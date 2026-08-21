@@ -23,7 +23,8 @@ struct Q8Params {
 
 struct KernelEntry {
   std::shared_ptr<at::native::mps::PrecompiledMetalShaderLibrary> library;
-  std::shared_ptr<at::native::mps::MetalKernelFunction> kernel;
+  std::shared_ptr<at::native::mps::MetalKernelFunction> half_kernel;
+  std::shared_ptr<at::native::mps::MetalKernelFunction> float_kernel;
 };
 
 std::mutex cache_mutex;
@@ -39,11 +40,12 @@ std::shared_ptr<KernelEntry> load_kernel(const std::string& library_path) {
   auto entry = std::make_shared<KernelEntry>();
   entry->library = std::make_shared<at::native::mps::PrecompiledMetalShaderLibrary>(
       library_path);
-  entry->kernel = entry->library->getKernelFunction("llmopt_q8_linear");
+  entry->half_kernel = entry->library->getKernelFunction("llmopt_q8_linear");
   TORCH_CHECK(
-      entry->kernel,
+      entry->half_kernel,
       "generated Metal library has no llmopt_q8_linear function: ",
       library_path);
+  entry->float_kernel = entry->library->getKernelFunction("llmopt_q8_linear_f32");
   kernel_cache.emplace(library_path, entry);
   return entry;
 }
@@ -68,7 +70,11 @@ at::Tensor q8_linear(
   TORCH_CHECK(is_mps(input), "llmopt Metal runtime expects an MPS input");
   TORCH_CHECK(is_mps(weight), "llmopt Metal runtime expects an MPS weight");
   TORCH_CHECK(is_mps(scale), "llmopt Metal runtime expects an MPS scale");
-  TORCH_CHECK(input.scalar_type() == at::kHalf, "llmopt Metal runtime expects float16 input");
+  const bool input_is_half = input.scalar_type() == at::kHalf;
+  const bool input_is_float = input.scalar_type() == at::kFloat;
+  TORCH_CHECK(
+      input_is_half || input_is_float,
+      "llmopt Metal runtime expects float16 or float32 input");
   TORCH_CHECK(weight.scalar_type() == at::kChar, "llmopt Metal runtime expects int8 weight");
   TORCH_CHECK(scale.scalar_type() == at::kHalf, "llmopt Metal runtime expects float16 scale");
   TORCH_CHECK(input.dim() >= 2, "llmopt Metal runtime expects at least a 2-D input");
@@ -100,6 +106,11 @@ at::Tensor q8_linear(
 
   at::Tensor output_2d = at::empty({m, n}, input.options());
   const auto entry = load_kernel(library_path);
+  const auto& kernel = input_is_half ? entry->half_kernel : entry->float_kernel;
+  TORCH_CHECK(
+      kernel,
+      "generated Metal library has no float32 Q8 kernel: ",
+      library_path);
   const Q8Params params{
       static_cast<uint32_t>(m),
       static_cast<uint32_t>(n),
@@ -113,15 +124,15 @@ at::Tensor q8_linear(
       round_up_to_tile(n), round_up_to_tile(m)};
   const std::array<uint64_t, 2> group = {kTile, kTile};
 
-  entry->kernel->runCommandBlock([&] {
-    entry->kernel->startEncoding();
-    entry->kernel->setArg(0, input_2d);
-    entry->kernel->setArg(1, weight_2d);
-    entry->kernel->setArg(2, scale_1d);
-    entry->kernel->setArg(3, bias_1d);
-    entry->kernel->setArg(4, output_2d);
-    entry->kernel->setArg(5, params);
-    entry->kernel->dispatch(grid, group);
+  kernel->runCommandBlock([&] {
+    kernel->startEncoding();
+    kernel->setArg(0, input_2d);
+    kernel->setArg(1, weight_2d);
+    kernel->setArg(2, scale_1d);
+    kernel->setArg(3, bias_1d);
+    kernel->setArg(4, output_2d);
+    kernel->setArg(5, params);
+    kernel->dispatch(grid, group);
   });
 
   std::vector<int64_t> output_shape(input.sizes().begin(), input.sizes().end());

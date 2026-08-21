@@ -61,6 +61,8 @@ ninja -f ninja.build metal
 ninja -f ninja.build fx-smoke
 ninja -f ninja.build q8-smoke
 ninja -f ninja.build metal-runtime
+ninja -f ninja.build metal-runtime-smoke
+ninja -f ninja.build metal-runtime-model-smoke
 ninja -f ninja.build bench-mps
 ninja -f ninja.build bench-suite
 ninja -f ninja.build bench-suite-350m
@@ -88,13 +90,20 @@ probe and does not replace the 2.6B FP16 record.
 `q8-smoke` emits and compiles the model-shaped Q8 linear kernel. `metal-runtime`
 builds the native MPS bridge. The model-level MPS benchmark defaults to the
 Python Q8 loader and `llmopt.q8_linear`; when a generated Q8 library is active,
-the callable dispatches packed int8 weights through the tiled Metal kernel and
-falls back to PyTorch MPS for unsupported combinations.
+the callable dispatches packed int8 weights through the tiled Metal kernel for
+both float16 and float32 activations, and falls back to PyTorch MPS for
+unsupported combinations. `metal-runtime-smoke` exercises both generated
+entry points on a non-aligned shape. `metal-runtime-model-smoke` runs one
+bounded LFM2.5-350M forward through the FX backend and records graph artifacts
+under `_artifacts/phase1-350m-mps/`.
 
 The first generated-library probe used a non-aligned 3x29x37 shape and exposed
 a partial-threadgroup mismatch; the bridge now rounds launches to complete
-16x16 groups. The corrected device path has not been rerun in this slice, and
-no model benchmark uses the generated kernel yet.
+16x16 groups. The corrected device probe passes for both dtypes with maximum
+absolute errors `0.0078125` (float16) and `2.86102294921875e-06` (float32).
+The 350M integration target reaches the generated-library configuration but
+its existing exact-logit check reports `max_abs=0.03515625` and
+`mean_abs=0.004932403564453125`; it does not write an ERS result.
 
 The earlier tiny MPS Q8 callable probe returned exact reference output through
 the dequantizing fallback, and the bounded

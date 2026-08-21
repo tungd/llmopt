@@ -102,7 +102,10 @@ def dispatch_q8_linear(
         return None
     if getattr(input, "device", None) is None or input.device.type != "mps":
         return None
-    if getattr(input, "dtype", None) is None or str(input.dtype) != "torch.float16":
+    if getattr(input, "dtype", None) is None or str(input.dtype) not in {
+        "torch.float16",
+        "torch.float32",
+    }:
         return None
     if getattr(weight, "device", None) is None or weight.device.type != "mps":
         return None

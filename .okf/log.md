@@ -3,6 +3,8 @@
 ## 2026-08-21
 * **Runtime loading**: Added the Ninja-built PyTorch MPS C++ bridge, Python metallib loader, generated Q8 library activation, and direct tensor binding for the OCaml-emitted `llmopt_q8_linear` kernel. The tiled launch rounds `dispatchThreads` dimensions up to complete 16x16 groups so cooperative loads remain populated on non-aligned shapes.
 * **Device observation**: The one non-model `M=3,N=29,K=37` probe loaded and dispatched the library but failed parity with `87/87` mismatched elements, maximum absolute difference `17.40625`, and maximum relative difference `18640.0`. Static builds and the 18-test suite passed after the launch correction; no model process or benchmark was launched for this runtime slice.
+* **Runtime correction**: Added a float32 Q8 Metal entry point and dtype-selected native dispatch because the LFM2.5 FX graph uses float32 activations at its 92 Q8 nodes. The half/float32 non-aligned probe now passes with maximum absolute errors `0.0078125` and `2.86102294921875e-06` respectively; the Python suite passes 19 tests.
+* **Model observation**: `ninja -f ninja.build metal-runtime-model-smoke` loaded LFM2.5-350M, planned 1,115 FX nodes, and selected a generated Q8 metallib, but the existing exact-logit check reported `max_abs=0.03515625` and `mean_abs=0.004932403564453125`. No ERS result was written and Phase 2 was not started.
 
 ## 2026-08-20
 * **Creation**: Scaffolded the research bundle — see [getting started](getting-started.md).

@@ -76,6 +76,11 @@ rule metal_runtime_smoke
   description = dispatch tiled Q8 Metal runtime smoke
   pool = console
 
+rule metal_runtime_model_smoke
+  command = mkdir -p _artifacts/phase1-350m-mps && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_mps.py --model LiquidAI/LFM2.5-350M --quantization q8 --iterations 1 --warmup 0 --artifact-dir _artifacts/phase1-350m-mps/graphs --output _artifacts/phase1-350m-mps/result.json
+  description = run 350M generated Metal Q8 FX integration smoke
+  pool = console
+
 rule lfm25_mps_benchmark
   command = mkdir -p _artifacts/lfm25-mps && python3.13 bench/lfm25_mps.py --artifact-dir _artifacts/lfm25-mps/graphs --output _artifacts/lfm25-mps/result.json
   description = benchmark LFM2.5 PyTorch MPS execution
@@ -153,6 +158,8 @@ build _build/native/metal-runtime.stamp: native_runtime native/metal_runtime.cpp
 build q8-fx-smoke: phony _build/q8-fx-example/kernel.ll.o _build/q8-fx-example/kernel.air _build/q8-fx-example/kernel.metallib
 build metal-runtime: phony _build/native/metal-runtime.stamp
 build metal-runtime-smoke: metal_runtime_smoke _build/native/metal-runtime.stamp _build/q8-fx-example/kernel.metallib python/examples/metal_runtime_smoke.py python/llmopt_backend/metal_runtime.py
+build _artifacts/phase1-350m-mps/result.json: metal_runtime_model_smoke _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_mps.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
+build metal-runtime-model-smoke: phony _artifacts/phase1-350m-mps/result.json
 
 build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx
 build ocaml-test: run_test _build/bin/llmopt-test
