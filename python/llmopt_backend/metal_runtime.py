@@ -60,9 +60,9 @@ def _native() -> Any | None:
         spec.loader.exec_module(module)
         _native_module = module
         return module
-    if _mode() == "native":
+    if _mode() in {"native", "exact"}:
         raise RuntimeError(
-            "LLMOPT_METAL_RUNTIME=native but the Ninja-built MPS bridge is unavailable"
+            "LLMOPT_METAL_RUNTIME requires the Ninja-built MPS bridge, but it is unavailable"
         )
     return None
 
@@ -78,6 +78,17 @@ def reset_dispatch_count() -> None:
 
 def dispatch_count() -> int:
     return _dispatches
+
+
+def runtime_kind() -> str:
+    mode = _mode()
+    if mode == "exact":
+        return "generated-metal-q8-exact-mps"
+    if mode == "native":
+        return "generated-metal-q8-native"
+    if mode == "off":
+        return "pytorch-mps-fallback"
+    return "generated-metal-q8-native"
 
 
 def _run(command: list[str]) -> None:
@@ -146,6 +157,13 @@ def dispatch_q8_linear(
     if module is None:
         return None
     global _dispatches
-    output = module.q8_linear(input, weight, scale, bias, str(library))
+    output = module.q8_linear(
+        input,
+        weight,
+        scale,
+        bias,
+        str(library),
+        _mode() == "exact",
+    )
     _dispatches += 1
     return output

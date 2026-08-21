@@ -75,6 +75,11 @@ def main() -> None:
 
     if args.artifact_dir is not None:
         os.environ["LLMOPT_ARTIFACT_DIR"] = args.artifact_dir
+    # The model-level parity probe uses the generated dequantization kernel
+    # followed by PyTorch MPS linear, which preserves the eager reference's
+    # reduction semantics. Set LLMOPT_METAL_RUNTIME=native to benchmark the
+    # approximate Phase 2 tiled matmul explicitly.
+    os.environ.setdefault("LLMOPT_METAL_RUNTIME", "exact")
     if not torch.backends.mps.is_available():
         raise RuntimeError("PyTorch MPS is not available on this host")
 

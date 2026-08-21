@@ -31,8 +31,8 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - Textual LLVM IR emission for inspection and a tiled Metal Shading Language
   emitter for the executable backend boundary.
 - A Ninja-built PyTorch MPS C++ bridge that loads generated Q8 `.metallib`
-  files, binds MPS tensors, and dispatches the tiled kernel with a PyTorch-MPS
-  fallback for unsupported cases.
+  files, binds MPS tensors, and dispatches either the Phase 2 tiled kernel or
+  the exact generated dequantization path with PyTorch-MPS linear.
 - A direct FX GraphModule MPS executor as the first runtime optimization pass.
 - A racebench-compatible ERS benchsuite with validated warmup/scored traces,
   the adjacent HTTP runner contract, a full 70x6 trace profile, and a natural
@@ -89,28 +89,32 @@ record. The FX compiler executable is `_build/bin/llmopt-fx`.
 probe and does not replace the 2.6B FP16 record.
 
 `q8-smoke` emits and compiles the model-shaped Q8 linear kernel. `metal-runtime`
-builds the native MPS bridge. The model-level MPS benchmark defaults to the
-Python Q8 loader and `llmopt.q8_linear`; when a generated Q8 library is active,
-the callable dispatches packed int8 weights through the tiled Metal kernel for
-both float16 and float32 activations, and falls back to PyTorch MPS for
-unsupported combinations. The Phase 2 emitter uses aligned `half4`/`float4`
-and `char4` cooperative loads while retaining the ordered scalar reduction.
-Generated libraries compile with safe Metal FP32 math and cache the selected
-compiler flags. `metal-runtime-smoke` exercises both generated entry points on
-a non-aligned shape. `metal-runtime-differential` performs one memory-bounded
-350M probe covering direct dispatch, eager MPS, compiled fallback FX, compiled
-generated FX, exact logits, argmax parity, and native dispatch counts; its
-artifacts are under `_artifacts/phase1-350m-differential/`.
+builds the native MPS bridge. The Phase 2 native mode uses aligned
+`half4`/`float4` and `char4` cooperative loads with an ordered reduction.
+The exact mode uses a generated dequantization kernel and then PyTorch MPS
+linear, preserving eager reduction semantics while still exercising the
+generated library. Generated libraries compile with safe Metal FP32 math and
+cache the selected compiler flags. `metal-runtime-smoke` exercises the native
+Phase 2 entry points on a non-aligned shape. `metal-runtime-differential`
+performs one memory-bounded 350M probe covering direct native dispatch, eager
+MPS, compiled fallback FX, generated exact FX, generated native FX, exact
+logits, argmax parity, and dispatch counts; its artifacts are under
+`_artifacts/phase1-350m-differential/`.
+
+`LLMOPT_METAL_RUNTIME=off` selects the PyTorch fallback, `exact` selects the
+generated dequantization plus MPS-linear path, and `native` selects the
+generated Phase 2 tiled Q8 matmul. `bench-mps` defaults to `exact` so its
+existing exact-logit comparison remains a correctness probe; set `native`
+explicitly when measuring the Phase 2 matmul boundary.
 
 The first generated-library probe used a non-aligned 3x29x37 shape and exposed
 a partial-threadgroup mismatch; the bridge now rounds launches to complete
-16x16 groups. The corrected device probe passes for both dtypes with maximum
-absolute errors `0.0078125` (float16) and `2.86102294921875e-06` (float32).
-The differential probe confirmed the generated library was used for all 92 Q8
-nodes. Eager versus compiled fallback was exact; eager versus generated had
-`max_abs=0.03515625`, `mean_abs=0.004931225907057524`, and exact argmax token
-positions. The generated path therefore remains numerically non-exact at the
-model logits and writes no ERS result; the one device probe was not retried.
+16x16 groups. The combined differential probe dispatched the native Phase 2
+kernel for both dtypes, then ran 92 generated exact-mode Q8 nodes and 92
+generated native-mode Q8 nodes. Eager versus generated exact-mode logits were
+bit-exact (`max_abs=0`, `mean_abs=0`); native Phase 2 remains a separately
+measured approximate matmul path with `max_abs=0.078125` and
+`mean_abs=0.00713115930557251`. The exact model path produced no ERS score.
 
 The earlier tiny MPS Q8 callable probe returned exact reference output through
 the dequantizing fallback, and the bounded

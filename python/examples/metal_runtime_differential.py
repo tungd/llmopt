@@ -46,6 +46,7 @@ def hardware_model() -> str | None:
 
 
 def direct_probe(library: Path) -> dict[str, object]:
+    os.environ["LLMOPT_METAL_RUNTIME"] = "native"
     torch.manual_seed(23)
     device = torch.device("mps")
     rows, output_channels, input_channels = 3, 29, 37
@@ -79,7 +80,7 @@ def direct_probe(library: Path) -> dict[str, object]:
     return {
         "library": str(library),
         "shape": [rows, output_channels, input_channels],
-        "dispatch": "generated-metal-q8-vectorized-tiled",
+        "dispatch": "generated-metal-q8-native-vectorized-tiled",
         "errors": errors,
     }
 
@@ -152,11 +153,17 @@ def main() -> None:
         runtime_mode="off",
         artifact_dir=args.artifact_dir / "fallback",
     )
-    generated, generated_seconds, generated_dispatches = run_compiled(
+    generated_exact, generated_exact_seconds, generated_exact_dispatches = run_compiled(
         model,
         input_ids,
-        runtime_mode="auto",
-        artifact_dir=args.artifact_dir / "generated",
+        runtime_mode="exact",
+        artifact_dir=args.artifact_dir / "generated-exact",
+    )
+    generated_native, generated_native_seconds, generated_native_dispatches = run_compiled(
+        model,
+        input_ids,
+        runtime_mode="native",
+        artifact_dir=args.artifact_dir / "generated-native",
     )
 
     result = {
@@ -178,13 +185,17 @@ def main() -> None:
         "load_seconds": load_seconds,
         "direct_probe": direct,
         "eager_vs_fallback": difference(eager, fallback),
-        "eager_vs_generated": difference(eager, generated),
-        "fallback_vs_generated": difference(fallback, generated),
+        "eager_vs_generated_exact": difference(eager, generated_exact),
+        "eager_vs_generated_native": difference(eager, generated_native),
+        "fallback_vs_generated_exact": difference(fallback, generated_exact),
+        "fallback_vs_generated_native": difference(fallback, generated_native),
         "compiled": {
             "fallback_seconds": fallback_seconds,
-            "generated_seconds": generated_seconds,
+            "generated_exact_seconds": generated_exact_seconds,
+            "generated_native_seconds": generated_native_seconds,
             "fallback_dispatches": fallback_dispatches,
-            "generated_dispatches": generated_dispatches,
+            "generated_exact_dispatches": generated_exact_dispatches,
+            "generated_native_dispatches": generated_native_dispatches,
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -257,7 +257,7 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
                     "optimization": f"fx-direct-execution+{quantization}",
                     "quantization": quantization,
                     "runtime": (
-                        "generated-metal-q8"
+                        metal_runtime.runtime_kind()
                         if metal_library is not None
                         else "pytorch-mps-fallback"
                     ),

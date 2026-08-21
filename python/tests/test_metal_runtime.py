@@ -29,6 +29,33 @@ class MetalRuntimeTest(unittest.TestCase):
             scale,
             bias,
             "/tmp/generated.metallib",
+            False,
+        )
+
+    def test_exact_mode_selects_generated_mps_reference_path(self):
+        tensor = SimpleNamespace(device=SimpleNamespace(type="mps"))
+        input = SimpleNamespace(device=tensor.device, dtype="torch.float32")
+        weight = SimpleNamespace(device=tensor.device, dtype="torch.int8")
+        scale = SimpleNamespace(device=tensor.device, dtype="torch.float16")
+        bias = SimpleNamespace(device=tensor.device, dtype="torch.float16")
+        native = mock.Mock()
+        native.q8_linear.return_value = "exact-output"
+
+        with mock.patch.dict("os.environ", {"LLMOPT_METAL_RUNTIME": "exact"}):
+            with mock.patch.object(metal_runtime, "_native", return_value=native):
+                with metal_runtime.activate(Path("/tmp/generated.metallib")):
+                    result = metal_runtime.dispatch_q8_linear(
+                        input, weight, scale, bias
+                    )
+
+        self.assertEqual(result, "exact-output")
+        native.q8_linear.assert_called_once_with(
+            input,
+            weight,
+            scale,
+            bias,
+            "/tmp/generated.metallib",
+            True,
         )
 
     def test_cpu_inputs_leave_generated_runtime_untouched(self):

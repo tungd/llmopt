@@ -17,7 +17,8 @@ let input_name graph value =
   | None ->
       Printf.sprintf "value-%d" (Ir.Value_id.to_int (Ir.Value.id value))
 
-let q8_kernel ~name ~value_type ~vector_type ~alignment ~zero_value ~store_value =
+let q8_kernel ~name ~value_type ~vector_type ~alignment ~weight_value_type
+    ~weight_cast ~scale_type ~scale_zero ~zero_value ~store_value =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
   ^ "    device const char* weight [[buffer(1)]],\n"
@@ -30,8 +31,10 @@ let q8_kernel ~name ~value_type ~vector_type ~alignment ~zero_value ~store_value
   ^ "  const uint row = gid.y;\n"
   ^ "  const uint col = gid.x;\n"
   ^ "  threadgroup " ^ value_type ^ " input_tile[16][16];\n"
-  ^ "  threadgroup char weight_tile[16][16];\n"
+  ^ "  threadgroup " ^ weight_value_type ^ " weight_tile[16][16];\n"
   ^ "  float acc = 0.0f;\n"
+  ^ "  const " ^ scale_type ^ " channel_scale =\n"
+  ^ "      (col < params.n) ? scale[col] : " ^ scale_zero ^ ";\n"
   ^ "  for (uint base = 0; base < params.k; base += TILE) {\n"
   ^ "    if (tid.x < 4) {\n"
   ^ "      const uint input_offset = row * params.k + base + tid.x * 4;\n"
@@ -59,16 +62,16 @@ let q8_kernel ~name ~value_type ~vector_type ~alignment ~zero_value ~store_value
   ^ "        device const char4* weight_vector =\n"
   ^ "            reinterpret_cast<device const char4*>(weight + weight_offset);\n"
   ^ "        char4 values = *weight_vector;\n"
-  ^ "        weight_tile[tid.y * 4 + 0][tid.x] = values[0];\n"
-  ^ "        weight_tile[tid.y * 4 + 1][tid.x] = values[1];\n"
-  ^ "        weight_tile[tid.y * 4 + 2][tid.x] = values[2];\n"
-  ^ "        weight_tile[tid.y * 4 + 3][tid.x] = values[3];\n"
+  ^ "        weight_tile[tid.y * 4 + 0][tid.x] = " ^ weight_cast ^ "(values[0]) * channel_scale;\n"
+  ^ "        weight_tile[tid.y * 4 + 1][tid.x] = " ^ weight_cast ^ "(values[1]) * channel_scale;\n"
+  ^ "        weight_tile[tid.y * 4 + 2][tid.x] = " ^ weight_cast ^ "(values[2]) * channel_scale;\n"
+  ^ "        weight_tile[tid.y * 4 + 3][tid.x] = " ^ weight_cast ^ "(values[3]) * channel_scale;\n"
   ^ "      } else {\n"
   ^ "        for (uint lane = 0; lane < 4; ++lane)\n"
   ^ "          weight_tile[tid.y * 4 + lane][tid.x] =\n"
   ^ "              (col < params.n && base + tid.y * 4 + lane < params.k)\n"
-  ^ "                  ? weight[weight_offset + lane]\n"
-  ^ "                  : char(0);\n"
+  ^ "                  ? " ^ weight_cast ^ "(weight[weight_offset + lane]) * channel_scale\n"
+  ^ "                  : " ^ weight_cast ^ "(0);\n"
   ^ "      }\n"
   ^ "    }\n"
   ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
@@ -79,9 +82,23 @@ let q8_kernel ~name ~value_type ~vector_type ~alignment ~zero_value ~store_value
   ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
   ^ "  }\n"
   ^ "  if (row < params.m && col < params.n) {\n"
-  ^ "    acc *= float(scale[col]);\n"
   ^ "    if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
   ^ "    output[row * params.n + col] = " ^ store_value ^ ";\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const char* weight [[buffer(0)]],\n"
+  ^ "    device const half* scale [[buffer(1)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(2)]],\n"
+  ^ "    constant Q8Params& params [[buffer(3)]],\n"
+  ^ "    uint2 gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint col = gid.y;\n"
+  ^ "  const uint inner = gid.x;\n"
+  ^ "  if (col < params.n && inner < params.k) {\n"
+  ^ "    output[col * params.k + inner] = " ^ weight_cast
+  ^ "(weight[col * params.k + inner]) * " ^ scale_cast ^ "(scale[col]);\n"
   ^ "  }\n"
   ^ "}\n"
 
@@ -196,6 +213,10 @@ let emit graph =
             ~value_type:"half"
             ~vector_type:"half4"
             ~alignment:"8"
+            ~weight_value_type:"half"
+            ~weight_cast:"half"
+            ~scale_type:"half"
+            ~scale_zero:"half(0.0h)"
             ~zero_value:"half(0.0h)"
             ~store_value:"half(acc)"
         ^ q8_kernel
@@ -203,8 +224,22 @@ let emit graph =
             ~value_type:"float"
             ~vector_type:"float4"
             ~alignment:"16"
+            ~weight_value_type:"float"
+            ~weight_cast:"float"
+            ~scale_type:"float"
+            ~scale_zero:"0.0f"
             ~zero_value:"0.0f"
             ~store_value:"acc"
+        ^ q8_dequant_kernel
+            ~name:"llmopt_q8_dequantize"
+            ~value_type:"half"
+            ~weight_cast:"half"
+            ~scale_cast:"half"
+        ^ q8_dequant_kernel
+            ~name:"llmopt_q8_dequantize_f32"
+            ~value_type:"float"
+            ~weight_cast:"float"
+            ~scale_cast:"float"
       in
       ignore (input_symbol, weight_symbol, scale_symbol, bias_symbol, output_symbol);
       Ok source

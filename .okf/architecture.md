@@ -4,7 +4,7 @@ title: 'Dynamo/FX frontend with OCaml effect-based planning'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans them, and the direct FX executor can dispatch generated Q8 Metal libraries through PyTorch MPS.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-21T09:13:06Z' }
+generated: { by: codex/gpt-5, at: '2026-08-21T09:24:27Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -63,19 +63,21 @@ the complete LFM2.5 forward still runs through PyTorch MPS. Short-convolution
 and GQA are therefore executed by PyTorch rather than custom OCaml effects in
 this slice. The model-shaped compiler fixture and model-level MPS loader now
 default to Q8 weight-only linear lowering. For graphs containing the generated
-Q8 kernel, the loader compiles MSL to AIR/metallib and the C++ bridge selects a
-float16 or float32 tiled entry point, binds MPS tensors, and submits the launch
-on the current MPS stream. Unsupported dtypes or unavailable bridge builds use
-the PyTorch dequantizing operator as fallback.
+Q8 library, the loader compiles MSL to AIR/metallib. `native` selects the
+float16/float32 Phase 2 tiled entry points; `exact` selects generated f16/f32
+dequantization and then the same PyTorch MPS `linear` operation used by the
+fallback, preserving model-logit parity. Unsupported dtypes or unavailable
+bridge builds use the PyTorch dequantizing operator as fallback.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the
 launch grid was rounded to full 16x16 tiles. The corrected half/float32 probes
 pass. Phase 2 now emits aligned `half4`/`float4` and `char4` cooperative loads,
-with an ordered reduction and safe Metal FP32 compilation flags. The one-shot
-350M differential probe confirms 92 generated dispatches and exact eager versus
-fallback output, but generated versus eager logits remain non-exact; both
-observations are recorded in [exp-0008](experiments/exp-0008-metal-runtime-q8.md).
+with an ordered reduction and safe Metal FP32 compilation flags. The combined
+350M differential probe recorded 92 generated exact-mode dispatches with
+bit-exact eager logits, plus 92 generated native Phase 2 dispatches whose
+separate numerical result was `max_abs=0.078125`; both paths are recorded in
+[exp-0008](experiments/exp-0008-metal-runtime-q8.md).
 
 [^pytorch-backend-contract]: PyTorch custom backend documentation.
 [^local-python-backend]: `python/llmopt_backend/__init__.py` in this repository.

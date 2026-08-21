@@ -25,6 +25,8 @@ struct KernelEntry {
   std::shared_ptr<at::native::mps::PrecompiledMetalShaderLibrary> library;
   std::shared_ptr<at::native::mps::MetalKernelFunction> half_kernel;
   std::shared_ptr<at::native::mps::MetalKernelFunction> float_kernel;
+  std::shared_ptr<at::native::mps::MetalKernelFunction> half_dequant_kernel;
+  std::shared_ptr<at::native::mps::MetalKernelFunction> float_dequant_kernel;
 };
 
 std::mutex cache_mutex;
@@ -46,6 +48,10 @@ std::shared_ptr<KernelEntry> load_kernel(const std::string& library_path) {
       "generated Metal library has no llmopt_q8_linear function: ",
       library_path);
   entry->float_kernel = entry->library->getKernelFunction("llmopt_q8_linear_f32");
+  entry->half_dequant_kernel =
+      entry->library->getKernelFunction("llmopt_q8_dequantize");
+  entry->float_dequant_kernel =
+      entry->library->getKernelFunction("llmopt_q8_dequantize_f32");
   kernel_cache.emplace(library_path, entry);
   return entry;
 }
@@ -66,7 +72,8 @@ at::Tensor q8_linear(
     const at::Tensor& weight,
     const at::Tensor& scale,
     pybind11::object bias_object,
-    const std::string& library_path) {
+    const std::string& library_path,
+    bool exact) {
   TORCH_CHECK(is_mps(input), "llmopt Metal runtime expects an MPS input");
   TORCH_CHECK(is_mps(weight), "llmopt Metal runtime expects an MPS weight");
   TORCH_CHECK(is_mps(scale), "llmopt Metal runtime expects an MPS scale");
@@ -103,9 +110,44 @@ at::Tensor q8_linear(
   TORCH_CHECK(m > 0, "Q8 input must contain at least one row");
   TORCH_CHECK(m <= UINT32_MAX && n <= UINT32_MAX && k <= UINT32_MAX,
               "Q8 dimensions exceed the Metal runtime ABI");
+  std::vector<int64_t> output_shape(input.sizes().begin(), input.sizes().end());
+  output_shape.back() = n;
+
+  const auto entry = load_kernel(library_path);
+
+  if (exact) {
+    const auto& dequant_kernel = input_is_half ? entry->half_dequant_kernel
+                                               : entry->float_dequant_kernel;
+    TORCH_CHECK(
+        dequant_kernel,
+        "generated Metal library has no exact Q8 dequantization kernel: ",
+        library_path);
+    at::Tensor dequantized_weight = at::empty({n, k}, input.options());
+    const Q8Params dequant_params{
+        0u,
+        static_cast<uint32_t>(n),
+        static_cast<uint32_t>(k),
+        0u};
+    const std::array<uint64_t, 2> dequant_grid = {
+        round_up_to_tile(k), round_up_to_tile(n)};
+    const std::array<uint64_t, 2> dequant_group = {kTile, kTile};
+
+    dequant_kernel->runCommandBlock([&] {
+      dequant_kernel->startEncoding();
+      dequant_kernel->setArg(0, weight_2d);
+      dequant_kernel->setArg(1, scale_1d);
+      dequant_kernel->setArg(2, dequantized_weight);
+      dequant_kernel->setArg(3, dequant_params);
+      dequant_kernel->dispatch(dequant_grid, dequant_group);
+    });
+
+    c10::optional<at::Tensor> reference_bias =
+        has_bias ? c10::optional<at::Tensor>(bias_1d) : c10::nullopt;
+    return at::linear(input_2d, dequantized_weight, reference_bias)
+        .reshape(output_shape);
+  }
 
   at::Tensor output_2d = at::empty({m, n}, input.options());
-  const auto entry = load_kernel(library_path);
   const auto& kernel = input_is_half ? entry->half_kernel : entry->float_kernel;
   TORCH_CHECK(
       kernel,
@@ -135,8 +177,6 @@ at::Tensor q8_linear(
     kernel->dispatch(grid, group);
   });
 
-  std::vector<int64_t> output_shape(input.sizes().begin(), input.sizes().end());
-  output_shape.back() = n;
   return output_2d.reshape(output_shape);
 }
 
@@ -148,5 +188,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
       pybind11::arg("weight"),
       pybind11::arg("scale"),
       pybind11::arg("bias"),
-      pybind11::arg("library_path"));
+      pybind11::arg("library_path"),
+      pybind11::arg("exact") = false);
 }

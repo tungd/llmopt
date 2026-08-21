@@ -31,10 +31,12 @@ PyTorch MPS fallback.
 
 The OCaml model-shaped kernel fixture and the model-level runner default to Q8
 weight-only linear lowering: int8 weights plus per-output-channel float16
-scales, with FP16 activations. The Python boundary rewrites eligible linear
-modules to `llmopt.q8_linear`; when the generated library is active it consumes
-packed weights through the tiled kernel, otherwise it dequantizes inside the
-operator. `--quantization fp16` selects the explicit fallback.
+scales. The Python boundary rewrites eligible linear modules to
+`llmopt.q8_linear`. The model-level parity runner defaults to
+`LLMOPT_METAL_RUNTIME=exact`, which dispatches the generated dequantization
+kernel and then uses PyTorch MPS linear; `LLMOPT_METAL_RUNTIME=native` selects
+the Phase 2 tiled Q8 matmul for explicit performance experiments. `--quantization
+fp16` selects the explicit weight-format fallback.
 The compiler target is validated by `ninja -f ninja.build q8-smoke`.
 
 The checked-in 350M and 2.6B result JSON files predate this default and remain

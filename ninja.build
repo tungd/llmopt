@@ -77,7 +77,7 @@ rule metal_runtime_smoke
   pool = console
 
 rule metal_runtime_model_smoke
-  command = mkdir -p _artifacts/phase1-350m-mps && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_mps.py --model LiquidAI/LFM2.5-350M --quantization q8 --iterations 1 --warmup 0 --artifact-dir _artifacts/phase1-350m-mps/graphs --output _artifacts/phase1-350m-mps/result.json
+  command = mkdir -p _artifacts/phase1-350m-mps && LLMOPT_METAL_RUNTIME=exact PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_mps.py --model LiquidAI/LFM2.5-350M --quantization q8 --iterations 1 --warmup 0 --artifact-dir _artifacts/phase1-350m-mps/graphs --output _artifacts/phase1-350m-mps/result.json
   description = run 350M generated Metal Q8 FX integration smoke
   pool = console
 
