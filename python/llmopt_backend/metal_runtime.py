@@ -19,6 +19,17 @@ _active_library: ContextVar[Path | None] = ContextVar(
     "llmopt_active_metal_library", default=None
 )
 _native_module: Any | None = None
+_dispatches = 0
+
+# The Xcode Metal compiler defaults to aggressive fast-math.  The generated
+# Q8 reduction is deliberately kept in source order so that its numerical
+# behavior is comparable with the MPS fallback; use safe FP32 math while the
+# kernel is being used as the model reference implementation.
+_METAL_FLAGS = (
+    "-fmetal-math-mode=safe",
+    "-fmetal-math-fp32-functions=precise",
+    "-ffp-contract=on",
+)
 
 
 def _mode() -> str:
@@ -60,6 +71,15 @@ def native_available() -> bool:
     return _native() is not None
 
 
+def reset_dispatch_count() -> None:
+    global _dispatches
+    _dispatches = 0
+
+
+def dispatch_count() -> int:
+    return _dispatches
+
+
 def _run(command: list[str]) -> None:
     subprocess.run(command, check=True, text=True)
 
@@ -76,9 +96,13 @@ def compile_library(source: Path) -> Path | None:
 
     air = source.with_suffix(".air")
     library = source.with_suffix(".metallib")
-    if not library.exists() or library.stat().st_mtime < source.stat().st_mtime:
-        _run(["xcrun", "metal", "-c", str(source), "-o", str(air)])
+    flags_stamp = source.with_suffix(".metal-flags")
+    flags_text = " ".join(_METAL_FLAGS) + "\n"
+    flags_changed = not flags_stamp.exists() or flags_stamp.read_text(encoding="utf-8") != flags_text
+    if flags_changed or not library.exists() or library.stat().st_mtime < source.stat().st_mtime:
+        _run(["xcrun", "metal", *_METAL_FLAGS, "-c", str(source), "-o", str(air)])
         _run(["xcrun", "metallib", str(air), "-o", str(library)])
+        flags_stamp.write_text(flags_text, encoding="utf-8")
     return library
 
 
@@ -121,4 +145,7 @@ def dispatch_q8_linear(
     module = _native()
     if module is None:
         return None
-    return module.q8_linear(input, weight, scale, bias, str(library))
+    global _dispatches
+    output = module.q8_linear(input, weight, scale, bias, str(library))
+    _dispatches += 1
+    return output

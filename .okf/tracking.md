@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-21T09:00:28Z' }
+generated: { by: codex/gpt-5, at: '2026-08-21T09:13:06Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -31,7 +31,7 @@ sources:
 | ERS trace/report benchsuite | implemented; 2.6B baseline recorded | racebench score math, reference-style HTTP runner, shape-matched semantic 5x3 and full 70x6 profiles, distinct warmup, isolated reports, exact token-ID parity, and `/bench/results/lfm25-racebench-baseline.json` with `engine_pass: true`, eager ERS `0.0`, and 15/15 successful requests per candidate |
 | LFM2.5-350M memory-safe benchmark path | implemented; engine pass and baseline recorded | `bench-suite-350m` completed 15/15 warmup and scored requests per candidate, exact token/digest parity, eager ERS `0.0003597708408867709`; the 2.6B result is recorded separately in the ERS benchsuite slice |
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, `ninja -f ninja.build q8-smoke`, and the historical dequantizing MPS callable probe pass; the bounded Q8 350M run records 15/15 requests per candidate, exact digest/token parity, and `0/6` needle retrieval at `/bench/results/lfm25-350m-q8-racebench-baseline.json` |
-| generated Q8 Metal runtime loading and dispatch | implemented; model integration parity observation recorded | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects half/float32 Q8 entry points; the corrected non-aligned `M=3,N=29,K=37` probe passes, while the bounded 350M FX integration reports `max_abs=0.03515625` and `mean_abs=0.004932403564453125` under the existing exact-logit check and writes no ERS result |
+| generated Q8 Metal runtime loading and dispatch | implemented; model logit parity open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects half/float32 Q8 entry points; Phase 2 adds aligned vector loads and safe-math compilation. The one-shot differential probe records 92 generated dispatches, exact eager/fallback parity, generated-vs-eager `max_abs=0.03515625`, `mean_abs=0.004931225907057524`, and exact argmax parity; no ERS result was written |
 | natural needle-in-a-haystack validation | implemented | semantic 5x3 run records `0/6` for both candidates at 2,048/4,096-token contexts and 10/50/90 placement |
 
 # Evidence rule
@@ -59,5 +59,5 @@ measurement into a release gate.
   pressure down during the measurement?
 - Which LFM2.5 linear subgraphs can use the generated Q8 callable without
   falling back to PyTorch dequantization?
-- How should model-level Q8 correctness be reported when a generated float32
-  kernel has small logit drift but may preserve generated token IDs?
+- What lowering or numerical policy should make the generated float32 Q8 path
+  match the MPS fallback logits while retaining the Phase 2 kernel?

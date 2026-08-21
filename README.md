@@ -63,6 +63,7 @@ ninja -f ninja.build q8-smoke
 ninja -f ninja.build metal-runtime
 ninja -f ninja.build metal-runtime-smoke
 ninja -f ninja.build metal-runtime-model-smoke
+ninja -f ninja.build metal-runtime-differential
 ninja -f ninja.build bench-mps
 ninja -f ninja.build bench-suite
 ninja -f ninja.build bench-suite-350m
@@ -92,18 +93,24 @@ builds the native MPS bridge. The model-level MPS benchmark defaults to the
 Python Q8 loader and `llmopt.q8_linear`; when a generated Q8 library is active,
 the callable dispatches packed int8 weights through the tiled Metal kernel for
 both float16 and float32 activations, and falls back to PyTorch MPS for
-unsupported combinations. `metal-runtime-smoke` exercises both generated
-entry points on a non-aligned shape. `metal-runtime-model-smoke` runs one
-bounded LFM2.5-350M forward through the FX backend and records graph artifacts
-under `_artifacts/phase1-350m-mps/`.
+unsupported combinations. The Phase 2 emitter uses aligned `half4`/`float4`
+and `char4` cooperative loads while retaining the ordered scalar reduction.
+Generated libraries compile with safe Metal FP32 math and cache the selected
+compiler flags. `metal-runtime-smoke` exercises both generated entry points on
+a non-aligned shape. `metal-runtime-differential` performs one memory-bounded
+350M probe covering direct dispatch, eager MPS, compiled fallback FX, compiled
+generated FX, exact logits, argmax parity, and native dispatch counts; its
+artifacts are under `_artifacts/phase1-350m-differential/`.
 
 The first generated-library probe used a non-aligned 3x29x37 shape and exposed
 a partial-threadgroup mismatch; the bridge now rounds launches to complete
 16x16 groups. The corrected device probe passes for both dtypes with maximum
 absolute errors `0.0078125` (float16) and `2.86102294921875e-06` (float32).
-The 350M integration target reaches the generated-library configuration but
-its existing exact-logit check reports `max_abs=0.03515625` and
-`mean_abs=0.004932403564453125`; it does not write an ERS result.
+The differential probe confirmed the generated library was used for all 92 Q8
+nodes. Eager versus compiled fallback was exact; eager versus generated had
+`max_abs=0.03515625`, `mean_abs=0.004931225907057524`, and exact argmax token
+positions. The generated path therefore remains numerically non-exact at the
+model logits and writes no ERS result; the one device probe was not retried.
 
 The earlier tiny MPS Q8 callable probe returned exact reference output through
 the dequantizing fallback, and the bounded

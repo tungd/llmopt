@@ -4,7 +4,7 @@ title: 'Dynamo/FX frontend with OCaml effect-based planning'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans them, and the direct FX executor can dispatch generated Q8 Metal libraries through PyTorch MPS.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-21T09:00:28Z' }
+generated: { by: codex/gpt-5, at: '2026-08-21T09:13:06Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -71,9 +71,11 @@ the PyTorch dequantizing operator as fallback.
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the
 launch grid was rounded to full 16x16 tiles. The corrected half/float32 probes
-pass. The bounded 350M FX integration reaches the generated-library path but
-still reports a non-exact forward result; both observations are recorded in
-[exp-0008](experiments/exp-0008-metal-runtime-q8.md).
+pass. Phase 2 now emits aligned `half4`/`float4` and `char4` cooperative loads,
+with an ordered reduction and safe Metal FP32 compilation flags. The one-shot
+350M differential probe confirms 92 generated dispatches and exact eager versus
+fallback output, but generated versus eager logits remain non-exact; both
+observations are recorded in [exp-0008](experiments/exp-0008-metal-runtime-q8.md).
 
 [^pytorch-backend-contract]: PyTorch custom backend documentation.
 [^local-python-backend]: `python/llmopt_backend/__init__.py` in this repository.
