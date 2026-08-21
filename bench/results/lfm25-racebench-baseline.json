@@ -1,0 +1,999 @@
+{
+  "schema_version": 2,
+  "measurement_status": "isolated_observation",
+  "created_at": "2026-08-20T14:15:50.699037+00:00",
+  "target": "pytorch-mps",
+  "optimization": "fx-direct-execution",
+  "trace": "semantic-5x3",
+  "warmup_trace": "profile:semantic-5x3:warmup",
+  "candidate_order": [
+    "eager",
+    "llmopt"
+  ],
+  "metadata": {
+    "model": "LiquidAI/LFM2.5-2.6B",
+    "device": "mps",
+    "torch": "2.13.0",
+    "python": "3.13.7",
+    "transformers": "5.13.0",
+    "host": {
+      "machine": "arm64",
+      "macos": "26.6.1",
+      "model": "Mac16,8"
+    },
+    "load_seconds": 9.15166566701373,
+    "mps_watermark_environment": {
+      "high_ratio": "0.8",
+      "low_ratio": "0.7"
+    },
+    "mps_memory": {
+      "recommended_max_bytes": 19069665280,
+      "allocated_bytes_at_record": 5394399744,
+      "driver_allocated_bytes_at_record": 6451314688
+    },
+    "timing": {
+      "ttft": "perf_counter after device synchronization at first logits processor",
+      "tpot": "mean interval between synchronized logits processor observations"
+    },
+    "input_prompt": "The capital of France is",
+    "isolation": "one child process per candidate"
+  },
+  "racebench_contract": {
+    "score": "official ERS constants from viettel-ai-race/src/racebench/score.py",
+    "runner": "serial MPS conversations with serial closed-loop turns",
+    "max_workers": 1,
+    "http_reference": "concurrent conversations with serial closed-loop turns",
+    "warmup": "byte-distinct and shape-matched when requested",
+    "completion_tokens": "pinned per trace request",
+    "mps_cache_release": true,
+    "target_model_substitution": {
+      "reference": "LiquidAI/LFM2.5-1.2B-Instruct",
+      "local": "LiquidAI/LFM2.5-2.6B"
+    }
+  },
+  "candidates": {
+    "eager": {
+      "warmup": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.0,
+        "ttft_ms": {
+          "mean": 2878.2764832663815,
+          "median": 2783.9337910118047,
+          "p95": 3425.4319294035663,
+          "min": 2286.9794580037706,
+          "max": 3757.3232499998994
+        },
+        "tpot_ms": {
+          "mean": 34.56950903077321,
+          "median": 33.70817753505413,
+          "p95": 37.06599646156427,
+          "min": 33.284046127107366,
+          "max": 37.329202899721025
+        },
+        "request_score": {
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "prompt_tokens": 39112,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 2413.4518248029053,
+              "median": 2345.5859159876127,
+              "p95": 2617.256233614171,
+              "min": 2286.9794580037706,
+              "max": 2656.1075420177076
+            },
+            "tpot_ms": {
+              "mean": 34.75985574247129,
+              "median": 33.73235005686406,
+              "p95": 37.077226478296545,
+              "min": 33.284046127107366,
+              "max": 37.329202899721025
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 10841,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 2862.527916597901,
+              "median": 2783.9337910118047,
+              "p95": 3020.0784415879752,
+              "min": 2759.2590839776676,
+              "max": 3035.7008749851957
+            },
+            "tpot_ms": {
+              "mean": 34.394532052198905,
+              "median": 33.6217721571825,
+              "p95": 36.07116856389947,
+              "min": 33.45044885626153,
+              "max": 36.356732722416204
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13039,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 3358.8497083983384,
+              "median": 3264.3584579927847,
+              "p95": 3662.4971584009472,
+              "min": 3234.945333999349,
+              "max": 3757.3232499998994
+            },
+            "tpot_ms": {
+              "mean": 34.55413929764945,
+              "median": 33.70817753505413,
+              "p95": 36.58936376923643,
+              "min": 33.46989409029359,
+              "max": 36.95319370235423
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15232,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "scored": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.0,
+        "ttft_ms": {
+          "mean": 3604.362252734912,
+          "median": 3587.8108339966275,
+          "p95": 4724.849100079154,
+          "min": 2359.8837919998914,
+          "max": 5278.969916980714
+        },
+        "tpot_ms": {
+          "mean": 36.11665973602042,
+          "median": 36.36554849497977,
+          "p95": 38.77385119770507,
+          "min": 33.37609169231479,
+          "max": 40.013027173894486
+        },
+        "request_score": {
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "prompt_tokens": 39067,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 2945.2032418048475,
+              "median": 3079.9229580152314,
+              "p95": 3522.1875171991996,
+              "min": 2359.8837919998914,
+              "max": 3587.8108339966275
+            },
+            "tpot_ms": {
+              "mean": 35.50150602007437,
+              "median": 36.20722227092104,
+              "p95": 37.408153955878404,
+              "min": 33.43789005018599,
+              "max": 37.668805321103065
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 10831,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 3526.7901584040374,
+              "median": 3723.7008749798406,
+              "p95": 4023.6816162010655,
+              "min": 2849.7643750160933,
+              "max": 4085.997290996602
+            },
+            "tpot_ms": {
+              "mean": 36.34364021740337,
+              "median": 36.6978846153791,
+              "p95": 39.432776031430095,
+              "min": 33.37609169231479,
+              "max": 40.013027173894486
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13024,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 4341.093357995851,
+              "median": 4347.826290992089,
+              "p95": 5120.649683580268,
+              "min": 3557.6811660139356,
+              "max": 5278.969916980714
+            },
+            "tpot_ms": {
+              "mean": 36.5048329705835,
+              "median": 36.85609239132539,
+              "p95": 38.17589866093992,
+              "min": 33.70786594311834,
+              "max": 38.24277577933818
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15212,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "warmup_report": "_artifacts/lfm25-benchsuite-racebench-safe/eager/warmup.json",
+      "report": "_artifacts/lfm25-benchsuite-racebench-safe/eager/report.json"
+    },
+    "llmopt": {
+      "warmup": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.0,
+        "ttft_ms": {
+          "mean": 3214.9469668006836,
+          "median": 3047.9737500136252,
+          "p95": 4154.836221286677,
+          "min": 2440.199125005165,
+          "max": 4999.810624984093
+        },
+        "tpot_ms": {
+          "mean": 39.750417679148015,
+          "median": 37.055399528463965,
+          "p95": 50.42632210067816,
+          "min": 34.36303455857591,
+          "max": 76.90397408032824
+        },
+        "request_score": {
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "prompt_tokens": 39112,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 2984.234191593714,
+              "median": 2464.9137500091456,
+              "p95": 4512.210249982309,
+              "min": 2440.199125005165,
+              "max": 4999.810624984093
+            },
+            "tpot_ms": {
+              "mean": 44.66909133244374,
+              "median": 36.51949540132978,
+              "p95": 69.0068757244624,
+              "min": 36.23392140468657,
+              "max": 76.90397408032824
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 10841,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 3016.2886000063736,
+              "median": 3004.082333005499,
+              "p95": 3168.621383601567,
+              "min": 2854.1845419968013,
+              "max": 3198.783291998552
+            },
+            "tpot_ms": {
+              "mean": 36.85135150501149,
+              "median": 36.33678651169132,
+              "p95": 39.03743166018614,
+              "min": 34.36303455857591,
+              "max": 39.07875696654248
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13039,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 3644.318108801963,
+              "median": 3656.640334025724,
+              "p95": 3768.0536339932587,
+              "min": 3550.1416249899194,
+              "max": 3792.7043339877855
+            },
+            "tpot_ms": {
+              "mean": 37.7308101999888,
+              "median": 37.95975849832903,
+              "p95": 38.66330626882834,
+              "min": 36.60941555185779,
+              "max": 38.762351307616164
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15232,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "scored": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.0,
+        "ttft_ms": {
+          "mean": 3116.988027871897,
+          "median": 3204.066792008234,
+          "p95": 3708.2837457070127,
+          "min": 2519.341000006534,
+          "max": 3772.1366670157295
+        },
+        "tpot_ms": {
+          "mean": 37.630908193520696,
+          "median": 37.374999163805484,
+          "p95": 39.33419562476363,
+          "min": 35.8618854514493,
+          "max": 40.46426700004906
+        },
+        "request_score": {
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "prompt_tokens": 39067,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 2625.411766592879,
+              "median": 2552.8944580000825,
+              "p95": 2766.2822747894097,
+              "min": 2519.341000006534,
+              "max": 2774.158207990695
+            },
+            "tpot_ms": {
+              "mean": 37.463591136462696,
+              "median": 37.08815217398911,
+              "p95": 39.830221013414416,
+              "min": 35.8618854514493,
+              "max": 40.46426700004906
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 10831,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 3104.490825207904,
+              "median": 3204.066792008234,
+              "p95": 3216.8946504127234,
+              "min": 2935.1848750084173,
+              "max": 3217.3610420140903
+            },
+            "tpot_ms": {
+              "mean": 37.50293832173007,
+              "median": 37.38175236785872,
+              "p95": 38.188200945834346,
+              "min": 36.89020498993302,
+              "max": 38.305019367899725
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13024,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 3621.0614918149076,
+              "median": 3619.5907500223257,
+              "p95": 3753.892975213239,
+              "min": 3505.158667016076,
+              "max": 3772.1366670157295
+            },
+            "tpot_ms": {
+              "mean": 37.92619512236932,
+              "median": 37.65645206019743,
+              "p95": 38.75885393042631,
+              "min": 37.35489269892177,
+              "max": 38.84987932106988
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15212,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "warmup_report": "_artifacts/lfm25-benchsuite-racebench-safe/llmopt/warmup.json",
+      "report": "_artifacts/lfm25-benchsuite-racebench-safe/llmopt/report.json"
+    }
+  },
+  "baseline": {
+    "candidate": "eager",
+    "metric": "ERS",
+    "ers": 0.0,
+    "scored_ers": 0.0,
+    "successful_requests": 15,
+    "requests": 15
+  },
+  "comparison": {
+    "scored_ers_delta_llmopt_minus_eager": 0.0,
+    "scored_ttft_median_delta_ms_llmopt_minus_eager": -383.7440419883933,
+    "scored_tpot_median_delta_ms_llmopt_minus_eager": 1.009450668825714,
+    "valid_for_relative_speed_claim": false,
+    "invalidity_reason": "Each candidate ran in its own process, but this is one execution per candidate with no repeated or counterbalanced samples."
+  },
+  "correctness": {
+    "shape": [
+      1,
+      15,
+      128000
+    ],
+    "dtype": "torch.float16",
+    "eager_sha256": "bc39171c650cf14fd8b89348d7da9e9e871aa14d3d5bc43bf4af16051906a7cf",
+    "llmopt_sha256": "bc39171c650cf14fd8b89348d7da9e9e871aa14d3d5bc43bf4af16051906a7cf",
+    "max_abs": null,
+    "mean_abs": null,
+    "exact": true,
+    "comparison_mode": "cross-process tensor digest"
+  },
+  "token_output_parity": {
+    "warmup": {
+      "equal": true,
+      "compared_requests": 15,
+      "mismatches": []
+    },
+    "scored": {
+      "equal": true,
+      "compared_requests": 15,
+      "mismatches": []
+    }
+  },
+  "needle": {
+    "eager": {
+      "lengths": [
+        2048,
+        4096
+      ],
+      "positions": [
+        10,
+        50,
+        90
+      ],
+      "expected": "RAVEN-4271",
+      "max_tokens": 12,
+      "correct": 0,
+      "total": 6,
+      "results": [
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 2047,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 2.886722875002306,
+          "ttft_ms": 2470.0735410151538,
+          "tpot_ms": 37.73829172661697,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 2047,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 2.7168620830052532,
+          "ttft_ms": 2315.8278329938184,
+          "tpot_ms": 36.333022729112685,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 2047,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 2.9037998749990948,
+          "ttft_ms": 2510.9251250105444,
+          "tpot_ms": 35.524431817148894,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 4095,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 5.098374249995686,
+          "ttft_ms": 4671.596707979916,
+          "tpot_ms": 38.66993563662452,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 5.051455999986501,
+          "ttft_ms": 4631.968000001507,
+          "tpot_ms": 38.00531063726257,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 4095,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 5.006434458016884,
+          "ttft_ms": 4575.553000002401,
+          "tpot_ms": 39.037587092025205,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        }
+      ]
+    },
+    "llmopt": {
+      "lengths": [
+        2048,
+        4096
+      ],
+      "positions": [
+        10,
+        50,
+        90
+      ],
+      "expected": "RAVEN-4271",
+      "max_tokens": 12,
+      "correct": 0,
+      "total": 6,
+      "results": [
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 2047,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 3.074570416996721,
+          "ttft_ms": 2632.9999169975054,
+          "tpot_ms": 40.006462090373546,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 2047,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 2.8944774589908775,
+          "ttft_ms": 2454.770667012781,
+          "tpot_ms": 39.84487881693481,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 2047,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 2.900653084012447,
+          "ttft_ms": 2451.915125013329,
+          "tpot_ms": 40.65824245282618,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 4095,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 5.1273831670114305,
+          "ttft_ms": 4681.425792019581,
+          "tpot_ms": 40.4117991803849,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 5.102563833992463,
+          "ttft_ms": 4671.658584004035,
+          "tpot_ms": 38.985712091247976,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 4095,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 5.093058624974219,
+          "ttft_ms": 4674.051041976782,
+          "tpot_ms": 37.95916663842615,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            597,
+            4695,
+            10966,
+            622,
+            310,
+            1500,
+            278,
+            55097,
+            31532,
+            2696,
+            4713,
+            487
+          ],
+          "output_token_ids_sha256": "f24594183a59eed4f57141f22042d78dfa016c6574293e8b9346185fd65b82fa",
+          "text": "The user wants me to find the Orion archive access code from",
+          "text_sha256": "78ca2d39e72ce84c6d1a48d5a273220143739a16a77ff263be8964142cfe2820",
+          "error": null
+        }
+      ]
+    }
+  },
+  "engine_pass": true,
+  "needle_validation": {
+    "required": false,
+    "passed": false
+  },
+  "exit_code": 0
+}

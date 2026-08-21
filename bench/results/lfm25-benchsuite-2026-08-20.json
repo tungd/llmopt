@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "measurement_status": "engine_pass",
+  "created_at": "2026-08-20T12:31:45.016821+00:00",
+  "model": "LiquidAI/LFM2.5-2.6B",
+  "target": "pytorch-mps",
+  "optimization": "fx-direct-execution",
+  "trace": "bench/traces/lfm25-mps-smoke.json",
+  "warmup_trace": "bench/traces/lfm25-mps-warmup.json",
+  "command": "ninja -f ninja.build bench-suite",
+  "metadata": {
+    "torch": "2.13.0",
+    "python": "3.13.7",
+    "transformers": "5.13.0",
+    "device": "mps",
+    "host_model": "Mac16,8",
+    "macos": "26.6.1"
+  },
+  "baseline": {
+    "candidate": "eager",
+    "warmup_ers": 0.3327927949,
+    "scored_ers": 0.4836256290,
+    "scored_successful_requests": 4,
+    "scored_requests": 4,
+    "scored_ttft_median_ms": 18.1430210068,
+    "scored_tpot_median_ms": 56.2094791627
+  },
+  "candidate": {
+    "candidate": "llmopt",
+    "warmup_ers": 0.2479533456,
+    "scored_ers": 0.5,
+    "scored_successful_requests": 4,
+    "scored_requests": 4,
+    "scored_ttft_median_ms": 7.9491875076,
+    "scored_tpot_median_ms": 50.9672916620
+  },
+  "comparison": {
+    "scored_ers_delta_llmopt_minus_eager": 0.0163743710,
+    "scored_ttft_median_delta_ms_llmopt_minus_eager": -10.1938334992,
+    "scored_tpot_median_delta_ms_llmopt_minus_eager": -5.2421875007,
+    "valid_for_relative_speed_claim": false,
+    "invalidity_reason": "Eager and llmopt were measured sequentially in one process; llmopt ran second after eager had warmed shared MPS state, and its scored phase followed llmopt compilation warmup.",
+    "ers_saturated_for_candidate": true,
+    "saturation_reason": "The reference TPOT ceiling is 10 ms; both candidates exceed it, while llmopt TTFT is below the 10 ms floor."
+  },
+  "parity": {
+    "scored_outputs_equal": true,
+    "scored_completion_token_counts_equal": true,
+    "scored_requests_equal": true,
+    "scored_output_token_mismatches": 0
+  },
+  "correctness": {
+    "shape": [1, 15, 128000],
+    "max_abs": 0.0,
+    "mean_abs": 0.0,
+    "exact": true
+  },
+  "needle": {
+    "lengths": [128, 256],
+    "positions": [10, 50, 90],
+    "expected": "RAVEN-4271",
+    "max_tokens": 12,
+    "eager_correct": 0,
+    "llmopt_correct": 0,
+    "total_per_candidate": 6,
+    "required_for_exit": false,
+    "passed": false
+  },
+  "engine_pass": true,
+  "exit_code": 0,
+  "prior_invalid_observation": "The previous run's llmopt score was discarded because torch.compile(...).generate() delegated to the original model. The corrected runner routes GenerationMixin self(...) calls through the selected forward callable."
+}

@@ -1,0 +1,46 @@
+{
+  "nodes": [
+    {
+      "dtype": "float32",
+      "inputs": [],
+      "name": "x",
+      "op": "placeholder",
+      "shape": [2, 4],
+      "target": "x"
+    },
+    {
+      "dtype": "float32",
+      "inputs": [],
+      "name": "weight",
+      "op": "placeholder",
+      "shape": [3, 4],
+      "target": "weight"
+    },
+    {
+      "dtype": "float32",
+      "inputs": [],
+      "name": "bias",
+      "op": "placeholder",
+      "shape": [3],
+      "target": "bias"
+    },
+    {
+      "dtype": "float32",
+      "inputs": ["x", "weight", "bias"],
+      "name": "linear",
+      "op": "call_function",
+      "shape": [2, 3],
+      "target": "aten.linear.default"
+    },
+    {
+      "dtype": "float32",
+      "inputs": ["linear"],
+      "name": "output",
+      "op": "output",
+      "shape": null,
+      "target": "output"
+    }
+  ],
+  "outputs": ["linear"],
+  "version": 1
+}

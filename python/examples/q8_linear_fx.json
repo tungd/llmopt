@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "name": "input",
+      "op": "placeholder",
+      "target": "input",
+      "inputs": [],
+      "shape": [2, 4],
+      "dtype": "float16"
+    },
+    {
+      "name": "weight_q8",
+      "op": "get_attr",
+      "target": "weight_q8",
+      "inputs": [],
+      "shape": [3, 4],
+      "dtype": "int8"
+    },
+    {
+      "name": "weight_scale",
+      "op": "get_attr",
+      "target": "weight_scale",
+      "inputs": [],
+      "shape": [1, 3],
+      "dtype": "float16"
+    },
+    {
+      "name": "bias",
+      "op": "get_attr",
+      "target": "bias",
+      "inputs": [],
+      "shape": [1, 3],
+      "dtype": "float16"
+    },
+    {
+      "name": "q8_linear",
+      "op": "call_function",
+      "target": "llmopt.q8_linear.default",
+      "inputs": ["input", "weight_q8", "weight_scale", "bias"],
+      "shape": [2, 3],
+      "dtype": "float16"
+    },
+    {
+      "name": "output",
+      "op": "output",
+      "target": "output",
+      "inputs": ["q8_linear"],
+      "shape": null,
+      "dtype": "float16"
+    }
+  ],
+  "outputs": ["q8_linear"]
+}

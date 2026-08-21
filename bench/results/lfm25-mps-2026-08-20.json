@@ -1,0 +1,37 @@
+{
+  "model": "LiquidAI/LFM2.5-2.6B",
+  "prompt": "The capital of France is",
+  "device": "mps",
+  "torch": "2.13.0",
+  "python": "3.13.7",
+  "transformers": "5.13.0",
+  "host": {
+    "machine": "arm64",
+    "macos": "26.6.1",
+    "model": "Mac16,8"
+  },
+  "input_tokens": 5,
+  "parameters": 2697198592,
+  "iterations": 3,
+  "warmup": 1,
+  "load_seconds": 6.94929374998901,
+  "compile_first_call_seconds": 1.9117972919775639,
+  "eager": {
+    "mean_seconds": 0.04114359767603067,
+    "median_seconds": 0.04126566700870171,
+    "min_seconds": 0.04029808400082402,
+    "max_seconds": 0.04186704201856628
+  },
+  "naive_mps": {
+    "mean_seconds": 0.031205027664933976,
+    "median_seconds": 0.030938625015551224,
+    "min_seconds": 0.03052154098986648,
+    "max_seconds": 0.03215491698938422
+  },
+  "correctness": {
+    "max_abs": 0.0,
+    "mean_abs": 0.0,
+    "exact": true
+  },
+  "optimization": "none"
+}

@@ -1,0 +1,8 @@
+_build/
+.ninja_log
+.DS_Store
+bench/.venv/
+_artifacts/
+*.air
+*.metallib
+__pycache__/

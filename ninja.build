@@ -1,0 +1,173 @@
+ocaml_flags = -O3 -g -bin-annot -I _build/ocaml
+ocaml_packages = -package yojson,unix
+
+rule ocaml_interface
+  command = mkdir -p _build/ocaml && ocamlfind ocamlopt $ocaml_packages $ocaml_flags -c $in -o $out
+  description = ocaml interface $in
+
+rule ocaml_module
+  command = mkdir -p _build/ocaml && ocamlfind ocamlopt $ocaml_packages $ocaml_flags -c $in -o $out
+  description = ocaml module $in
+
+rule ocaml_link
+  command = mkdir -p _build/bin && ocamlfind ocamlopt $ocaml_packages -linkpkg $in -o $out
+  description = link $out
+
+rule run_demo
+  command = $in --emit-dir _build/llmopt-demo
+  description = emit capture, LLVM IR, and Metal sources
+  pool = console
+
+rule run_test
+  command = $in
+  description = run OCaml tests
+  pool = console
+
+rule metal_compile
+  command = xcrun metal -c _build/llmopt-demo/small.metal -o _build/llmopt-demo/small.air
+  description = compile Metal kernel
+  pool = console
+
+rule python_test
+  command = PYTHONPATH=python:bench python3.13 -m unittest discover -s python/tests -v
+  description = run Python FX and benchsuite tests
+  pool = console
+
+rule fx_manifest
+  command = mkdir -p _build/fx-example && _build/bin/llmopt-fx python/examples/linear_fx.json _build/fx-example
+  description = plan the static FX fixture
+  pool = console
+
+rule q8_fx_manifest
+  command = mkdir -p _build/q8-fx-example && _build/bin/llmopt-fx python/examples/q8_linear_fx.json _build/q8-fx-example
+  description = plan the static Q8 FX fixture
+  pool = console
+
+rule llvm_check
+  command = clang -c -x ir $in -o $out
+  description = validate emitted LLVM IR
+  pool = console
+
+rule metal_check
+  command = xcrun metal -c $in -o $out
+  description = validate emitted Metal source
+
+rule q8_metal_check
+  command = xcrun metal -c _build/llmopt-demo/lfm25_linear.metal -o _build/llmopt-demo/lfm25_linear.air
+  description = validate emitted Q8 Metal source
+
+rule q8_llvm_check
+  command = clang -c -x ir _build/llmopt-demo/lfm25_linear.ll -o _build/llmopt-demo/lfm25_linear.ll.o
+  description = validate emitted Q8 LLVM IR
+  pool = console
+
+rule metal_lib
+  command = xcrun metallib $in -o $out
+  description = link Metal library $out
+  pool = console
+
+rule native_runtime
+  command = python3.13 native/build_metal_runtime.py --build-dir _build/native --stamp $out
+  description = build PyTorch MPS runtime bridge
+  pool = console
+
+rule metal_runtime_smoke
+  command = PYTHONPATH=python python3.13 python/examples/metal_runtime_smoke.py --library _build/q8-fx-example/kernel.metallib
+  description = dispatch tiled Q8 Metal runtime smoke
+  pool = console
+
+rule lfm25_mps_benchmark
+  command = mkdir -p _artifacts/lfm25-mps && python3.13 bench/lfm25_mps.py --artifact-dir _artifacts/lfm25-mps/graphs --output _artifacts/lfm25-mps/result.json
+  description = benchmark LFM2.5 PyTorch MPS execution
+  pool = console
+
+rule lfm25_benchsuite
+  command = mkdir -p _artifacts/lfm25-benchsuite-q8-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-q8-racebench-safe --output _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json --record-output bench/results/lfm25-q8-racebench-baseline.json
+  description = run racebench-shaped ERS trace and needle benchsuite on MPS
+  pool = console
+
+rule lfm25_benchsuite_350m
+  command = mkdir -p _artifacts/lfm25-benchsuite-350m-q8-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --model LiquidAI/LFM2.5-350M --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-350m-q8-racebench-safe --output _artifacts/lfm25-benchsuite-350m-q8-racebench-safe/result.json --record-output bench/results/lfm25-350m-q8-racebench-baseline.json
+  description = run racebench-shaped ERS trace and needle benchsuite on LFM2.5-350M MPS
+  pool = console
+
+rule lfm25_benchsuite_smoke
+  command = mkdir -p _artifacts/lfm25-benchsuite-smoke && PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --trace bench/traces/lfm25-mps-smoke.json --warmup-trace bench/traces/lfm25-mps-warmup.json --needle-lengths 128,256 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-smoke --output _artifacts/lfm25-benchsuite-smoke/result.json
+  description = run short ERS engine smoke on MPS
+  pool = console
+
+build _build/ocaml/shape.cmi: ocaml_interface lib/shape.mli
+build _build/ocaml/shape.cmx: ocaml_module lib/shape.ml | _build/ocaml/shape.cmi
+
+build _build/ocaml/ir.cmi: ocaml_interface lib/ir.mli | _build/ocaml/shape.cmi
+build _build/ocaml/ir.cmx: ocaml_module lib/ir.ml | _build/ocaml/ir.cmi _build/ocaml/shape.cmx
+
+build _build/ocaml/tile_effect.cmi: ocaml_interface lib/tile_effect.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
+build _build/ocaml/tile_effect.cmx: ocaml_module lib/tile_effect.ml | _build/ocaml/tile_effect.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx
+
+build _build/ocaml/tile.cmi: ocaml_interface lib/tile.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi _build/ocaml/tile_effect.cmi
+build _build/ocaml/tile.cmx: ocaml_module lib/tile.ml | _build/ocaml/tile.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx
+
+build _build/ocaml/capture.cmi: ocaml_interface lib/capture.mli | _build/ocaml/ir.cmi
+build _build/ocaml/capture.cmx: ocaml_module lib/capture.ml | _build/ocaml/capture.cmi _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx
+
+build _build/ocaml/cpu.cmi: ocaml_interface lib/cpu.mli | _build/ocaml/shape.cmi
+build _build/ocaml/cpu.cmx: ocaml_module lib/cpu.ml | _build/ocaml/cpu.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx
+
+build _build/ocaml/passes.cmi: ocaml_interface lib/passes.mli | _build/ocaml/ir.cmi
+build _build/ocaml/passes.cmx: ocaml_module lib/passes.ml | _build/ocaml/passes.cmi _build/ocaml/ir.cmx _build/ocaml/shape.cmx
+
+build _build/ocaml/metal.cmi: ocaml_interface lib/metal.mli | _build/ocaml/ir.cmi
+build _build/ocaml/metal.cmx: ocaml_module lib/metal.ml | _build/ocaml/metal.cmi _build/ocaml/ir.cmx
+
+build _build/ocaml/llvm_ir.cmi: ocaml_interface lib/llvm_ir.mli | _build/ocaml/ir.cmi
+build _build/ocaml/llvm_ir.cmx: ocaml_module lib/llvm_ir.ml | _build/ocaml/llvm_ir.cmi _build/ocaml/ir.cmx
+
+build _build/ocaml/lfm25.cmi: ocaml_interface lib/lfm25.mli | _build/ocaml/ir.cmi
+build _build/ocaml/lfm25.cmx: ocaml_module lib/lfm25.ml | _build/ocaml/lfm25.cmi _build/ocaml/ir.cmx _build/ocaml/shape.cmx _build/ocaml/tile.cmx
+
+build _build/ocaml/fx.cmi: ocaml_interface lib/fx.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
+build _build/ocaml/fx.cmx: ocaml_module lib/fx.ml | _build/ocaml/fx.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx
+
+build _build/ocaml/fx_plan.cmi: ocaml_interface lib/fx_plan.mli | _build/ocaml/fx.cmi _build/ocaml/capture.cmi _build/ocaml/tile_effect.cmi
+build _build/ocaml/fx_plan.cmx: ocaml_module lib/fx_plan.ml | _build/ocaml/fx_plan.cmi _build/ocaml/fx.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/ir.cmx _build/ocaml/shape.cmx
+
+build _build/ocaml/demo.cmx: ocaml_module bin/demo.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
+build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/demo.cmx
+
+build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
+build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/test.cmx
+
+build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/passes.cmx
+build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/fx_compile.cmx
+
+build _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll: fx_manifest python/examples/linear_fx.json | _build/bin/llmopt-fx
+build _build/fx-example/kernel.ll.o: llvm_check _build/fx-example/kernel.ll
+build _build/fx-example/kernel.air: metal_check _build/fx-example/kernel.metal
+
+build _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.ll: q8_fx_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx
+build _build/q8-fx-example/kernel.ll.o: llvm_check _build/q8-fx-example/kernel.ll
+build _build/q8-fx-example/kernel.air: metal_check _build/q8-fx-example/kernel.metal
+build _build/q8-fx-example/kernel.metallib: metal_lib _build/q8-fx-example/kernel.air
+build _build/native/metal-runtime.stamp: native_runtime native/metal_runtime.cpp native/build_metal_runtime.py
+build q8-fx-smoke: phony _build/q8-fx-example/kernel.ll.o _build/q8-fx-example/kernel.air _build/q8-fx-example/kernel.metallib
+build metal-runtime: phony _build/native/metal-runtime.stamp
+build metal-runtime-smoke: metal_runtime_smoke _build/native/metal-runtime.stamp _build/q8-fx-example/kernel.metallib python/examples/metal_runtime_smoke.py python/llmopt_backend/metal_runtime.py
+
+build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx
+build ocaml-test: run_test _build/bin/llmopt-test
+build python-test: python_test
+build test: phony ocaml-test python-test
+build demo: run_demo _build/bin/llmopt-demo
+build metal: metal_compile | demo
+build q8-metal: q8_metal_check | demo
+build q8-llvm: q8_llvm_check | demo
+build q8-smoke: phony q8-metal q8-llvm
+build fx-smoke: phony _build/fx-example/kernel.ll.o _build/fx-example/kernel.air
+build bench-mps: lfm25_mps_benchmark | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_mps.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
+build _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json: lfm25_benchsuite | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
+build bench-suite: phony _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json
+build _artifacts/lfm25-benchsuite-350m-q8-racebench-safe/result.json: lfm25_benchsuite_350m | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
+build bench-suite-350m: phony _artifacts/lfm25-benchsuite-350m-q8-racebench-safe/result.json
+build _artifacts/lfm25-benchsuite-smoke/result.json: lfm25_benchsuite_smoke | _build/bin/llmopt-fx bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json
+build bench-smoke: phony _artifacts/lfm25-benchsuite-smoke/result.json

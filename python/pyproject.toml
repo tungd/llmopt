@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmopt-backend"
+version = "0.1.0"
+description = "PyTorch Dynamo/FX adapter for the llmopt OCaml research compiler"
+requires-python = ">=3.13,<3.14"
+dependencies = []
+
+[project.optional-dependencies]
+torch = ["torch>=2.9"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
