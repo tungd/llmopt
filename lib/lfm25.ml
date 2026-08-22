@@ -17,21 +17,20 @@ module Config = struct
 
   let default =
     {
-      hidden_size = 2048;
-      intermediate_size = 10752;
-      num_hidden_layers = 30;
-      num_attention_heads = 32;
+      hidden_size = 1024;
+      intermediate_size = 6656;
+      num_hidden_layers = 16;
+      num_attention_heads = 16;
       num_key_value_heads = 8;
-      vocab_size = 128000;
-      max_position_embeddings = 131072;
+      vocab_size = 65536;
+      max_position_embeddings = 128000;
       conv_l_cache = 3;
       dtype = Ir.Dtype.Float16;
       quantization = Ir.Quantization.Q8_weight_only;
       layer_types =
-        [ Conv; Conv; Full_attention; Conv; Conv; Full_attention; Conv; Conv; Conv;
-          Full_attention; Conv; Conv; Conv; Full_attention; Conv; Conv; Conv;
-          Full_attention; Conv; Conv; Conv; Full_attention; Conv; Conv; Full_attention;
-          Conv; Conv; Full_attention; Conv; Conv ];
+        [ Conv; Conv; Full_attention; Conv; Conv; Full_attention; Conv; Conv;
+          Full_attention; Conv; Full_attention; Conv; Full_attention; Conv;
+          Full_attention; Conv ];
     }
 
   let count_layers layer config =
@@ -42,8 +41,8 @@ module Config = struct
     let checks =
       [ (config.num_hidden_layers = List.length config.layer_types,
          "layer_types length does not match num_hidden_layers")
-      ; (count_layers Conv config = 22, "expected 22 convolution layers")
-      ; (count_layers Full_attention config = 8, "expected 8 attention layers")
+      ; (count_layers Conv config = 10, "expected 10 convolution layers")
+      ; (count_layers Full_attention config = 6, "expected 6 attention layers")
       ; (config.num_attention_heads mod config.num_key_value_heads = 0,
          "attention heads must divide evenly into KV heads")
       ; ((match config.quantization, config.dtype with

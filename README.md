@@ -4,9 +4,9 @@
 provides the frontend FX graph; OCaml 5 algebraic effects provide the staging
 boundary for planning, capture, optimization, and code generation.
 
-The first concrete target is Liquid AI's **LFM2.5-2.6B**. The model is a hybrid
-30-layer network: 22 short-convolution blocks and 8 GQA blocks, with hidden size
-2048, intermediate size 10752, 32 attention heads, 8 KV heads, and a 128000
+The first concrete target is Liquid AI's **LFM2.5-350M**. The model is a hybrid
+16-layer network: 10 short-convolution blocks and 6 GQA blocks, with hidden size
+1024, intermediate size 6656, 16 attention heads, 8 KV heads, and a 65536
 token vocabulary. Those values are recorded in [the OKF target concept](.okf/target-lfm25.md).
 
 ## Current slice
@@ -66,7 +66,6 @@ ninja -f ninja.build metal-runtime-model-smoke
 ninja -f ninja.build metal-runtime-differential
 ninja -f ninja.build bench-mps
 ninja -f ninja.build bench-suite
-ninja -f ninja.build bench-suite-350m
 ```
 
 `test` runs the OCaml reference tests and the Python FX/bench-suite contract tests.
@@ -74,19 +73,14 @@ The demo writes generated sources to `_build/llmopt-demo/` and prints the CPU
 reference result, capture summary, and fusion summary. `metal` compiles the
 small reference kernel with the installed Xcode Metal toolchain. `fx-smoke`
 plans `python/examples/linear_fx.json` and validates its LLVM and Metal
-artifacts. `bench-mps` loads LFM2.5-2.6B with Q8 weight-only quantization by
+artifacts. `bench-mps` loads LFM2.5-350M with Q8 weight-only quantization by
 default, runs eager MPS and the llmopt direct FX GraphModule executor, checks
 exact logits, and writes a JSON measurement. Pass `--quantization fp16` for
 the explicit fallback.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
-warmup artifacts, and the natural needle probe. A Q8 run records its compact
-result at `bench/results/lfm25-q8-racebench-baseline.json`; the older
-`bench/results/lfm25-racebench-baseline.json` remains the historical FP16
-record. The FX compiler executable is `_build/bin/llmopt-fx`.
-`bench-suite-350m` runs the same contract against the separately tracked
-`LiquidAI/LFM2.5-350M` checkpoint and records
-`bench/results/lfm25-350m-q8-racebench-baseline.json`; it is a smaller-model
-probe and does not replace the 2.6B FP16 record.
+warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
+A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
+The FX compiler executable is `_build/bin/llmopt-fx`.
 
 `q8-smoke` emits and compiles the model-shaped Q8 linear kernel. `metal-runtime`
 builds the native MPS bridge. The Phase 2 native mode uses aligned
@@ -116,18 +110,11 @@ bit-exact (`max_abs=0`, `mean_abs=0`); native Phase 2 remains a separately
 measured approximate matmul path with `max_abs=0.078125` and
 `mean_abs=0.00713115930557251`. The exact model path produced no ERS score.
 
-The earlier tiny MPS Q8 callable probe returned exact reference output through
-the dequantizing fallback, and the bounded
-350M Q8 run recorded 15/15 successful warmup and scored requests per
-candidate with exact fixed-forward digest and token-ID parity. The Q8 result
-is recorded separately; changing the default does not relabel the historical
-FP16 artifacts.
-
-The current 2.6B record has `engine_pass: true`, exit code `0`, 15/15
-successful warmup and scored requests per candidate, eager baseline ERS `0.0`,
-and exact generated-token/fixed-forward parity. Needle retrieval was `0/6`
-for both candidates and is tracked separately; because each candidate ran once,
-the record does not support a relative speed claim.
+The bounded 350M Q8 run recorded `engine_pass: true`, exit code `0`, 15/15
+successful warmup and scored requests per candidate with exact fixed-forward
+digest and token-ID parity. Needle retrieval was `0/6` for both candidates and
+is tracked separately; because each candidate ran once, the record does not
+support a relative speed claim.
 
 ## Architecture
 

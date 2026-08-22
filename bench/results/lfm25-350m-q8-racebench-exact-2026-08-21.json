@@ -1,0 +1,1101 @@
+{
+  "schema_version": 2,
+  "measurement_status": "isolated_observation",
+  "created_at": "2026-08-21T09:51:06.207486+00:00",
+  "target": "pytorch-mps",
+  "optimization": "fx-direct-execution+q8",
+  "trace": "semantic-5x3",
+  "warmup_trace": "profile:semantic-5x3:warmup",
+  "candidate_order": [
+    "eager",
+    "llmopt"
+  ],
+  "metadata": {
+    "model": "LiquidAI/LFM2.5-350M",
+    "quantization": "q8",
+    "quantization_summary": {
+      "scheme": "q8-weight-only-per-output-channel",
+      "converted_linear_modules": 92,
+      "converted_modules": [
+        "model.layers.0.conv.in_proj",
+        "model.layers.0.conv.out_proj",
+        "model.layers.0.feed_forward.w1",
+        "model.layers.0.feed_forward.w3",
+        "model.layers.0.feed_forward.w2",
+        "model.layers.1.conv.in_proj",
+        "model.layers.1.conv.out_proj",
+        "model.layers.1.feed_forward.w1",
+        "model.layers.1.feed_forward.w3",
+        "model.layers.1.feed_forward.w2",
+        "model.layers.2.self_attn.q_proj",
+        "model.layers.2.self_attn.k_proj",
+        "model.layers.2.self_attn.v_proj",
+        "model.layers.2.self_attn.out_proj",
+        "model.layers.2.feed_forward.w1",
+        "model.layers.2.feed_forward.w3",
+        "model.layers.2.feed_forward.w2",
+        "model.layers.3.conv.in_proj",
+        "model.layers.3.conv.out_proj",
+        "model.layers.3.feed_forward.w1",
+        "model.layers.3.feed_forward.w3",
+        "model.layers.3.feed_forward.w2",
+        "model.layers.4.conv.in_proj",
+        "model.layers.4.conv.out_proj",
+        "model.layers.4.feed_forward.w1",
+        "model.layers.4.feed_forward.w3",
+        "model.layers.4.feed_forward.w2",
+        "model.layers.5.self_attn.q_proj",
+        "model.layers.5.self_attn.k_proj",
+        "model.layers.5.self_attn.v_proj",
+        "model.layers.5.self_attn.out_proj",
+        "model.layers.5.feed_forward.w1",
+        "model.layers.5.feed_forward.w3",
+        "model.layers.5.feed_forward.w2",
+        "model.layers.6.conv.in_proj",
+        "model.layers.6.conv.out_proj",
+        "model.layers.6.feed_forward.w1",
+        "model.layers.6.feed_forward.w3",
+        "model.layers.6.feed_forward.w2",
+        "model.layers.7.conv.in_proj",
+        "model.layers.7.conv.out_proj",
+        "model.layers.7.feed_forward.w1",
+        "model.layers.7.feed_forward.w3",
+        "model.layers.7.feed_forward.w2",
+        "model.layers.8.self_attn.q_proj",
+        "model.layers.8.self_attn.k_proj",
+        "model.layers.8.self_attn.v_proj",
+        "model.layers.8.self_attn.out_proj",
+        "model.layers.8.feed_forward.w1",
+        "model.layers.8.feed_forward.w3",
+        "model.layers.8.feed_forward.w2",
+        "model.layers.9.conv.in_proj",
+        "model.layers.9.conv.out_proj",
+        "model.layers.9.feed_forward.w1",
+        "model.layers.9.feed_forward.w3",
+        "model.layers.9.feed_forward.w2",
+        "model.layers.10.self_attn.q_proj",
+        "model.layers.10.self_attn.k_proj",
+        "model.layers.10.self_attn.v_proj",
+        "model.layers.10.self_attn.out_proj",
+        "model.layers.10.feed_forward.w1",
+        "model.layers.10.feed_forward.w3",
+        "model.layers.10.feed_forward.w2",
+        "model.layers.11.conv.in_proj",
+        "model.layers.11.conv.out_proj",
+        "model.layers.11.feed_forward.w1",
+        "model.layers.11.feed_forward.w3",
+        "model.layers.11.feed_forward.w2",
+        "model.layers.12.self_attn.q_proj",
+        "model.layers.12.self_attn.k_proj",
+        "model.layers.12.self_attn.v_proj",
+        "model.layers.12.self_attn.out_proj",
+        "model.layers.12.feed_forward.w1",
+        "model.layers.12.feed_forward.w3",
+        "model.layers.12.feed_forward.w2",
+        "model.layers.13.conv.in_proj",
+        "model.layers.13.conv.out_proj",
+        "model.layers.13.feed_forward.w1",
+        "model.layers.13.feed_forward.w3",
+        "model.layers.13.feed_forward.w2",
+        "model.layers.14.self_attn.q_proj",
+        "model.layers.14.self_attn.k_proj",
+        "model.layers.14.self_attn.v_proj",
+        "model.layers.14.self_attn.out_proj",
+        "model.layers.14.feed_forward.w1",
+        "model.layers.14.feed_forward.w3",
+        "model.layers.14.feed_forward.w2",
+        "model.layers.15.conv.in_proj",
+        "model.layers.15.conv.out_proj",
+        "model.layers.15.feed_forward.w1",
+        "model.layers.15.feed_forward.w3",
+        "model.layers.15.feed_forward.w2"
+      ],
+      "skipped_modules": [
+        "lm_head"
+      ]
+    },
+    "device": "mps",
+    "torch": "2.13.0",
+    "python": "3.13.7",
+    "transformers": "5.13.0",
+    "host": {
+      "machine": "arm64",
+      "macos": "26.6.1",
+      "model": "Mac16,8"
+    },
+    "load_seconds": 3.114522749965545,
+    "mps_watermark_environment": {
+      "high_ratio": "0.8",
+      "low_ratio": "0.7"
+    },
+    "mps_memory": {
+      "recommended_max_bytes": 19069665280,
+      "allocated_bytes_at_record": 422106624,
+      "driver_allocated_bytes_at_record": 1107787776
+    },
+    "timing": {
+      "ttft": "perf_counter after device synchronization at first logits processor",
+      "tpot": "mean interval between synchronized logits processor observations"
+    },
+    "input_prompt": "The capital of France is",
+    "isolation": "one child process per candidate"
+  },
+  "racebench_contract": {
+    "score": "official ERS constants from viettel-ai-race/src/racebench/score.py",
+    "runner": "serial MPS conversations with serial closed-loop turns",
+    "max_workers": 1,
+    "http_reference": "concurrent conversations with serial closed-loop turns",
+    "warmup": "byte-distinct and shape-matched when requested",
+    "completion_tokens": "pinned per trace request",
+    "mps_cache_release": true,
+    "target_model_substitution": {
+      "reference": "LiquidAI/LFM2.5-1.2B-Instruct",
+      "local": "LiquidAI/LFM2.5-350M"
+    }
+  },
+  "candidates": {
+    "eager": {
+      "warmup": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.00023287002821333305,
+        "ttft_ms": {
+          "mean": 484.3986638705246,
+          "median": 495.301750022918,
+          "p95": 590.1839206868317,
+          "min": 373.0462919920683,
+          "max": 639.1047919751145
+        },
+        "tpot_ms": {
+          "mean": 39.9856698162643,
+          "median": 39.58333180271195,
+          "p95": 43.18016198622203,
+          "min": 37.718377785872434,
+          "max": 43.9463671973134
+        },
+        "request_score": {
+          "mean": 0.00023287002821333302,
+          "median": 0.0,
+          "p95": 0.0013380311616428841,
+          "min": 0.0,
+          "max": 0.0023882392352953382
+        },
+        "prompt_tokens": 39606,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0006986100846399991,
+            "ttft_ms": {
+              "mean": 440.6683002016507,
+              "median": 391.8777090148069,
+              "p95": 594.4333917810582,
+              "min": 373.0462919920683,
+              "max": 639.1047919751145
+            },
+            "tpot_ms": {
+              "mean": 40.189240747139195,
+              "median": 38.6920246655,
+              "p95": 43.55830833445113,
+              "min": 37.718377785872434,
+              "max": 43.9463671973134
+            },
+            "request_score": {
+              "mean": 0.0006986100846399991,
+              "median": 0.00021686920068425102,
+              "p95": 0.0020881797856803514,
+              "min": 0.0,
+              "max": 0.0023882392352953382
+            },
+            "prompt_tokens": 10989,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 473.02545820130035,
+              "median": 466.1170409526676,
+              "p95": 500.9343500249088,
+              "min": 446.4328340254724,
+              "max": 502.3425000254065
+            },
+            "tpot_ms": {
+              "mean": 39.62896967627557,
+              "median": 39.68879821407375,
+              "p95": 41.896887456828466,
+              "min": 37.740097548399916,
+              "max": 42.41184350496382
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13204,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 539.5022332086228,
+              "median": 531.6057910094969,
+              "p95": 563.4754913975485,
+              "min": 524.6667920146137,
+              "max": 569.2178329918534
+            },
+            "tpot_ms": {
+              "mean": 40.13879902537813,
+              "median": 39.58333180271195,
+              "p95": 42.54474576514364,
+              "min": 38.09012305014845,
+              "max": 42.85178832432573
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15413,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "scored": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 3.4584899865437764e-06,
+        "ttft_ms": {
+          "mean": 565.8853890063862,
+          "median": 541.3814170169644,
+          "p95": 766.0168001719283,
+          "min": 396.02745801676065,
+          "max": 904.5262089930475
+        },
+        "tpot_ms": {
+          "mean": 47.819980257761806,
+          "median": 45.37768213368055,
+          "p95": 61.73571093781947,
+          "min": 39.78051003349017,
+          "max": 67.66871418406794
+        },
+        "request_score": {
+          "mean": 3.4584899865437764e-06,
+          "median": 0.0,
+          "p95": 1.5563204939446937e-05,
+          "min": 0.0,
+          "max": 5.1877349798156645e-05
+        },
+        "prompt_tokens": 39533,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 1.0375469959631328e-05,
+            "ttft_ms": {
+              "mean": 444.33564980281517,
+              "median": 442.69083300605416,
+              "p95": 495.1136999996379,
+              "min": 396.02745801676065,
+              "max": 499.1781249991618
+            },
+            "tpot_ms": {
+              "mean": 46.281153065569846,
+              "median": 45.37768213368055,
+              "p95": 53.27081806026399,
+              "min": 39.78051003349017,
+              "max": 53.60840719070965
+            },
+            "request_score": {
+              "mean": 1.0375469959631328e-05,
+              "median": 0.0,
+              "p95": 4.150187983852531e-05,
+              "min": 0.0,
+              "max": 5.1877349798156645e-05
+            },
+            "prompt_tokens": 10979,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 568.6469002161175,
+              "median": 593.1466670008376,
+              "p95": 682.2970672044903,
+              "min": 466.8860420351848,
+              "max": 699.2239590035751
+            },
+            "tpot_ms": {
+              "mean": 48.247304040764185,
+              "median": 49.508054210628416,
+              "p95": 57.49033427957669,
+              "min": 39.79024805017999,
+              "max": 59.19299526085585
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13178,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 684.6736170002259,
+              "median": 694.6072090067901,
+              "p95": 864.9520921870135,
+              "min": 541.3814170169644,
+              "max": 904.5262089930475
+            },
+            "tpot_ms": {
+              "mean": 48.93148366695139,
+              "median": 42.336903010023114,
+              "p95": 64.7406092516293,
+              "min": 39.79211803007852,
+              "max": 67.66871418406794
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15376,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "warmup_report": "_artifacts/lfm25-benchsuite-350m-q8-racebench-exact-2026-08-21/eager/warmup.json",
+      "report": "_artifacts/lfm25-benchsuite-350m-q8-racebench-exact-2026-08-21/eager/report.json"
+    },
+    "llmopt": {
+      "warmup": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 1.157072938453312e-05,
+        "ttft_ms": {
+          "mean": 671.2951748670699,
+          "median": 512.8482090076432,
+          "p95": 1327.1709954831724,
+          "min": 392.8157910122536,
+          "max": 3005.0080830114894
+        },
+        "tpot_ms": {
+          "mean": 44.870255314192136,
+          "median": 42.30989451168952,
+          "p95": 54.847927869844185,
+          "min": 39.19992781610985,
+          "max": 75.8640785953871
+        },
+        "request_score": {
+          "mean": 1.157072938453312e-05,
+          "median": 0.0,
+          "p95": 5.3625651595301745e-05,
+          "min": 0.0,
+          "max": 0.0001696675173557396
+        },
+        "prompt_tokens": 39606,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 3.471218815359936e-05,
+            "ttft_ms": {
+              "mean": 926.3206832227297,
+              "median": 402.67987502738833,
+              "p95": 2490.4440582147795,
+              "min": 392.8157910122536,
+              "max": 3005.0080830114894
+            },
+            "tpot_ms": {
+              "mean": 48.44163046358621,
+              "median": 42.30989451168952,
+              "p95": 69.70358132649474,
+              "min": 39.19992781610985,
+              "max": 75.8640785953871
+            },
+            "request_score": {
+              "mean": 3.471218815359936e-05,
+              "median": 0.0,
+              "p95": 0.0001365126985670431,
+              "min": 0.0,
+              "max": 0.0001696675173557396
+            },
+            "prompt_tokens": 10989,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 500.9638165938668,
+              "median": 487.79591597849503,
+              "p95": 543.46717458684,
+              "min": 471.76895901793614,
+              "max": 551.1219159816392
+            },
+            "tpot_ms": {
+              "mean": 42.95340420804407,
+              "median": 43.87493742813658,
+              "p95": 44.27369094319816,
+              "min": 41.21833653843348,
+              "max": 44.33402564220074
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13204,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 586.6010247846134,
+              "median": 591.2699170294218,
+              "p95": 607.0660579716787,
+              "min": 560.894540976733,
+              "max": 608.0979579710402
+            },
+            "tpot_ms": {
+              "mean": 43.21573127094613,
+              "median": 42.29592349509519,
+              "p95": 45.64825172701938,
+              "min": 41.49975292645488,
+              "max": 45.84100613032583
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15413,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "scored": {
+        "requests": 15,
+        "successful_requests": 15,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.0,
+        "ttft_ms": {
+          "mean": 550.1182166626677,
+          "median": 556.2578750541434,
+          "p95": 671.601271291729,
+          "min": 408.695042016916,
+          "max": 709.4221250154078
+        },
+        "tpot_ms": {
+          "mean": 43.67357631932442,
+          "median": 43.547884615435635,
+          "p95": 47.522067641866634,
+          "min": 40.016606464876126,
+          "max": 48.85635562871823
+        },
+        "request_score": {
+          "mean": 0.0,
+          "median": 0.0,
+          "p95": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "prompt_tokens": 39533,
+        "cached_prompt_tokens": 0,
+        "cached_prompt_token_ratio": 0.0,
+        "by_turn": {
+          "0": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 471.63209980353713,
+              "median": 448.39612499345094,
+              "p95": 588.6576660326682,
+              "min": 408.695042016916,
+              "max": 619.2060410394333
+            },
+            "tpot_ms": {
+              "mean": 42.8761610923254,
+              "median": 43.547884615435635,
+              "p95": 44.249317529813744,
+              "min": 40.016606464876126,
+              "max": 44.27903037799373
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 10979,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 539.2879002029076,
+              "median": 515.0384590378962,
+              "p95": 633.3496421808377,
+              "min": 469.63537496048957,
+              "max": 652.6225839625113
+            },
+            "tpot_ms": {
+              "mean": 43.8513426140907,
+              "median": 42.75467502689892,
+              "p95": 47.97525250767187,
+              "min": 41.247995264273776,
+              "max": 48.85635562871823
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 13178,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "2": {
+            "requests": 5,
+            "successful_requests": 5,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.0,
+            "ttft_ms": {
+              "mean": 639.4346499815583,
+              "median": 643.025083001703,
+              "p95": 698.6161668086424,
+              "min": 568.6085829511285,
+              "max": 709.4221250154078
+            },
+            "tpot_ms": {
+              "mean": 44.293225251557146,
+              "median": 45.151282331196086,
+              "p95": 46.6831849218287,
+              "min": 41.75005072570502,
+              "max": 46.95022993321596
+            },
+            "request_score": {
+              "mean": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "min": 0.0,
+              "max": 0.0
+            },
+            "prompt_tokens": 15376,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          }
+        }
+      },
+      "warmup_report": "_artifacts/lfm25-benchsuite-350m-q8-racebench-exact-2026-08-21/llmopt/warmup.json",
+      "report": "_artifacts/lfm25-benchsuite-350m-q8-racebench-exact-2026-08-21/llmopt/report.json"
+    }
+  },
+  "baseline": {
+    "candidate": "eager",
+    "metric": "ERS",
+    "ers": 3.4584899865437764e-06,
+    "scored_ers": 3.4584899865437764e-06,
+    "successful_requests": 15,
+    "requests": 15
+  },
+  "comparison": {
+    "scored_ers_delta_llmopt_minus_eager": -3.4584899865437764e-06,
+    "scored_ttft_median_delta_ms_llmopt_minus_eager": 14.876458037178963,
+    "scored_tpot_median_delta_ms_llmopt_minus_eager": -1.8297975182449164,
+    "valid_for_relative_speed_claim": false,
+    "invalidity_reason": "Each candidate ran in its own process, but this is one execution per candidate with no repeated or counterbalanced samples."
+  },
+  "correctness": {
+    "shape": [
+      1,
+      14,
+      65536
+    ],
+    "dtype": "torch.float16",
+    "eager_sha256": "712ae07a7e42ccfccd6145bfb45941ed31af998c282c6179e8ec478b2b67e16e",
+    "llmopt_sha256": "712ae07a7e42ccfccd6145bfb45941ed31af998c282c6179e8ec478b2b67e16e",
+    "max_abs": null,
+    "mean_abs": null,
+    "exact": true,
+    "comparison_mode": "cross-process tensor digest"
+  },
+  "token_output_parity": {
+    "warmup": {
+      "equal": true,
+      "compared_requests": 15,
+      "mismatches": []
+    },
+    "scored": {
+      "equal": true,
+      "compared_requests": 15,
+      "mismatches": []
+    }
+  },
+  "needle": {
+    "eager": {
+      "lengths": [
+        2048,
+        4096
+      ],
+      "positions": [
+        10,
+        50,
+        90
+      ],
+      "expected": "RAVEN-4271",
+      "max_tokens": 12,
+      "correct": 0,
+      "total": 6,
+      "results": [
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 2048,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 0.9345431249821559,
+          "ttft_ms": 422.5016660057008,
+          "tpot_ms": 46.31895081415264,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 2048,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 0.9490553750074469,
+          "ttft_ms": 433.1177080166526,
+          "tpot_ms": 46.800731093919076,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 2048,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.1159784170449711,
+          "ttft_ms": 534.790542034898,
+          "tpot_ms": 52.75215909138999,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.4751983750029467,
+          "ttft_ms": 910.5139170424081,
+          "tpot_ms": 51.24334090876139,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.4752831250079907,
+          "ttft_ms": 916.4330830099061,
+          "tpot_ms": 50.72307954436507,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.383760875032749,
+          "ttft_ms": 852.0956669817679,
+          "tpot_ms": 48.238291637972,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        }
+      ]
+    },
+    "llmopt": {
+      "lengths": [
+        2048,
+        4096
+      ],
+      "positions": [
+        10,
+        50,
+        90
+      ],
+      "expected": "RAVEN-4271",
+      "max_tokens": 12,
+      "correct": 0,
+      "total": 6,
+      "results": [
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 2048,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 0.8677783340099268,
+          "ttft_ms": 408.0193340196274,
+          "tpot_ms": 41.7031439084729,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 2048,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.1755629580002278,
+          "ttft_ms": 540.7116250135005,
+          "tpot_ms": 57.621590909548104,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 2048,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 2048,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 0.9917202499927953,
+          "ttft_ms": 524.2640840006061,
+          "tpot_ms": 42.248477275610306,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 10,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.247672333032824,
+          "ttft_ms": 769.752583000809,
+          "tpot_ms": 43.35770081855696,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 50,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.276752958947327,
+          "ttft_ms": 774.0652919746935,
+          "tpot_ms": 45.440905272368006,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        },
+        {
+          "target_prompt_tokens": 4096,
+          "needle_percent": 90,
+          "constructed_prompt_tokens": 4096,
+          "success": true,
+          "correct": false,
+          "elapsed_s": 1.2488879159791395,
+          "ttft_ms": 769.6410409989767,
+          "tpot_ms": 43.47428036536175,
+          "completion_tokens": 12,
+          "output_token_ids": [
+            8832,
+            563,
+            2880,
+            522,
+            31429,
+            526,
+            7,
+            2,
+            1,
+            553,
+            849,
+            18149
+          ],
+          "output_token_ids_sha256": "386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8",
+          "text": "RAVEN-4271Lottery",
+          "text_sha256": "09b28dbf0d3396973caddd3e8a039ffeb60e70721893833346d33a813c3c08b3",
+          "error": null
+        }
+      ]
+    }
+  },
+  "engine_pass": true,
+  "needle_validation": {
+    "required": false,
+    "passed": false
+  },
+  "exit_code": 0
+}

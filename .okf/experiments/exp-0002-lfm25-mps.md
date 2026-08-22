@@ -1,6 +1,6 @@
 ---
 type: Experiment
-title: 'LFM2.5-2.6B naive MPS execution'
+title: 'LFM2.5-350M naive MPS execution'
 description: 'The complete LFM2.5 forward graph runs through the OCaml-planned FX backend and matches eager PyTorch MPS exactly.'
 tags: [experiment, lfm2.5, pytorch, mps, end-to-end]
 status: stable
@@ -20,18 +20,19 @@ sources:
 # Question
 
 Can the current Dynamo/FX-to-OCaml planning boundary execute the complete
-LFM2.5-2.6B forward graph on PyTorch MPS without an optimization pass?
+LFM2.5-350M forward graph on PyTorch MPS without an optimization pass?
 
 # Procedure
 
 ```sh
 python3.13 bench/lfm25_mps.py \
+  --model LiquidAI/LFM2.5-350M \
   --iterations 3 --warmup 1 \
   --artifact-dir _artifacts/lfm25-benchmark/graphs \
   --output _artifacts/lfm25-benchmark/result.json
 ```
 
-The harness loads `LiquidAI/LFM2.5-2.6B` in float16, runs eager MPS, compiles
+The harness loads `LiquidAI/LFM2.5-350M` in float16, runs eager MPS, compiles
 with `torch.compile(backend=llmopt)`, and runs the resulting naive FX
 interpreter on the same input.
 

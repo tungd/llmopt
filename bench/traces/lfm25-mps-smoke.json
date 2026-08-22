@@ -1,6 +1,6 @@
 {
   "name": "lfm25-mps-local-smoke",
-  "model": "LiquidAI/LFM2.5-2.6B",
+  "model": "LiquidAI/LFM2.5-350M",
   "shared_system_prefix": "You are a concise assistant in a local MPS benchmark.",
   "conversation_prefixes": [
     "Conversation A: ",

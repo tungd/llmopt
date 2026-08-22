@@ -1,14 +1,14 @@
 ---
 type: Experiment
-title: 'LFM2.5-350M smaller-model benchsuite probe'
-description: 'Run the adopted Viettel AI Race benchsuite against the official smaller instruction checkpoint without conflating it with the 2.6B target baseline.'
+title: 'LFM2.5-350M benchsuite baseline'
+description: 'Run the adopted Viettel AI Race benchsuite against the official 350M instruction checkpoint.'
 tags: [experiment, benchmark, racebench, ERS, mps, lfm2.5, 350m]
 status: draft
 generated: { by: codex/gpt-5, at: '2026-08-20T15:00:00Z' }
 sources:
   - id: ninja-target
     resource: /ninja.build
-    title: separate bench-suite-350m target
+    title: bench-suite target
   - id: local-runner
     resource: /bench/lfm25_benchsuite.py
     title: local MPS adapter and result coordinator
@@ -25,21 +25,19 @@ sources:
 
 # Rationale
 
-The 2.6B probe drove unified-memory free percentage from 69% to 36% before
-the first request completed. The local Hugging Face cache did not contain a
-350M checkpoint, so the official `LiquidAI/LFM2.5-350M` snapshot was downloaded
-and is now addressed by an explicit Ninja target.
+The official `LiquidAI/LFM2.5-350M` snapshot was downloaded to serve as the primary
+on-device target for memory-safe execution on Apple Silicon.
 
 # Protocol
 
 ```sh
-ninja -f ninja.build bench-suite-350m
+ninja -f ninja.build bench-suite
 ```
 
 The target retains the semantic 5x3 shape, shape-matched byte-distinct
 warmup, serialized MPS execution, exact token-output comparison, and 2,048 /
 4,096-token needle matrix at 10 / 50 / 90 percent placement. Its result is
-written to `_artifacts/lfm25-benchsuite-350m-racebench-safe/result.json` and
+written to `_artifacts/lfm25-benchsuite-q8-racebench-safe/result.json` and
 the compact baseline record to
 `bench/results/lfm25-350m-racebench-baseline.json`.
 
@@ -60,6 +58,4 @@ The single isolated run completed with Ninja exit code `0` at
 * The recorded MPS values were 708,969,984 allocated bytes and 1,091,010,560
   driver-allocated bytes, with watermark ratios `0.8` / `0.7`.
 
-This proves the smaller-model benchsuite path and its eager baseline record.
-It remains separate from the LFM2.5-2.6B target; the authoritative 2.6B
-result is now recorded in [exp-0005](exp-0005-viettel-racebench-implementation.md).
+This proves the 350M benchsuite path and its eager baseline record.

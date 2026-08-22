@@ -57,7 +57,7 @@ candidates; its failures are recorded separately from the engine pass.
 # Limits
 
 This result demonstrates that the adopted racebench ERS has no useful dynamic
-range for this long-context LFM2.5-2.6B MPS workload. Subsequent compiler work
+range for this long-context LFM2.5 MPS workload. Subsequent compiler work
 should use raw prefill/decode latency and exact parity for local iteration,
 while retaining ERS as a compatibility field. Repeated/counterbalanced
 sampling remains an open measurement design question.

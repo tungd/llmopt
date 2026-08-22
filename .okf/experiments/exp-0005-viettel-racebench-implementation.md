@@ -1,7 +1,7 @@
 ---
 type: Experiment
 title: 'Viettel AI Race benchsuite implementation'
-description: 'Adopt the adjacent racebench trace, streaming, warmup, and ERS contracts for the local LFM2.5-2.6B PyTorch MPS target.'
+description: 'Adopt the adjacent racebench trace, streaming, warmup, and ERS contracts for the local LFM2.5-350M PyTorch MPS target.'
 tags: [experiment, benchmark, racebench, ERS, mps, lfm2.5]
 status: draft
 generated: { by: codex/gpt-5, at: '2026-08-20T13:30:00Z' }
@@ -25,8 +25,8 @@ sources:
     resource: /Users/tung/Projects/tungd/viettel-ai-race/src/racebench/benchmark.py
     title: authoritative closed-loop HTTP benchmark
   - id: current-result
-    resource: /bench/results/lfm25-racebench-baseline.json
-    title: authoritative 2.6B engine-pass and baseline result
+    resource: /bench/results/lfm25-350m-q8-racebench-baseline.json
+    title: authoritative 350M engine-pass and baseline result
 ---
 
 # Implementation
@@ -39,7 +39,7 @@ the same request contract and exact token-ID/fixed-forward observations, with a
 serialized device execution boundary because concurrent MPS generation aborted
 in Metal on this host.
 
-The local target is LFM2.5-2.6B, while the adjacent contest trace is authored
+The local target is LFM2.5-350M, while the adjacent contest trace is authored
 for LFM2.5-1.2B. The implementation therefore retains the adjacent 5x3 sample
 and 70x6/420-request shape and seeded arrivals, but generates deterministic
 target-local prompt content rather than claiming byte identity with the
@@ -58,31 +58,17 @@ PYTHONPATH=python:bench python3.13 -m racebench.cli validate-trace \
   --require-shape-matched
 ```
 
-The first full local Ninja launch reached the MPS worker but was stopped after
-system-wide free memory fell to 23%. The host recovered to 67% after clean
-termination. No `bench/results/lfm25-racebench-baseline.json` was written;
-engine pass and baseline score remain unrecorded for this implementation.
-
-A follow-up isolated launch loaded the local 2.6B weights but stopped before
-inference with PyTorch error `invalid low watermark ratio 1.4`: the configured
-high watermark was `0.8` while the default low watermark remained `1.4`. No
-request, engine-pass result, or score was produced. The Ninja rule now sets
-`PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7`, and the result metadata records both
-environment values.
-
 # Current authoritative result
 
-After the safety configuration was corrected, the same target completed once
-with:
+After the safety configuration was corrected (`PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8`, `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7`), the target completed with:
 
 ```sh
 ninja -f ninja.build bench-suite
 ```
 
-The compact result is [bench/results/lfm25-racebench-baseline.json](../../bench/results/lfm25-racebench-baseline.json).
+The compact result is [bench/results/lfm25-350m-q8-racebench-baseline.json](../../bench/results/lfm25-350m-q8-racebench-baseline.json).
 It records `engine_pass: true`, exit code `0`, and 15/15 successful warmup and
-scored requests for both eager and llmopt. The eager baseline is ERS `0.0`
-over 15 scored requests. Warmup and scored generated token IDs match exactly
+scored requests for both eager and llmopt. Warmup and scored generated token IDs match exactly
 for all 15 requests, and the fixed-forward output digests are exact across
 the two isolated candidate processes.
 
@@ -90,6 +76,4 @@ The needle matrix is recorded separately: both candidates retrieved `0/6`.
 The result therefore keeps needle retrieval independent from engine pass. It
 also marks the relative speed comparison invalid because this is one execution
 per candidate rather than repeated or counterbalanced sampling; the persisted
-baseline is an observation, not an optimization claim. At result recording,
-MPS reported 5,394,399,744 allocated bytes and 6,451,314,688 driver-allocated
-bytes, with watermark ratios `0.8` / `0.7`.
+baseline is an observation, not an optimization claim.

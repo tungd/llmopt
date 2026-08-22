@@ -594,7 +594,7 @@ def _metadata(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="LiquidAI/LFM2.5-2.6B")
+    parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
     parser.add_argument(
         "--quantization",
         choices=("q8", "fp16"),

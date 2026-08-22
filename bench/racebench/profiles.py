@@ -7,7 +7,7 @@ import random
 from .trace import Arrival, WorkloadTrace
 
 
-MODEL = "LiquidAI/LFM2.5-2.6B"
+MODEL = "LiquidAI/LFM2.5-350M"
 SEMANTIC_INITIAL_OFFSETS = (
     0.0,
     0.2040120574549602,
@@ -166,7 +166,7 @@ def official_shape_70x6(*, warmup: bool = False) -> WorkloadTrace:
     The adjacent racebench publishes generated prompt content for its 1.2B
     target.  This profile preserves the published execution shape, arrival
     process, pinned output budget, and request options while generating
-    deterministic local content for the 2.6B MPS target.
+    deterministic local content for the LFM2.5 MPS target.
     """
     variant = "warmup" if warmup else "scored"
     shared_prefix = (

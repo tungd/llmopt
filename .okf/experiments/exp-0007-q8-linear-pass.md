@@ -65,8 +65,8 @@ The tests cover Q8 CPU numerical results, captured IR, default LFM2.5 Q8
 configuration, and both source emitters. `q8-smoke` compiles the generated
 Q8 Metal source with `xcrun metal` and Q8 LLVM text with `clang`. The Python
 suite covers per-channel quantization, model rewriting, and preservation of the
-Q8 operator boundary in an FX manifest. The existing 350M and 2.6B baseline
-files remain historical FP16 measurements; the new Q8 result is recorded at
+Q8 operator boundary in an FX manifest. The historical 350M FP16 baseline
+remains recorded; the new Q8 result is recorded at
 `bench/results/lfm25-350m-q8-racebench-baseline.json`.
 
 # Boundary

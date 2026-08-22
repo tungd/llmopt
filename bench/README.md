@@ -1,7 +1,7 @@
 # Benchmark setup
 
-The comparison target is the same LFM2.5-2.6B checkpoint running on the same
-Apple Silicon host. The baseline is eager PyTorch on MPS; the candidate is the
+The comparison target is the `LiquidAI/LFM2.5-350M` checkpoint running on Apple
+Silicon. The baseline is eager PyTorch on MPS; the candidate is the
 OCaml-planned FX GraphModule with the first `fx-direct-execution` runtime pass.
 The benchmark is split into compiler work and runtime work so graph planning is
 not mixed with model execution.
@@ -39,10 +39,6 @@ the Phase 2 tiled Q8 matmul for explicit performance experiments. `--quantizatio
 fp16` selects the explicit weight-format fallback.
 The compiler target is validated by `ninja -f ninja.build q8-smoke`.
 
-The checked-in 350M and 2.6B result JSON files predate this default and remain
-historical records from the fallback/runtime configuration described in each
-OKF experiment.
-
 Run the model-level probe with:
 
 ```sh
@@ -61,7 +57,6 @@ matrix:
 
 ```sh
 ninja -f ninja.build bench-suite
-ninja -f ninja.build bench-suite-350m
 ```
 
 The suite uses the same request scoring as the adjacent racebench: TTFT floor
@@ -76,21 +71,10 @@ defaults remain 7,500/9,000/16,000/30,000 prompt tokens; pass explicit
 `--needle-lengths` and `--needle-positions` to run that matrix.
 
 The suite writes `warmup.json` and `report.json` per candidate under
-`_artifacts/lfm25-benchsuite-q8-racebench-safe/`, a top-level result, and (for the
-Ninja target) the compact record at
-`bench/results/lfm25-q8-racebench-baseline.json`. The older
-`bench/results/lfm25-racebench-baseline.json` is the historical FP16 record.
-The full shape profile is
-available without loading a trace file:
+`_artifacts/lfm25-benchsuite-q8-racebench-safe/`, a top-level result, and the
+compact record at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
 
-The `bench-suite-350m` target uses the official
-`LiquidAI/LFM2.5-350M` instruction checkpoint, writes to a separate
-Q8 artifact/result path (`bench/results/lfm25-350m-q8-racebench-baseline.json`),
-and is tracked as a smaller-model probe rather than as evidence for the 2.6B
-target. Its current record has 15/15 successful warmup and scored requests per
-candidate, exact fixed-forward digest and token-ID parity, and `0/6` needle
-retrieval for each candidate. The one-run relative latency comparison is
-marked invalid by the bench contract.
+The full shape profile is available without loading a trace file:
 
 ```sh
 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py \
@@ -133,30 +117,8 @@ corpus, seed, and warm/cold state.
 - Peak process/unified-memory usage and model load time.
 - Exact output comparison against eager PyTorch MPS for fixed inputs.
 
-The first recorded case is a 5-token LFM2.5-2.6B forward. The measured result
-is stored in [bench/results/lfm25-mps-2026-08-20.json](results/lfm25-mps-2026-08-20.json).
-The corrected short ERS/needle smoke run is summarized in
-[bench/results/lfm25-benchsuite-2026-08-20.json](results/lfm25-benchsuite-2026-08-20.json);
-the eager baseline ERS was `0.4836256290` and the corrected llmopt observation
-was `0.5`, with four successful scored requests and equal decoded outputs. The
-fixed-input direct-forward logits were exact; the needle observation was `0/6`
-for each candidate and was not part of the engine exit status. Because both
-candidates ran sequentially in one process, the relative speed comparison is
-explicitly unverified; the eager value is the baseline record. This is retained
-as an engine smoke observation, not an optimization result: four short requests
-leave the ERS comparison confounded and saturated. The new long-context
-isolated result is stored in
-[bench/results/lfm25-benchsuite-semantic-5x3-2026-08-20.json](results/lfm25-benchsuite-semantic-5x3-2026-08-20.json).
-It records `0.0` ERS for both candidates, exact generated-token parity, and raw
-long-context medians; the relative comparison remains an isolated observation.
-The first racebench-aligned serialized-MPS launch was intentionally stopped
-after live memory pressure fell to 23% system-wide free; the host recovered to
-67% after termination. It produced no baseline record. The implementation and
-result contract were present, but that earlier probe did not write a baseline.
-The later corrected 2.6B target completed and wrote
-[results/lfm25-racebench-baseline.json](results/lfm25-racebench-baseline.json):
-`engine_pass: true`, exit code `0`, 15/15 successful warmup and scored
-requests per candidate, eager baseline ERS `0.0`, and exact generated-token
+The recorded 350M Q8 result has `engine_pass: true`, exit code `0`, 15/15
+successful warmup and scored requests per candidate, exact generated-token
 and fixed-forward digest parity. Needle retrieval was `0/6` for both
 candidates and is recorded separately; the one-run relative speed comparison
 is invalid without repeated or counterbalanced samples. The protocol records

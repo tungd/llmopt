@@ -92,8 +92,8 @@ rule lfm25_mps_benchmark
   pool = console
 
 rule lfm25_benchsuite
-  command = mkdir -p _artifacts/lfm25-benchsuite-q8-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-q8-racebench-safe --output _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json --record-output bench/results/lfm25-q8-racebench-baseline.json
-  description = run racebench-shaped ERS trace and needle benchsuite on MPS
+  command = mkdir -p _artifacts/lfm25-benchsuite-q8-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --model LiquidAI/LFM2.5-350M --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-q8-racebench-safe --output _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json --record-output bench/results/lfm25-350m-q8-racebench-baseline.json
+  description = run racebench-shaped ERS trace and needle benchsuite on LFM2.5-350M MPS
   pool = console
 
 rule lfm25_benchsuite_350m

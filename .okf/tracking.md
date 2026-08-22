@@ -28,8 +28,8 @@ sources:
 | LFM2.5 GQA/KV-cache lowering | open | executed as opaque FX nodes through PyTorch MPS |
 | model weight loading for the MPS probe | implemented | Transformers checkpoint loads on MPS |
 | end-to-end PyTorch MPS comparison | implemented | short smoke proves routed generation; semantic 5x3 result has exact fixed-forward digest and exact generated-token parity |
-| ERS trace/report benchsuite | implemented; 2.6B baseline recorded | racebench score math, reference-style HTTP runner, shape-matched semantic 5x3 and full 70x6 profiles, distinct warmup, isolated reports, exact token-ID parity, and `/bench/results/lfm25-racebench-baseline.json` with `engine_pass: true`, eager ERS `0.0`, and 15/15 successful requests per candidate |
-| LFM2.5-350M memory-safe benchmark path | implemented; engine pass and baseline recorded | `bench-suite-350m` completed 15/15 warmup and scored requests per candidate, exact token/digest parity, eager ERS `0.0003597708408867709`; the 2.6B result is recorded separately in the ERS benchsuite slice |
+| ERS trace/report benchsuite | implemented; 350M baseline recorded | racebench score math, reference-style HTTP runner, shape-matched semantic 5x3 and full 70x6 profiles, distinct warmup, isolated reports, exact token-ID parity, and `/bench/results/lfm25-350m-racebench-baseline.json` with `engine_pass: true`, eager ERS `0.0003597708408867709`, and 15/15 successful requests per candidate |
+| LFM2.5-350M memory-safe benchmark path | implemented; engine pass and baseline recorded | `bench-suite` completed 15/15 warmup and scored requests per candidate, exact token/digest parity, eager ERS `0.0003597708408867709` |
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, `ninja -f ninja.build q8-smoke`, and the historical dequantizing MPS callable probe pass; the bounded Q8 350M run records 15/15 requests per candidate, exact digest/token parity, and `0/6` needle retrieval at `/bench/results/lfm25-350m-q8-racebench-baseline.json` |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | natural needle-in-a-haystack validation | implemented | semantic 5x3 run records `0/6` for both candidates at 2,048/4,096-token contexts and 10/50/90 placement |
@@ -49,14 +49,11 @@ measurement into a release gate.
   the LFM2.5 projection dimensions beyond the initial 16x16 kernel?
 - How should generated libraries be versioned and invalidated when the FX
   graph, target device, or compiler flags change?
-- What prompt/template and response budget should the LFM2.5-2.6B needle probe
+- What prompt/template and response budget should the LFM2.5-350M needle probe
   use so semantic retrieval is measured independently from explanatory output
   formatting?
 - How much repeat/counterbalance sampling should be used when comparing MPS
   latency distributions after the isolated profile is recorded?
-- What host-memory reservation or process-level model lifecycle is needed to
-  run the full 2.6B racebench-shaped profile without driving unified-memory
-  pressure down during the measurement?
 - Which LFM2.5 linear subgraphs can use the generated Q8 callable without
   falling back to PyTorch dequantization?
 - Which reduction schedule or MPS-compatible matmul lowering can make the

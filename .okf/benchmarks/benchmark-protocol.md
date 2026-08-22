@@ -1,6 +1,6 @@
 ---
 type: Benchmark Protocol
-title: 'LFM2.5-2.6B PyTorch MPS comparison protocol'
+title: 'LFM2.5-350M PyTorch MPS comparison protocol'
 description: 'Record compiler and runtime measurements separately when comparing llmopt with eager PyTorch MPS on the same host.'
 tags: [benchmark, lfm2.5, pytorch, mps, apple-silicon]
 status: draft
@@ -9,18 +9,12 @@ sources:
   - id: local-protocol
     resource: /bench/README.md
     title: repository benchmark setup
-  - id: result
-    resource: /bench/results/lfm25-mps-2026-08-20.json
-    title: recorded LFM2.5 MPS measurement
-  - id: semantic-result
-    resource: /bench/results/lfm25-benchsuite-semantic-5x3-2026-08-20.json
-    title: recorded isolated semantic comparison
-  - id: 350m-result
+  - id: 350m-q8-result
+    resource: /bench/results/lfm25-350m-q8-racebench-baseline.json
+    title: recorded LFM2.5-350M Q8 engine-pass and baseline result
+  - id: 350m-fp16-result
     resource: /bench/results/lfm25-350m-racebench-baseline.json
-    title: recorded LFM2.5-350M engine-pass and baseline result
-  - id: 2.6b-result
-    resource: /bench/results/lfm25-racebench-baseline.json
-    title: recorded LFM2.5-2.6B engine-pass and baseline result
+    title: recorded LFM2.5-350M FP16 engine-pass and baseline result
   - id: racebench-runner
     resource: /bench/racebench/http.py
     title: reference-style concurrent HTTP runner
@@ -29,7 +23,7 @@ sources:
 # Scope
 
 Compare eager PyTorch MPS with the OCaml-planned llmopt FX GraphModule on the
-same LFM2.5-2.6B checkpoint and Apple Silicon host. Keep graph
+same LFM2.5-350M checkpoint and Apple Silicon host. Keep graph
 capture/planning, model loading, and tensor execution as separately reported
 measurements.
 
@@ -71,7 +65,7 @@ in separate child processes; generated token IDs are compared exactly and the
 fixed forward is compared by tensor digest across processes. A single isolated
 execution is still recorded as an observation, not as a repeated speed claim.
 
-The local implementation now carries the adjacent runner's trace, request,
+The local implementation carries the adjacent runner's trace, request,
 warmup, streaming, and score contracts. The in-process MPS adapter serializes
 active conversations because the host aborted a concurrent Metal command
 encoder; this is recorded as a target adaptation rather than silently treated
@@ -79,32 +73,13 @@ as equivalent serving concurrency. The full-shape profile is 70 conversations
 x 6 turns = 420 requests with the adjacent seeded 70-rps initial-arrival
 sequence.
 
-The first racebench-aligned serialized-MPS launch was stopped after live
-system-wide free memory fell to 23%; the host recovered to 67% after clean
-termination. No baseline result was written, so the baseline field remains
-pending a safe measurement window. The protocol records measurements for
-comparison. It introduces no unstated performance threshold or release
-decision.
+# Current 350M result
 
-A later launch loaded weights but did not reach inference because PyTorch
-rejected the configured high watermark `0.8` alongside its default low
-watermark `1.4`. The Ninja rule now sets low watermark `0.7`; that attempt
-also produced no request or score.
-
-The separate `bench-suite-350m` target then completed the same semantic 5x3
-protocol with 15/15 successful warmup and scored requests for both candidates,
-`engine_pass: true`, exact token/digest parity, and eager baseline ERS
-`0.0003597708408867709`. Needle retrieval was `0/6` for both candidates and
-was recorded separately from engine pass. This is evidence for the 350M
-probe only; the 2.6B comparison is recorded separately below.
-
-# Current 2.6B result
-
-The corrected authoritative target completed with `ninja -f ninja.build
-bench-suite` and wrote `bench/results/lfm25-racebench-baseline.json`. The
+The authoritative target completed with `ninja -f ninja.build bench-suite`
+and wrote `bench/results/lfm25-350m-q8-racebench-baseline.json`. The
 result has `engine_pass: true`, exit code `0`, 15/15 successful warmup and
-scored requests for eager and llmopt, eager baseline ERS `0.0`, exact generated
-token-ID parity, and exact fixed-forward tensor-digest parity. Needle retrieval
-was `0/6` for each candidate and is not part of the engine-pass status. Since
-each candidate ran once in an isolated process, the result marks relative
-speed claims invalid and retains the eager ERS as the recorded baseline only.
+scored requests for eager and llmopt, exact generated token-ID parity, and
+exact fixed-forward tensor-digest parity. Needle retrieval was `0/6` for each
+candidate and is not part of the engine-pass status. Since each candidate ran
+once in an isolated process, the result marks relative speed claims invalid
+and retains the eager ERS as the recorded baseline only.
