@@ -489,6 +489,88 @@ pipeline_for_name(llmopt_metal_library *library, const char *kernel_name) {
   return [library->pipelines objectForKey:name];
 }
 
+static NSUInteger positive_size(value encoded, const char *name) {
+  intnat decoded = Long_val(encoded);
+  if (decoded <= 0) {
+    char message[160];
+    snprintf(message, sizeof(message), "Metal %s must be positive", name);
+    caml_invalid_argument(message);
+  }
+  return (NSUInteger)decoded;
+}
+
+CAMLprim value caml_llmopt_metal_dispatch(value arguments) {
+  CAMLparam1(arguments);
+  llmopt_metal_library *library = Library_val(Field(arguments, 0));
+  const char *kernel_name = String_val(Field(arguments, 1));
+  value buffers = Field(arguments, 2);
+  value parameters = Field(arguments, 3);
+  MTLSize grid = MTLSizeMake(
+      positive_size(Field(arguments, 4), "grid width"),
+      positive_size(Field(arguments, 5), "grid height"),
+      positive_size(Field(arguments, 6), "grid depth"));
+  MTLSize group = MTLSizeMake(
+      positive_size(Field(arguments, 7), "threadgroup width"),
+      positive_size(Field(arguments, 8), "threadgroup height"),
+      positive_size(Field(arguments, 9), "threadgroup depth"));
+
+  if (library == NULL) {
+    caml_failwith("Metal library has been finalized");
+  }
+
+  @autoreleasepool {
+    id<MTLComputePipelineState> pipeline =
+        pipeline_for_name(library, kernel_name);
+    if (group.width * group.height * group.depth >
+        pipeline.maxTotalThreadsPerThreadgroup) {
+      caml_invalid_argument("Metal threadgroup exceeds pipeline capacity");
+    }
+
+    id<MTLCommandBuffer> command = [library->queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+    if (command == nil || encoder == nil) {
+      caml_failwith("Metal could not create a command buffer or encoder");
+    }
+    [encoder setComputePipelineState:pipeline];
+
+    NSUInteger buffer_index = 0;
+    value remaining = buffers;
+    while (remaining != Val_emptylist) {
+      llmopt_metal_buffer *buffer = Buffer_val(Field(remaining, 0));
+      if (buffer == NULL) {
+        caml_failwith("Metal buffer has been finalized");
+      }
+      [encoder setBuffer:buffer->buffer
+                  offset:buffer->offset
+                 atIndex:buffer_index];
+      buffer_index += 1;
+      remaining = Field(remaining, 1);
+    }
+
+    mlsize_t parameter_length = caml_string_length(parameters);
+    if (parameter_length > 0) {
+      [encoder setBytes:Bytes_val(parameters)
+                 length:(NSUInteger)parameter_length
+                atIndex:buffer_index];
+    }
+    [encoder dispatchThreads:grid threadsPerThreadgroup:group];
+    [encoder endEncoding];
+    [command retain];
+    [command commit];
+    caml_enter_blocking_section();
+    [command waitUntilCompleted];
+    caml_leave_blocking_section();
+    MTLCommandBufferStatus status = command.status;
+    NSError *command_error = [command.error retain];
+    [command release];
+    if (status != MTLCommandBufferStatusCompleted) {
+      fail_with_error("Metal dispatch failed", command_error);
+    }
+    [command_error release];
+  }
+  CAMLreturn(Val_unit);
+}
+
 CAMLprim value caml_llmopt_metal_dispatch_q8(value arguments) {
   CAMLparam1(arguments);
   llmopt_metal_library *library = Library_val(Field(arguments, 0));

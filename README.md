@@ -40,8 +40,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - A standalone, Ninja-built OCaml Metal runtime that validates the package,
   loads every declared metallib function, maps the tensor archive into one
   no-copy Metal buffer, creates tensor views by archive offset, and interprets
-  the binary input/Q8/output schedule through small Objective-C bindings.
-  Compute pipelines are cached per loaded library.
+  the binary command schedule through small Objective-C bindings. Native
+  dispatch covers matmul, Q8 linear, RMSNorm, ShortConv, masked attention,
+  embedding, range/fill, diff/cumsum, and two-index gather; compute pipelines
+  are cached per loaded library.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -90,8 +92,9 @@ separate prefill and one-token decode graphs with one physical
 422,137,216-byte archive. Offline replanning produces 872 prefill commands and
 926 decode commands, both with zero opaque operations; both generated MSL
 programs compile and their serving packages validate all 241 static bindings.
-Native command-stream interpretation and kernel materialization for the
-complete typed schedules remain open. Exact parity was computed during the
+Native execution now covers every kernel family already emitted for those
+packages, but pointwise, cast, movement, reduction, recurrent-state, final
+float16 linear, and complete command-buffer execution remain open. Exact parity was computed during the
 capture process but its result file was not written after a post-capture
 package-check failure, so this capture adds no parity claim. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
@@ -118,6 +121,8 @@ ninja -f ninja.build mask-position-smoke
 ninja -f ninja.build q8-serving-smoke
 ninja -f ninja.build ocaml-metal-runtime
 ninja -f ninja.build ocaml-metal-runtime-smoke
+ninja -f ninja.build native-schedule-smoke
+ninja -f ninja.build ocaml-metal-primitives-smoke
 ninja -f ninja.build metal-runtime
 ninja -f ninja.build metal-runtime-smoke
 ninja -f ninja.build metal-runtime-model-smoke
@@ -154,6 +159,12 @@ archive. `ocaml-metal-runtime-smoke` maps that archive once, lets the OCaml
 executor bind runtime/static inputs and allocate outputs from the binary
 schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.json`.
+`native-schedule-smoke` generates a JSON-free, 42-command typed package and
+compiles its 13 emitted Metal entry points without launching a device.
+`ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
+executes 12 commands across matmul, normalization, convolution, attention,
+embedding, position/mask, and fill kernels and checks all 12 outputs byte for
+byte. It writes a plain-text report.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.

@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:40:37Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:55:02Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -28,9 +28,9 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Metal source emitter | implemented | Xcode `metal` accepts the linear smoke |
 | Fused LFM RMSNorm pass and Metal kernel | implemented; real-model count pending | synthetic LFM chain fuses from 10 commands to four; float32-to-float16 and float16 kernels pass `rms-norm-smoke` |
 | Direct FX GraphModule MPS callable returned to PyTorch | implemented | fixed direct-forward logits match eager MPS exactly; generation routing is now explicit |
-| LFM2.5 short-convolution lowering | typed and compiled; native dispatch open | all ten saved prefill `conv1d` nodes lower to validated ShortConv commands; CPU reference, schedule-v4 round trip, and Xcode Metal compilation pass |
-| LFM2.5 GQA/KV-cache lowering | prefill attention typed and compiled; decode/KV open | all six saved SDPA nodes lower to validated masked-attention commands; CPU softmax, schedule-v5 round trip, and Xcode Metal compilation pass |
-| LFM2.5 token embedding lowering | typed and compiled; native dispatch open | the saved int64-to-float16 lookup lowers to a validated embedding command; exact CPU gather, schedule-v6 round trip, and Xcode Metal compilation pass |
+| LFM2.5 short-convolution lowering | typed, compiled, and native-dispatched | all ten saved prefill `conv1d` nodes lower to ShortConv commands; the shared native probe executes the same kernel ABI and matches the 12-element fixture output exactly |
+| LFM2.5 GQA/KV-cache lowering | prefill attention native-dispatched; decode/KV open | all six saved SDPA nodes lower to masked-attention commands; the shared native probe matches a fully masked 2x2 fixture exactly, while physical decode KV remains open |
+| LFM2.5 token embedding lowering | typed, compiled, and native-dispatched | the int64-to-float16 lookup lowers to a validated command and the shared native probe gathers four float16 elements exactly |
 | LFM2.5 position and mask lowering | typed and compiled; native dispatch open | five aranges, prepended diff, bool-to-int64 cumsum, scalar bool fill, and two broadcast gathers lower through schedule v7; exact CPU references and `mask-position-smoke` pass, while the exact unused PyTorch telemetry call is elided |
 | model weight loading for the MPS probe | implemented | Transformers checkpoint loads on MPS |
 | end-to-end PyTorch MPS comparison | implemented | short smoke proves routed generation; semantic 5x3 result has exact fixed-forward digest and exact generated-token parity |
@@ -41,7 +41,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
 | Versioned generated package ABI | partial; prefill and decode packages validated | Package ABI v2 emits `package.llmopt` with schedule-v8 commands, logical shapes, kernel ABI, cache policy, and one `weights.llmopt` reference. The current 350M use-cache packages validate with 872 prefill and 926 decode commands, zero opaque operations, and 241 bindings each; native interpretation remains open |
 | OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
-| OCaml Metal serving loader and dispatch | partial; binary Q8 schedule executes | At 61% free memory, the native executor loaded the replacement archive, resolved runtime and static schedule inputs, allocated the output, dispatched the float16 Q8 command, and returned `[3.5, 8, 1, 1.5, 4, 2]` exactly. Pipelines are cached per library; complete model command coverage and batched submission remain open |
+| OCaml Metal serving loader and dispatch | partial; all currently emitted kernel families execute | The archive-backed Q8 schedule remains exact. A second fixed 42-command binary package ran at 57% free memory and matched 12/12 outputs byte-for-byte across matmul, RMSNorm, ShortConv, attention, embedding, arange/fill, diff/cumsum, and Gather2. Pointwise, non-identity cast, movement, reduction, recurrent commands, float16 vocabulary projection, and batched submission remain open |
 | Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Offline replans of the real use-cache manifests have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 14-kernel/10-kernel metallibs; kernels or zero-cost views for every command and native command interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 

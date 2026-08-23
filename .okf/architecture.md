@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:40:37Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:55:02Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -167,6 +167,19 @@ all schedule values, dispatched `llmopt_q8_linear`, and returned
 `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves automatic
 execution of that schedule subset against the replacement archive; it does not
 prove complete model-schedule execution.
+
+The runtime's generic native command path now selects declared kernels by
+typed operation and input/output dtype, packs fixed-width Metal parameters,
+binds schedule buffers, and reuses the per-library pipeline cache. It executes
+the currently emitted matmul, RMSNorm, ShortConv, masked-attention, embedding,
+arange, fill, diff, cumsum, and Gather2 families in addition to Q8 linear. A
+fixed JSON-free fixture contains 42 commands and 13 kernel declarations. With
+57% system memory free and no model process, one Apple M4 Pro execution
+dispatched 12 kernel commands and matched all 12 outputs byte-for-byte. This
+was a 59,325-byte package-plus-metallib probe, not a 350M model run. Pointwise,
+non-identity cast, tensor movement, reduction, recurrent-state kernels, the
+float16 vocabulary projection, and batched command submission remain outside
+that device evidence.
 
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,

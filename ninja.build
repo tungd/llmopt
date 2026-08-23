@@ -71,6 +71,16 @@ rule run_ocaml_metal_smoke
   description = dispatch Q8 package through native OCaml Metal
   pool = console
 
+rule native_schedule_fixture
+  command = mkdir -p $directory && $generator $directory
+  description = write typed native schedule fixture
+  pool = console
+
+rule run_ocaml_metal_primitives_smoke
+  command = $runner $directory > $out && cat $out
+  description = execute typed primitive package through native OCaml Metal
+  pool = console
+
 rule llvm_check
   command = clang -c -x ir $in -o $out
   description = validate emitted LLVM IR
@@ -244,6 +254,12 @@ build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/
 build _build/ocaml/ocaml_metal_smoke.cmx: ocaml_module bin/ocaml_metal_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/weight_archive.cmx
 build _build/bin/llmopt-ocaml-metal-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_smoke.cmx _build/native/ocaml_metal_stubs.o
 
+build _build/ocaml/native_schedule_fixture.cmx: ocaml_module bin/native_schedule_fixture.ml | _build/ocaml/ir.cmx _build/ocaml/metal.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
+build _build/bin/llmopt-native-schedule-fixture: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/native_schedule_fixture.cmx
+
+build _build/ocaml/ocaml_metal_primitives_smoke.cmx: ocaml_module bin/ocaml_metal_primitives_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/weight_archive.cmx
+build _build/bin/llmopt-ocaml-metal-primitives-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_primitives_smoke.cmx _build/native/ocaml_metal_stubs.o
+
 build _build/fx-example/fx.json _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest python/examples/linear_fx.json | _build/bin/llmopt-fx
 build _build/fx-example/kernel.ll.o: llvm_check _build/fx-example/kernel.ll
 build _build/fx-example/kernel.air: metal_check _build/fx-example/kernel.metal
@@ -270,6 +286,17 @@ build _build/q8-serving-example/package.ok: package_check _build/q8-serving-exam
 build _build/q8-serving-example/ocaml-metal-smoke.json: run_ocaml_metal_smoke _build/q8-serving-example/package.ok _build/bin/llmopt-ocaml-metal-smoke
   runner = _build/bin/llmopt-ocaml-metal-smoke
   directory = _build/q8-serving-example
+build _build/native-schedule-fixture/package.llmopt _build/native-schedule-fixture/kernel.metal: native_schedule_fixture | _build/bin/llmopt-native-schedule-fixture
+  generator = _build/bin/llmopt-native-schedule-fixture
+  directory = _build/native-schedule-fixture
+build _build/native-schedule-fixture/kernel.air: metal_check _build/native-schedule-fixture/kernel.metal
+build _build/native-schedule-fixture/kernel.metallib: metal_lib _build/native-schedule-fixture/kernel.air
+build _build/native-schedule-fixture/package.ok: package_check _build/native-schedule-fixture/package.llmopt _build/native-schedule-fixture/kernel.metallib | _build/bin/llmopt-package-check
+  checker = _build/bin/llmopt-package-check
+  directory = _build/native-schedule-fixture
+build _build/native-schedule-fixture/device-smoke.txt: run_ocaml_metal_primitives_smoke _build/native-schedule-fixture/package.ok _build/bin/llmopt-ocaml-metal-primitives-smoke
+  runner = _build/bin/llmopt-ocaml-metal-primitives-smoke
+  directory = _build/native-schedule-fixture
 build _build/native/metal-runtime.stamp: native_runtime native/metal_runtime.cpp native/build_metal_runtime.py
 build q8-fx-smoke: phony _build/q8-fx-example/kernel.ll.o _build/q8-fx-example/kernel.air _build/q8-fx-example/kernel.metallib _build/q8-fx-example/package.ok
 build q8-serving-smoke: phony _build/q8-serving-example/kernel.ll.o _build/q8-serving-example/kernel.air _build/q8-serving-example/kernel.metallib _build/q8-serving-example/package.ok
@@ -282,7 +309,7 @@ build metal-runtime-differential: phony _artifacts/phase1-350m-differential/resu
 build _artifacts/lfm25-350m-q8-prefill-decode/result.json: lfm25_prefill_decode_capture _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/native/metal-runtime.stamp bench/lfm25_capture_decode.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py python/llmopt_backend/tensor_archive.py
 build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-q8-prefill-decode/result.json
 
-build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-ocaml-metal-smoke
+build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke
 build ocaml-test: run_test _build/bin/llmopt-test
 build python-test: python_test
 build test: phony ocaml-test python-test
@@ -299,6 +326,8 @@ build mask-position-smoke: mask_position_metal_check | demo
 build fx-smoke: phony _build/fx-example/kernel.ll.o _build/fx-example/kernel.air _build/fx-example/kernel.metallib _build/fx-example/package.ok
 build ocaml-metal-runtime: phony _build/bin/llmopt-ocaml-metal-smoke
 build ocaml-metal-runtime-smoke: phony _build/q8-serving-example/ocaml-metal-smoke.json
+build native-schedule-smoke: phony _build/native-schedule-fixture/package.ok
+build ocaml-metal-primitives-smoke: phony _build/native-schedule-fixture/device-smoke.txt
 build bench-mps: lfm25_mps_benchmark | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_mps.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
 build _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json: lfm25_benchsuite | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
 build bench-suite: phony _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json
