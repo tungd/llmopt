@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T22:09:23Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T22:43:43Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -229,6 +229,15 @@ selectors back to the source. One 125-command package started with 7.54 GB
 Pro, and matched all 38 outputs byte-for-byte. Its 6,630-byte package and
 169,895-byte metallib totaled 176,525 bytes; this was not a model run.
 
+The same ABI-v6 package can now declare `llmopt_linear_f16` for the untied
+runtime operation used by the final vocabulary projection. One SIMD group owns
+one output channel, reads its contiguous 1,024-element weight row cooperatively,
+reuses each weight across blocks of up to eight prompt rows, reduces float32
+partial sums with `simd_sum`, and stores float16. A 129-command fixed package
+started at 59% free system memory with no model process, dispatched 38 kernels
+on Apple M4 Pro, and matched all 39 outputs byte-for-byte. Its 6,861-byte package
+and 174,942-byte metallib total 181,803 bytes; this was not a model run.
+
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,
 compared with 379 typed and 736 opaque in the saved v1 package. A subsequent
@@ -267,8 +276,9 @@ The same preserved manifests now round-trip exactly through binary FX
 transport ABI v1. Prefill occupies 253,354 bytes instead of 776,844 bytes of
 diagnostic JSON; decode occupies 259,928 instead of 796,970. Offline binary
 replanning now writes JSON-free ABI-v6 artifact directories with 872/926
-commands, 37/35 kernels, zero opaque operations, and all 241 archive bindings
-validated. Prefill needs no recurrent-compute entry; decode adds one sum and one
+commands, 38/36 kernels, zero opaque operations, and all 241 archive bindings
+validated. Both packages add the shared float16-linear entry for their
+`6x65536x1024` and `1x65536x1024` projections; decode also adds one sum and one
 slice-update entry shared across its ten recurrent blocks. This conversion and
 replan loaded no model and launched no Metal device work.
 

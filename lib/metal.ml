@@ -177,6 +177,42 @@ let q8_entries =
       ~input_dtype:Ir.Dtype.Int8
       ~output_dtype:Ir.Dtype.Float32 ]
 
+let linear_f16_source =
+  "\nconstant uint LINEAR_SIMD_WIDTH = 32;\n"
+  ^ "constant uint LINEAR_ROWS_PER_BLOCK = 8;\n\n"
+  ^ "struct LinearF16Params { uint m; uint n; uint k; };\n\n"
+  ^ "kernel void llmopt_linear_f16(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant LinearF16Params& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint column = gid / LINEAR_SIMD_WIDTH;\n"
+  ^ "  if (column >= params.n) return;\n"
+  ^ "  const uint weight_base = column * params.k;\n"
+  ^ "  for (uint row_base = 0; row_base < params.m;\n"
+  ^ "       row_base += LINEAR_ROWS_PER_BLOCK) {\n"
+  ^ "    float accumulators[8] = {};\n"
+  ^ "    const uint rows = min(LINEAR_ROWS_PER_BLOCK, params.m - row_base);\n"
+  ^ "    for (uint inner = lane; inner < params.k; inner += LINEAR_SIMD_WIDTH) {\n"
+  ^ "      const float weight_value = float(weight[weight_base + inner]);\n"
+  ^ "      for (uint row = 0; row < rows; ++row)\n"
+  ^ "        accumulators[row] +=\n"
+  ^ "            float(input[(row_base + row) * params.k + inner]) * weight_value;\n"
+  ^ "    }\n"
+  ^ "    for (uint row = 0; row < rows; ++row) {\n"
+  ^ "      const float value = simd_sum(accumulators[row]);\n"
+  ^ "      if (lane == 0) output[(row_base + row) * params.n + column] = half(value);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let linear_f16_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_linear_f16" ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let rms_norm_source =
   "\nstruct RmsNormParams { uint rows; uint width; float epsilon; };\n\n"
   ^ "kernel void llmopt_rms_norm_f32_f16(\n"
@@ -952,6 +988,18 @@ let has_q8 graph =
          | Ir.Op.Q8_linear _ -> true
          | _ -> false)
 
+let has_f16_linear graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | ( Ir.Op.Linear { bias = false; _ },
+             [ input; weight ],
+             Some output ) ->
+             Ir.Value.dtype input = Ir.Dtype.Float16
+             && Ir.Value.dtype weight = Ir.Dtype.Float16
+             && Ir.Value.dtype output = Ir.Dtype.Float16
+         | _ -> false)
+
 let lower_primary graph =
   let kernel =
     Ir.Graph.nodes graph
@@ -963,8 +1011,16 @@ let lower_primary graph =
                Some (Fused (m, n, k, lhs, rhs, bias, output))
            | Ir.Op.Linear { m; n; k; bias }, inputs, Some output ->
                (match inputs with
-               | [ input; weight ] -> Some (Linear (m, n, k, bias, input, weight, None, output))
-               | [ input; weight; bias_value ] ->
+               | [ input; weight ]
+                 when Ir.Value.dtype input = Ir.Dtype.Float32
+                      && Ir.Value.dtype weight = Ir.Dtype.Float32
+                      && Ir.Value.dtype output = Ir.Dtype.Float32 ->
+                   Some (Linear (m, n, k, bias, input, weight, None, output))
+               | [ input; weight; bias_value ]
+                 when Ir.Value.dtype input = Ir.Dtype.Float32
+                      && Ir.Value.dtype weight = Ir.Dtype.Float32
+                      && Ir.Value.dtype bias_value = Ir.Dtype.Float32
+                      && Ir.Value.dtype output = Ir.Dtype.Float32 ->
                    Some (Linear (m, n, k, bias, input, weight, Some bias_value, output))
                | _ -> None)
            | _ -> None)
@@ -1053,7 +1109,14 @@ let lower_primary graph =
                  ~operation:Kernel_abi.Operation.Fused_linear
                  ~input_dtype:Ir.Dtype.Float32
                  ~output_dtype:Ir.Dtype.Float32 ])
-  | Some (Linear (m, n, k, has_bias, input, weight, bias, output)) ->
+  | Some (Linear (m, n, k, has_bias, input, weight, bias, output))
+    when Ir.Value.dtype input = Ir.Dtype.Float32
+         && Ir.Value.dtype weight = Ir.Dtype.Float32
+         && Ir.Value.dtype output = Ir.Dtype.Float32
+         &&
+         (match bias with
+         | None -> true
+         | Some value -> Ir.Value.dtype value = Ir.Dtype.Float32) ->
       let input_symbol = input_name graph input in
       let weight_symbol = input_name graph weight in
       let bias_symbol = Option.map (input_name graph) bias in
@@ -1100,6 +1163,7 @@ let lower_primary graph =
                  ~operation:Kernel_abi.Operation.Linear
                  ~input_dtype:Ir.Dtype.Float32
                  ~output_dtype:Ir.Dtype.Float32 ])
+  | Some (Linear _) -> Error "primary Metal linear supports float32 only"
 
 let lower graph =
   let materialized_movement = has_materialized_movement graph in
@@ -1108,6 +1172,7 @@ let lower graph =
   in
   let components =
     [ has_q8 graph, q8_source, q8_entries;
+      has_f16_linear graph, linear_f16_source, linear_f16_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_short_conv graph, short_conv_source, short_conv_entries;
       has_attention graph, attention_source, attention_entries;

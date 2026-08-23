@@ -135,6 +135,14 @@ let () =
                  0x4800 ]);
           input runtime "update_source"
             (bytes_of_u16 [ 0x4900; 0x4980; 0x4a00; 0x4a80 ]);
+          input runtime "linear_f16_input"
+            (bytes_of_u16
+               [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4000; 0x3c00; 0x0000;
+                 0x3c00 ]);
+          input runtime "linear_f16_weight"
+            (bytes_of_u16
+               [ 0x3c00; 0x0000; 0x4000; 0xbc00; 0x0000; 0x3c00; 0xbc00;
+                 0x4000; 0x4000; 0xc000; 0x0000; 0x3c00 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
     |> expect_ok
@@ -195,14 +203,16 @@ let () =
   expect_bytes execution "update_slice_f16"
     (bytes_of_u16
        [ 0x3c00; 0x4900; 0x4980; 0x4400; 0x4500; 0x4a00; 0x4a80; 0x4800 ]);
+  expect_bytes execution "linear_f16"
+    (bytes_of_u16 [ 0x4200; 0x4700; 0x4000; 0x3c00; 0x4200; 0x4200 ]);
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 37 then
+  if List.length kernels <> 38 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 37"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 38"
          (List.length kernels));
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 38 exact\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 39 exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels)

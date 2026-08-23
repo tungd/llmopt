@@ -100,8 +100,9 @@ separate prefill and one-token decode graphs with one physical
 926 decode commands, both with zero opaque operations; both generated MSL
 programs compile and their serving packages validate all 241 static bindings.
 Native execution now covers every built-in, cast, pointwise, movement,
-reduction, and recurrent-update kernel family required by those packages, but
-final float16 linear and complete command-buffer execution remain open. Exact parity was computed during the
+reduction, recurrent-update, and final float16-linear kernel family required by
+those packages, but full-model and batched command-buffer execution remain
+open. Exact parity was computed during the
 capture process but its result file was not written after a post-capture
 package-check failure, so this capture adds no parity claim. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
@@ -167,12 +168,12 @@ archive. `ocaml-metal-runtime-smoke` maps that archive once, lets the OCaml
 executor bind runtime/static inputs and allocate outputs from the binary
 schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.json`.
-`native-schedule-smoke` generates a JSON-free, 125-command typed package and
-compiles its 38 emitted Metal entry points without launching a device.
+`native-schedule-smoke` generates a JSON-free, 129-command typed package and
+compiles its 39 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
-executes 37 kernels across matmul, normalization, convolution, attention,
+executes 38 kernels across matmul, linear, normalization, convolution, attention,
 embedding, position/mask, fill, cast, pointwise, and movement forms and checks
-all 38 outputs, including sum and slice update, byte for byte. It writes a
+all 39 outputs, including float16 linear, sum, and slice update, byte for byte. It writes a
 plain-text report.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
@@ -248,8 +249,8 @@ generated serving package (fixture boundary implemented)
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout (implemented; Q8 default)
-        ├── Metal package loading/mapped weights/Q8 dispatch (implemented)
-        └── complete model lowering, schedule execution, and request loop (next)
+        ├── Metal package loading/mapped weights/per-family dispatch (implemented)
+        └── full schedule execution, physical KV, and request loop (next)
 ```
 
 `graph.llmopt` is a compile-time transport and `plan.txt` is a compiler
@@ -264,7 +265,7 @@ model.
 The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
 776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
 bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
-binary-input replanning emits ABI-v6 packages with 872/926 commands, 37/35
+binary-input replanning emits ABI-v6 packages with 872/926 commands, 38/36
 kernels, zero opaque commands, and all 241 tensor bindings validated. No model
 load or device dispatch was used for that replan.
 

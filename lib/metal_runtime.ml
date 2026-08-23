@@ -587,6 +587,28 @@ let round_up value multiple =
     Error "Metal grid dimension overflows"
   else Ok (((value + multiple - 1) / multiple) * multiple)
 
+let linear_f16_grid columns =
+  let simdgroups_per_threadgroup = 8 in
+  let simd_width = 32 in
+  let* rounded_columns = round_up columns simdgroups_per_threadgroup in
+  if rounded_columns > max_int / simd_width then
+    Error "Metal float16 linear grid dimension overflows"
+  else Ok (rounded_columns * simd_width)
+
+let validate_linear_shapes ~m ~n ~k input weight output =
+  let input_elements = Tensor_shape.numel (Ir.Value.logical_shape input) in
+  let output_elements = Tensor_shape.numel (Ir.Value.logical_shape output) in
+  let weight_dimensions =
+    Tensor_shape.dimensions (Ir.Value.logical_shape weight)
+  in
+  if input_elements <> m * k then
+    Error "linear input shape is inconsistent with m and k"
+  else if weight_dimensions <> [ n; k ] then
+    Error "linear weight shape is inconsistent with n and k"
+  else if output_elements <> m * n then
+    Error "linear output shape is inconsistent with m and n"
+  else Ok ()
+
 let split_axis shape axis =
   let rec loop outer remaining = function
     | [] -> Error "Metal axis is outside the tensor rank"
@@ -964,23 +986,50 @@ let execute runtime ~inputs =
                  ~operation:Kernel_abi.Operation.Fused_linear
                  ~input_dtype:(Ir.Value.dtype lhs) ~buffers
                  ~parameters:(Bytes.create 0) ~grid:(grid_x, grid_y, 1))
-        | Ir.Op.Linear { m; n; k = _; bias }, values, Some output ->
+        | Ir.Op.Linear { m; n; k; bias }, values, Some output ->
             let* values =
               match values, bias with
-              | [ input; weight ], false -> Ok (input, [ input; weight ])
+              | [ input; weight ], false ->
+                  Ok (input, weight, None, [ input; weight ])
               | [ input; weight; bias_value ], true ->
-                  Ok (input, [ input; weight; bias_value ])
+                  Ok
+                    ( input,
+                      weight,
+                      Some bias_value,
+                      [ input; weight; bias_value ] )
               | _ -> Error "linear schedule command has inconsistent bias inputs"
             in
-            let input, values = values in
+            let input, weight, bias_value, values = values in
+            let* () = validate_linear_shapes ~m ~n ~k input weight output in
             let* buffers = find_values state values in
-            let* grid_x = round_up n 16 in
-            let* grid_y = round_up m 16 in
-            dispatched
-              (dispatch_output runtime state output
-                 ~operation:Kernel_abi.Operation.Linear
-                 ~input_dtype:(Ir.Value.dtype input) ~buffers
-                 ~parameters:(Bytes.create 0) ~grid:(grid_x, grid_y, 1))
+            (match
+               Ir.Value.dtype input,
+               Ir.Value.dtype weight,
+               Ir.Value.dtype output,
+               bias_value
+             with
+            | Ir.Dtype.Float16, Ir.Dtype.Float16, Ir.Dtype.Float16, None ->
+                let* parameters = Parameters.u32s [ m; n; k ] in
+                let* grid_x = linear_f16_grid n in
+                dispatched
+                  (dispatch_output ~name:"llmopt_linear_f16" runtime state output
+                     ~operation:Kernel_abi.Operation.Linear
+                     ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
+                     ~grid:(grid_x, 1, 1))
+            | Ir.Dtype.Float32, Ir.Dtype.Float32, Ir.Dtype.Float32, _ ->
+                let* grid_x = round_up n 16 in
+                let* grid_y = round_up m 16 in
+                dispatched
+                  (dispatch_output runtime state output
+                     ~operation:Kernel_abi.Operation.Linear
+                     ~input_dtype:(Ir.Value.dtype input) ~buffers
+                     ~parameters:(Bytes.create 0) ~grid:(grid_x, grid_y, 1))
+            | input_dtype, weight_dtype, output_dtype, _ ->
+                Error
+                  (Printf.sprintf "unsupported Metal linear kernel: %s + %s -> %s"
+                     (Ir.Dtype.to_string input_dtype)
+                     (Ir.Dtype.to_string weight_dtype)
+                     (Ir.Dtype.to_string output_dtype)))
         | Ir.Op.Rms_norm { epsilon }, [ input; weight ], Some output ->
             let input_shape = Ir.Value.logical_shape input in
             let dimensions = Tensor_shape.dimensions input_shape in

@@ -32,3 +32,4 @@
 * [Binary Dynamo/FX compiler transport](exp-0030-binary-fx-transport.md) - `LLMOPTFX` replaces JSON on the default Python-to-OCaml compile path.
 * [Native LFM movement dispatch](exp-0031-native-movement-dispatch.md) - ABI-v5 movement kernels and one exact 36-output execution probe.
 * [Native recurrent compute dispatch](exp-0032-native-recurrent-dispatch.md) - ABI-v6 sum and slice-update kernels with one exact 38-output probe.
+* [Native float16 vocabulary projection](exp-0033-native-f16-linear.md) - SIMD-reduced final projection with one exact 39-output probe and complete fixed-graph metallibs.

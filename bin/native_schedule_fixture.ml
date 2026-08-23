@@ -294,6 +294,16 @@ let graph () =
     [ update_destination; update_source ] [ 2; 4 ] Ir.Dtype.Float16
   |> output graph "update_slice_f16";
 
+  let linear_f16_input =
+    input graph "linear_f16_input" [ 2; 4 ] Ir.Dtype.Float16
+  in
+  let linear_f16_weight =
+    input graph "linear_f16_weight" [ 3; 4 ] Ir.Dtype.Float16
+  in
+  command graph (Ir.Op.Linear { m = 2; n = 3; k = 4; bias = false })
+    [ linear_f16_input; linear_f16_weight ] [ 2; 3 ] Ir.Dtype.Float16
+  |> output graph "linear_f16";
+
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in
   command graph (Ir.Op.Matmul { m = 2; n = 2; k = 3 }) [ lhs; rhs ] [ 2; 2 ]

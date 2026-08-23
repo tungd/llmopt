@@ -954,6 +954,40 @@ let () =
     |> List.exists (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_linear))
     "mixed graph declares Q8 kernel ABI entries";
+  let f16_linear_graph = Ir.Graph.create () in
+  let f16_linear_input =
+    Ir.Graph.tensor_input f16_linear_graph ~name:"f16_linear_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let f16_linear_weight =
+    Ir.Graph.tensor_input f16_linear_graph ~name:"f16_linear_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let f16_linear_output =
+    Ir.Graph.fresh_tensor_value f16_linear_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append f16_linear_graph
+    ~op:(Ir.Op.Linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ f16_linear_input; f16_linear_weight ]
+    ~output:(Some f16_linear_output);
+  Ir.Graph.add_output f16_linear_graph ~name:"f16_linear" f16_linear_output;
+  let f16_linear_program = expect_ok (Metal.lower f16_linear_graph) in
+  expect
+    (contains_substring (Metal.Program.source f16_linear_program)
+       "kernel void llmopt_linear_f16")
+    "float16 linear emits its SIMD Metal kernel";
+  expect
+    (Metal.Program.kernels f16_linear_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_linear_f16"
+           && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Linear
+           && Kernel_abi.Entry.input_dtype entry = Ir.Dtype.Float16
+           && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16
+           && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
+    "float16 linear declares its exact kernel ABI";
   let weight_archive_path = Filename.temp_file "llmopt-weights-" ".llmopt" in
   Fun.protect
     ~finally:(fun () -> Sys.remove weight_archive_path)
