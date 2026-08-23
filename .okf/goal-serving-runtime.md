@@ -24,6 +24,9 @@ sources:
   - id: native-bridge
     resource: /native/metal_runtime.cpp
     title: Current PyTorch MPS C++ dispatch bridge
+  - id: ocaml-metal-runtime
+    resource: /lib/metal_runtime.ml
+    title: Native OCaml package loader and Metal dispatch API
   - id: serving-cache
     resource: /lib/serving_cache.ml
     title: OCaml radix and KV ownership layer
@@ -55,7 +58,7 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Current planner preserves unsupported FX nodes as opaque | partial |
 | Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, tensor metadata, quantized weights, and cache layout; OCaml validates it | Ninja emits and validates a version-1 `compiled-graph` package with FX, plan, MSL, metallib, LLVM, typed kernel entries, and Q8-default cache policy; exported model weights and a complete operation schedule remain absent | partial |
 | Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 linear and small graph fixtures emit Metal; complete model lowering is absent | partial |
-| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, allocates/binds buffers, and submits commands without Python or PyTorch in the serving hot path | Current loader is Python and dispatch is a PyTorch MPS C++ extension | open |
+| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, allocates/binds buffers, and submits commands without Python or PyTorch in the serving hot path | Standalone OCaml package loader and shared-buffer command path dispatched the generated Q8 FP32 fixture exactly on Apple M4 Pro; complete model schedule execution is not present | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | Weight ownership remains in PyTorch modules | open |
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | Current request loop and tokenizer are Python/Transformers | open |
 | Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Compressed radix structure and ownership tests pass, but no request reaches it | partial |

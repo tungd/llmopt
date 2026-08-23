@@ -34,6 +34,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   optimized plan, MSL, metallib reference, LLVM IR, typed kernel entries, and
   mandatory radix/Q8-default cache policy; current output is explicitly the
   weightless `compiled-graph` stage.
+- A standalone, Ninja-built OCaml Metal runtime that validates the package,
+  loads every declared metallib function, owns shared Metal buffers, and
+  directly dispatches typed Q8 kernels through small Objective-C bindings.
 - A Ninja-built PyTorch MPS C++ bridge that loads generated Q8 `.metallib`
   files, binds MPS tensors, and dispatches either the Phase 2 tiled kernel or
   the exact generated dequantization path with PyTorch-MPS linear.
@@ -72,6 +75,8 @@ ninja -f ninja.build demo
 ninja -f ninja.build metal
 ninja -f ninja.build fx-smoke
 ninja -f ninja.build q8-smoke
+ninja -f ninja.build ocaml-metal-runtime
+ninja -f ninja.build ocaml-metal-runtime-smoke
 ninja -f ninja.build metal-runtime
 ninja -f ninja.build metal-runtime-smoke
 ninja -f ninja.build metal-runtime-model-smoke
@@ -91,6 +96,11 @@ the package schema and every referenced file. `bench-mps` loads LFM2.5-350M
 with Q8 weight-only quantization by default, runs eager MPS and the llmopt
 direct FX GraphModule executor, checks exact logits, and writes a JSON
 measurement. Pass `--quantization fp16` for the explicit fallback.
+
+`ocaml-metal-runtime` builds the standalone package consumer without Python or
+PyTorch. `ocaml-metal-runtime-smoke` directly loads the Q8 fixture package,
+allocates shared Metal buffers, dispatches `llmopt_q8_linear_f32`, and records
+the deterministic output in `_build/q8-fx-example/ocaml-metal-smoke.json`.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -161,7 +171,8 @@ generated compiled-graph package (implemented boundary)
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout (implemented; Q8 default)
-        └── Metal library loading and command dispatch (next slice)
+        ├── Metal package loading/buffers/Q8 command dispatch (implemented)
+        └── full model schedule, weights, and request loop (next slices)
 ```
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,

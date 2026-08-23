@@ -27,6 +27,12 @@ sources:
   - id: local-runtime-loader
     resource: /python/llmopt_backend/metal_runtime.py
     title: generated metallib loader and fallback boundary
+  - id: local-ocaml-runtime
+    resource: /lib/metal_runtime.ml
+    title: Native OCaml package loader and typed Q8 dispatch
+  - id: local-ocaml-stubs
+    resource: /native/ocaml_metal_stubs.m
+    title: Metal device, library, shared-buffer, and command bindings
   - id: local-kv-cache
     resource: /lib/kv_cache.ml
     title: OCaml KV format, accounting, and slot allocator
@@ -71,12 +77,14 @@ optional Metal source plus textual LLVM IR.[^local-python-backend]
 | direct FX execution and device dispatch | Python FX GraphModule plus PyTorch MPS |
 | generated Q8 library loading and tensor binding | Python loader plus PyTorch MPS C++ bridge |
 | custom Metal buffers and command submission | PyTorch MPS stream through the bridge |
+| standalone package loading and Q8 Metal dispatch | OCaml runtime plus Objective-C Metal bindings |
 | serving prefix lookup, eviction, and cache ownership | OCaml serving runtime |
 | serving KV format policy and slot allocation | OCaml serving runtime |
 
-The last two rows are implemented as the native cache layer. The Python bridge
-still owns executable Metal loading and command submission until those rows are
-moved into the OCaml serving process.
+The cache rows and standalone OCaml Metal primitives are implemented. The
+model-level execution path still uses the Python/PyTorch bridge because package
+weight export and complete LFM2.5 schedule execution have not moved into the
+OCaml process.
 
 # Current scope
 
@@ -117,6 +125,15 @@ policies, and a `serving` stage without weights. The current Ninja fixtures
 intentionally emit the `compiled-graph` stage with zero weights; model weight
 serialization and complete scheduled invocation metadata remain separate
 compiler work rather than being represented as finished serving data.
+
+The Ninja-built OCaml runtime consumes that manifest directly, validates every
+referenced artifact and declared entry point, selects the default Metal device,
+loads the metallib, owns shared `MTLBuffer` allocations, binds the Q8 ABI, and
+submits a command buffer while releasing the OCaml runtime lock during device
+completion. A standalone 2x3x4 FP32/Q8 fixture selected
+`llmopt_q8_linear_f32` and returned `[3, 7, 2, 1, 3, 3]` exactly on Apple M4
+Pro. This proves the native package-to-command boundary, not complete model
+execution.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the
