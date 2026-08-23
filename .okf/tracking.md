@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:00:03Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:30:25Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -23,7 +23,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 |---|---|---|
 | Ninja-built OCaml 5 effect/IR prototype | implemented | `ninja test` passes |
 | Python Dynamo/FX manifest exporter | implemented | v2 captures rank plus typed node, integer, float, bool, null, string, symbol, sequence, mapping, and slice arguments; Python unittest passes |
-| OCaml FX importer and effect planner | implemented for the captured no-cache prefill vocabulary; decode families remain | typed arguments, ellipsis, N-dimensional shapes, pointwise/reduction/cast/movement primitives, deferred chunk/getitem slices, concat, expand, RMSNorm, position/mask construction, and telemetry elision survive a real v2 capture and binary schedule round-trip |
+| OCaml FX importer and effect planner | implemented for the captured prefill and one-token decode vocabularies | typed arguments, ellipsis, N-dimensional shapes, pointwise/reduction/cast/movement primitives, cache crop/fill/copy, roll, functional slice update, sum, deferred chunk/getitem slices, concat identities, RMSNorm, position/mask construction, and telemetry elision survive real v2 captures and a schedule-v8 round trip |
 | LLVM textual emitter | implemented | `clang -x ir` accepts the linear smoke |
 | Metal source emitter | implemented | Xcode `metal` accepts the linear smoke |
 | Fused LFM RMSNorm pass and Metal kernel | implemented; real-model count pending | synthetic LFM chain fuses from 10 commands to four; float32-to-float16 and float16 kernels pass `rms-norm-smoke` |
@@ -39,10 +39,10 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, and `ninja -f ninja.build q8-smoke` pass; the bounded Q8 result has exact digest/token parity, and its saved outputs prove 6/6 control-code retrieval with 0/6 exact-only formatting |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
-| Versioned generated package ABI | partial; current prefill package validated | Package ABI v2 emits `package.llmopt` with schedule-v7 commands, logical shapes, kernel ABI, cache policy, and one `weights.llmopt` reference. The current 350M no-cache prefill package validates with 834 commands and 241 bindings; native interpretation remains open |
-| OCaml tensor-store ownership | partial; real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. The saved 241 tensors were converted offline into a 422,137,216-byte `weights.llmopt`, and the OCaml package checker validates every dtype/shape binding; no model or device process ran |
+| Versioned generated package ABI | partial; prefill and decode packages validated | Package ABI v2 emits `package.llmopt` with schedule-v8 commands, logical shapes, kernel ABI, cache policy, and one `weights.llmopt` reference. The current 350M use-cache packages validate with 872 prefill and 926 decode commands, zero opaque operations, and 241 bindings each; native interpretation remains open |
+| OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
 | OCaml Metal serving loader and dispatch | partial | The superseded safetensors fixture returned `[3.5, 8, 1, 1.5, 4, 2]` exactly. The replacement binary archive passes package validation; its single memory-checked probe stopped before dispatch on a corrected index-field ordering mismatch and was not retried |
-| Complete 350M operation schedule | no-cache prefill has zero opaque; decode/native execution partial | Offline replan of the real manifest-v2 no-cache forward has 834 commands and zero opaque. The serving package validates 241 archive tensors and 11 declared kernels; decode/KV-state graphs, kernels for every other typed command, and native command interpretation remain open |
+| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Offline replans of the real use-cache manifests have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 14-kernel/10-kernel metallibs; kernels or zero-cost views for every command and native command interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule

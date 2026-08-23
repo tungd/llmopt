@@ -260,7 +260,7 @@ let pointwise state operation output_value output =
     Tensor.set_linear output index value
   done
 
-let reduce_mean state reduction input_value output_value output =
+let reduce state reduction input_value output_value output =
   let input_shape = Ir.Value.logical_shape input_value in
   let output_shape = Ir.Value.logical_shape output_value in
   let input_dimensions = Tensor_shape.dimensions input_shape |> Array.of_list in
@@ -289,11 +289,14 @@ let reduce_mean state reduction input_value output_value output =
       +. Tensor.get_linear (find state input_value) input_index);
     counts.(output_index) <- counts.(output_index) + 1
   done;
-  Array.iteri
-    (fun index count ->
-      Tensor.set_linear output index
-        (Tensor.get_linear output index /. Float.of_int count))
-    counts
+  match reduction.Ir.Reduction.operator with
+  | Ir.Reduction.Sum -> ()
+  | Ir.Reduction.Mean ->
+      Array.iteri
+        (fun index count ->
+          Tensor.set_linear output index
+            (Tensor.get_linear output index /. Float.of_int count))
+        counts
 
 let apply_index state selection input_value output_value output =
   let output_shape = Ir.Value.logical_shape output_value in
@@ -320,6 +323,40 @@ let apply_index state selection input_value output_value output =
          | Tensor_shape.Index.New_axis -> incr output_axis);
     let input_index = linear_index input_dimensions input_coordinates in
     Tensor.set_linear output index (Tensor.get_linear source input_index)
+  done
+
+let update_slice state selection destination_value source_value output =
+  let destination_shape = Ir.Value.logical_shape destination_value in
+  let source_shape = Ir.Value.logical_shape source_value in
+  let destination_dimensions =
+    Tensor_shape.dimensions destination_shape |> Array.of_list
+  in
+  let source_dimensions = Tensor_shape.dimensions source_shape |> Array.of_list in
+  let destination = find state destination_value in
+  let source = find state source_value in
+  copy_into destination output;
+  for index = 0 to Tensor_shape.numel source_shape - 1 do
+    let source_coordinates = coordinates source_dimensions index in
+    let destination_coordinates =
+      Array.make (Array.length destination_dimensions) 0
+    in
+    let destination_axis = ref 0 in
+    let source_axis = ref 0 in
+    Tensor_shape.Index.selectors selection
+    |> List.iter (function
+         | Tensor_shape.Index.At selected ->
+             destination_coordinates.(!destination_axis) <- selected;
+             incr destination_axis
+         | Tensor_shape.Index.Slice { start; step; length = _ } ->
+             destination_coordinates.(!destination_axis) <-
+               start + (source_coordinates.(!source_axis) * step);
+             incr destination_axis;
+             incr source_axis
+         | Tensor_shape.Index.New_axis -> incr source_axis);
+    let destination_index =
+      linear_index destination_dimensions destination_coordinates
+    in
+    Tensor.set_linear output destination_index (Tensor.get_linear source index)
   done
 
 let concatenate state axis input_values output_value output =
@@ -387,6 +424,16 @@ let apply_movement state movement input_value output_value output =
   | Ir.Movement.Index selection ->
       apply_index state selection input_value output_value output
   | Ir.Movement.Concat _ -> failf "concat reached the unary movement handler"
+  | Ir.Movement.Roll { axis; shift } ->
+      let width = input_dimensions.(axis) in
+      for index = 0 to Tensor_shape.numel output_shape - 1 do
+        let output_coordinates = coordinates output_dimensions index in
+        let input_coordinates = Array.copy output_coordinates in
+        let shifted = (output_coordinates.(axis) - shift) mod width in
+        input_coordinates.(axis) <- if shifted < 0 then shifted + width else shifted;
+        let input_index = linear_index input_dimensions input_coordinates in
+        Tensor.set_linear output index (Tensor.get_linear source input_index)
+      done
 
 let short_conv state config input_value weight_value output_value output =
   match
@@ -700,9 +747,8 @@ let primitive state operation inputs output_value output =
   | Ir.Primitive.Pointwise operation, _ ->
       pointwise state operation output_value output
   | Ir.Primitive.Cast _, [ input ] -> copy_into (find state input) output
-  | Ir.Primitive.Reduce ({ operator = Ir.Reduction.Mean; _ } as reduction),
-    [ input ] ->
-      reduce_mean state reduction input output_value output
+  | Ir.Primitive.Reduce reduction, [ input ] ->
+      reduce state reduction input output_value output
   | Ir.Primitive.Movement (Ir.Movement.Concat { axis }), inputs ->
       concatenate state axis inputs output_value output
   | Ir.Primitive.Movement movement, [ input ] ->
@@ -721,6 +767,8 @@ let primitive state operation inputs output_value output =
   | Ir.Primitive.Fill scalar, [] -> fill scalar output_value output
   | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
       gather2 state source first_index second_index output_value output
+  | Ir.Primitive.Update_slice index, [ destination; source ] ->
+      update_slice state index destination source output
   | _ -> failf "invalid primitive input arity"
 
 let run ~inputs thunk =

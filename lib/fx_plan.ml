@@ -286,10 +286,12 @@ and index_spec argument : (Tensor_shape.Index.Spec.t, string) result =
       Ok (Tensor_shape.Index.Spec.Slice { start; stop; step })
   | _ -> Error "expected a static integer, slice, newaxis, or ellipsis index"
 
-let tensor_sequence_for env = function
+let tensor_sequence_for env empty_tensors = function
   | Fx.Argument.List arguments | Fx.Argument.Tuple arguments ->
       let rec loop acc = function
         | [] -> Ok (List.rev acc)
+        | Fx.Argument.Node name :: rest when Hashtbl.mem empty_tensors name ->
+            loop acc rest
         | Fx.Argument.Node name :: rest ->
             let* value = value_for env name in
             loop (value :: acc) rest
@@ -326,6 +328,7 @@ let fail_unsupported node reason =
 let plan fx_graph =
   let env = Hashtbl.create (List.length (Fx.nodes fx_graph)) in
   let deferred_chunks = Hashtbl.create 16 in
+  let empty_tensors = Hashtbl.create 16 in
   let typed_manifest = Fx.version fx_graph >= 2 in
   let lower () =
     let lower_node node =
@@ -406,7 +409,7 @@ let plan fx_graph =
               ~logical_shape
         | _ -> Error "cast requires one tensor input"
       in
-      let lower_mean inputs =
+      let lower_reduction operator inputs =
         match inputs with
         | [ input ] ->
             let input_shape = Ir.Value.logical_shape input in
@@ -435,9 +438,9 @@ let plan fx_graph =
             emit_primitive node
               ~operation:
                 (Ir.Primitive.Reduce
-                   { Ir.Reduction.operator = Mean; axes; keepdim })
+                   { Ir.Reduction.operator = operator; axes; keepdim })
               ~inputs ~logical_shape
-        | _ -> Error "mean requires one tensor input"
+        | _ -> Error "reduction requires one tensor input"
       in
       let lower_movement movement inferred inputs =
         match inputs with
@@ -510,6 +513,147 @@ let plan fx_graph =
             in
             lower_movement Ir.Movement.Expand inferred inputs
         | _ -> Error "expand requires one tensor input"
+      in
+      let lower_roll inputs =
+        match inputs with
+        | [ input ] ->
+            let positional =
+              match Fx.Node.arguments node with _receiver :: rest -> rest | [] -> []
+            in
+            let shifts =
+              match keyword "shifts" node, positional with
+              | Some argument, _ -> singleton_int_argument argument
+              | None, argument :: _ -> singleton_int_argument argument
+              | None, [] -> Error "roll requires a shift"
+            in
+            let dims =
+              match keyword "dims" node, positional with
+              | Some argument, _ -> singleton_int_argument argument
+              | None, _shift :: argument :: _ -> singleton_int_argument argument
+              | None, _ -> Error "roll requires one axis"
+            in
+            let* shift = shifts in
+            let* axis = dims in
+            let* axis =
+              Tensor_shape.normalize_axis (Ir.Value.logical_shape input) axis
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            lower_movement (Ir.Movement.Roll { axis; shift })
+              (Ir.Value.logical_shape input) inputs
+        | _ -> Error "roll requires one tensor input"
+      in
+      let lower_crop_pad inputs =
+        match inputs, Fx.Node.arguments node with
+        | ( [ input ],
+            _input :: Fx.Argument.Tuple [ Fx.Argument.Int left; Fx.Argument.Int right ]
+            :: Fx.Argument.String "constant" :: Fx.Argument.Null :: _ ) ->
+            let source_shape = Ir.Value.logical_shape input in
+            let dimensions = Tensor_shape.dimensions source_shape in
+            let rank = List.length dimensions in
+            if rank = 0 then Error "crop pad requires a ranked tensor"
+            else if left > 0 || right > 0 then
+              Error "captured LFM cache pad must be a pure crop"
+            else
+              let width = List.nth dimensions (rank - 1) in
+              let start = -left in
+              let stop = width + right in
+              if start < 0 || stop < start || stop > width then
+                Error "captured LFM cache crop is outside its source"
+              else
+                let full =
+                  Tensor_shape.Index.Spec.Slice
+                    { start = None; stop = None; step = None }
+                in
+                let cropped =
+                  Tensor_shape.Index.Spec.Slice
+                    { start = Some start; stop = Some stop; step = None }
+                in
+                let specs = List.init rank (fun axis -> if axis = rank - 1 then cropped else full) in
+                let* selection, inferred =
+                  Tensor_shape.index source_shape specs
+                  |> Result.map_error Tensor_shape.error_to_string
+                in
+                let* logical_shape = declared_or_inferred node inferred in
+                emit_primitive node
+                  ~operation:
+                    (Ir.Primitive.Movement (Ir.Movement.Index selection))
+                  ~inputs ~logical_shape
+        | _ -> Error "captured LFM cache pad requires one static crop pair"
+      in
+      let lower_zeros_like inputs =
+        match inputs with
+        | [ input ] ->
+            if
+              Ir.Value.dtype input <> Fx.Node.dtype node
+              || not
+                   (List.for_all
+                      (fun (name, _) -> name = "dtype" || name = "device")
+                      (Fx.Node.keyword_arguments node))
+            then Error "zeros_like dtype or options differ from its source"
+            else
+              let* logical_shape =
+                declared_or_inferred node (Ir.Value.logical_shape input)
+              in
+              emit_primitive node
+                ~operation:(Ir.Primitive.Fill (Ir.Scalar.Float 0.0)) ~inputs:[]
+                ~logical_shape
+        | _ -> Error "zeros_like requires one tensor input"
+      in
+      let lower_copy inputs =
+        match inputs with
+        | [ destination; source ]
+          when Fx.Node.keyword_arguments node = []
+               && Ir.Value.dtype destination = Ir.Value.dtype source
+               && Tensor_shape.equal
+                    (Ir.Value.logical_shape destination)
+                    (Ir.Value.logical_shape source) ->
+            Tile_effect.copy ~src:source ~dst:destination;
+            Hashtbl.replace env name destination;
+            Ok ()
+        | _ -> Error "copy_ requires equal source and destination tensors"
+      in
+      let lower_setitem inputs =
+        match inputs, Fx.Node.arguments node with
+        | ( [ destination; source ],
+            Fx.Argument.Node destination_name :: raw_index
+            :: Fx.Argument.Node _source_name :: _ ) ->
+            let* specs = index_specs raw_index in
+            let* selection, selected_shape =
+              Tensor_shape.index (Ir.Value.logical_shape destination) specs
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Ir.Value.dtype destination <> Ir.Value.dtype source
+              || not
+                   (Tensor_shape.equal selected_shape
+                      (Ir.Value.logical_shape source))
+            then Error "setitem source does not match its selected destination"
+            else
+              let logical_shape = Ir.Value.logical_shape destination in
+              let* shape = primitive_shape logical_shape in
+              let value =
+                Tile_effect.primitive
+                  {
+                    operation = Ir.Primitive.Update_slice selection;
+                    inputs = [ destination; source ];
+                    shape;
+                    logical_shape;
+                    dtype = Ir.Value.dtype destination;
+                  }
+              in
+              Hashtbl.replace env destination_name value;
+              Ok value
+        | _ -> Error "setitem requires a static tensor slice assignment"
+      in
+      let lower_empty_tensor () =
+        match Fx.Node.arguments node, Fx.Node.shape node with
+        | [ Fx.Argument.List [] ], Some [ 0 ]
+          when List.for_all
+                 (fun (name, _) -> name = "dtype" || name = "device")
+                 (Fx.Node.keyword_arguments node) ->
+            Hashtbl.replace empty_tensors name (Fx.Node.dtype node);
+            Ok ()
+        | _ -> Error "tensor literal is not the captured empty cache identity"
       in
       let lower_short_conv inputs =
         match inputs, Fx.Node.arguments node with
@@ -883,12 +1027,19 @@ let plan fx_graph =
         let* inputs, positional =
           match Fx.Node.arguments node with
           | tensor_list :: rest ->
-              let* inputs = tensor_sequence_for env tensor_list in
+              let* inputs = tensor_sequence_for env empty_tensors tensor_list in
               Ok (inputs, rest)
           | [] -> Error "concat requires a tensor list or tuple"
         in
         match inputs with
         | [] -> Error "concat requires at least one tensor input"
+        | [ input ] ->
+            let* declared = logical_shape_for node in
+            if
+              Ir.Value.dtype input = Fx.Node.dtype node
+              && Tensor_shape.equal declared (Ir.Value.logical_shape input)
+            then Ok input
+            else Error "concat identity metadata differs from its non-empty input"
         | first :: rest ->
             if
               not
@@ -964,6 +1115,36 @@ let plan fx_graph =
             && target_is target
                  [ "_operator.getitem"; "operator.getitem"; "getitem" ]
           then lower_getitem ()
+          else if
+            typed_manifest
+            && target_is target
+                 [ "torch._variablefunctionsclass.tensor";
+                   "torch.tensor"; "aten.tensor.default" ]
+          then
+            (match lower_empty_tensor () with
+            | Ok () -> Ok ()
+            | Error _ ->
+                (match values_for env (Fx.Node.inputs node) with
+                | Error message -> Error message
+                | Ok inputs -> lower_opaque inputs))
+          else if
+            typed_manifest
+            && target_is target
+                 [ "torch._variablefunctionsclass.cat"; "torch.cat";
+                   "aten.cat.default"; "aten.cat" ]
+          then
+            (match lower_concat () with
+            | Ok value -> bind_primitive (Ok value)
+            | Error message ->
+                if
+                  List.exists
+                    (fun input -> Hashtbl.mem empty_tensors input)
+                    (Fx.Node.inputs node)
+                then Error message
+                else
+                  (match values_for env (Fx.Node.inputs node) with
+                  | Error _ -> Error message
+                  | Ok inputs -> lower_opaque inputs))
           else
           (match values_for env (Fx.Node.inputs node) with
           | Error message -> Error message
@@ -1048,7 +1229,14 @@ let plan fx_graph =
               else if typed_manifest && target_is target [ "pow"; "aten.pow.tensor_scalar" ] then
                 lower_pow inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "mean"; "aten.mean.dim" ] then
-                lower_mean inputs |> lower_or_opaque inputs
+                lower_reduction Ir.Reduction.Mean inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "sum"; "torch._variablefunctionsclass.sum";
+                       "aten.sum.dim_intlist" ]
+              then
+                lower_reduction Ir.Reduction.Sum inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "to"; "_to_copy"; "aten._to_copy.default" ] then
                 lower_cast (Fx.Node.dtype node) inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "float" ] then
@@ -1064,6 +1252,29 @@ let plan fx_graph =
                 lower_unsqueeze inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "expand"; "aten.expand.default" ] then
                 lower_expand inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "roll"; "aten.roll.default" ] then
+                lower_roll inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target [ "torch._c._nn.pad"; "aten.pad.default" ]
+              then lower_crop_pad inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "zeros_like"; "torch._variablefunctionsclass.zeros_like";
+                       "aten.zeros_like.default" ]
+              then lower_zeros_like inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "_operator.setitem"; "operator.setitem"; "setitem" ]
+              then lower_setitem inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest && target_is target [ "copy_"; "aten.copy_.default" ]
+              then
+                (match lower_copy inputs with
+                | Ok () -> Ok ()
+                | Error _ -> lower_opaque inputs)
               else if
                 typed_manifest
                 && target_is target
@@ -1106,12 +1317,6 @@ let plan fx_graph =
                       (Ir.Value.logical_shape input) inputs
                     |> lower_or_opaque inputs
                 | _ -> lower_opaque inputs)
-              else if
-                typed_manifest
-                && target_is target
-                     [ "torch._variablefunctionsclass.cat"; "torch.cat";
-                       "aten.cat.default"; "aten.cat" ]
-              then lower_concat () |> lower_or_opaque inputs
               else if
                 (not typed_manifest)
                 && target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]

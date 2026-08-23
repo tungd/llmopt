@@ -2,7 +2,6 @@ type kernel =
   | Matmul of int * int * int * Ir.Value.t * Ir.Value.t * Ir.Value.t
   | Fused of int * int * int * Ir.Value.t * Ir.Value.t * Ir.Value.t * Ir.Value.t
   | Linear of int * int * int * bool * Ir.Value.t * Ir.Value.t * Ir.Value.t option * Ir.Value.t
-  | Q8 of int * int * int * bool * Ir.Value.t * Ir.Value.t * Ir.Value.t * Ir.Value.t option * Ir.Value.t
 
 module Program = struct
   type t = { source : string; kernels : Kernel_abi.Entry.t list }
@@ -57,7 +56,7 @@ let q8_kernel ~name ~value_type ~vector_type ~alignment ~weight_value_type
   ^ "  float acc = 0.0f;\n"
   ^ "  const " ^ scale_type ^ " channel_scale =\n"
   ^ "      (col < params.n) ? scale[col] : " ^ scale_zero ^ ";\n"
-  ^ "  for (uint base = 0; base < params.k; base += TILE) {\n"
+  ^ "  for (uint base = 0; base < params.k; base += Q8_TILE) {\n"
   ^ "    if (tid.x < 4) {\n"
   ^ "      const uint input_offset = row * params.k + base + tid.x * 4;\n"
   ^ "      if (row < params.m && base + tid.x * 4 + 3 < params.k &&\n"
@@ -98,7 +97,7 @@ let q8_kernel ~name ~value_type ~vector_type ~alignment ~weight_value_type
   ^ "    }\n"
   ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
   ^ "    #pragma clang loop unroll(full)\n"
-  ^ "    for (uint inner = 0; inner < TILE; ++inner)\n"
+  ^ "    for (uint inner = 0; inner < Q8_TILE; ++inner)\n"
   ^ "      acc += float(input_tile[tid.y][inner]) *\n"
   ^ "             float(weight_tile[inner][tid.x]);\n"
   ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
@@ -123,6 +122,60 @@ let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
   ^ "(weight[col * params.k + inner]) * " ^ scale_cast ^ "(scale[col]);\n"
   ^ "  }\n"
   ^ "}\n"
+
+let q8_source =
+  "\nconstant uint Q8_TILE = 16;\n\n"
+  ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
+  ^ q8_kernel
+      ~name:"llmopt_q8_linear"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~alignment:"8"
+      ~weight_value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~scale_zero:"half(0.0h)"
+      ~zero_value:"half(0.0h)"
+      ~store_value:"half(acc)"
+  ^ q8_kernel
+      ~name:"llmopt_q8_linear_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~alignment:"16"
+      ~weight_value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~scale_zero:"0.0f"
+      ~zero_value:"0.0f"
+      ~store_value:"acc"
+  ^ q8_dequant_kernel
+      ~name:"llmopt_q8_dequantize"
+      ~value_type:"half"
+      ~weight_cast:"half"
+      ~scale_cast:"half"
+  ^ q8_dequant_kernel
+      ~name:"llmopt_q8_dequantize_f32"
+      ~value_type:"float"
+      ~weight_cast:"float"
+      ~scale_cast:"float"
+
+let q8_entries =
+  [ kernel_entry ~name:"llmopt_q8_linear"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry ~name:"llmopt_q8_linear_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32
+      ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry ~name:"llmopt_q8_dequantize"
+      ~operation:Kernel_abi.Operation.Q8_dequantize
+      ~input_dtype:Ir.Dtype.Int8
+      ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry ~name:"llmopt_q8_dequantize_f32"
+      ~operation:Kernel_abi.Operation.Q8_dequantize
+      ~input_dtype:Ir.Dtype.Int8
+      ~output_dtype:Ir.Dtype.Float32 ]
 
 let rms_norm_source =
   "\nstruct RmsNormParams { uint rows; uint width; float epsilon; };\n\n"
@@ -400,12 +453,31 @@ let fill_source =
   ^ "    constant FillBoolParams& params [[buffer(1)]],\n"
   ^ "    uint gid [[thread_position_in_grid]]) {\n"
   ^ "  if (gid < params.count) output[gid] = params.value != 0 ? 1 : 0;\n"
+  ^ "}\n\n"
+  ^ "struct FillFloatParams { uint count; float value; };\n\n"
+  ^ "kernel void llmopt_fill_f16(\n"
+  ^ "    device half* output [[buffer(0)]],\n"
+  ^ "    constant FillFloatParams& params [[buffer(1)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) output[gid] = half(params.value);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_fill_f32(\n"
+  ^ "    device float* output [[buffer(0)]],\n"
+  ^ "    constant FillFloatParams& params [[buffer(1)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) output[gid] = params.value;\n"
   ^ "}\n"
 
 let fill_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_fill_bool" ~operation:Kernel_abi.Operation.Fill
-      ~input_dtype:Ir.Dtype.Bool ~output_dtype:Ir.Dtype.Bool ]
+      ~input_dtype:Ir.Dtype.Bool ~output_dtype:Ir.Dtype.Bool;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_fill_f16" ~operation:Kernel_abi.Operation.Fill
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_fill_f32" ~operation:Kernel_abi.Operation.Fill
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
 let gather2_source =
   "\nstruct Gather2Params {\n"
@@ -484,6 +556,13 @@ let has_primitive graph predicate =
          | Ir.Op.Primitive primitive -> predicate primitive
          | _ -> false)
 
+let has_q8 graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_linear _ -> true
+         | _ -> false)
+
 let lower_primary graph =
   let kernel =
     Ir.Graph.nodes graph
@@ -493,13 +572,6 @@ let lower_primary graph =
                Some (Matmul (m, n, k, lhs, rhs, output))
            | Ir.Op.Fused_matmul_bias { m; n; k }, [ lhs; rhs; bias ], Some output ->
                Some (Fused (m, n, k, lhs, rhs, bias, output))
-           | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, inputs, Some output ->
-               (match inputs with
-               | [ input; weight; scale ] ->
-                   Some (Q8 (m, n, k, has_bias, input, weight, scale, None, output))
-               | [ input; weight; scale; bias ] ->
-                   Some (Q8 (m, n, k, has_bias, input, weight, scale, Some bias, output))
-               | _ -> None)
            | Ir.Op.Linear { m; n; k; bias }, inputs, Some output ->
                (match inputs with
                | [ input; weight ] -> Some (Linear (m, n, k, bias, input, weight, None, output))
@@ -592,69 +664,6 @@ let lower_primary graph =
                  ~operation:Kernel_abi.Operation.Fused_linear
                  ~input_dtype:Ir.Dtype.Float32
                  ~output_dtype:Ir.Dtype.Float32 ])
-  | Some (Q8 (_m, _n, _k, _has_bias, input, weight, scale, bias, output)) ->
-      let input_symbol = input_name graph input in
-      let weight_symbol = input_name graph weight in
-      let scale_symbol = input_name graph scale in
-      let bias_symbol = Option.map (input_name graph) bias in
-      let output_symbol = input_name graph output in
-      let source =
-        "#include <metal_stdlib>\nusing namespace metal;\n\n"
-        ^ "constant uint TILE = 16;\n\n"
-        ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
-        ^ q8_kernel
-            ~name:"llmopt_q8_linear"
-            ~value_type:"half"
-            ~vector_type:"half4"
-            ~alignment:"8"
-            ~weight_value_type:"half"
-            ~weight_cast:"half"
-            ~scale_type:"half"
-            ~scale_zero:"half(0.0h)"
-            ~zero_value:"half(0.0h)"
-            ~store_value:"half(acc)"
-        ^ q8_kernel
-            ~name:"llmopt_q8_linear_f32"
-            ~value_type:"float"
-            ~vector_type:"float4"
-            ~alignment:"16"
-            ~weight_value_type:"float"
-            ~weight_cast:"float"
-            ~scale_type:"float"
-            ~scale_zero:"0.0f"
-            ~zero_value:"0.0f"
-            ~store_value:"acc"
-        ^ q8_dequant_kernel
-            ~name:"llmopt_q8_dequantize"
-            ~value_type:"half"
-            ~weight_cast:"half"
-            ~scale_cast:"half"
-        ^ q8_dequant_kernel
-            ~name:"llmopt_q8_dequantize_f32"
-            ~value_type:"float"
-            ~weight_cast:"float"
-            ~scale_cast:"float"
-      in
-      ignore (input_symbol, weight_symbol, scale_symbol, bias_symbol, output_symbol);
-      Ok
-        (Program.make ~source
-           ~kernels:
-             [ kernel_entry ~name:"llmopt_q8_linear"
-                 ~operation:Kernel_abi.Operation.Q8_linear
-                 ~input_dtype:Ir.Dtype.Float16
-                 ~output_dtype:Ir.Dtype.Float16;
-               kernel_entry ~name:"llmopt_q8_linear_f32"
-                 ~operation:Kernel_abi.Operation.Q8_linear
-                 ~input_dtype:Ir.Dtype.Float32
-                 ~output_dtype:Ir.Dtype.Float32;
-               kernel_entry ~name:"llmopt_q8_dequantize"
-                 ~operation:Kernel_abi.Operation.Q8_dequantize
-                 ~input_dtype:Ir.Dtype.Int8
-                 ~output_dtype:Ir.Dtype.Float16;
-               kernel_entry ~name:"llmopt_q8_dequantize_f32"
-                 ~operation:Kernel_abi.Operation.Q8_dequantize
-                 ~input_dtype:Ir.Dtype.Int8
-                 ~output_dtype:Ir.Dtype.Float32 ])
   | Some (Linear (m, n, k, has_bias, input, weight, bias, output)) ->
       let input_symbol = input_name graph input in
       let weight_symbol = input_name graph weight in
@@ -705,7 +714,8 @@ let lower_primary graph =
 
 let lower graph =
   let components =
-    [ has_rms_norm graph, rms_norm_source, rms_norm_entries;
+    [ has_q8 graph, q8_source, q8_entries;
+      has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_short_conv graph, short_conv_source, short_conv_entries;
       has_attention graph, attention_source, attention_entries;
       has_embedding graph, embedding_source, embedding_entries;

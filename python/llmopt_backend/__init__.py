@@ -14,6 +14,7 @@ import operator
 import os
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -23,12 +24,109 @@ from .tensor_archive import ArchiveSummary, write_archive
 
 
 _compile_counter = itertools.count()
+_capture_sessions: dict[Path, "CaptureSession"] = {}
+_capture_sessions_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
 class CapturedFx:
     manifest: dict[str, Any]
     tensors: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SessionCapture:
+    captured: CapturedFx
+    tensor_archive: ArchiveSummary | None
+
+
+class CaptureSession:
+    """Own one static tensor archive shared by every graph in a capture run.
+
+    Dynamo specializes prefill and decode into separate graphs, but their
+    lifted model tensors refer to the same storage.  The first graph writes the
+    archive; subsequent graphs hard-link it and rebind aliases to the first
+    graph's canonical tensor keys.  A later graph may use a subset of those
+    tensors, but cannot introduce new static storage after the archive has been
+    sealed.
+    """
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.archive_path = self.root / "weights.llmopt"
+        self._archive_summary: ArchiveSummary | None = None
+        self._key_by_identity: dict[tuple[Any, ...], str] = {}
+        self._identity_by_key: dict[str, tuple[Any, ...]] = {}
+        self._lock = threading.Lock()
+
+    def _seal(self, tensors: Mapping[str, Any]) -> None:
+        if self.archive_path.exists():
+            raise FileExistsError(
+                f"capture-session archive already exists: {self.archive_path}"
+            )
+        self._archive_summary = write_archive(tensors, self.archive_path)
+        for key, tensor in tensors.items():
+            identity = _tensor_identity(tensor)
+            self._key_by_identity[identity] = key
+            self._identity_by_key[key] = identity
+
+    def _canonical_keys(self, tensors: Mapping[str, Any]) -> dict[str, str]:
+        canonical: dict[str, str] = {}
+        for key, tensor in tensors.items():
+            identity = _tensor_identity(tensor)
+            canonical_key = self._key_by_identity.get(identity)
+            if canonical_key is None:
+                previous_identity = self._identity_by_key.get(key)
+                if previous_identity is not None:
+                    raise ValueError(
+                        f"static tensor {key} changed storage within capture session"
+                    )
+                raise ValueError(
+                    f"static tensor {key} was not present when the capture-session "
+                    "archive was sealed"
+                )
+            canonical[key] = canonical_key
+        return canonical
+
+    @staticmethod
+    def _rebind(captured: CapturedFx, canonical: Mapping[str, str]) -> CapturedFx:
+        nodes: list[dict[str, Any]] = []
+        for node in captured.manifest["nodes"]:
+            binding = node.get("binding")
+            if isinstance(binding, Mapping) and binding.get("kind") == "tensor-store":
+                source_key = str(binding["key"])
+                canonical_key = canonical.get(source_key)
+                if canonical_key is None:
+                    raise ValueError(
+                        f"FX tensor binding {source_key} has no captured static tensor"
+                    )
+                node = {**node, "binding": {"kind": "tensor-store", "key": canonical_key}}
+            nodes.append(node)
+        manifest = {**captured.manifest, "nodes": nodes}
+        tensors = {canonical[key]: tensor for key, tensor in captured.tensors.items()}
+        return CapturedFx(manifest=manifest, tensors=tensors)
+
+    def bind(self, captured: CapturedFx, output_directory: str | Path) -> SessionCapture:
+        if not captured.tensors:
+            return SessionCapture(captured=captured, tensor_archive=None)
+        output = Path(output_directory)
+        output.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            if self._archive_summary is None:
+                self._seal(captured.tensors)
+            canonical = self._canonical_keys(captured.tensors)
+            rebound = self._rebind(captured, canonical)
+            graph_archive = output / "weights.llmopt"
+            if graph_archive.exists():
+                raise FileExistsError(
+                    f"graph tensor archive already exists: {graph_archive}"
+                )
+            os.link(self.archive_path, graph_archive)
+            return SessionCapture(
+                captured=rebound,
+                tensor_archive=self._archive_summary,
+            )
 
 
 class NaiveMpsExecutable:
@@ -354,6 +452,27 @@ def _compiler_path() -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def _next_graph_directory(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    while True:
+        candidate = root / f"graph-{next(_compile_counter):04d}"
+        try:
+            candidate.mkdir()
+            return candidate
+        except FileExistsError:
+            continue
+
+
+def _capture_session(root: Path) -> CaptureSession:
+    canonical_root = root.resolve()
+    with _capture_sessions_lock:
+        session = _capture_sessions.get(canonical_root)
+        if session is None:
+            session = CaptureSession(canonical_root)
+            _capture_sessions[canonical_root] = session
+        return session
+
+
 def compile_fx(gm: Any, example_inputs: Sequence[Any]):
     """Plan an FX graph with OCaml and return its direct MPS executable."""
 
@@ -368,23 +487,29 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
 
     artifact_root = os.environ.get("LLMOPT_ARTIFACT_DIR")
     if artifact_root:
-        output_directory = Path(artifact_root) / f"graph-{next(_compile_counter):04d}"
-        output_directory.mkdir(parents=True, exist_ok=True)
+        root = Path(artifact_root)
+        output_directory = _next_graph_directory(root)
+        capture_session = _capture_session(root)
         temporary_directory = None
     else:
         temporary_directory = tempfile.TemporaryDirectory(prefix="llmopt-fx-")
         output_directory = Path(temporary_directory.name)
+        capture_session = None
 
     captured = capture_from_fx(gm, example_inputs)
+    tensor_archive: ArchiveSummary | None = None
+    tensor_store = output_directory / "weights.llmopt"
+    if capture_session is not None:
+        session_capture = capture_session.bind(captured, output_directory)
+        captured = session_capture.captured
+        tensor_archive = session_capture.tensor_archive
+    elif captured.tensors:
+        tensor_archive = write_archive(captured.tensors, tensor_store)
     manifest = output_directory / "fx.json"
     manifest.write_text(
         json.dumps(captured.manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    tensor_archive: ArchiveSummary | None = None
-    tensor_store = output_directory / "weights.llmopt"
-    if captured.tensors:
-        tensor_archive = write_archive(captured.tensors, tensor_store)
     quantization = os.environ.get("LLMOPT_QUANTIZATION", "q8")
     metal_library: Path | None = None
     try:
@@ -457,9 +582,11 @@ except ImportError:
 
 
 __all__ = [
+    "CaptureSession",
     "CapturedFx",
     "DirectMpsExecutable",
     "NaiveMpsExecutable",
+    "SessionCapture",
     "capture_from_fx",
     "compile_fx",
     "llmopt",

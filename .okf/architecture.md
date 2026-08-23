@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:00:03Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:30:25Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -181,6 +181,25 @@ and zero opaque operations. Direct-FX
 execution is bit exact against eager MPS for the six-token probe. This is
 capture and planning evidence; PyTorch MPS, not the OCaml package runtime,
 executed the parity check.
+
+A later bounded use-cache attempt captured both specializations before a
+post-capture check failed because mixed matmul/Q8 graphs omitted the additive
+Q8 Metal family. The preserved manifests contain 1,155 prefill nodes and 1,195
+decode nodes. Prefill has one runtime input and 23 outputs; decode has 23
+runtime inputs, including ten ShortConv states and twelve attention K/V
+tensors, and 13 outputs. Both graphs bind the same 241 static tensors. The
+capture session seals one 422,137,216-byte `weights.llmopt` and hard-links it
+into graph directories after rebinding static aliases by storage identity.
+
+The Metal emitter now includes Q8 kernels additively when another operation is
+the graph's primary kernel family. Schedule v8 types prefill cache crop,
+float16 zero fill, copy, and empty-concat identity, plus decode roll, functional
+slice update, copy, and sum. Offline replanning of the preserved manifests
+emits 872 prefill commands and 926 decode commands with zero opaque operations.
+Their 14-kernel and 10-kernel Metal programs compile to metallibs, and both
+packages validate all 241 archive bindings. The failed capture process did not
+write its parity result, so the preserved graphs provide structure and package
+evidence but no retained eager/compiled parity measurement.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

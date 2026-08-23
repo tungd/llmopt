@@ -57,7 +57,7 @@ module Pointwise : sig
 end
 
 module Reduction : sig
-  type operator = Mean
+  type operator = Mean | Sum
   type t = { operator : operator; axes : int list; keepdim : bool }
   val to_string : t -> string
 end
@@ -72,6 +72,7 @@ module Movement : sig
     | Contiguous
     | Index of Tensor_shape.Index.t
     | Concat of { axis : int }
+    | Roll of { axis : int; shift : int }
 
   val to_string : t -> string
 end
@@ -142,6 +143,7 @@ module Primitive : sig
     | Cumsum of Cumsum.t
     | Fill of Scalar.t
     | Gather2
+    | Update_slice of Tensor_shape.Index.t
 
   val values : t -> Value.t list
   val to_string : t -> string

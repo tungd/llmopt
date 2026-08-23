@@ -134,6 +134,11 @@ rule metal_runtime_differential
   description = run one 350M generated Q8 differential probe
   pool = console
 
+rule lfm25_prefill_decode_capture
+  command = PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_capture_decode.py --model LiquidAI/LFM2.5-350M --artifact-dir _artifacts/lfm25-350m-q8-prefill-decode --output $out
+  description = capture one 350M Q8 prefill and one-token decode
+  pool = console
+
 rule lfm25_mps_benchmark
   command = mkdir -p _artifacts/lfm25-mps && python3.13 bench/lfm25_mps.py --artifact-dir _artifacts/lfm25-mps/graphs --output _artifacts/lfm25-mps/result.json
   description = benchmark LFM2.5 PyTorch MPS execution
@@ -274,6 +279,8 @@ build _artifacts/phase1-350m-mps/result.json: metal_runtime_model_smoke _build/b
 build metal-runtime-model-smoke: phony _artifacts/phase1-350m-mps/result.json
 build _artifacts/phase1-350m-differential/result.json: metal_runtime_differential _build/bin/llmopt-fx _build/native/metal-runtime.stamp _build/q8-fx-example/kernel.metallib python/examples/metal_runtime_differential.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
 build metal-runtime-differential: phony _artifacts/phase1-350m-differential/result.json
+build _artifacts/lfm25-350m-q8-prefill-decode/result.json: lfm25_prefill_decode_capture _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/native/metal-runtime.stamp bench/lfm25_capture_decode.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py python/llmopt_backend/tensor_archive.py
+build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-q8-prefill-decode/result.json
 
 build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-ocaml-metal-smoke
 build ocaml-test: run_test _build/bin/llmopt-test

@@ -496,8 +496,113 @@ let () =
     (position_mask_operations
     = [ Kernel_abi.Operation.Arange; Kernel_abi.Operation.Diff;
         Kernel_abi.Operation.Cumsum; Kernel_abi.Operation.Fill;
+        Kernel_abi.Operation.Fill; Kernel_abi.Operation.Fill;
         Kernel_abi.Operation.Gather2 ])
     "position and mask graph declares all generated Metal kernel ABIs";
+  let recurrent_shape = Tensor_shape.of_ints_exn [ 1; 2; 3 ] in
+  let recurrent_token_shape = Tensor_shape.of_ints_exn [ 1; 2; 1 ] in
+  let recurrent_update, recurrent_selection_shape =
+    expect_ok
+      (Tensor_shape.index recurrent_shape
+         [ Tensor_shape.Index.Spec.Slice
+             { start = None; stop = None; step = None };
+           Tensor_shape.Index.Spec.Slice
+             { start = None; stop = None; step = None };
+           Tensor_shape.Index.Spec.Slice
+             { start = Some (-1); stop = None; step = None } ]
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect
+    (Tensor_shape.equal recurrent_selection_shape recurrent_token_shape)
+    "recurrent cache slice selects one trailing token";
+  let recurrent_kernel () =
+    let cache =
+      Tile_effect.tensor_input ~name:"recurrent_cache"
+        ~source:Ir.Input_source.Runtime ~shape:recurrent_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    let token =
+      Tile_effect.tensor_input ~name:"recurrent_token"
+        ~source:Ir.Input_source.Runtime ~shape:recurrent_token_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    let rolled =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Movement (Ir.Movement.Roll { axis = 2; shift = -1 }))
+        ~inputs:[ cache ] ~logical_shape:recurrent_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    let updated =
+      primitive_value ~operation:(Ir.Primitive.Update_slice recurrent_update)
+        ~inputs:[ rolled; token ] ~logical_shape:recurrent_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    Tile_effect.copy ~src:updated ~dst:cache;
+    let total =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Reduce
+             { operator = Ir.Reduction.Sum; axes = [ 2 ]; keepdim = false })
+        ~inputs:[ updated ] ~logical_shape:(Tensor_shape.of_ints_exn [ 1; 2 ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Tile_effect.output ~name:"recurrent_cache_output" ~value:cache;
+    Tile_effect.output ~name:"recurrent_sum" ~value:total
+  in
+  (match
+     Cpu.run
+       ~inputs:
+         [ ( "recurrent_cache",
+             Cpu.Tensor.of_rows [| [| 1.; 2.; 3. |]; [| 4.; 5.; 6. |] |] );
+           ("recurrent_token", Cpu.Tensor.of_rows [| [| 9. |]; [| 8. |] |]) ]
+       recurrent_kernel
+   with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      let rows name = Cpu.output execution name |> Option.get |> Cpu.Tensor.to_rows in
+      expect
+        (rows "recurrent_cache_output"
+        = [| [| 2.; 3.; 9. |]; [| 5.; 6.; 8. |] |])
+        "CPU reference interprets roll, slice update, and cache copy";
+      expect (rows "recurrent_sum" = [| [| 14.; 19. |] |])
+        "CPU reference interprets recurrent-state sum");
+  let recurrent_graph =
+    match Capture.run recurrent_kernel with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  let recurrent_schedule =
+    recurrent_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  let recurrent_operations =
+    Serving_schedule.commands recurrent_schedule
+    |> List.map Serving_schedule.Command.op
+  in
+  expect (Serving_schedule.opaque_count recurrent_schedule = 0)
+    "recurrent cache operations survive schedule-v8 round trip";
+  expect
+    (List.exists
+       (function
+         | Ir.Op.Primitive
+             (Ir.Primitive.Movement (Ir.Movement.Roll { axis = 2; shift = -1 })) ->
+             true
+         | _ -> false)
+       recurrent_operations
+    && List.exists
+         (function Ir.Op.Primitive (Ir.Primitive.Update_slice _) -> true | _ -> false)
+         recurrent_operations
+    && List.exists (function Ir.Op.Copy _ -> true | _ -> false) recurrent_operations
+    && List.exists
+         (function
+           | Ir.Op.Primitive
+               (Ir.Primitive.Reduce
+                 { operator = Ir.Reduction.Sum; axes = [ 2 ]; keepdim = false }) ->
+               true
+           | _ -> false)
+         recurrent_operations)
+    "schedule-v8 preserves recurrent-state operator semantics";
   let primitive_kernel () =
     let input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
     let channel_shape = Tensor_shape.of_ints_exn [ 4 ] in
@@ -778,6 +883,41 @@ let () =
   let q8_entries = Metal.Program.kernels q8_program in
   let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
   expect (List.length q8_entries = 4) "Q8 Metal kernel ABI entries";
+  let mixed_matmul_q8_kernel () =
+    let lhs = Tile.input ~name:"mixed_lhs" ~shape:left () in
+    let rhs = Tile.input ~name:"mixed_rhs" ~shape:right () in
+    Tile.output ~name:"mixed_matmul" (Tile.matmul lhs rhs);
+    let input =
+      Tile.input ~dtype:Ir.Dtype.Float16 ~name:"mixed_q8_input" ~shape:left ()
+    in
+    let weight =
+      Tile.input ~dtype:Ir.Dtype.Int8 ~name:"mixed_q8_weight"
+        ~shape:(Shape.of_ints_exn ~rows:3 ~cols:4) ()
+    in
+    let scale =
+      Tile.input ~dtype:Ir.Dtype.Float16 ~name:"mixed_q8_scale"
+        ~shape:(Shape.of_ints_exn ~rows:1 ~cols:3) ()
+    in
+    Tile.output ~name:"mixed_q8" (Tile.q8_linear input weight scale ?bias:None)
+  in
+  let mixed_matmul_q8_graph =
+    match Capture.run mixed_matmul_q8_kernel with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  let mixed_matmul_q8_program = expect_ok (Metal.lower mixed_matmul_q8_graph) in
+  let mixed_matmul_q8_source = Metal.Program.source mixed_matmul_q8_program in
+  expect
+    (contains_substring mixed_matmul_q8_source "kernel void llmopt_matmul")
+    "mixed graph emits its matmul kernel";
+  expect
+    (contains_substring mixed_matmul_q8_source "kernel void llmopt_q8_linear")
+    "mixed graph emits its Q8 kernel family";
+  expect
+    (Metal.Program.kernels mixed_matmul_q8_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_linear))
+    "mixed graph declares Q8 kernel ABI entries";
   let weight_archive_path = Filename.temp_file "llmopt-weights-" ".llmopt" in
   Fun.protect
     ~finally:(fun () -> Sys.remove weight_archive_path)
@@ -1472,6 +1612,156 @@ let () =
                List.length (Serving_schedule.Command.inputs command) = 3
            | _ -> false))
     "binary schedule preserves concat axis and duplicate operands";
+  let full_slice =
+    fx_slice_argument ~start:fx_null_argument ~stop:fx_null_argument
+      ~step:fx_null_argument
+  in
+  let prefill_cache_fx =
+    let nodes =
+      [ fx_node ~op:"placeholder" ~dtype:"float16" ~name:"bx" ~target:"bx"
+          ~shape:[ 1; 2; 6 ] ();
+        fx_node ~op:"call_function" ~dtype:"float16" ~name:"cropped"
+          ~target:"torch._C._nn.pad" ~inputs:[ "bx" ]
+          ~arguments:
+            [ fx_node_argument "bx";
+              fx_tuple_argument [ fx_int_argument (-3); fx_int_argument 0 ];
+              fx_string_argument "constant"; fx_null_argument ]
+          ~shape:[ 1; 2; 3 ] ();
+        fx_node ~op:"call_function" ~dtype:"float16" ~name:"cache"
+          ~target:"torch._VariableFunctionsClass.zeros_like"
+          ~inputs:[ "cropped" ] ~arguments:[ fx_node_argument "cropped" ]
+          ~keywords:
+            [ ("dtype", fx_symbol_argument "torch.float16");
+              ("device", fx_symbol_argument "mps:0") ]
+          ~shape:[ 1; 2; 3 ] ();
+        fx_node ~dtype:"float16" ~name:"copied" ~target:"copy_"
+          ~inputs:[ "cache"; "cropped" ]
+          ~arguments:[ fx_node_argument "cache"; fx_node_argument "cropped" ]
+          ~shape:[ 1; 2; 3 ] ();
+        fx_node ~op:"call_function" ~dtype:"float16" ~name:"empty"
+          ~target:"torch._VariableFunctionsClass.tensor"
+          ~arguments:[ fx_list_argument [] ]
+          ~keywords:
+            [ ("dtype", fx_symbol_argument "torch.float16");
+              ("device", fx_symbol_argument "mps:0") ]
+          ~shape:[ 0 ] ();
+        fx_node ~op:"call_function" ~dtype:"float16" ~name:"joined"
+          ~target:"torch._VariableFunctionsClass.cat"
+          ~inputs:[ "empty"; "cropped" ]
+          ~arguments:
+            [ fx_list_argument
+                [ fx_node_argument "empty"; fx_node_argument "cropped" ] ]
+          ~keywords:[ ("dim", fx_int_argument (-1)) ] ~shape:[ 1; 2; 3 ] () ]
+    in
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2); ("nodes", `List nodes);
+             ("outputs", `List [ `String "copied"; `String "joined" ]) ]))
+  in
+  let prefill_cache_graph = expect_ok (Fx_plan.plan prefill_cache_fx) in
+  let prefill_cache_schedule =
+    prefill_cache_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  let prefill_cache_operations =
+    Serving_schedule.commands prefill_cache_schedule
+    |> List.map Serving_schedule.Command.op
+  in
+  expect (Serving_schedule.opaque_count prefill_cache_schedule = 0)
+    "prefill recurrent-cache initialization has no opaque command";
+  expect
+    (List.exists
+       (function
+         | Ir.Op.Primitive
+             (Ir.Primitive.Movement (Ir.Movement.Index _)) -> true
+         | _ -> false)
+       prefill_cache_operations
+    && List.exists
+         (function
+           | Ir.Op.Primitive (Ir.Primitive.Fill (Ir.Scalar.Float 0.0)) -> true
+           | _ -> false)
+         prefill_cache_operations
+    && List.exists (function Ir.Op.Copy _ -> true | _ -> false)
+         prefill_cache_operations
+    && not
+         (List.exists
+            (function
+              | Ir.Op.Primitive
+                  (Ir.Primitive.Movement (Ir.Movement.Concat _)) -> true
+              | _ -> false)
+            prefill_cache_operations))
+    "prefill cache crop/fill/copy is typed and empty concat is an identity";
+  let decode_cache_fx =
+    let nodes =
+      [ fx_node ~op:"placeholder" ~dtype:"float16" ~name:"cache"
+          ~target:"cache" ~shape:[ 1; 2; 3 ] ();
+        fx_node ~op:"placeholder" ~dtype:"float16" ~name:"token"
+          ~target:"token" ~shape:[ 1; 2; 1 ] ();
+        fx_node ~dtype:"float16" ~name:"rolled" ~target:"roll"
+          ~inputs:[ "cache" ] ~arguments:[ fx_node_argument "cache" ]
+          ~keywords:
+            [ ("shifts", fx_int_argument (-1));
+              ("dims", fx_int_argument (-1)) ]
+          ~shape:[ 1; 2; 3 ] ();
+        fx_node ~op:"call_function" ~dtype:"float32" ~name:"setitem"
+          ~target:"_operator.setitem" ~inputs:[ "rolled"; "token" ]
+          ~arguments:
+            [ fx_node_argument "rolled";
+              fx_tuple_argument
+                [ full_slice; full_slice;
+                  fx_slice_argument ~start:(fx_int_argument (-1))
+                    ~stop:fx_null_argument ~step:fx_null_argument ];
+              fx_node_argument "token" ]
+          ~shape:[ 1; 2; 3 ] ();
+        fx_node ~dtype:"float16" ~name:"copied" ~target:"copy_"
+          ~inputs:[ "cache"; "rolled" ]
+          ~arguments:[ fx_node_argument "cache"; fx_node_argument "rolled" ]
+          ~shape:[ 1; 2; 3 ] ();
+        fx_node ~op:"call_function" ~dtype:"float16" ~name:"total"
+          ~target:"torch._VariableFunctionsClass.sum" ~inputs:[ "rolled" ]
+          ~arguments:[ fx_node_argument "rolled" ]
+          ~keywords:[ ("dim", fx_int_argument (-1)) ] ~shape:[ 1; 2 ] () ]
+    in
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2); ("nodes", `List nodes);
+             ("outputs", `List [ `String "copied"; `String "total" ]) ]))
+  in
+  let decode_cache_graph = expect_ok (Fx_plan.plan decode_cache_fx) in
+  let decode_cache_schedule =
+    decode_cache_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  let decode_cache_operations =
+    Serving_schedule.commands decode_cache_schedule
+    |> List.map Serving_schedule.Command.op
+  in
+  expect (Serving_schedule.opaque_count decode_cache_schedule = 0)
+    "decode recurrent-cache update has no opaque command";
+  expect
+    (List.exists
+       (function
+         | Ir.Op.Primitive
+             (Ir.Primitive.Movement (Ir.Movement.Roll { axis = 2; shift = -1 })) ->
+             true
+         | _ -> false)
+       decode_cache_operations
+    && List.exists
+         (function Ir.Op.Primitive (Ir.Primitive.Update_slice _) -> true | _ -> false)
+         decode_cache_operations
+    && List.exists (function Ir.Op.Copy _ -> true | _ -> false)
+         decode_cache_operations
+    && List.exists
+         (function
+           | Ir.Op.Primitive
+               (Ir.Primitive.Reduce
+                 { operator = Ir.Reduction.Sum; axes = [ 2 ]; keepdim = false }) ->
+               true
+           | _ -> false)
+         decode_cache_operations)
+    "FX planner types the captured roll/setitem/copy/sum decode sequence";
   (match Llvm_ir.emit q8_graph with
   | Error message -> fail message
   | Ok source ->

@@ -76,6 +76,16 @@ let validate_command seen_values command =
         | Ir.Op.Output _, [ _ ], None -> Ok ()
         | Ir.Op.Output _, _, _ ->
             Error "schedule output must have one dependency and no result"
+        | Ir.Op.Copy _, [ source; destination ], None ->
+            if
+              Tensor_shape.equal
+                (Ir.Value.logical_shape source)
+                (Ir.Value.logical_shape destination)
+              && Ir.Value.dtype source = Ir.Value.dtype destination
+            then Ok ()
+            else Error "schedule copy tensor metadata is inconsistent"
+        | Ir.Op.Copy _, _, _ ->
+            Error "schedule copy must have source/destination dependencies and no result"
         | _, _, Some output when Int_set.mem (value_id output) seen_values ->
             Error
               (Printf.sprintf "schedule redefines value %d" (value_id output))
@@ -116,6 +126,41 @@ let validate_command seen_values command =
               Error
                 (Printf.sprintf
                    "schedule node %d concat result metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement (Ir.Movement.Roll { axis; shift = _ })),
+            [ input ],
+            Some output ) ->
+            let* normalized =
+              Tensor_shape.normalize_axis (Ir.Value.logical_shape input) axis
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              normalized = axis
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape input)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Value.dtype output
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d roll result metadata is inconsistent"
+                   command.Command.node_id)
+        | Ir.Op.Primitive (Ir.Primitive.Reduce reduction), [ input ], Some output ->
+            let* inferred =
+              Tensor_shape.reduce (Ir.Value.logical_shape input)
+                ~axes:reduction.Ir.Reduction.axes ~keepdim:reduction.keepdim
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Value.dtype output
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d reduction metadata is inconsistent"
                    command.Command.node_id)
         | ( Ir.Op.Primitive (Ir.Primitive.Short_conv config),
             [ input; weight ],
@@ -267,10 +312,30 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d two-index gather metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Update_slice index),
+            [ destination; source ],
+            Some output ) ->
+            let* selected =
+              Tensor_shape.apply_index (Ir.Value.logical_shape destination) index
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal selected (Ir.Value.logical_shape source)
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape destination)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype destination = Ir.Value.dtype source
+              && Ir.Value.dtype destination = Ir.Value.dtype output
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d slice-update metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive
               (Ir.Primitive.Arange _ | Ir.Primitive.Diff _
               | Ir.Primitive.Cumsum _ | Ir.Primitive.Fill _
-              | Ir.Primitive.Gather2),
+              | Ir.Primitive.Gather2 | Ir.Primitive.Update_slice _),
             _,
             _ ) ->
             Error
@@ -703,6 +768,11 @@ let write_primitive writer = function
       Binary.Writer.u16 writer (List.length axes);
       List.iter (Binary.Writer.u16 writer) axes;
       Binary.Writer.bool writer keepdim
+  | Ir.Primitive.Reduce { operator = Ir.Reduction.Sum; axes; keepdim } ->
+      Binary.Writer.u8 writer 12;
+      Binary.Writer.u16 writer (List.length axes);
+      List.iter (Binary.Writer.u16 writer) axes;
+      Binary.Writer.bool writer keepdim
   | Ir.Primitive.Movement movement ->
       Binary.Writer.u8 writer 3;
       (match movement with
@@ -722,7 +792,11 @@ let write_primitive writer = function
           write_index writer index
       | Ir.Movement.Concat { axis } ->
           Binary.Writer.u8 writer 7;
-          Binary.Writer.u16 writer axis)
+          Binary.Writer.u16 writer axis
+      | Ir.Movement.Roll { axis; shift } ->
+          Binary.Writer.u8 writer 8;
+          Binary.Writer.u16 writer axis;
+          Binary.Writer.i64 writer shift)
   | Ir.Primitive.Short_conv config ->
       Binary.Writer.u8 writer 4;
       Binary.Writer.u32 writer (Ir.Short_conv.stride config);
@@ -749,6 +823,9 @@ let write_primitive writer = function
       Binary.Writer.u8 writer 10;
       write_scalar writer scalar
   | Ir.Primitive.Gather2 -> Binary.Writer.u8 writer 11
+  | Ir.Primitive.Update_slice index ->
+      Binary.Writer.u8 writer 13;
+      write_index writer index
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -791,6 +868,10 @@ let read_primitive values reader =
         | 7 ->
             Binary.Reader.u16 reader
             |> Result.map (fun axis -> Ir.Movement.Concat { axis })
+        | 8 ->
+            let* axis = Binary.Reader.u16 reader in
+            let* shift = Binary.Reader.i64 reader in
+            Ok (Ir.Movement.Roll { axis; shift })
         | _ -> Error (Printf.sprintf "unknown movement tag: %d" movement_tag)
       in
       Ok (Ir.Primitive.Movement movement)
@@ -822,6 +903,21 @@ let read_primitive values reader =
       |> Result.map (fun config -> Ir.Primitive.Cumsum config)
   | 10 -> read_scalar reader |> Result.map (fun scalar -> Ir.Primitive.Fill scalar)
   | 11 -> Ok Ir.Primitive.Gather2
+  | 12 ->
+      let* count = Binary.Reader.u16 reader in
+      let rec axes acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* axis = Binary.Reader.u16 reader in
+          axes (axis :: acc) (remaining - 1)
+      in
+      let* axes = axes [] count in
+      let* keepdim = Binary.Reader.bool reader in
+      Ok
+        (Ir.Primitive.Reduce
+           { Ir.Reduction.operator = Sum; axes; keepdim })
+  | 13 ->
+      read_index reader |> Result.map (fun index -> Ir.Primitive.Update_slice index)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -963,7 +1059,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 7;
+  Binary.Writer.u16 writer 8;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -985,7 +1081,7 @@ let of_bytes bytes =
     let* version = Binary.Reader.u16 reader in
     if
       version <> 1 && version <> 2 && version <> 3 && version <> 4
-      && version <> 5 && version <> 6 && version <> 7
+      && version <> 5 && version <> 6 && version <> 7 && version <> 8
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else

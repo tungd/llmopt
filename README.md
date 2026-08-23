@@ -43,7 +43,8 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   dispatches typed Q8 kernels through small Objective-C bindings.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
-  archive. The first real 350M Q8 package contains all 241 captured tensors.
+  archive. Prefill and decode specializations share one 241-tensor archive by
+  storage identity instead of writing a model-sized copy per FX graph.
 - A Ninja-built PyTorch MPS C++ bridge that loads generated Q8 `.metallib`
   files, binds MPS tensors, and dispatches either the Phase 2 tiled kernel or
   the exact generated dequantization path with PyTorch-MPS linear.
@@ -61,10 +62,14 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 The typed effect vocabulary now also covers N-dimensional pointwise,
 reduction, cast, normalized static indexing, concat, movement, static integer
 ranges, prepended differences, boolean cumulative sums, scalar fills, and the
-rank-two/two-index gather used by LFM masking.
+rank-two/two-index gather used by LFM masking. Schedule v8 adds the recurrent
+decode operations observed in LFM2.5: roll, functional slice update, explicit
+state copy, and sum. Empty cache tensors are compile-time concat identities,
+and prefill cache initialization lowers to crop, fill, and copy.
 The planner eliminates valid `chunk` tuple nodes by emitting slices directly
 at integer `getitem` consumers; its CPU reference and binary codecs are tested.
-Schedule v7 preserves the position/mask primitives and explicitly elides only
+Schedule v8 preserves the position/mask and recurrent-state primitives and
+explicitly elides only
 the captured unused `torch._C._log_api_usage_once` telemetry operation. The
 exact LFM depthwise ShortConv form also lowers to a typed command
 with a CPU reference and compiled scalar MSL. The masked prefill-attention form
@@ -79,12 +84,15 @@ operations and inputs use the PyTorch MPS fallback. The intended serving stack
 moves generated-library loading, Metal dispatch, request scheduling, and cache
 ownership into OCaml. Its radix/KV ownership and archive-backed Metal loader
 are implemented; complete schedule execution and physical KV
-quantize/dequantize remain open. Replanning the current manifest-v2 no-cache
-capture against the binary 241-tensor archive produces 834 schedule commands
-with zero opaque commands and 11 declared kernels; the generated MSL compiles
-with Xcode. Decode/KV-state capture, native command-stream interpretation, and
-kernel materialization for the complete typed schedule remain open. The earlier
-direct-FX probe is bit-exact against eager MPS. The boundary is documented in
+quantize/dequantize remain open. The bounded use-cache capture produced
+separate prefill and one-token decode graphs with one physical
+422,137,216-byte archive. Offline replanning produces 872 prefill commands and
+926 decode commands, both with zero opaque operations; both generated MSL
+programs compile and their serving packages validate all 241 static bindings.
+Native command-stream interpretation and kernel materialization for the
+complete typed schedules remain open. Exact parity was computed during the
+capture process but its result file was not written after a post-capture
+package-check failure, so this capture adds no parity claim. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
 ## Build and run
@@ -113,6 +121,7 @@ ninja -f ninja.build metal-runtime
 ninja -f ninja.build metal-runtime-smoke
 ninja -f ninja.build metal-runtime-model-smoke
 ninja -f ninja.build metal-runtime-differential
+ninja -f ninja.build capture-lfm25-prefill-decode
 ninja -f ninja.build bench-mps
 ninja -f ninja.build bench-suite
 ```

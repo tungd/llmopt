@@ -123,12 +123,13 @@ module Pointwise = struct
 end
 
 module Reduction = struct
-  type operator = Mean
+  type operator = Mean | Sum
   type t = { operator : operator; axes : int list; keepdim : bool }
 
   let to_string reduction =
     let axes = reduction.axes |> List.map string_of_int |> String.concat "," in
-    Printf.sprintf "mean(axes=[%s],keepdim=%b)" axes reduction.keepdim
+    let operator = match reduction.operator with Mean -> "mean" | Sum -> "sum" in
+    Printf.sprintf "%s(axes=[%s],keepdim=%b)" operator axes reduction.keepdim
 end
 
 module Movement = struct
@@ -141,6 +142,7 @@ module Movement = struct
     | Contiguous
     | Index of Tensor_shape.Index.t
     | Concat of { axis : int }
+    | Roll of { axis : int; shift : int }
 
   let to_string = function
     | View -> "view"
@@ -152,6 +154,7 @@ module Movement = struct
     | Contiguous -> "contiguous"
     | Index index -> Tensor_shape.Index.to_string index
     | Concat { axis } -> Printf.sprintf "concat(axis=%d)" axis
+    | Roll { axis; shift } -> Printf.sprintf "roll(axis=%d,shift=%d)" axis shift
 end
 
 module Short_conv = struct
@@ -245,11 +248,12 @@ module Primitive = struct
     | Cumsum of Cumsum.t
     | Fill of Scalar.t
     | Gather2
+    | Update_slice of Tensor_shape.Index.t
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
     | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _ | Embedding
-    | Arange _ | Diff _ | Cumsum _ | Fill _ | Gather2 -> []
+    | Arange _ | Diff _ | Cumsum _ | Fill _ | Gather2 | Update_slice _ -> []
 
   let to_string = function
     | Pointwise operation -> Pointwise.to_string operation
@@ -264,6 +268,7 @@ module Primitive = struct
     | Cumsum config -> Cumsum.to_string config
     | Fill scalar -> "fill(" ^ Scalar.to_string scalar ^ ")"
     | Gather2 -> "gather2"
+    | Update_slice index -> "update-" ^ Tensor_shape.Index.to_string index
 end
 
 module Argument = struct

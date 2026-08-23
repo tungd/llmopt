@@ -4,7 +4,7 @@ title: 'Complete OCaml Metal serving stack for LFM2.5'
 description: 'The requirement-by-requirement completion map from torch.compile capture through OCaml cached serving and ERS measurement.'
 tags: [goal, compiler, ocaml, metal, serving, radix-cache, kv-cache, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:00:03Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:30:25Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -54,10 +54,10 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 
 | Requirement | Evidence that proves it | Current evidence | State |
 |---|---|---|---|
-| Dynamo/FX graph capture | PyTorch invokes `backend=llmopt` and the captured graph reaches OCaml | One memory-bounded manifest-v2 capture reached OCaml, preserved all 241 static tensors and typed arguments, and planned the complete six-token no-cache graph | implemented for the no-cache probe; decode capture open |
-| Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Replanning the real manifest-v2 no-cache capture produces 834 commands and zero opaque after position/mask lowering and exact telemetry elision; decode and KV-state graphs remain uncaptured | partial |
-| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v2, schedule v7, and weight ABI v1 validate on the 834-command model package with all 241 bindings and 11 kernel declarations; native invocation metadata remains incomplete | partial |
-| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 linear, fused RMSNorm, scalar depthwise ShortConv, masked attention, embedding, arange, diff, cumsum, bool fill, and two-index gather kernels compile with Xcode Metal; pointwise/movement materialization and complete model lowering remain absent | partial |
+| Dynamo/FX graph capture | PyTorch invokes `backend=llmopt` and the captured graph reaches OCaml | One memory-bounded use-cache attempt preserved a 1,155-node prefill graph and a 1,195-node decode graph, with one and 23 runtime inputs respectively, while sharing all 241 static tensors through one binary archive | implemented for fixed six-token prefill and one-token decode specializations |
+| Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Replanning the preserved manifests produces 872 prefill and 926 decode commands with zero opaque operations after recurrent cache lowering and exact telemetry elision | partial; typed coverage is present, executable kernel/view coverage is not |
+| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v2, schedule v8, and weight ABI v1 validate both model packages with all 241 bindings and one shared 422,137,216-byte archive; prefill declares 14 kernels and decode declares 10 | partial |
+| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 kernels now remain present in mixed graphs; Q8 linear, fused RMSNorm, scalar depthwise ShortConv, masked attention, embedding, arange, diff, cumsum, bool/FP16/FP32 fill, and two-index gather compile in both preserved packages. Pointwise/movement/recurrent materialization remains absent | partial |
 | Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | Exact dispatch was measured with the superseded archive. The `weights.llmopt` replacement passes writer/parser/package validation; its one probe stopped before device dispatch on a corrected field-order mismatch and was not retried. Complete command-stream interpretation is not present | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | All 241 captured 350M tensors are in one 422,137,216-byte binary archive and the OCaml checker validates every binding; native full-model execution and persistent activation ownership remain absent | partial |
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | Current request loop and tokenizer are Python/Transformers | open |
