@@ -523,6 +523,41 @@ let gather2_entries =
       ~name:"llmopt_gather2_i64" ~operation:Kernel_abi.Operation.Gather2
       ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Int64 ]
 
+let cast_source =
+  "\nstruct CastParams { uint count; };\n\n"
+  ^ "kernel void llmopt_cast_f16_f32(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant CastParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) output[gid] = float(input[gid]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_cast_f32_f16(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device half* output [[buffer(1)]],\n"
+  ^ "    constant CastParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) output[gid] = half(input[gid]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_cast_i64_f32(\n"
+  ^ "    device const long* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant CastParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) output[gid] = float(input[gid]);\n"
+  ^ "}\n"
+
+let cast_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_cast_f16_f32" ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_cast_f32_f16" ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_cast_i64_f32" ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float32 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -733,7 +768,10 @@ let lower graph =
         fill_entries );
       ( has_primitive graph (function Ir.Primitive.Gather2 -> true | _ -> false),
         gather2_source,
-        gather2_entries ) ]
+        gather2_entries );
+      ( has_primitive graph (function Ir.Primitive.Cast _ -> true | _ -> false),
+        cast_source,
+        cast_entries ) ]
   in
   let auxiliary_source, auxiliary_entries =
     List.fold_left

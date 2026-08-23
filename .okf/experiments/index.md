@@ -27,3 +27,4 @@
 * [Shared prefill/decode capture and recurrent state](exp-0025-lfm-prefill-decode.md) - one shared binary archive and schedule-v8 lowering produce zero-opaque prefill/decode packages.
 * [Native binary schedule execution](exp-0026-native-schedule-execution.md) - automatic OCaml input binding, Q8 dispatch, and output resolution against `weights.llmopt`.
 * [Native built-in kernel dispatch](exp-0027-native-builtin-dispatch.md) - generic typed dispatch and one 12-output Metal execution probe.
+* [Native typed cast dispatch](exp-0028-native-cast-dispatch.md) - ABI-v3 cast kernels and one exact 15-output execution probe.

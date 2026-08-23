@@ -14,6 +14,7 @@ module Operation = struct
     | Cumsum
     | Fill
     | Gather2
+    | Cast
 
   let to_string = function
     | Matmul -> "matmul"
@@ -30,6 +31,7 @@ module Operation = struct
     | Cumsum -> "cumsum"
     | Fill -> "fill"
     | Gather2 -> "gather2"
+    | Cast -> "cast"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -46,6 +48,7 @@ module Operation = struct
     | "cumsum" -> Ok Cumsum
     | "fill" -> Ok Fill
     | "gather2" -> Ok Gather2
+    | "cast" -> Ok Cast
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 

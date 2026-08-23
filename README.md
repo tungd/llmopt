@@ -43,7 +43,8 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   the binary command schedule through small Objective-C bindings. Native
   dispatch covers matmul, Q8 linear, RMSNorm, ShortConv, masked attention,
   embedding, range/fill, diff/cumsum, and two-index gather; compute pipelines
-  are cached per loaded library.
+  are cached per loaded library. Package ABI v3 also dispatches the model's
+  float16/float32/int64 cast directions.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -93,7 +94,7 @@ separate prefill and one-token decode graphs with one physical
 926 decode commands, both with zero opaque operations; both generated MSL
 programs compile and their serving packages validate all 241 static bindings.
 Native execution now covers every kernel family already emitted for those
-packages, but pointwise, cast, movement, reduction, recurrent-state, final
+packages, but pointwise, movement, reduction, recurrent-state, final
 float16 linear, and complete command-buffer execution remain open. Exact parity was computed during the
 capture process but its result file was not written after a post-capture
 package-check failure, so this capture adds no parity claim. The boundary is documented in
@@ -159,12 +160,12 @@ archive. `ocaml-metal-runtime-smoke` maps that archive once, lets the OCaml
 executor bind runtime/static inputs and allocate outputs from the binary
 schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.json`.
-`native-schedule-smoke` generates a JSON-free, 42-command typed package and
-compiles its 13 emitted Metal entry points without launching a device.
+`native-schedule-smoke` generates a JSON-free, 51-command typed package and
+compiles its 16 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
-executes 12 commands across matmul, normalization, convolution, attention,
-embedding, position/mask, and fill kernels and checks all 12 outputs byte for
-byte. It writes a plain-text report.
+executes 15 commands across matmul, normalization, convolution, attention,
+embedding, position/mask, fill, and cast kernels and checks all 15 outputs byte
+for byte. It writes a plain-text report.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -244,9 +245,9 @@ OCaml serving runtime
 
 `fx.json` and `plan.txt` are compiler diagnostics, not serving inputs. The
 native runtime consumes only `package.llmopt`, the declared `.metallib`, and
-`weights.llmopt`. Package ABI v2 references weight-archive ABI v1; neither file
-contains JSON. Earlier recorded 350M packages use the superseded safetensors
-boundary and have not yet been regenerated under the new ABI.
+`weights.llmopt`. Package ABI v3 references weight-archive ABI v1 and retains
+read compatibility with ABI v2; neither file contains JSON. The preserved
+350M packages are ABI v2 and can be replanned to v3 without loading the model.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

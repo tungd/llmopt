@@ -106,6 +106,19 @@ let graph () =
     [ 1; 1; 2; 2 ] Ir.Dtype.Float16
   |> output graph "attention";
 
+  let cast_f16 = input graph "cast_f16_input" [ 3 ] Ir.Dtype.Float16 in
+  primitive graph (Ir.Primitive.Cast Ir.Dtype.Float32) [ cast_f16 ] [ 3 ]
+    Ir.Dtype.Float32
+  |> output graph "cast_f16_f32";
+  let cast_f32 = input graph "cast_f32_input" [ 3 ] Ir.Dtype.Float32 in
+  primitive graph (Ir.Primitive.Cast Ir.Dtype.Float16) [ cast_f32 ] [ 3 ]
+    Ir.Dtype.Float16
+  |> output graph "cast_f32_f16";
+  let cast_i64 = input graph "cast_i64_input" [ 3 ] Ir.Dtype.Int64 in
+  primitive graph (Ir.Primitive.Cast Ir.Dtype.Float32) [ cast_i64 ] [ 3 ]
+    Ir.Dtype.Float32
+  |> output graph "cast_i64_f32";
+
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in
   command graph (Ir.Op.Matmul { m = 2; n = 2; k = 3 }) [ lhs; rhs ] [ 2; 2 ]

@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:55:02Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T21:20:37Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -139,7 +139,8 @@ cache policy, metallib path, and optional tensor-store path. The copied
 not referenced by the serving runtime. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v2 names weight-archive ABI v1.
+exactly one binary tensor archive. Package ABI v3 names weight-archive ABI v1
+and reads ABI-v2 packages.
 Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
 archive rather than being split into per-tensor files.
 
@@ -180,6 +181,14 @@ was a 59,325-byte package-plus-metallib probe, not a 350M model run. Pointwise,
 non-identity cast, tensor movement, reduction, recurrent-state kernels, the
 float16 vocabulary projection, and batched command submission remain outside
 that device evidence.
+
+Package ABI v3 adds a typed cast kernel family. Three generated kernels cover
+the model's non-identity conversions: float16 to float32, float32 to float16,
+and int64 to float32. A second fixed run started at 60% free memory and executed
+the expanded 51-command package once; 15 kernel dispatches produced 15 exact
+outputs, including all three cast directions. The existing ABI-v2 model
+packages remain readable and require only offline replanning to declare these
+new kernels.
 
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,

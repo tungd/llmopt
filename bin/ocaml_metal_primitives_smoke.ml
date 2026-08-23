@@ -90,6 +90,10 @@ let () =
             (bytes_of_u16 [ 0x4900; 0x0000; 0x0000; 0x4d00 ]);
           input runtime "attention_mask"
             (bytes_of_bool [ true; false; false; true ]);
+          input runtime "cast_f16_input"
+            (bytes_of_u16 [ 0x3c00; 0xc000; 0x3800 ]);
+          input runtime "cast_f32_input" (bytes_of_f32 [ 1.; -2.; 0.5 ]);
+          input runtime "cast_i64_input" (bytes_of_i64 [ 0; -3; 7 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
     |> expect_ok
@@ -111,14 +115,18 @@ let () =
          0x4a00; 0x4b00; 0x49c0; 0x4400 ]);
   expect_bytes execution "attention"
     (bytes_of_u16 [ 0x4900; 0; 0; 0x4d00 ]);
+  expect_bytes execution "cast_f16_f32" (bytes_of_f32 [ 1.; -2.; 0.5 ]);
+  expect_bytes execution "cast_f32_f16"
+    (bytes_of_u16 [ 0x3c00; 0xc000; 0x3800 ]);
+  expect_bytes execution "cast_i64_f32" (bytes_of_f32 [ 0.; -3.; 7. ]);
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 12 then
+  if List.length kernels <> 15 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 12"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 15"
          (List.length kernels));
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 12 exact\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 15 exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels)

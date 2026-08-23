@@ -47,3 +47,4 @@ okf_version: '0.2'
 * [Shared prefill/decode capture and recurrent state](experiments/exp-0025-lfm-prefill-decode.md) - one binary weight archive, typed schedule-v8 cache operations, and zero-opaque preserved model packages.
 * [Native binary schedule execution](experiments/exp-0026-native-schedule-execution.md) - OCaml resolves package values and dispatches Q8 from the command stream against the binary archive.
 * [Native built-in kernel dispatch](experiments/exp-0027-native-builtin-dispatch.md) - one typed package executes every currently emitted Metal family with 12 exact outputs.
+* [Native typed cast dispatch](experiments/exp-0028-native-cast-dispatch.md) - package ABI v3 adds and executes the three cast directions used by LFM2.5.

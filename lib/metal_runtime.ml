@@ -439,6 +439,15 @@ let execute runtime ~inputs =
             let* buffer = find_value state input in
             let* () = validate_buffer output buffer in
             continue (bind_value state output buffer)
+        | Ir.Op.Primitive (Ir.Primitive.Cast _), [ input ], Some output ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* buffers = find_values state [ input ] in
+            let* parameters = Parameters.u32s [ count ] in
+            dispatched
+              (dispatch_output runtime state output
+                 ~operation:Kernel_abi.Operation.Cast
+                 ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
+                 ~grid:(count, 1, 1))
         | Ir.Op.Matmul { m; n; k = _ }, [ lhs; rhs ], Some output ->
             let* buffers = find_values state [ lhs; rhs ] in
             let* grid_x = round_up n 16 in

@@ -14,6 +14,7 @@ module Operation : sig
     | Cumsum
     | Fill
     | Gather2
+    | Cast
 
   val to_string : t -> string
   val of_string : string -> (t, string) result
