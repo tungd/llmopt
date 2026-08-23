@@ -9,6 +9,11 @@ module Operation = struct
     | Short_conv
     | Attention
     | Embedding
+    | Arange
+    | Diff
+    | Cumsum
+    | Fill
+    | Gather2
 
   let to_string = function
     | Matmul -> "matmul"
@@ -20,6 +25,11 @@ module Operation = struct
     | Short_conv -> "short-conv"
     | Attention -> "attention"
     | Embedding -> "embedding"
+    | Arange -> "arange"
+    | Diff -> "diff"
+    | Cumsum -> "cumsum"
+    | Fill -> "fill"
+    | Gather2 -> "gather2"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -31,6 +41,11 @@ module Operation = struct
     | "short-conv" -> Ok Short_conv
     | "attention" -> Ok Attention
     | "embedding" -> Ok Embedding
+    | "arange" -> Ok Arange
+    | "diff" -> Ok Diff
+    | "cumsum" -> Ok Cumsum
+    | "fill" -> Ok Fill
+    | "gather2" -> Ok Gather2
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 

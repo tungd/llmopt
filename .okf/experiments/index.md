@@ -23,3 +23,4 @@
 * [Typed LFM masked attention and Metal kernel](exp-0021-lfm-attention.md) - six SDPA nodes lowered through schedule v5 with CPU and Xcode Metal evidence.
 * [Typed LFM token embedding and Metal gather](exp-0022-lfm-embedding.md) - model lookup moved into schedule v6 with exact CPU and Xcode Metal evidence.
 * [JSON-free binary weight archive](exp-0023-binary-weight-archive.md) - replaces the safetensors serving boundary with a versioned binary index and aligned payloads.
+* [Typed LFM position and mask construction](exp-0024-lfm-mask-position.md) - schedule-v7 lowering and compiled MSL remove the final opaque commands from saved no-cache prefill.

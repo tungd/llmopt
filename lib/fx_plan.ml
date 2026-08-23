@@ -245,6 +245,10 @@ let bool_argument = function
   | Fx.Argument.Bool value -> Ok value
   | _ -> Error "expected a bool argument"
 
+let symbol_argument = function
+  | Fx.Argument.Symbol value -> Ok (String.lowercase_ascii value)
+  | _ -> Error "expected a symbolic argument"
+
 let finite_float_argument = function
   | Fx.Argument.Int value -> Ok (Float.of_int value)
   | Fx.Argument.Float value when Float.is_finite value -> Ok value
@@ -634,6 +638,152 @@ let plan fx_graph =
                   ~logical_shape
         | _ -> Error "LFM embedding requires static inference options"
       in
+      let lower_arange inputs =
+        if inputs <> [] then Error "arange cannot have tensor inputs"
+        else if Fx.Node.dtype node <> Ir.Dtype.Int64 then
+          Error "LFM position arange must produce int64"
+        else if
+          not
+            (List.for_all
+               (fun (name, _) -> name = "device")
+               (Fx.Node.keyword_arguments node))
+        then Error "LFM position arange has unsupported keyword arguments"
+        else
+          let* start, stop, step =
+            match Fx.Node.arguments node with
+            | [ stop ] ->
+                let* stop = axis_argument stop in
+                Ok (0, stop, 1)
+            | [ start; stop ] ->
+                let* start = axis_argument start in
+                let* stop = axis_argument stop in
+                Ok (start, stop, 1)
+            | [ start; stop; step ] ->
+                let* start = axis_argument start in
+                let* stop = axis_argument stop in
+                let* step = axis_argument step in
+                Ok (start, stop, step)
+            | _ -> Error "arange requires one to three static integer arguments"
+          in
+          let* config = Ir.Arange.create ~start ~stop ~step in
+          let* inferred =
+            Tensor_shape.arange ~start ~stop ~step
+            |> Result.map_error Tensor_shape.error_to_string
+          in
+          let* logical_shape = declared_or_inferred node inferred in
+          emit_primitive node ~operation:(Ir.Primitive.Arange config) ~inputs:[]
+            ~logical_shape
+      in
+      let lower_diff inputs =
+        match inputs, Fx.Node.arguments node with
+        | [ source; prepend ], _source :: positional ->
+            if Ir.Value.dtype source <> Ir.Dtype.Int64
+               || Ir.Value.dtype prepend <> Ir.Dtype.Int64
+               || Fx.Node.dtype node <> Ir.Dtype.Int64
+            then Error "LFM position diff requires int64 tensors"
+            else
+              let n =
+                match keyword "n" node, positional with
+                | Some argument, _ -> axis_argument argument
+                | None, argument :: _ -> axis_argument argument
+                | None, [] -> Ok 1
+              in
+              let dim =
+                match keyword "dim" node, positional with
+                | Some argument, _ -> axis_argument argument
+                | None, _n :: argument :: _ -> axis_argument argument
+                | None, _ -> Ok (-1)
+              in
+              let prepend_argument = keyword "prepend" node in
+              let append_supported =
+                match keyword "append" node with
+                | None | Some Fx.Argument.Null -> true
+                | Some _ -> false
+              in
+              let* n = n in
+              let* axis = dim in
+              let* prepend_matches =
+                match prepend_argument with
+                | Some (Fx.Argument.Node name) ->
+                    let* value = value_for env name in
+                    Ok (Ir.Value.equal value prepend)
+                | _ -> Ok false
+              in
+              if n <> 1 then Error "LFM position diff requires n=1"
+              else if not prepend_matches then
+                Error "LFM position diff requires its captured prepend tensor"
+              else if not append_supported then
+                Error "LFM position diff does not support append"
+              else
+                let* axis =
+                  Tensor_shape.normalize_axis (Ir.Value.logical_shape source) axis
+                  |> Result.map_error Tensor_shape.error_to_string
+                in
+                let* config = Ir.Diff.create ~axis in
+                let* inferred =
+                  Tensor_shape.diff (Ir.Value.logical_shape source)
+                    (Ir.Value.logical_shape prepend) ~axis
+                  |> Result.map_error Tensor_shape.error_to_string
+                in
+                let* logical_shape = declared_or_inferred node inferred in
+                emit_primitive node ~operation:(Ir.Primitive.Diff config)
+                  ~inputs:[ source; prepend ] ~logical_shape
+        | _ -> Error "diff requires a source and captured prepend tensor"
+      in
+      let lower_cumsum inputs =
+        match inputs with
+        | [ input ] ->
+            if Ir.Value.dtype input <> Ir.Dtype.Bool
+               || Fx.Node.dtype node <> Ir.Dtype.Int64
+            then Error "LFM packed-sequence cumsum requires bool to int64"
+            else if Option.is_some (keyword "dtype" node) then
+              Error "LFM packed-sequence cumsum has an explicit dtype"
+            else
+              let positional =
+                match Fx.Node.arguments node with _receiver :: rest -> rest | [] -> []
+              in
+              let dim =
+                match keyword "dim" node, positional with
+                | Some argument, _ -> axis_argument argument
+                | None, argument :: _ -> axis_argument argument
+                | None, [] -> Ok 0
+              in
+              let* axis = dim in
+              let* axis =
+                Tensor_shape.normalize_axis (Ir.Value.logical_shape input) axis
+                |> Result.map_error Tensor_shape.error_to_string
+              in
+              let* config = Ir.Cumsum.create ~axis in
+              let* logical_shape =
+                declared_or_inferred node (Ir.Value.logical_shape input)
+              in
+              emit_primitive node ~operation:(Ir.Primitive.Cumsum config)
+                ~inputs ~logical_shape
+        | _ -> Error "cumsum requires one tensor input"
+      in
+      let lower_new_ones inputs =
+        match inputs, Fx.Node.arguments node with
+        | [ _receiver ], _receiver_argument :: [ Fx.Argument.Tuple [] ] ->
+            let* dtype =
+              match keyword "dtype" node with
+              | Some argument -> symbol_argument argument
+              | None -> Error "new_ones requires an explicit bool dtype"
+            in
+            if dtype <> "torch.bool" || Fx.Node.dtype node <> Ir.Dtype.Bool then
+              Error "LFM scalar new_ones must produce bool"
+            else if
+              not
+                (List.for_all
+                   (fun (name, _) -> name = "dtype")
+                   (Fx.Node.keyword_arguments node))
+            then Error "LFM scalar new_ones has unsupported keyword arguments"
+            else
+              let* logical_shape = declared_or_inferred node Tensor_shape.scalar in
+              emit_primitive node
+                ~operation:(Ir.Primitive.Fill (Ir.Scalar.Bool true)) ~inputs:[]
+                ~logical_shape
+        | _ -> Error "new_ones requires an empty static shape"
+      in
       let lower_chunk () =
         match Fx.Node.inputs node with
         | [ input_name ] ->
@@ -698,8 +848,32 @@ let plan fx_graph =
                 | Error _ -> fallback ()
                 | Ok input ->
                     let result =
-                      let* specs = index_specs raw_index in
-                      lower_index input specs
+                      match raw_index with
+                      | Fx.Argument.Tuple
+                          [ Fx.Argument.Node first_name;
+                            Fx.Argument.Node second_name ] ->
+                          let* first_index = value_for env first_name in
+                          let* second_index = value_for env second_name in
+                          if Ir.Value.dtype input <> Ir.Dtype.Int64
+                             || Ir.Value.dtype first_index <> Ir.Dtype.Int64
+                             || Ir.Value.dtype second_index <> Ir.Dtype.Int64
+                             || Fx.Node.dtype node <> Ir.Dtype.Int64
+                          then Error "LFM two-index gather requires int64 tensors"
+                          else
+                            let* inferred =
+                              Tensor_shape.gather2
+                                (Ir.Value.logical_shape input)
+                                (Ir.Value.logical_shape first_index)
+                                (Ir.Value.logical_shape second_index)
+                              |> Result.map_error Tensor_shape.error_to_string
+                            in
+                            let* logical_shape = declared_or_inferred node inferred in
+                            emit_primitive node ~operation:Ir.Primitive.Gather2
+                              ~inputs:[ input; first_index; second_index ]
+                              ~logical_shape
+                      | _ ->
+                          let* specs = index_specs raw_index in
+                          lower_index input specs
                     in
                     let* inputs = values_for env (Fx.Node.inputs node) in
                     lower_or_opaque inputs result))
@@ -772,6 +946,16 @@ let plan fx_graph =
       | "call_function" | "call_method" ->
           let target = String.lowercase_ascii (Fx.Node.target node) in
           if
+            typed_manifest
+            && target = "torch._c._log_api_usage_once"
+            &&
+            (match Fx.Node.arguments node with
+            | [ Fx.Argument.String _ ] -> true
+            | _ -> false)
+            && Fx.Node.keyword_arguments node = []
+            && Fx.Node.shape node = None
+          then Ok ()
+          else if
             typed_manifest
             && target_is target [ "chunk"; "torch.chunk"; "aten.chunk.default" ]
           then lower_chunk ()
@@ -880,6 +1064,22 @@ let plan fx_graph =
                 lower_unsqueeze inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "expand"; "aten.expand.default" ] then
                 lower_expand inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "torch._variablefunctionsclass.arange";
+                       "aten.arange.default"; "aten.arange.start" ]
+              then lower_arange inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "torch._variablefunctionsclass.diff";
+                       "aten.diff.default" ]
+              then lower_diff inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "cumsum"; "aten.cumsum.default" ] then
+                lower_cumsum inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "new_ones"; "aten.new_ones.default" ] then
+                lower_new_ones inputs |> lower_or_opaque inputs
               else if
                 typed_manifest
                 && target_is target

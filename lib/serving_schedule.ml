@@ -32,6 +32,14 @@ module Int_set = Set.Make (Int)
 
 let value_id value = Ir.Value.id value |> Ir.Value_id.to_int
 
+let scalar_matches_dtype scalar dtype =
+  match scalar, dtype with
+  | Ir.Scalar.Bool _, Ir.Dtype.Bool -> true
+  | Ir.Scalar.Int _, (Ir.Dtype.Int64 | Ir.Dtype.Int32 | Ir.Dtype.Int8) -> true
+  | ( Ir.Scalar.Float _,
+      (Ir.Dtype.Float32 | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16) ) -> true
+  | _ -> false
+
 let validate_command seen_values command =
   let input_ids = List.map value_id command.Command.inputs in
   match List.find_opt (fun id -> not (Int_set.mem id seen_values)) input_ids with
@@ -176,6 +184,99 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d embedding metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Arange config),
+            [],
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.arange ~start:(Ir.Arange.start config)
+                ~stop:(Ir.Arange.stop config) ~step:(Ir.Arange.step config)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype output = Ir.Dtype.Int64
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d arange metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Diff config),
+            [ source; prepend ],
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.diff (Ir.Value.logical_shape source)
+                (Ir.Value.logical_shape prepend) ~axis:(Ir.Diff.axis config)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype source = Ir.Dtype.Int64
+              && Ir.Value.dtype prepend = Ir.Dtype.Int64
+              && Ir.Value.dtype output = Ir.Dtype.Int64
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf "schedule node %d diff metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Cumsum config),
+            [ input ],
+            Some output ) ->
+            let* axis =
+              Tensor_shape.normalize_axis (Ir.Value.logical_shape input)
+                (Ir.Cumsum.axis config)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              axis = Ir.Cumsum.axis config
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape input)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Dtype.Bool
+              && Ir.Value.dtype output = Ir.Dtype.Int64
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d cumsum metadata is inconsistent"
+                   command.Command.node_id)
+        | Ir.Op.Primitive (Ir.Primitive.Fill scalar), [], Some output ->
+            if scalar_matches_dtype scalar (Ir.Value.dtype output) then Ok ()
+            else
+              Error
+                (Printf.sprintf "schedule node %d fill dtype is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Primitive Ir.Primitive.Gather2,
+            [ source; first_index; second_index ],
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.gather2 (Ir.Value.logical_shape source)
+                (Ir.Value.logical_shape first_index)
+                (Ir.Value.logical_shape second_index)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype source = Ir.Dtype.Int64
+              && Ir.Value.dtype first_index = Ir.Dtype.Int64
+              && Ir.Value.dtype second_index = Ir.Dtype.Int64
+              && Ir.Value.dtype output = Ir.Dtype.Int64
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d two-index gather metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Arange _ | Ir.Primitive.Diff _
+              | Ir.Primitive.Cumsum _ | Ir.Primitive.Fill _
+              | Ir.Primitive.Gather2),
+            _,
+            _ ) ->
+            Error
+              (Printf.sprintf
+                 "schedule node %d position/mask primitive arity is inconsistent"
+                 command.Command.node_id)
         | _ -> Ok ()
 
 let create commands =
@@ -633,6 +734,21 @@ let write_primitive writer = function
       Binary.Writer.float64 writer (Ir.Attention.scale config);
       Binary.Writer.bool writer (Ir.Attention.causal config)
   | Ir.Primitive.Embedding -> Binary.Writer.u8 writer 6
+  | Ir.Primitive.Arange config ->
+      Binary.Writer.u8 writer 7;
+      Binary.Writer.i64 writer (Ir.Arange.start config);
+      Binary.Writer.i64 writer (Ir.Arange.stop config);
+      Binary.Writer.i64 writer (Ir.Arange.step config)
+  | Ir.Primitive.Diff config ->
+      Binary.Writer.u8 writer 8;
+      Binary.Writer.u16 writer (Ir.Diff.axis config)
+  | Ir.Primitive.Cumsum config ->
+      Binary.Writer.u8 writer 9;
+      Binary.Writer.u16 writer (Ir.Cumsum.axis config)
+  | Ir.Primitive.Fill scalar ->
+      Binary.Writer.u8 writer 10;
+      write_scalar writer scalar
+  | Ir.Primitive.Gather2 -> Binary.Writer.u8 writer 11
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -691,6 +807,21 @@ let read_primitive values reader =
       Ir.Attention.create ~scale ~causal
       |> Result.map (fun config -> Ir.Primitive.Attention config)
   | 6 -> Ok Ir.Primitive.Embedding
+  | 7 ->
+      let* start = Binary.Reader.i64 reader in
+      let* stop = Binary.Reader.i64 reader in
+      let* step = Binary.Reader.i64 reader in
+      Ir.Arange.create ~start ~stop ~step
+      |> Result.map (fun config -> Ir.Primitive.Arange config)
+  | 8 ->
+      let* axis = Binary.Reader.u16 reader in
+      Ir.Diff.create ~axis |> Result.map (fun config -> Ir.Primitive.Diff config)
+  | 9 ->
+      let* axis = Binary.Reader.u16 reader in
+      Ir.Cumsum.create ~axis
+      |> Result.map (fun config -> Ir.Primitive.Cumsum config)
+  | 10 -> read_scalar reader |> Result.map (fun scalar -> Ir.Primitive.Fill scalar)
+  | 11 -> Ok Ir.Primitive.Gather2
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -832,7 +963,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 6;
+  Binary.Writer.u16 writer 7;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -854,7 +985,7 @@ let of_bytes bytes =
     let* version = Binary.Reader.u16 reader in
     if
       version <> 1 && version <> 2 && version <> 3 && version <> 4
-      && version <> 5 && version <> 6
+      && version <> 5 && version <> 6 && version <> 7
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else

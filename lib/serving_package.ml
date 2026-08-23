@@ -148,6 +148,11 @@ let operation_tag = function
   | Kernel_abi.Operation.Short_conv -> 6
   | Kernel_abi.Operation.Attention -> 7
   | Kernel_abi.Operation.Embedding -> 8
+  | Kernel_abi.Operation.Arange -> 9
+  | Kernel_abi.Operation.Diff -> 10
+  | Kernel_abi.Operation.Cumsum -> 11
+  | Kernel_abi.Operation.Fill -> 12
+  | Kernel_abi.Operation.Gather2 -> 13
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -159,6 +164,11 @@ let operation_of_tag = function
   | 6 -> Ok Kernel_abi.Operation.Short_conv
   | 7 -> Ok Kernel_abi.Operation.Attention
   | 8 -> Ok Kernel_abi.Operation.Embedding
+  | 9 -> Ok Kernel_abi.Operation.Arange
+  | 10 -> Ok Kernel_abi.Operation.Diff
+  | 11 -> Ok Kernel_abi.Operation.Cumsum
+  | 12 -> Ok Kernel_abi.Operation.Fill
+  | 13 -> Ok Kernel_abi.Operation.Gather2
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function

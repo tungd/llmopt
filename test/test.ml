@@ -38,6 +38,7 @@ let fx_int_argument value = fx_argument "int" [ ("value", `Int value) ]
 let fx_float_argument value = fx_argument "float" [ ("value", `Float value) ]
 let fx_bool_argument value = fx_argument "bool" [ ("value", `Bool value) ]
 let fx_symbol_argument value = fx_argument "symbol" [ ("value", `String value) ]
+let fx_string_argument value = fx_argument "string" [ ("value", `String value) ]
 let fx_null_argument = fx_argument "null" []
 let fx_ellipsis_argument = fx_argument "ellipsis" []
 let fx_list_argument values = fx_argument "list" [ ("items", `List values) ]
@@ -169,6 +170,37 @@ let () =
   in
   expect (Tensor_shape.dimensions concat_shape = [ 2; 5 ])
     "concat shape inference";
+  let arange_shape =
+    expect_ok
+      (Tensor_shape.arange ~start:0 ~stop:6 ~step:1
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions arange_shape = [ 6 ])
+    "arange shape inference";
+  let descending_arange_shape =
+    expect_ok
+      (Tensor_shape.arange ~start:5 ~stop:(-1) ~step:(-2)
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions descending_arange_shape = [ 3 ])
+    "descending arange shape inference";
+  let diff_shape =
+    expect_ok
+      (Tensor_shape.diff (Tensor_shape.of_ints_exn [ 1; 3 ])
+         (Tensor_shape.of_ints_exn [ 1; 1 ]) ~axis:1
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions diff_shape = [ 1; 3 ])
+    "prepended diff shape inference";
+  let gather2_shape =
+    expect_ok
+      (Tensor_shape.gather2 (Tensor_shape.of_ints_exn [ 2; 3 ])
+         (Tensor_shape.of_ints_exn [ 1; 1; 1; 1 ])
+         (Tensor_shape.of_ints_exn [ 1; 1; 3; 1 ])
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions gather2_shape = [ 1; 1; 3; 1 ])
+    "two-index gather broadcast shape inference";
   let short_conv_input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
   let short_conv_weight_shape = Tensor_shape.of_ints_exn [ 2; 1; 3 ] in
   let short_conv_shape =
@@ -360,6 +392,112 @@ let () =
     |> List.exists (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Embedding))
     "embedding graph declares its Metal kernel ABI";
+  let arange_config = expect_ok (Ir.Arange.create ~start:0 ~stop:3 ~step:1) in
+  let diff_config = expect_ok (Ir.Diff.create ~axis:1) in
+  let cumsum_config = expect_ok (Ir.Cumsum.create ~axis:1) in
+  let position_mask_kernel () =
+    let input name shape dtype =
+      Tile_effect.tensor_input ~name ~source:Ir.Input_source.Runtime ~shape
+        ~dtype
+    in
+    let positions =
+      input "positions" (Tensor_shape.of_ints_exn [ 1; 3 ]) Ir.Dtype.Int64
+    in
+    let prepend =
+      input "prepend" (Tensor_shape.of_ints_exn [ 1; 1 ]) Ir.Dtype.Int64
+    in
+    let packed =
+      input "packed" (Tensor_shape.of_ints_exn [ 1; 3 ]) Ir.Dtype.Bool
+    in
+    let source =
+      input "gather_source" (Tensor_shape.of_ints_exn [ 2; 3 ]) Ir.Dtype.Int64
+    in
+    let first_index =
+      input "first_index" (Tensor_shape.of_ints_exn [ 1; 1; 1; 1 ])
+        Ir.Dtype.Int64
+    in
+    let second_index =
+      input "second_index" (Tensor_shape.of_ints_exn [ 1; 1; 3; 1 ])
+        Ir.Dtype.Int64
+    in
+    let arange =
+      primitive_value ~operation:(Ir.Primitive.Arange arange_config) ~inputs:[]
+        ~logical_shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Int64
+    in
+    let difference =
+      primitive_value ~operation:(Ir.Primitive.Diff diff_config)
+        ~inputs:[ positions; prepend ]
+        ~logical_shape:(Tensor_shape.of_ints_exn [ 1; 3 ])
+        ~dtype:Ir.Dtype.Int64
+    in
+    let cumulative =
+      primitive_value ~operation:(Ir.Primitive.Cumsum cumsum_config)
+        ~inputs:[ packed ] ~logical_shape:(Tensor_shape.of_ints_exn [ 1; 3 ])
+        ~dtype:Ir.Dtype.Int64
+    in
+    let one =
+      primitive_value ~operation:(Ir.Primitive.Fill (Ir.Scalar.Bool true))
+        ~inputs:[] ~logical_shape:Tensor_shape.scalar ~dtype:Ir.Dtype.Bool
+    in
+    let gathered =
+      primitive_value ~operation:Ir.Primitive.Gather2
+        ~inputs:[ source; first_index; second_index ]
+        ~logical_shape:(Tensor_shape.of_ints_exn [ 1; 1; 3; 1 ])
+        ~dtype:Ir.Dtype.Int64
+    in
+    Tile_effect.output ~name:"arange" ~value:arange;
+    Tile_effect.output ~name:"difference" ~value:difference;
+    Tile_effect.output ~name:"cumulative" ~value:cumulative;
+    Tile_effect.output ~name:"one" ~value:one;
+    Tile_effect.output ~name:"gathered" ~value:gathered
+  in
+  (match
+     Cpu.run
+       ~inputs:
+         [ ("positions", Cpu.Tensor.of_rows [| [| 0.; 0.; 2. |] |]);
+           ("prepend", Cpu.Tensor.of_rows [| [| -1. |] |]);
+           ("packed", Cpu.Tensor.of_rows [| [| 1.; 0.; 1. |] |]);
+           ( "gather_source",
+             Cpu.Tensor.of_rows [| [| 10.; 11.; 12. |]; [| 20.; 21.; 22. |] |] );
+           ("first_index", Cpu.Tensor.of_rows [| [| 1. |] |]);
+           ("second_index", Cpu.Tensor.of_rows [| [| 2. |]; [| 0. |]; [| 1. |] |]) ]
+       position_mask_kernel
+   with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      let rows name = Cpu.output execution name |> Option.get |> Cpu.Tensor.to_rows in
+      expect (rows "arange" = [| [| 0.; 1.; 2. |] |])
+        "CPU reference interprets arange";
+      expect (rows "difference" = [| [| 1.; 0.; 2. |] |])
+        "CPU reference interprets prepended diff";
+      expect (rows "cumulative" = [| [| 1.; 1.; 2. |] |])
+        "CPU reference interprets bool-to-int64 cumsum";
+      expect (rows "one" = [| [| 1. |] |])
+        "CPU reference interprets scalar bool fill";
+      expect (rows "gathered" = [| [| 22. |]; [| 20. |]; [| 21. |] |])
+        "CPU reference interprets broadcast two-index gather");
+  let position_mask_graph =
+    match Capture.run position_mask_kernel with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  let position_mask_schedule =
+    position_mask_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count position_mask_schedule = 0)
+    "position and mask primitives survive the binary schedule";
+  let position_mask_program = expect_ok (Metal.lower position_mask_graph) in
+  let position_mask_operations =
+    Metal.Program.kernels position_mask_program
+    |> List.map Kernel_abi.Entry.operation
+  in
+  expect
+    (position_mask_operations
+    = [ Kernel_abi.Operation.Arange; Kernel_abi.Operation.Diff;
+        Kernel_abi.Operation.Cumsum; Kernel_abi.Operation.Fill;
+        Kernel_abi.Operation.Gather2 ])
+    "position and mask graph declares all generated Metal kernel ABIs";
   let primitive_kernel () =
     let input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
     let channel_shape = Tensor_shape.of_ints_exn [ 4 ] in
@@ -1133,6 +1271,114 @@ let () =
   in
   expect (Serving_schedule.opaque_count embedding_fx_schedule = 0)
     "captured embedding lowers to a typed gather command";
+  let telemetry_node =
+    `Assoc
+      [ ("name", `String "_log_api_usage_once");
+        ("op", `String "call_function");
+        ("target", `String "torch._C._log_api_usage_once");
+        ("inputs", `List []);
+        ("dtype", `String "float32");
+        ("binding", `Assoc [ ("kind", `String "computed") ]);
+        ( "arguments",
+          `Assoc
+            [ ("args", `List [ fx_string_argument "python.nn_module" ]);
+              ("kwargs", `List []) ] ) ]
+  in
+  let position_mask_fx =
+    let nodes =
+      [ fx_node ~op:"placeholder" ~dtype:"int64" ~name:"position_ids"
+          ~target:"position_ids" ~shape:[ 1; 3 ] ();
+        fx_node ~op:"placeholder" ~dtype:"int64" ~name:"prepend"
+          ~target:"prepend" ~shape:[ 1; 1 ] ();
+        fx_node ~op:"placeholder" ~dtype:"bool" ~name:"packed"
+          ~target:"packed" ~shape:[ 1; 3 ] ();
+        fx_node ~op:"placeholder" ~dtype:"int64" ~name:"source"
+          ~target:"source" ~shape:[ 2; 3 ] ();
+        fx_node ~op:"placeholder" ~dtype:"int64" ~name:"batch_index"
+          ~target:"batch_index" ~shape:[ 1; 1; 1; 1 ] ();
+        fx_node ~op:"placeholder" ~dtype:"int64" ~name:"q_index"
+          ~target:"q_index" ~shape:[ 1; 1; 3; 1 ] ();
+        fx_node ~op:"call_function" ~dtype:"int64" ~name:"positions"
+          ~target:"torch._VariableFunctionsClass.arange"
+          ~arguments:[ fx_int_argument 3 ]
+          ~keywords:[ ("device", fx_symbol_argument "mps:0") ] ~shape:[ 3 ] ();
+        fx_node ~op:"call_function" ~dtype:"int64" ~name:"position_diff"
+          ~target:"torch._VariableFunctionsClass.diff"
+          ~inputs:[ "position_ids"; "prepend" ]
+          ~arguments:[ fx_node_argument "position_ids" ]
+          ~keywords:
+            [ ("prepend", fx_node_argument "prepend");
+              ("dim", fx_int_argument (-1)) ]
+          ~shape:[ 1; 3 ] ();
+        fx_node ~dtype:"int64" ~name:"packed_sequence_mask" ~target:"cumsum"
+          ~inputs:[ "packed" ]
+          ~arguments:[ fx_node_argument "packed"; fx_int_argument (-1) ]
+          ~shape:[ 1; 3 ] ();
+        fx_node ~dtype:"bool" ~name:"one" ~target:"new_ones"
+          ~inputs:[ "q_index" ]
+          ~arguments:[ fx_node_argument "q_index"; fx_tuple_argument [] ]
+          ~keywords:[ ("dtype", fx_symbol_argument "torch.bool") ] ~shape:[] ();
+        fx_node ~op:"call_function" ~dtype:"int64" ~name:"gathered"
+          ~target:"_operator.getitem"
+          ~inputs:[ "source"; "batch_index"; "q_index" ]
+          ~arguments:
+            [ fx_node_argument "source";
+              fx_tuple_argument
+                [ fx_node_argument "batch_index"; fx_node_argument "q_index" ] ]
+          ~shape:[ 1; 1; 3; 1 ] ();
+        telemetry_node ]
+    in
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2); ("nodes", `List nodes);
+             ( "outputs",
+               `List
+                 [ `String "positions"; `String "position_diff";
+                   `String "packed_sequence_mask"; `String "one";
+                   `String "gathered" ] ) ]))
+  in
+  let position_mask_fx_graph = expect_ok (Fx_plan.plan position_mask_fx) in
+  let position_mask_fx_schedule =
+    position_mask_fx_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count position_mask_fx_schedule = 0)
+    "captured LFM position and mask construction has no opaque command";
+  expect (List.length (Serving_schedule.commands position_mask_fx_schedule) = 16)
+    "framework telemetry is elided without removing executable commands";
+  let position_mask_fx_operations =
+    Serving_schedule.commands position_mask_fx_schedule
+    |> List.filter_map (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive primitive -> Some primitive
+           | _ -> None)
+  in
+  expect
+    (List.exists
+       (function Ir.Primitive.Arange _ -> true | _ -> false)
+       position_mask_fx_operations
+    && List.exists
+         (function Ir.Primitive.Diff _ -> true | _ -> false)
+         position_mask_fx_operations
+    && List.exists
+         (function Ir.Primitive.Cumsum _ -> true | _ -> false)
+         position_mask_fx_operations
+    && List.exists
+         (function Ir.Primitive.Fill (Ir.Scalar.Bool true) -> true | _ -> false)
+         position_mask_fx_operations
+    && List.exists
+         (function Ir.Primitive.Gather2 -> true | _ -> false)
+         position_mask_fx_operations)
+    "FX planner preserves all position and mask primitive semantics";
+  expect
+    (Serving_schedule.commands position_mask_fx_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Fill _) ->
+               Serving_schedule.Command.inputs command = []
+           | _ -> false))
+    "scalar new_ones has no false data dependency on its device-owning receiver";
   let optimized_schedule =
     primitive_optimized |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok

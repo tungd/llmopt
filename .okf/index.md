@@ -43,3 +43,4 @@ okf_version: '0.2'
 * [Typed LFM masked attention and Metal kernel](experiments/exp-0021-lfm-attention.md) - captured prefill GQA boundary moved into typed IR and compiled fused MSL.
 * [Typed LFM token embedding and Metal gather](experiments/exp-0022-lfm-embedding.md) - int64 token lookup moved into typed IR and a compiled float16 gather kernel.
 * [JSON-free binary weight archive](experiments/exp-0023-binary-weight-archive.md) - package ABI v2 and a typed, aligned, mmap-ready weight archive without a JSON index.
+* [Typed LFM position and mask construction](experiments/exp-0024-lfm-mask-position.md) - zero-opaque saved prefill through schedule-v7 primitives and compiled Metal kernels.

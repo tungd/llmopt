@@ -34,6 +34,8 @@ let capture_or_fail thunk =
   | Ok result -> result
   | Error exception_value -> raise exception_value
 
+let result_or_fail = function Ok value -> value | Error message -> failwith message
+
 let emit_graph ~directory ~stem graph =
   let optimized = Passes.optimize graph in
   let metal =
@@ -66,6 +68,67 @@ let emit_metal_graph ~directory ~stem graph =
     (List.length (Ir.Graph.nodes graph))
     (List.length (Ir.Graph.nodes optimized));
   Format.printf "%a" Ir.Graph.pp optimized
+
+let primitive_value ~operation ~inputs ~logical_shape ~dtype =
+  Tile_effect.primitive
+    {
+      operation;
+      inputs;
+      shape = Tensor_shape.matrix_exn logical_shape;
+      logical_shape;
+      dtype;
+    }
+
+let position_mask_kernel () =
+  let input name shape dtype =
+    Tile_effect.tensor_input ~name ~source:Ir.Input_source.Runtime ~shape ~dtype
+  in
+  let positions =
+    input "positions" (Tensor_shape.of_ints_exn [ 1; 6 ]) Ir.Dtype.Int64
+  in
+  let prepend =
+    input "prepend" (Tensor_shape.of_ints_exn [ 1; 1 ]) Ir.Dtype.Int64
+  in
+  let packed =
+    input "packed" (Tensor_shape.of_ints_exn [ 1; 6 ]) Ir.Dtype.Bool
+  in
+  let source =
+    input "gather_source" (Tensor_shape.of_ints_exn [ 1; 6 ]) Ir.Dtype.Int64
+  in
+  let first_index =
+    input "first_index" (Tensor_shape.of_ints_exn [ 1; 1; 1; 1 ])
+      Ir.Dtype.Int64
+  in
+  let second_index =
+    input "second_index" (Tensor_shape.of_ints_exn [ 1; 1; 6; 1 ])
+      Ir.Dtype.Int64
+  in
+  let arange_config =
+    Ir.Arange.create ~start:0 ~stop:6 ~step:1 |> result_or_fail
+  in
+  let diff_config = Ir.Diff.create ~axis:1 |> result_or_fail in
+  let cumsum_config = Ir.Cumsum.create ~axis:1 |> result_or_fail in
+  ignore
+    (primitive_value ~operation:(Ir.Primitive.Arange arange_config) ~inputs:[]
+       ~logical_shape:(Tensor_shape.of_ints_exn [ 6 ]) ~dtype:Ir.Dtype.Int64);
+  ignore
+    (primitive_value ~operation:(Ir.Primitive.Diff diff_config)
+       ~inputs:[ positions; prepend ]
+       ~logical_shape:(Tensor_shape.of_ints_exn [ 1; 6 ]) ~dtype:Ir.Dtype.Int64);
+  ignore
+    (primitive_value ~operation:(Ir.Primitive.Cumsum cumsum_config)
+       ~inputs:[ packed ] ~logical_shape:(Tensor_shape.of_ints_exn [ 1; 6 ])
+       ~dtype:Ir.Dtype.Int64);
+  ignore
+    (primitive_value ~operation:(Ir.Primitive.Fill (Ir.Scalar.Bool true))
+       ~inputs:[] ~logical_shape:Tensor_shape.scalar ~dtype:Ir.Dtype.Bool);
+  let gathered =
+    primitive_value ~operation:Ir.Primitive.Gather2
+      ~inputs:[ source; first_index; second_index ]
+      ~logical_shape:(Tensor_shape.of_ints_exn [ 1; 1; 6; 1 ])
+      ~dtype:Ir.Dtype.Int64
+  in
+  Tile_effect.output ~name:"gathered" ~value:gathered
 
 let () =
   let emit_directory = ref "_build/llmopt-demo" in
@@ -131,4 +194,7 @@ let () =
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_embedding"
     embedding_graph;
+  let position_mask_graph = snd (capture_or_fail position_mask_kernel) in
+  emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_mask_position"
+    position_mask_graph;
   Printf.printf "generated sources in %s\n" !emit_directory

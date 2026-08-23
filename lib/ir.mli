@@ -102,6 +102,32 @@ module Attention : sig
   val to_string : t -> string
 end
 
+module Arange : sig
+  type t
+
+  val create : start:int -> stop:int -> step:int -> (t, string) result
+  val start : t -> int
+  val stop : t -> int
+  val step : t -> int
+  val to_string : t -> string
+end
+
+module Diff : sig
+  type t
+
+  val create : axis:int -> (t, string) result
+  val axis : t -> int
+  val to_string : t -> string
+end
+
+module Cumsum : sig
+  type t
+
+  val create : axis:int -> (t, string) result
+  val axis : t -> int
+  val to_string : t -> string
+end
+
 module Primitive : sig
   type t =
     | Pointwise of Pointwise.t
@@ -111,6 +137,11 @@ module Primitive : sig
     | Short_conv of Short_conv.t
     | Attention of Attention.t
     | Embedding
+    | Arange of Arange.t
+    | Diff of Diff.t
+    | Cumsum of Cumsum.t
+    | Fill of Scalar.t
+    | Gather2
 
   val values : t -> Value.t list
   val to_string : t -> string

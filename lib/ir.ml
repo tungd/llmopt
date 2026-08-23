@@ -193,6 +193,44 @@ module Attention = struct
     Printf.sprintf "attention(scale=%.9g,causal=%b)" config.scale config.causal
 end
 
+module Arange = struct
+  type t = { start : int; stop : int; step : int }
+
+  let create ~start ~stop ~step =
+    if step = 0 then Error "arange step must be non-zero"
+    else Ok { start; stop; step }
+
+  let start config = config.start
+  let stop config = config.stop
+  let step config = config.step
+
+  let to_string config =
+    Printf.sprintf "arange(start=%d,stop=%d,step=%d)" config.start config.stop
+      config.step
+end
+
+module Diff = struct
+  type t = { axis : int }
+
+  let create ~axis =
+    if axis < 0 then Error "diff axis must be normalized"
+    else Ok { axis }
+
+  let axis config = config.axis
+  let to_string config = Printf.sprintf "diff(axis=%d,prepend=true)" config.axis
+end
+
+module Cumsum = struct
+  type t = { axis : int }
+
+  let create ~axis =
+    if axis < 0 then Error "cumsum axis must be normalized"
+    else Ok { axis }
+
+  let axis config = config.axis
+  let to_string config = Printf.sprintf "cumsum(axis=%d)" config.axis
+end
+
 module Primitive = struct
   type t =
     | Pointwise of Pointwise.t
@@ -202,11 +240,16 @@ module Primitive = struct
     | Short_conv of Short_conv.t
     | Attention of Attention.t
     | Embedding
+    | Arange of Arange.t
+    | Diff of Diff.t
+    | Cumsum of Cumsum.t
+    | Fill of Scalar.t
+    | Gather2
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
-    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _ | Embedding ->
-        []
+    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _ | Embedding
+    | Arange _ | Diff _ | Cumsum _ | Fill _ | Gather2 -> []
 
   let to_string = function
     | Pointwise operation -> Pointwise.to_string operation
@@ -216,6 +259,11 @@ module Primitive = struct
     | Short_conv config -> Short_conv.to_string config
     | Attention config -> Attention.to_string config
     | Embedding -> "embedding"
+    | Arange config -> Arange.to_string config
+    | Diff config -> Diff.to_string config
+    | Cumsum config -> Cumsum.to_string config
+    | Fill scalar -> "fill(" ^ Scalar.to_string scalar ^ ")"
+    | Gather2 -> "gather2"
 end
 
 module Argument = struct

@@ -317,6 +317,140 @@ let embedding_entries =
       ~operation:Kernel_abi.Operation.Embedding
       ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float16 ]
 
+let arange_source =
+  "\nstruct ArangeParams { uint count; long start; long step; };\n\n"
+  ^ "kernel void llmopt_arange_i64(\n"
+  ^ "    device long* output [[buffer(0)]],\n"
+  ^ "    constant ArangeParams& params [[buffer(1)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count)\n"
+  ^ "    output[gid] = params.start + long(gid) * params.step;\n"
+  ^ "}\n"
+
+let arange_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_arange_i64" ~operation:Kernel_abi.Operation.Arange
+      ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Int64 ]
+
+let diff_source =
+  "\nstruct DiffParams {\n"
+  ^ "  uint outer; uint source_width; uint prepend_width; uint inner;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_diff_i64(\n"
+  ^ "    device const long* source [[buffer(0)]],\n"
+  ^ "    device const long* prepend [[buffer(1)]],\n"
+  ^ "    device long* output [[buffer(2)]],\n"
+  ^ "    constant DiffParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint output_width = params.source_width + params.prepend_width - 1;\n"
+  ^ "  const uint count = params.outer * output_width * params.inner;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint inner_index = gid % params.inner;\n"
+  ^ "  const uint axis_index = (gid / params.inner) % output_width;\n"
+  ^ "  const uint outer_index = gid / (params.inner * output_width);\n"
+  ^ "  const uint left_axis = axis_index;\n"
+  ^ "  const uint right_axis = axis_index + 1;\n"
+  ^ "  const long left = left_axis < params.prepend_width\n"
+  ^ "      ? prepend[(outer_index * params.prepend_width + left_axis)\n"
+  ^ "          * params.inner + inner_index]\n"
+  ^ "      : source[(outer_index * params.source_width\n"
+  ^ "          + left_axis - params.prepend_width) * params.inner + inner_index];\n"
+  ^ "  const long right = right_axis < params.prepend_width\n"
+  ^ "      ? prepend[(outer_index * params.prepend_width + right_axis)\n"
+  ^ "          * params.inner + inner_index]\n"
+  ^ "      : source[(outer_index * params.source_width\n"
+  ^ "          + right_axis - params.prepend_width) * params.inner + inner_index];\n"
+  ^ "  output[gid] = right - left;\n"
+  ^ "}\n"
+
+let diff_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_diff_i64" ~operation:Kernel_abi.Operation.Diff
+      ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Int64 ]
+
+let cumsum_source =
+  "\nstruct CumsumParams { uint outer; uint width; uint inner; };\n\n"
+  ^ "kernel void llmopt_cumsum_bool_i64(\n"
+  ^ "    device const uchar* input [[buffer(0)]],\n"
+  ^ "    device long* output [[buffer(1)]],\n"
+  ^ "    constant CumsumParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint lanes = params.outer * params.inner;\n"
+  ^ "  if (gid >= lanes) return;\n"
+  ^ "  const uint outer_index = gid / params.inner;\n"
+  ^ "  const uint inner_index = gid % params.inner;\n"
+  ^ "  long accumulator = 0;\n"
+  ^ "  for (uint axis_index = 0; axis_index < params.width; ++axis_index) {\n"
+  ^ "    const uint index = ((outer_index * params.width + axis_index)\n"
+  ^ "        * params.inner) + inner_index;\n"
+  ^ "    accumulator += input[index] != 0 ? 1 : 0;\n"
+  ^ "    output[index] = accumulator;\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let cumsum_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_cumsum_bool_i64" ~operation:Kernel_abi.Operation.Cumsum
+      ~input_dtype:Ir.Dtype.Bool ~output_dtype:Ir.Dtype.Int64 ]
+
+let fill_source =
+  "\nstruct FillBoolParams { uint count; uint value; };\n\n"
+  ^ "kernel void llmopt_fill_bool(\n"
+  ^ "    device uchar* output [[buffer(0)]],\n"
+  ^ "    constant FillBoolParams& params [[buffer(1)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) output[gid] = params.value != 0 ? 1 : 0;\n"
+  ^ "}\n"
+
+let fill_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_fill_bool" ~operation:Kernel_abi.Operation.Fill
+      ~input_dtype:Ir.Dtype.Bool ~output_dtype:Ir.Dtype.Bool ]
+
+let gather2_source =
+  "\nstruct Gather2Params {\n"
+  ^ "  uint count; uint rows; uint cols;\n"
+  ^ "  uint output0; uint output1; uint output2; uint output3;\n"
+  ^ "  uint first0; uint first1; uint first2; uint first3;\n"
+  ^ "  uint second0; uint second1; uint second2; uint second3;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_gather2_i64(\n"
+  ^ "    device const long* source [[buffer(0)]],\n"
+  ^ "    device const long* first_index [[buffer(1)]],\n"
+  ^ "    device const long* second_index [[buffer(2)]],\n"
+  ^ "    device long* output [[buffer(3)]],\n"
+  ^ "    constant Gather2Params& params [[buffer(4)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.count) return;\n"
+  ^ "  uint remaining = gid;\n"
+  ^ "  const uint coordinate3 = remaining % params.output3;\n"
+  ^ "  remaining /= params.output3;\n"
+  ^ "  const uint coordinate2 = remaining % params.output2;\n"
+  ^ "  remaining /= params.output2;\n"
+  ^ "  const uint coordinate1 = remaining % params.output1;\n"
+  ^ "  const uint coordinate0 = remaining / params.output1;\n"
+  ^ "  const uint first_offset = (((\n"
+  ^ "      (params.first0 == 1 ? 0 : coordinate0) * params.first1\n"
+  ^ "      + (params.first1 == 1 ? 0 : coordinate1)) * params.first2\n"
+  ^ "      + (params.first2 == 1 ? 0 : coordinate2)) * params.first3\n"
+  ^ "      + (params.first3 == 1 ? 0 : coordinate3));\n"
+  ^ "  const uint second_offset = (((\n"
+  ^ "      (params.second0 == 1 ? 0 : coordinate0) * params.second1\n"
+  ^ "      + (params.second1 == 1 ? 0 : coordinate1)) * params.second2\n"
+  ^ "      + (params.second2 == 1 ? 0 : coordinate2)) * params.second3\n"
+  ^ "      + (params.second3 == 1 ? 0 : coordinate3));\n"
+  ^ "  const long row = first_index[first_offset];\n"
+  ^ "  const long col = second_index[second_offset];\n"
+  ^ "  output[gid] = row >= 0 && row < long(params.rows)\n"
+  ^ "      && col >= 0 && col < long(params.cols)\n"
+  ^ "      ? source[ulong(row) * params.cols + ulong(col)] : 0;\n"
+  ^ "}\n"
+
+let gather2_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_gather2_i64" ~operation:Kernel_abi.Operation.Gather2
+      ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Int64 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -341,6 +475,13 @@ let has_embedding graph =
   |> List.exists (fun node ->
          match Ir.node_op node with
          | Ir.Op.Primitive Ir.Primitive.Embedding -> true
+         | _ -> false)
+
+let has_primitive graph predicate =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive primitive -> predicate primitive
          | _ -> false)
 
 let lower_primary graph =
@@ -563,25 +704,33 @@ let lower_primary graph =
                  ~output_dtype:Ir.Dtype.Float32 ])
 
 let lower graph =
-  let auxiliary_source, auxiliary_entries =
-    let source, entries =
-      if has_rms_norm graph then rms_norm_source, rms_norm_entries else "", []
-    in
-    if has_short_conv graph then
-      source ^ short_conv_source, entries @ short_conv_entries
-    else source, entries
+  let components =
+    [ has_rms_norm graph, rms_norm_source, rms_norm_entries;
+      has_short_conv graph, short_conv_source, short_conv_entries;
+      has_attention graph, attention_source, attention_entries;
+      has_embedding graph, embedding_source, embedding_entries;
+      ( has_primitive graph (function Ir.Primitive.Arange _ -> true | _ -> false),
+        arange_source,
+        arange_entries );
+      ( has_primitive graph (function Ir.Primitive.Diff _ -> true | _ -> false),
+        diff_source,
+        diff_entries );
+      ( has_primitive graph (function Ir.Primitive.Cumsum _ -> true | _ -> false),
+        cumsum_source,
+        cumsum_entries );
+      ( has_primitive graph (function Ir.Primitive.Fill _ -> true | _ -> false),
+        fill_source,
+        fill_entries );
+      ( has_primitive graph (function Ir.Primitive.Gather2 -> true | _ -> false),
+        gather2_source,
+        gather2_entries ) ]
   in
   let auxiliary_source, auxiliary_entries =
-    if has_attention graph then
-      auxiliary_source ^ attention_source,
-      auxiliary_entries @ attention_entries
-    else auxiliary_source, auxiliary_entries
-  in
-  let auxiliary_source, auxiliary_entries =
-    if has_embedding graph then
-      auxiliary_source ^ embedding_source,
-      auxiliary_entries @ embedding_entries
-    else auxiliary_source, auxiliary_entries
+    List.fold_left
+      (fun (source, entries) (enabled, component_source, component_entries) ->
+        if enabled then source ^ component_source, entries @ component_entries
+        else source, entries)
+      ("", []) components
   in
   match lower_primary graph with
   | Ok program when auxiliary_entries <> [] ->

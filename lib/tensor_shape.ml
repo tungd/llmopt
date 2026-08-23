@@ -82,6 +82,9 @@ type error =
   | Convolution_dimension_overflow
   | Invalid_attention of string
   | Invalid_embedding of string
+  | Invalid_arange of string
+  | Invalid_diff of string
+  | Invalid_gather2 of string
   | Malformed_index of string
 
 let to_string shape =
@@ -139,6 +142,9 @@ let error_to_string = function
       "depthwise conv1d output dimension overflows"
   | Invalid_attention message -> "invalid scaled-dot-product attention: " ^ message
   | Invalid_embedding message -> "invalid embedding: " ^ message
+  | Invalid_arange message -> "invalid arange: " ^ message
+  | Invalid_diff message -> "invalid diff: " ^ message
+  | Invalid_gather2 message -> "invalid two-index gather: " ^ message
   | Malformed_index message -> "malformed normalized tensor index: " ^ message
 
 let create dimensions =
@@ -323,6 +329,64 @@ let embedding indices weight =
   | [ _; _ ] ->
       Error (Invalid_embedding "vocabulary and width must be positive")
   | _ -> Error (Invalid_embedding "weight must have rank two")
+
+let arange ~start ~stop ~step =
+  let invalid message = Error (Invalid_arange message) in
+  if step = 0 then invalid "step must be non-zero"
+  else
+    let start = Int64.of_int start in
+    let stop = Int64.of_int stop in
+    let step = Int64.of_int step in
+    let ceiling_quotient distance divisor =
+      Int64.div Int64.(add distance (sub divisor 1L)) divisor
+    in
+    let length =
+      if step > 0L then
+        if start >= stop then 0L
+        else ceiling_quotient Int64.(sub stop start) step
+      else if start <= stop then 0L
+      else
+        ceiling_quotient Int64.(sub start stop) (Int64.neg step)
+    in
+    if length > Int64.of_int max_int then invalid "element count overflows"
+    else create [ Int64.to_int length ]
+
+let diff source prepend ~axis =
+  let invalid message = Error (Invalid_diff message) in
+  let* axis = normalize_axis source axis in
+  let source_dimensions = Array.copy source.dimensions in
+  let prepend_dimensions = prepend.dimensions in
+  if Array.length prepend_dimensions <> Array.length source_dimensions then
+    invalid "source and prepend ranks differ"
+  else
+    let rec validate current_axis =
+      if current_axis = Array.length source_dimensions then Ok ()
+      else if current_axis = axis then validate (current_axis + 1)
+      else if source_dimensions.(current_axis) <> prepend_dimensions.(current_axis)
+      then invalid "source and prepend dimensions differ outside the diff axis"
+      else validate (current_axis + 1)
+    in
+    let* () = validate 0 in
+    let source_width = source_dimensions.(axis) in
+    let prepend_width = prepend_dimensions.(axis) in
+    if prepend_width <= 0 then invalid "prepend axis must contain at least one value"
+    else if source_width > max_int - prepend_width then
+      invalid "output dimension overflows"
+    else (
+      source_dimensions.(axis) <- source_width + prepend_width - 1;
+      create (Array.to_list source_dimensions))
+
+let gather2 source first_index second_index =
+  let invalid message = Error (Invalid_gather2 message) in
+  match dimensions source with
+  | [ _rows; _cols ] ->
+      if rank first_index <> 4 || rank second_index <> 4 then
+        invalid "index tensors must have rank four"
+      else
+        (match broadcast first_index second_index with
+        | Ok output -> Ok output
+        | Error _ -> invalid "index tensor shapes do not broadcast")
+  | _ -> invalid "source must have rank two"
 
 let reduce shape ~axes ~keepdim =
   match normalize_axes shape axes with

@@ -569,6 +569,132 @@ let embedding state indices_value weight_value output_value output =
       done
   | _ -> failf "invalid CPU embedding tensor metadata"
 
+let arange config output_value output =
+  let count = Tensor_shape.numel (Ir.Value.logical_shape output_value) in
+  let start = Ir.Arange.start config |> Int64.of_int in
+  let step = Ir.Arange.step config |> Int64.of_int in
+  for index = 0 to count - 1 do
+    let value = Int64.(add start (mul (of_int index) step)) in
+    Tensor.set_linear output index (Int64.to_float value)
+  done
+
+let axis_factors shape axis =
+  let dimensions = Tensor_shape.dimensions shape |> Array.of_list in
+  let product from_index to_index =
+    let result = ref 1 in
+    for index = from_index to to_index do
+      result := !result * dimensions.(index)
+    done;
+    !result
+  in
+  let outer = product 0 (axis - 1) in
+  let width = dimensions.(axis) in
+  let inner = product (axis + 1) (Array.length dimensions - 1) in
+  outer, width, inner
+
+let diff state config source_value prepend_value output_value output =
+  let axis = Ir.Diff.axis config in
+  let source_shape = Ir.Value.logical_shape source_value in
+  let prepend_shape = Ir.Value.logical_shape prepend_value in
+  let outer, source_width, inner = axis_factors source_shape axis in
+  let prepend_outer, prepend_width, prepend_inner =
+    axis_factors prepend_shape axis
+  in
+  let output_outer, output_width, output_inner =
+    axis_factors (Ir.Value.logical_shape output_value) axis
+  in
+  if outer <> prepend_outer || outer <> output_outer || inner <> prepend_inner
+     || inner <> output_inner || output_width <> source_width + prepend_width - 1
+  then failf "invalid CPU diff tensor metadata";
+  let source = find state source_value in
+  let prepend = find state prepend_value in
+  let combined outer_index axis_index inner_index =
+    if axis_index < prepend_width then
+      Tensor.get_linear prepend
+        (((outer_index * prepend_width) + axis_index) * inner + inner_index)
+    else
+      Tensor.get_linear source
+        (((outer_index * source_width) + axis_index - prepend_width) * inner
+        + inner_index)
+  in
+  for outer_index = 0 to outer - 1 do
+    for axis_index = 0 to output_width - 1 do
+      for inner_index = 0 to inner - 1 do
+        let output_index =
+          (((outer_index * output_width) + axis_index) * inner) + inner_index
+        in
+        Tensor.set_linear output output_index
+          (combined outer_index (axis_index + 1) inner_index
+          -. combined outer_index axis_index inner_index)
+      done
+    done
+  done
+
+let cumsum state config input_value output_value output =
+  let axis = Ir.Cumsum.axis config in
+  let input_shape = Ir.Value.logical_shape input_value in
+  let outer, width, inner = axis_factors input_shape axis in
+  if
+    not
+      (Tensor_shape.equal input_shape (Ir.Value.logical_shape output_value))
+  then failf "invalid CPU cumsum tensor metadata";
+  let input = find state input_value in
+  for outer_index = 0 to outer - 1 do
+    for inner_index = 0 to inner - 1 do
+      let accumulator = ref 0 in
+      for axis_index = 0 to width - 1 do
+        let index =
+          (((outer_index * width) + axis_index) * inner) + inner_index
+        in
+        if Tensor.get_linear input index <> 0.0 then incr accumulator;
+        Tensor.set_linear output index (Float.of_int !accumulator)
+      done
+    done
+  done
+
+let fill scalar output_value output =
+  let count = Tensor_shape.numel (Ir.Value.logical_shape output_value) in
+  let value = Ir.Scalar.to_float scalar in
+  for index = 0 to count - 1 do
+    Tensor.set_linear output index value
+  done
+
+let gather2 state source_value first_index_value second_index_value output_value
+    output =
+  let rows, cols =
+    match Tensor_shape.dimensions (Ir.Value.logical_shape source_value) with
+    | [ rows; cols ] -> rows, cols
+    | _ -> failf "invalid CPU two-index gather source metadata"
+  in
+  let source = find state source_value in
+  let first_index = find state first_index_value in
+  let second_index = find state second_index_value in
+  let output_shape = Ir.Value.logical_shape output_value in
+  let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
+  let read_index tensor value bound name =
+    let raw = Tensor.get_linear tensor value in
+    if
+      (not (Float.is_finite raw)) || raw <> Float.round raw || raw < 0.0
+      || raw >= Float.of_int bound
+    then failf "CPU two-index gather %s %.9g is out of range" name raw;
+    int_of_float raw
+  in
+  for output_index = 0 to Tensor_shape.numel output_shape - 1 do
+    let output_coordinates = coordinates output_dimensions output_index in
+    let first_offset =
+      broadcast_index ~source_shape:first_index_value ~output_dimensions
+        output_coordinates
+    in
+    let second_offset =
+      broadcast_index ~source_shape:second_index_value ~output_dimensions
+        output_coordinates
+    in
+    let row = read_index first_index first_offset rows "row" in
+    let col = read_index second_index second_offset cols "column" in
+    Tensor.set_linear output output_index
+      (Tensor.get_linear source ((row * cols) + col))
+  done
+
 let primitive state operation inputs output_value output =
   match operation, inputs with
   | Ir.Primitive.Pointwise operation, _ ->
@@ -587,6 +713,14 @@ let primitive state operation inputs output_value output =
       attention state config query key value mask output_value output
   | Ir.Primitive.Embedding, [ indices; weight ] ->
       embedding state indices weight output_value output
+  | Ir.Primitive.Arange config, [] -> arange config output_value output
+  | Ir.Primitive.Diff config, [ source; prepend ] ->
+      diff state config source prepend output_value output
+  | Ir.Primitive.Cumsum config, [ input ] ->
+      cumsum state config input output_value output
+  | Ir.Primitive.Fill scalar, [] -> fill scalar output_value output
+  | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
+      gather2 state source first_index second_index output_value output
   | _ -> failf "invalid primitive input arity"
 
 let run ~inputs thunk =

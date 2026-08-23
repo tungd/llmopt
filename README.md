@@ -59,10 +59,14 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   and model provenance.
 
 The typed effect vocabulary now also covers N-dimensional pointwise,
-reduction, cast, normalized static indexing, concat, and movement primitives.
+reduction, cast, normalized static indexing, concat, movement, static integer
+ranges, prepended differences, boolean cumulative sums, scalar fills, and the
+rank-two/two-index gather used by LFM masking.
 The planner eliminates valid `chunk` tuple nodes by emitting slices directly
-at integer `getitem` consumers; its CPU reference and schedule-v6 codecs are
-tested. The exact LFM depthwise ShortConv form also lowers to a typed command
+at integer `getitem` consumers; its CPU reference and binary codecs are tested.
+Schedule v7 preserves the position/mask primitives and explicitly elides only
+the captured unused `torch._C._log_api_usage_once` telemetry operation. The
+exact LFM depthwise ShortConv form also lowers to a typed command
 with a CPU reference and compiled scalar MSL. The masked prefill-attention form
 has typed shape/configuration checks, a CPU softmax reference, and compiled
 correctness-first fused MSL. Token embedding also has typed option checks,
@@ -76,7 +80,10 @@ moves generated-library loading, Metal dispatch, request scheduling, and cache
 ownership into OCaml. Its radix/KV ownership and archive-backed Metal loader
 are implemented; complete schedule execution and physical KV
 quantize/dequantize remain open. Replanning the current manifest-v2 no-cache
-capture produces 835 schedule commands, of which 11 remain opaque; its
+capture against the binary 241-tensor archive produces 834 schedule commands
+with zero opaque commands and 11 declared kernels; the generated MSL compiles
+with Xcode. Decode/KV-state capture, native command-stream interpretation, and
+kernel materialization for the complete typed schedule remain open. The earlier
 direct-FX probe is bit-exact against eager MPS. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
@@ -98,6 +105,7 @@ ninja -f ninja.build rms-norm-smoke
 ninja -f ninja.build short-conv-smoke
 ninja -f ninja.build attention-smoke
 ninja -f ninja.build embedding-smoke
+ninja -f ninja.build mask-position-smoke
 ninja -f ninja.build q8-serving-smoke
 ninja -f ninja.build ocaml-metal-runtime
 ninja -f ninja.build ocaml-metal-runtime-smoke

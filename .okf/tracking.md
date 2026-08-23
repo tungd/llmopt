@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T18:53:41Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:00:03Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -23,7 +23,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 |---|---|---|
 | Ninja-built OCaml 5 effect/IR prototype | implemented | `ninja test` passes |
 | Python Dynamo/FX manifest exporter | implemented | v2 captures rank plus typed node, integer, float, bool, null, string, symbol, sequence, mapping, and slice arguments; Python unittest passes |
-| OCaml FX importer and effect planner | implemented for the current primitive vocabulary; remaining model families measured | typed arguments, ellipsis, N-dimensional logical shapes, pointwise/reduction/cast/movement primitives, deferred chunk/getitem slices, concat, expand, and fused RMSNorm survive a real v2 capture and binary schedule round-trip; qualified target matching prevents `expand` from colliding with logical `and` |
+| OCaml FX importer and effect planner | implemented for the captured no-cache prefill vocabulary; decode families remain | typed arguments, ellipsis, N-dimensional shapes, pointwise/reduction/cast/movement primitives, deferred chunk/getitem slices, concat, expand, RMSNorm, position/mask construction, and telemetry elision survive a real v2 capture and binary schedule round-trip |
 | LLVM textual emitter | implemented | `clang -x ir` accepts the linear smoke |
 | Metal source emitter | implemented | Xcode `metal` accepts the linear smoke |
 | Fused LFM RMSNorm pass and Metal kernel | implemented; real-model count pending | synthetic LFM chain fuses from 10 commands to four; float32-to-float16 and float16 kernels pass `rms-norm-smoke` |
@@ -31,6 +31,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | LFM2.5 short-convolution lowering | typed and compiled; native dispatch open | all ten saved prefill `conv1d` nodes lower to validated ShortConv commands; CPU reference, schedule-v4 round trip, and Xcode Metal compilation pass |
 | LFM2.5 GQA/KV-cache lowering | prefill attention typed and compiled; decode/KV open | all six saved SDPA nodes lower to validated masked-attention commands; CPU softmax, schedule-v5 round trip, and Xcode Metal compilation pass |
 | LFM2.5 token embedding lowering | typed and compiled; native dispatch open | the saved int64-to-float16 lookup lowers to a validated embedding command; exact CPU gather, schedule-v6 round trip, and Xcode Metal compilation pass |
+| LFM2.5 position and mask lowering | typed and compiled; native dispatch open | five aranges, prepended diff, bool-to-int64 cumsum, scalar bool fill, and two broadcast gathers lower through schedule v7; exact CPU references and `mask-position-smoke` pass, while the exact unused PyTorch telemetry call is elided |
 | model weight loading for the MPS probe | implemented | Transformers checkpoint loads on MPS |
 | end-to-end PyTorch MPS comparison | implemented | short smoke proves routed generation; semantic 5x3 result has exact fixed-forward digest and exact generated-token parity |
 | ERS trace/report benchsuite | implemented; 350M baseline recorded | racebench score math, reference-style HTTP runner, shape-matched semantic 5x3 and full 70x6 profiles, distinct warmup, isolated reports, exact token-ID parity, and `/bench/results/lfm25-350m-racebench-baseline.json` with `engine_pass: true`, eager ERS `0.0003597708408867709`, and 15/15 successful requests per candidate |
@@ -38,10 +39,10 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, and `ninja -f ninja.build q8-smoke` pass; the bounded Q8 result has exact digest/token parity, and its saved outputs prove 6/6 control-code retrieval with 0/6 exact-only formatting |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
-| Versioned generated package ABI | partial; real graph serialized under superseded ABI | Package ABI v2 emits `package.llmopt` with commands, logical shapes, arguments, kernel ABI, cache policy, and a `weights.llmopt` reference. The saved real 350M package predates v2; native interpretation remains open |
-| OCaml tensor-store ownership | partial; JSON-free fixture validated | Dynamo now streams static inputs into a versioned binary index plus 256-byte-aligned payloads. Python and OCaml agree on the three-tensor fixture; the earlier real 350M archive contains 241 tensors and 422,104,704 payload bytes but has not been regenerated under this ABI |
+| Versioned generated package ABI | partial; current prefill package validated | Package ABI v2 emits `package.llmopt` with schedule-v7 commands, logical shapes, kernel ABI, cache policy, and one `weights.llmopt` reference. The current 350M no-cache prefill package validates with 834 commands and 241 bindings; native interpretation remains open |
+| OCaml tensor-store ownership | partial; real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. The saved 241 tensors were converted offline into a 422,137,216-byte `weights.llmopt`, and the OCaml package checker validates every dtype/shape binding; no model or device process ran |
 | OCaml Metal serving loader and dispatch | partial | The superseded safetensors fixture returned `[3.5, 8, 1, 1.5, 4, 2]` exactly. The replacement binary archive passes package validation; its single memory-checked probe stopped before dispatch on a corrected index-field ordering mismatch and was not retried |
-| Complete 350M operation schedule | partial | Offline replan of the real manifest-v2 no-cache forward has 835 commands: 824 typed/lowered and 11 opaque. The serving package validates 241 archive tensors and six declared kernels; remaining mask/position operations, decode/KV-state graphs, generated-kernel coverage, and native command interpretation remain open |
+| Complete 350M operation schedule | no-cache prefill has zero opaque; decode/native execution partial | Offline replan of the real manifest-v2 no-cache forward has 834 commands and zero opaque. The serving package validates 241 archive tensors and 11 declared kernels; decode/KV-state graphs, kernels for every other typed command, and native command interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule

@@ -9,6 +9,11 @@ module Operation : sig
     | Short_conv
     | Attention
     | Embedding
+    | Arange
+    | Diff
+    | Cumsum
+    | Fill
+    | Gather2
 
   val to_string : t -> string
   val of_string : string -> (t, string) result

@@ -4,7 +4,7 @@ title: 'JSON-free binary weight archive'
 description: 'Replace the safetensors serving boundary with a versioned typed binary index and aligned payloads consumed directly by OCaml.'
 tags: [experiment, ocaml, python, binary, weights, mmap, metal, serving]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T19:39:42Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:00:03Z' }
 sources:
   - id: writer
     resource: /python/llmopt_backend/tensor_archive.py
@@ -68,8 +68,9 @@ package validation above passes. Per the one-attempt rule, no second device
 probe ran in this slice; therefore the earlier safetensors fixture dispatch is
 not presented as evidence for `weights.llmopt` dispatch.
 
-# Remaining work
+# Subsequent work
 
-The saved 241-tensor LFM2.5-350M capture predates package ABI v2 and weight ABI
-v1. A future memory-checked capture must regenerate that model archive before
-native full-model execution evidence can use this boundary.
+The saved 241 tensors were subsequently converted offline into weight ABI v1
+without loading the model. The package checker validates every binding in the
+[zero-opaque prefill replan](exp-0024-lfm-mask-position.md); native full-model
+execution remains open.

@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T19:39:42Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:00:03Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -94,15 +94,16 @@ optional Metal source plus textual LLVM IR.[^local-python-backend]
 
 The cache rows and standalone OCaml Metal primitives are implemented. The
 model-level execution path still uses the Python/PyTorch bridge because the
-complete LFM2.5 Q8 archive and schedule have not moved into the OCaml process.
+complete LFM2.5 Q8 schedule is not yet interpreted inside the OCaml process.
 
 # Current scope
 
 The cross-language planner supports N-dimensional placeholders, `linear`,
 Q8 linear, `mm`/`matmul`, pointwise arithmetic/comparison and common unary
 operators, mean, casts, views, reshape, transpose, unsqueeze, expand,
-contiguous, normalized static indexing, concat, `relu`, and `gelu`, and
-preserves other FX nodes as opaque plan
+contiguous, normalized static indexing, concat, `relu`, `gelu`, static integer
+ranges, prepended differences, boolean cumulative sums, scalar fills, and
+LFM's rank-two/two-index gather, and preserves other FX nodes as opaque plan
 nodes. A pure pass fuses the LFM RMSNorm chain into one typed command, and its
 float32-to-float16 and float16 Metal kernels compile with Xcode. The first
 runtime optimization pass returns the captured FX
@@ -147,10 +148,11 @@ into `weights.llmopt` one at a time. The index uses fixed-width little-endian
 fields and each payload starts at a 256-byte boundary; neither the index nor the
 payload is JSON. This bounds CPU staging to the current tensor instead of
 retaining a second whole-model CPU copy. The preceding safetensors-based real
-350M Q8 capture emitted 241 tensor keys totaling 422,104,704 payload bytes; a
-new model capture under the binary archive ABI has not run yet. The OCaml
-package validator resolves every binary-schedule tensor binding against archive
-dtype and N-dimensional shape before runtime loading.
+350M Q8 capture emitted 241 tensor keys totaling 422,104,704 payload bytes. Its
+saved tensors were converted offline into a 422,137,216-byte `weights.llmopt`
+without loading the model; no fresh model capture under this ABI has run. The
+OCaml package validator resolves every binary-schedule tensor binding against
+archive dtype and N-dimensional shape before runtime loading.
 
 The Ninja-built OCaml runtime consumes that binary package directly, validates
 the metallib, tensor archive, schedule bindings, and declared entry points,
@@ -171,8 +173,11 @@ compared with 379 typed and 736 opaque in the saved v1 package. A subsequent
 offline replan corrected a target-suffix collision and moved all 14 expand
 commands into the typed set. Typed depthwise ShortConv lowering then moved the
 ten model `conv1d` commands, and masked-attention lowering moved all six SDPA
-commands. Embedding lowering moves the token lookup as well, leaving 824 typed
-and 11 opaque. Direct-FX
+commands. Embedding lowering moved the token lookup. Schedule v7 then typed the
+five static ranges, prepended difference, boolean cumulative sum, scalar fill,
+and two advanced gathers, while explicitly eliding the one unused framework
+telemetry call. The resulting no-cache prefill package contains 834 commands
+and zero opaque operations. Direct-FX
 execution is bit exact against eager MPS for the six-token probe. This is
 capture and planning evidence; PyTorch MPS, not the OCaml package runtime,
 executed the parity check.
@@ -180,11 +185,13 @@ executed the parity check.
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and
 emits normalized slices directly at integer getitem consumers, avoiding a
-tuple-valued runtime command. Static tensor indices and concat survive the
-schedule-v6 binary round trip and CPU interpretation. The latest offline
-package structurally validates with 241 tensors and declares six generated
-kernels; native Metal emission and command dispatch for the complete schedule
-remain open.
+tuple-valued runtime command. Static tensor indices, concat, and the position
+and mask primitives survive the schedule-v7 binary round trip and CPU
+interpretation. The latest offline package structurally validates with 241
+tensors, declares 11 generated kernels, and its 12,443-byte MSL compiles to a
+49,342-byte metallib. These additions cover the previously opaque prefill
+nodes; native command interpretation and generated materialization of every
+other typed schedule command remain open.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the
