@@ -28,3 +28,4 @@
 * [Native binary schedule execution](exp-0026-native-schedule-execution.md) - automatic OCaml input binding, Q8 dispatch, and output resolution against `weights.llmopt`.
 * [Native built-in kernel dispatch](exp-0027-native-builtin-dispatch.md) - generic typed dispatch and one 12-output Metal execution probe.
 * [Native typed cast dispatch](exp-0028-native-cast-dispatch.md) - ABI-v3 cast kernels and one exact 15-output execution probe.
+* [Native LFM pointwise dispatch](exp-0029-native-pointwise-dispatch.md) - ABI-v4 broadcast/scalar kernels and one exact 24-output execution probe.

@@ -181,18 +181,23 @@ let dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n
         ("Q8 Metal dispatch requires f16 or f32 activations, got "
         ^ Ir.Dtype.to_string dtype)
 
-let kernel_entry runtime ~operation ~input_dtype ~output_dtype =
+let kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype =
   Serving_package.kernels runtime.package
   |> List.find_opt (fun entry ->
          Kernel_abi.Entry.operation entry = operation
          && Kernel_abi.Entry.input_dtype entry = input_dtype
-         && Kernel_abi.Entry.output_dtype entry = output_dtype)
+         && Kernel_abi.Entry.output_dtype entry = output_dtype
+         &&
+         match name with
+         | None -> true
+         | Some expected -> Kernel_abi.Entry.name entry = expected)
   |> function
   | Some entry -> Ok entry
   | None ->
       Error
-        (Printf.sprintf "serving package has no %s kernel for %s -> %s"
+        (Printf.sprintf "serving package has no %s%s kernel for %s -> %s"
            (Kernel_abi.Operation.to_string operation)
+           (match name with None -> "" | Some value -> " " ^ value)
            (Ir.Dtype.to_string input_dtype) (Ir.Dtype.to_string output_dtype))
 
 let dispatch runtime entry ~buffers ~parameters ~grid =
@@ -275,6 +280,73 @@ module Parameters = struct
     let* () = write 0 values in
     Bytes.set_int32_le bytes 32 (Int32.bits_of_float scale);
     Ok bytes
+
+  let scalar_i64 = function
+    | Ir.Scalar.Bool value -> if value then 1L else 0L
+    | Ir.Scalar.Int value -> Int64.of_int value
+    | Ir.Scalar.Float value -> Int64.of_float value
+
+  let scalar_f32 scalar =
+    scalar |> Ir.Scalar.to_float |> Int32.bits_of_float
+
+  let rec write_shape bytes offset = function
+    | [] -> Ok ()
+    | dimension :: rest ->
+        let* () = set_u32 bytes offset dimension in
+        write_shape bytes (offset + 4) rest
+
+  let align_broadcast_shape ~output_dimensions = function
+    | None -> Ok (List.init (List.length output_dimensions) (Fun.const 1))
+    | Some input_dimensions ->
+        let output_rank = List.length output_dimensions in
+        let input_rank = List.length input_dimensions in
+        if input_rank > output_rank then
+          Error "pointwise input rank exceeds output rank"
+        else
+          let aligned =
+            List.init (output_rank - input_rank) (Fun.const 1)
+            @ input_dimensions
+          in
+          if
+            List.for_all2
+              (fun input output -> input = 1 || input = output)
+              aligned output_dimensions
+          then Ok aligned
+          else Error "pointwise input shape is not broadcastable to output"
+
+  let pointwise ~output_shape ~left_shape ~right_shape ~left_scalar
+      ~right_scalar =
+    let output_dimensions = Tensor_shape.dimensions output_shape in
+    let rank = List.length output_dimensions in
+    if rank > 8 then Error "Metal pointwise kernels support rank at most eight"
+    else
+      let* left_dimensions =
+        align_broadcast_shape ~output_dimensions left_shape
+      in
+      let* right_dimensions =
+        align_broadcast_shape ~output_dimensions right_shape
+      in
+      let pad dimensions = dimensions @ List.init (8 - rank) (Fun.const 1) in
+      let bytes = Bytes.make 136 '\000' in
+      let count = Tensor_shape.numel output_shape in
+      let* () = set_u32 bytes 0 count in
+      let* () = set_u32 bytes 4 rank in
+      let* () = set_u32 bytes 8 (if Option.is_some left_scalar then 1 else 0) in
+      let* () = set_u32 bytes 12 (if Option.is_some right_scalar then 1 else 0) in
+      let* () = write_shape bytes 16 (pad output_dimensions) in
+      let* () = write_shape bytes 48 (pad left_dimensions) in
+      let* () = write_shape bytes 80 (pad right_dimensions) in
+      Option.iter
+        (fun scalar ->
+          Bytes.set_int64_le bytes 112 (scalar_i64 scalar);
+          Bytes.set_int32_le bytes 128 (scalar_f32 scalar))
+        left_scalar;
+      Option.iter
+        (fun scalar ->
+          Bytes.set_int64_le bytes 120 (scalar_i64 scalar);
+          Bytes.set_int32_le bytes 132 (scalar_f32 scalar))
+        right_scalar;
+      Ok bytes
 end
 
 module Value_map = Map.Make (struct
@@ -365,10 +437,10 @@ let split_axis shape axis =
   in
   loop [] axis (Tensor_shape.dimensions shape)
 
-let dispatch_output runtime state output ~operation ~input_dtype ~buffers
+let dispatch_output ?name runtime state output ~operation ~input_dtype ~buffers
     ~parameters ~grid =
   let output_dtype = Ir.Value.dtype output in
-  let* entry = kernel_entry runtime ~operation ~input_dtype ~output_dtype in
+  let* entry = kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype in
   let* bytes = value_byte_length output in
   let* output_buffer = Buffer.create ~runtime ~bytes in
   let* kernel =
@@ -376,6 +448,65 @@ let dispatch_output runtime state output ~operation ~input_dtype ~buffers
       ~grid
   in
   Ok (bind_value state output output_buffer, kernel)
+
+let pointwise_kernel operation output =
+  let output_dtype = Ir.Value.dtype output in
+  let tensor_dtypes =
+    operation |> Ir.Pointwise.values |> List.map Ir.Value.dtype
+  in
+  let* input_dtype =
+    match tensor_dtypes with
+    | [] -> Error "Metal pointwise operation requires at least one tensor operand"
+    | dtype :: rest when List.for_all (( = ) dtype) rest -> Ok dtype
+    | _ -> Error "Metal pointwise operands must use one tensor dtype"
+  in
+  let name =
+    match operation, input_dtype, output_dtype with
+    | Ir.Pointwise.Binary (Ir.Pointwise.Add, _, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_add_f16"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Add, _, _), Ir.Dtype.Int64,
+      Ir.Dtype.Int64 ->
+        Some "llmopt_add_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_mul_f16"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_mul_f32"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Less_equal, _, _), Ir.Dtype.Int64,
+      Ir.Dtype.Bool ->
+        Some "llmopt_le_i64"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Neg, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_neg_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Silu, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_silu_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Cos, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_cos_f32"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Sin, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_sin_f32"
+    | _ -> None
+  in
+  match name with
+  | Some name -> Ok (name, input_dtype)
+  | None ->
+      Error
+        (Printf.sprintf "unsupported Metal pointwise kernel: %s %s -> %s"
+           (Ir.Pointwise.to_string operation)
+           (Ir.Dtype.to_string input_dtype) (Ir.Dtype.to_string output_dtype))
+
+let pointwise_operand_shape = function
+  | Ir.Pointwise.Tensor value ->
+      Some (Ir.Value.logical_shape value |> Tensor_shape.dimensions)
+  | Ir.Pointwise.Scalar _ -> None
+
+let pointwise_operand_scalar = function
+  | Ir.Pointwise.Tensor _ -> None
+  | Ir.Pointwise.Scalar scalar -> Some scalar
 
 let execute runtime ~inputs =
   let* runtime_inputs = runtime_input_map inputs in
@@ -448,6 +579,45 @@ let execute runtime ~inputs =
                  ~operation:Kernel_abi.Operation.Cast
                  ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
                  ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive (Ir.Primitive.Pointwise operation),
+            _,
+            Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* name, input_dtype = pointwise_kernel operation output in
+            (match operation with
+            | Ir.Pointwise.Unary (_, input) ->
+                let* input_buffer = find_value state input in
+                let* parameters = Parameters.u32s [ count ] in
+                dispatched
+                  (dispatch_output ~name runtime state output
+                     ~operation:Kernel_abi.Operation.Pointwise ~input_dtype
+                     ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
+            | Ir.Pointwise.Binary (_, left, right) ->
+                let tensor_values = Ir.Pointwise.values operation in
+                let* dummy =
+                  match tensor_values with
+                  | value :: _ -> find_value state value
+                  | [] -> Error "Metal pointwise operation has no tensor buffer"
+                in
+                let operand_buffer = function
+                  | Ir.Pointwise.Tensor value -> find_value state value
+                  | Ir.Pointwise.Scalar _ -> Ok dummy
+                in
+                let* left_buffer = operand_buffer left in
+                let* right_buffer = operand_buffer right in
+                let* parameters =
+                  Parameters.pointwise
+                    ~output_shape:(Ir.Value.logical_shape output)
+                    ~left_shape:(pointwise_operand_shape left)
+                    ~right_shape:(pointwise_operand_shape right)
+                    ~left_scalar:(pointwise_operand_scalar left)
+                    ~right_scalar:(pointwise_operand_scalar right)
+                in
+                dispatched
+                  (dispatch_output ~name runtime state output
+                     ~operation:Kernel_abi.Operation.Pointwise ~input_dtype
+                     ~buffers:[ left_buffer; right_buffer ] ~parameters
+                     ~grid:(count, 1, 1)))
         | Ir.Op.Matmul { m; n; k = _ }, [ lhs; rhs ], Some output ->
             let* buffers = find_values state [ lhs; rhs ] in
             let* grid_x = round_up n 16 in

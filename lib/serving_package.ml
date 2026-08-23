@@ -154,6 +154,7 @@ let operation_tag = function
   | Kernel_abi.Operation.Fill -> 12
   | Kernel_abi.Operation.Gather2 -> 13
   | Kernel_abi.Operation.Cast -> 14
+  | Kernel_abi.Operation.Pointwise -> 15
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -171,6 +172,7 @@ let operation_of_tag = function
   | 12 -> Ok Kernel_abi.Operation.Fill
   | 13 -> Ok Kernel_abi.Operation.Gather2
   | 14 -> Ok Kernel_abi.Operation.Cast
+  | 15 -> Ok Kernel_abi.Operation.Pointwise
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function
@@ -264,7 +266,7 @@ let magic = "LLMOPTPK"
 let to_bytes package =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 3;
+  Binary.Writer.u16 writer 4;
   Binary.Writer.u8 writer
     (match package.stage with Stage.Compiled_graph -> 0 | Stage.Serving -> 1);
   Binary.Writer.u8 writer 0;
@@ -285,7 +287,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving-package magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 2 && version <> 3 then
+    if version <> 2 && version <> 3 && version <> 4 then
       Error (Printf.sprintf "unsupported serving-package version: %d" version)
     else
       let* stage_tag = Binary.Reader.u8 reader in

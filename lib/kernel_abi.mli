@@ -15,6 +15,7 @@ module Operation : sig
     | Fill
     | Gather2
     | Cast
+    | Pointwise
 
   val to_string : t -> string
   val of_string : string -> (t, string) result

@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T21:20:37Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T21:30:47Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -62,7 +62,7 @@ The public frontend is a PyTorch `torch.compile` backend. Dynamo calls the
 backend with an FX `GraphModule` and example inputs, and the backend returns a
 callable with the same forward contract.[^pytorch-backend-contract]
 
-The Python adapter serializes a deliberately small manifest containing node
+The Python adapter currently serializes a deliberately small JSON manifest containing node
 names, op kinds, targets, references, static shape metadata from `val`,
 `tensor_meta`, or Dynamo `example_value`, dtypes, lossless typed arguments, and
 an explicit runtime-input or tensor-store binding. Dynamo's lifted-static-input
@@ -73,6 +73,11 @@ typed tile effects, preserves other nodes as opaque effect actions, captures
 the graph IR, with optional pure passes available for later slices, and emits
 optional Metal source plus textual LLVM IR.[^local-python-backend]
 [^local-ocaml-planner]
+
+That JSON file is a temporary compile-time subprocess bridge, not a serving
+format. The preserved prefill manifest is 776,844 bytes. The intended boundary
+is a versioned binary graph import with JSON retained only as an optional
+diagnostic dump.
 
 # Ownership
 
@@ -139,8 +144,8 @@ cache policy, metallib path, and optional tensor-store path. The copied
 not referenced by the serving runtime. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v3 names weight-archive ABI v1
-and reads ABI-v2 packages.
+exactly one binary tensor archive. Package ABI v4 names weight-archive ABI v1
+and reads ABI-v2 and ABI-v3 packages.
 Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
 archive rather than being split into per-tensor files.
 
@@ -189,6 +194,16 @@ the expanded 51-command package once; 15 kernel dispatches produced 15 exact
 outputs, including all three cast directions. The existing ABI-v2 model
 packages remain readable and require only offline replanning to declare these
 new kernels.
+
+Package ABI v4 adds a typed `Pointwise` operation with exact entry-name
+selection. Nine generated kernels cover the pointwise inventory before the
+first transformer block in both preserved plans: float16 add/multiply/negate/
+SiLU, int64 add and less-equal, and float32 multiply/cosine/sine. Binary
+operands support rank-eight row-major broadcasting and either operand may be a
+packed scalar. One fixed 81-command package started at 58% free memory with no
+model process, dispatched 24 kernels on Apple M4 Pro, and matched all 24 outputs
+byte-for-byte. Its package and metallib totaled 112,789 bytes. The preserved
+ABI-v2 model packages have not yet been replanned or executed with ABI v4.
 
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,

@@ -4,7 +4,7 @@ title: 'Complete OCaml Metal serving stack for LFM2.5'
 description: 'The requirement-by-requirement completion map from torch.compile capture through OCaml cached serving and ERS measurement.'
 tags: [goal, compiler, ocaml, metal, serving, radix-cache, kv-cache, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T21:20:37Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T21:30:47Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -55,10 +55,11 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Requirement | Evidence that proves it | Current evidence | State |
 |---|---|---|---|
 | Dynamo/FX graph capture | PyTorch invokes `backend=llmopt` and the captured graph reaches OCaml | One memory-bounded use-cache attempt preserved a 1,155-node prefill graph and a 1,195-node decode graph, with one and 23 runtime inputs respectively, while sharing all 241 static tensors through one binary archive | implemented for fixed six-token prefill and one-token decode specializations |
+| Binary compiler transport | Dynamo graph metadata reaches OCaml through a versioned binary format; JSON is optional diagnostics only | The current subprocess bridge writes JSON; its preserved prefill instance is 776,844 bytes. The serving runtime is already JSON-free | open |
 | Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Replanning the preserved manifests produces 872 prefill and 926 decode commands with zero opaque operations after recurrent cache lowering and exact telemetry elision | partial; typed coverage is present, executable kernel/view coverage is not |
-| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v3 adds typed cast kernels and retains ABI-v2 reads. The preserved ABI-v2 schedule-v8 model packages still validate all 241 bindings against one shared 422,137,216-byte weight-ABI-v1 archive | partial |
-| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 kernels now remain present in mixed graphs; Q8 linear, fused RMSNorm, scalar depthwise ShortConv, masked attention, embedding, arange, diff, cumsum, bool/FP16/FP32 fill, and two-index gather compile in both preserved packages. Pointwise/movement/recurrent materialization remains absent | partial |
-| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | The archive-backed Q8 schedule remains exact. The expanded ABI-v3 fixture executes 51 commands and matches 15 outputs byte-for-byte across all previously emitted built-ins plus the three model cast directions. Pointwise, movement, reduction, recurrent commands, float16 vocabulary projection, full-model execution, and batched submission remain absent | partial |
+| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v4 adds typed pointwise kernels and retains ABI-v2/v3 reads. The preserved ABI-v2 schedule-v8 model packages still validate all 241 bindings against one shared 422,137,216-byte weight-ABI-v1 archive | partial |
+| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 kernels now remain present in mixed graphs; Q8 linear, fused RMSNorm, scalar depthwise ShortConv, masked attention, embedding, arange, diff, cumsum, bool/FP16/FP32 fill, two-index gather, casts, and the nine required pointwise forms compile. Movement/reduction/recurrent materialization remains absent | partial |
+| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | The archive-backed Q8 schedule remains exact. One ABI-v4 fixture executes 81 commands and matches 24 outputs byte-for-byte across built-ins, casts, and all nine required pointwise forms. Movement, reduction, recurrent commands, float16 vocabulary projection, full-model execution, and batched submission remain absent | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | All 241 captured 350M tensors are in one 422,137,216-byte binary archive and the OCaml checker validates every binding; native full-model execution and persistent activation ownership remain absent | partial |
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | Current request loop and tokenizer are Python/Transformers | open |
 | Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Compressed radix structure and ownership tests pass, but no request reaches it | partial |
@@ -68,7 +69,8 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 # Completion condition
 
 The goal is complete only when one Ninja-built flow starts from a captured
-LFM2.5-350M graph, produces a versioned serving package, launches the OCaml
+LFM2.5-350M graph, crosses a versioned binary compiler boundary, produces a
+versioned serving package, launches the OCaml
 runtime, serves the benchmark through generated Metal kernels, records actual
 radix/KV reuse across turns, and emits parity, needle, latency, and ERS
 evidence. Q8 must be the default cache/weight policy with FP16 selectable.

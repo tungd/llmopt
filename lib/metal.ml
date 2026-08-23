@@ -558,6 +558,99 @@ let cast_entries =
       ~name:"llmopt_cast_i64_f32" ~operation:Kernel_abi.Operation.Cast
       ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float32 ]
 
+let pointwise_binary_kernel ~name ~input_type ~output_type ~scalar_field
+    ~scalar_cast ~expression =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ input_type ^ "* left [[buffer(0)]],\n"
+  ^ "    device const " ^ input_type ^ "* right [[buffer(1)]],\n"
+  ^ "    device " ^ output_type ^ "* output [[buffer(2)]],\n"
+  ^ "    constant PointwiseParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.count) return;\n"
+  ^ "  const " ^ input_type ^ " left_value = params.left_scalar != 0\n"
+  ^ "      ? " ^ scalar_cast ^ "(params.left_" ^ scalar_field ^ ")\n"
+  ^ "      : left[llmopt_pointwise_offset(gid, params, true)];\n"
+  ^ "  const " ^ input_type ^ " right_value = params.right_scalar != 0\n"
+  ^ "      ? " ^ scalar_cast ^ "(params.right_" ^ scalar_field ^ ")\n"
+  ^ "      : right[llmopt_pointwise_offset(gid, params, false)];\n"
+  ^ "  output[gid] = " ^ expression ^ ";\n"
+  ^ "}\n\n"
+
+let pointwise_unary_kernel ~name ~input_type ~output_type ~expression =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ input_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device " ^ output_type ^ "* output [[buffer(1)]],\n"
+  ^ "    constant UnaryParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) {\n"
+  ^ "    const " ^ input_type ^ " value = input[gid];\n"
+  ^ "    output[gid] = " ^ expression ^ ";\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let pointwise_source =
+  "\nstruct PointwiseParams {\n"
+  ^ "  uint count; uint rank; uint left_scalar; uint right_scalar;\n"
+  ^ "  uint output_shape[8]; uint left_shape[8]; uint right_shape[8];\n"
+  ^ "  long left_i64; long right_i64; float left_f32; float right_f32;\n"
+  ^ "};\n\n"
+  ^ "struct UnaryParams { uint count; };\n\n"
+  ^ "inline uint llmopt_pointwise_offset(uint gid,\n"
+  ^ "    constant PointwiseParams& params, bool is_left) {\n"
+  ^ "  uint remaining = gid;\n"
+  ^ "  uint offset = 0;\n"
+  ^ "  uint stride = 1;\n"
+  ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+  ^ "    const uint output_dimension = params.output_shape[axis];\n"
+  ^ "    const uint coordinate = remaining % output_dimension;\n"
+  ^ "    remaining /= output_dimension;\n"
+  ^ "    const uint input_dimension = is_left\n"
+  ^ "        ? params.left_shape[axis] : params.right_shape[axis];\n"
+  ^ "    offset += (input_dimension == 1 ? 0 : coordinate) * stride;\n"
+  ^ "    stride *= input_dimension;\n"
+  ^ "  }\n"
+  ^ "  return offset;\n"
+  ^ "}\n\n"
+  ^ pointwise_binary_kernel ~name:"llmopt_add_f16" ~input_type:"half"
+      ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
+      ~expression:"left_value + right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_add_i64" ~input_type:"long"
+      ~output_type:"long" ~scalar_field:"i64" ~scalar_cast:"long"
+      ~expression:"left_value + right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_mul_f16" ~input_type:"half"
+      ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
+      ~expression:"left_value * right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_mul_f32" ~input_type:"float"
+      ~output_type:"float" ~scalar_field:"f32" ~scalar_cast:"float"
+      ~expression:"left_value * right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_le_i64" ~input_type:"long"
+      ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
+      ~expression:"left_value <= right_value ? 1 : 0"
+  ^ pointwise_unary_kernel ~name:"llmopt_neg_f16" ~input_type:"half"
+      ~output_type:"half" ~expression:"-value"
+  ^ pointwise_unary_kernel ~name:"llmopt_silu_f16" ~input_type:"half"
+      ~output_type:"half"
+      ~expression:"half(float(value) / (1.0f + exp(-float(value))))"
+  ^ pointwise_unary_kernel ~name:"llmopt_cos_f32" ~input_type:"float"
+      ~output_type:"float" ~expression:"cos(value)"
+  ^ pointwise_unary_kernel ~name:"llmopt_sin_f32" ~input_type:"float"
+      ~output_type:"float" ~expression:"sin(value)"
+
+let pointwise_entries =
+  let entry name input_dtype output_dtype =
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name
+      ~operation:Kernel_abi.Operation.Pointwise ~input_dtype ~output_dtype
+  in
+  [ entry "llmopt_add_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_add_i64" Ir.Dtype.Int64 Ir.Dtype.Int64;
+    entry "llmopt_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_mul_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_le_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
+    entry "llmopt_neg_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_silu_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_cos_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_sin_f32" Ir.Dtype.Float32 Ir.Dtype.Float32 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -771,7 +864,10 @@ let lower graph =
         gather2_entries );
       ( has_primitive graph (function Ir.Primitive.Cast _ -> true | _ -> false),
         cast_source,
-        cast_entries ) ]
+        cast_entries );
+      ( has_primitive graph (function Ir.Primitive.Pointwise _ -> true | _ -> false),
+        pointwise_source,
+        pointwise_entries ) ]
   in
   let auxiliary_source, auxiliary_entries =
     List.fold_left

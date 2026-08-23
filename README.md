@@ -13,9 +13,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 
 - A Python `torch.compile` backend registered as `llmopt`, receiving the
   `GraphModule, example_inputs` Dynamo contract.
-- A compile-time JSON FX manifest ABI preserving node names, op kinds, targets,
-  references, Dynamo `example_value` shapes, dtypes, and typed arguments;
-  serving uses the binary schedule instead.
+- A temporary compile-time JSON FX import boundary preserving node names, op
+  kinds, targets, references, Dynamo `example_value` shapes, dtypes, and typed
+  arguments. It is not used by serving and remains to be replaced by the
+  versioned binary graph boundary.
 - An OCaml FX importer and effect-based planner. The internal effect vocabulary
   covers inputs, allocation, copies, barriers, matrix multiply, linear, add,
   GELU, ReLU, opaque FX actions, and outputs.
@@ -43,8 +44,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   the binary command schedule through small Objective-C bindings. Native
   dispatch covers matmul, Q8 linear, RMSNorm, ShortConv, masked attention,
   embedding, range/fill, diff/cumsum, and two-index gather; compute pipelines
-  are cached per loaded library. Package ABI v3 also dispatches the model's
-  float16/float32/int64 cast directions.
+  are cached per loaded library. Package ABI v4 also dispatches the model's
+  float16/float32/int64 cast directions and its required broadcast/scalar
+  pointwise add, multiply, comparison, activation, and rotary operations.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -93,9 +95,9 @@ separate prefill and one-token decode graphs with one physical
 422,137,216-byte archive. Offline replanning produces 872 prefill commands and
 926 decode commands, both with zero opaque operations; both generated MSL
 programs compile and their serving packages validate all 241 static bindings.
-Native execution now covers every kernel family already emitted for those
-packages, but pointwise, movement, reduction, recurrent-state, final
-float16 linear, and complete command-buffer execution remain open. Exact parity was computed during the
+Native execution now covers every built-in, cast, and pointwise kernel family
+already required by those packages, but movement, reduction, recurrent-state,
+final float16 linear, and complete command-buffer execution remain open. Exact parity was computed during the
 capture process but its result file was not written after a post-capture
 package-check failure, so this capture adds no parity claim. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
@@ -160,12 +162,12 @@ archive. `ocaml-metal-runtime-smoke` maps that archive once, lets the OCaml
 executor bind runtime/static inputs and allocate outputs from the binary
 schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.json`.
-`native-schedule-smoke` generates a JSON-free, 51-command typed package and
-compiles its 16 emitted Metal entry points without launching a device.
+`native-schedule-smoke` generates a JSON-free, 81-command typed package and
+compiles its 25 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
-executes 15 commands across matmul, normalization, convolution, attention,
-embedding, position/mask, fill, and cast kernels and checks all 15 outputs byte
-for byte. It writes a plain-text report.
+executes 24 kernels across matmul, normalization, convolution, attention,
+embedding, position/mask, fill, cast, and the nine required pointwise forms and
+checks all 24 outputs byte for byte. It writes a plain-text report.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -213,7 +215,7 @@ PyTorch model
         │ torch.compile(backend=llmopt)
         ▼
 FX GraphModule + example inputs
-        │ compile-time FX manifest (JSON diagnostic/import boundary)
+        │ temporary compile-time JSON import (binary graph ABI open)
         ▼
 OCaml FX importer
         │ effect-based planned execution
@@ -245,9 +247,10 @@ OCaml serving runtime
 
 `fx.json` and `plan.txt` are compiler diagnostics, not serving inputs. The
 native runtime consumes only `package.llmopt`, the declared `.metallib`, and
-`weights.llmopt`. Package ABI v3 references weight-archive ABI v1 and retains
-read compatibility with ABI v2; neither file contains JSON. The preserved
-350M packages are ABI v2 and can be replanned to v3 without loading the model.
+`weights.llmopt`. Package ABI v4 references weight-archive ABI v1 and retains
+read compatibility with ABI v2 and v3; neither file contains JSON. The
+preserved 350M packages are ABI v2 and can be replanned without loading the
+model.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the
