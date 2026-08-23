@@ -15,6 +15,9 @@ sources:
   - id: metal-emitter
     resource: /lib/metal.ml
     title: Current Metal source emitter
+  - id: package-abi
+    resource: /lib/serving_package.ml
+    title: Versioned compiled-graph and serving package ABI
   - id: python-runtime
     resource: /python/llmopt_backend/metal_runtime.py
     title: Current Python generated-library loader
@@ -50,7 +53,7 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 |---|---|---|---|
 | Dynamo/FX graph capture | PyTorch invokes `backend=llmopt` and the captured graph reaches OCaml | FX manifest exporter and planner tests pass | implemented |
 | Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Current planner preserves unsupported FX nodes as opaque | partial |
-| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, tensor metadata, quantized weights, and cache layout; OCaml validates it | Current backend writes ad-hoc temporary FX/MSL/LLVM files | open |
+| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, tensor metadata, quantized weights, and cache layout; OCaml validates it | Ninja emits and validates a version-1 `compiled-graph` package with FX, plan, MSL, metallib, LLVM, typed kernel entries, and Q8-default cache policy; exported model weights and a complete operation schedule remain absent | partial |
 | Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 linear and small graph fixtures emit Metal; complete model lowering is absent | partial |
 | Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, allocates/binds buffers, and submits commands without Python or PyTorch in the serving hot path | Current loader is Python and dispatch is a PyTorch MPS C++ extension | open |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | Weight ownership remains in PyTorch modules | open |

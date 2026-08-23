@@ -4,6 +4,22 @@ type kernel =
   | Linear of int * int * int * bool * Ir.Value.t * Ir.Value.t * Ir.Value.t option * Ir.Value.t
   | Q8 of int * int * int * bool * Ir.Value.t * Ir.Value.t * Ir.Value.t * Ir.Value.t option * Ir.Value.t
 
+module Program = struct
+  type t = { source : string; kernels : Kernel_abi.Entry.t list }
+
+  let make ~source ~kernels = { source; kernels }
+  let source program = program.source
+  let kernels program = program.kernels
+end
+
+let kernel_entry ~name ~operation ~input_dtype ~output_dtype =
+  match
+    Kernel_abi.Entry.create ~name ~operation ~input_dtype ~output_dtype
+      ~threadgroup:(16, 16, 1)
+  with
+  | Ok entry -> entry
+  | Error message -> invalid_arg ("invalid built-in Metal kernel: " ^ message)
+
 let find_input_name graph value =
   Ir.Graph.nodes graph
   |> List.find_map (fun node ->
@@ -102,7 +118,7 @@ let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
   ^ "  }\n"
   ^ "}\n"
 
-let emit graph =
+let lower graph =
   let kernel =
     Ir.Graph.nodes graph
     |> List.find_map (fun node ->
@@ -161,7 +177,13 @@ let emit graph =
           ^ "}\n"
       in
       ignore (a_name, b_name, output_name);
-      Ok source
+      Ok
+        (Program.make ~source
+           ~kernels:
+             [ kernel_entry ~name:"llmopt_matmul"
+                 ~operation:Kernel_abi.Operation.Matmul
+                 ~input_dtype:Ir.Dtype.Float32
+                 ~output_dtype:Ir.Dtype.Float32 ])
   | Some (Fused (m, n, k, lhs, rhs, bias, output)) ->
       let a_name = input_name graph lhs in
       let b_name = input_name graph rhs in
@@ -197,7 +219,13 @@ let emit graph =
           ^ "}\n"
       in
       ignore (a_name, b_name, bias_name, output_name);
-      Ok source
+      Ok
+        (Program.make ~source
+           ~kernels:
+             [ kernel_entry ~name:"llmopt_fused_linear"
+                 ~operation:Kernel_abi.Operation.Fused_linear
+                 ~input_dtype:Ir.Dtype.Float32
+                 ~output_dtype:Ir.Dtype.Float32 ])
   | Some (Q8 (_m, _n, _k, _has_bias, input, weight, scale, bias, output)) ->
       let input_symbol = input_name graph input in
       let weight_symbol = input_name graph weight in
@@ -242,7 +270,25 @@ let emit graph =
             ~scale_cast:"float"
       in
       ignore (input_symbol, weight_symbol, scale_symbol, bias_symbol, output_symbol);
-      Ok source
+      Ok
+        (Program.make ~source
+           ~kernels:
+             [ kernel_entry ~name:"llmopt_q8_linear"
+                 ~operation:Kernel_abi.Operation.Q8_linear
+                 ~input_dtype:Ir.Dtype.Float16
+                 ~output_dtype:Ir.Dtype.Float16;
+               kernel_entry ~name:"llmopt_q8_linear_f32"
+                 ~operation:Kernel_abi.Operation.Q8_linear
+                 ~input_dtype:Ir.Dtype.Float32
+                 ~output_dtype:Ir.Dtype.Float32;
+               kernel_entry ~name:"llmopt_q8_dequantize"
+                 ~operation:Kernel_abi.Operation.Q8_dequantize
+                 ~input_dtype:Ir.Dtype.Int8
+                 ~output_dtype:Ir.Dtype.Float16;
+               kernel_entry ~name:"llmopt_q8_dequantize_f32"
+                 ~operation:Kernel_abi.Operation.Q8_dequantize
+                 ~input_dtype:Ir.Dtype.Int8
+                 ~output_dtype:Ir.Dtype.Float32 ])
   | Some (Linear (m, n, k, has_bias, input, weight, bias, output)) ->
       let input_symbol = input_name graph input in
       let weight_symbol = input_name graph weight in
@@ -283,4 +329,12 @@ let emit graph =
           ^ "}\n"
       in
       ignore (input_symbol, weight_symbol, bias_symbol, output_symbol);
-      Ok source
+      Ok
+        (Program.make ~source
+           ~kernels:
+             [ kernel_entry ~name:"llmopt_linear"
+                 ~operation:Kernel_abi.Operation.Linear
+                 ~input_dtype:Ir.Dtype.Float32
+                 ~output_dtype:Ir.Dtype.Float32 ])
+
+let emit graph = Result.map Program.source (lower graph)

@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-23
+* **Compiled-graph package ABI**: Added abstract OCaml smart-constructor modules for Metal kernel entries, package artifacts, quantized weights, and mandatory radix/Q8-default cache policy. `llmopt-fx` now emits `package.json` with copied FX, plan, MSL, metallib, and LLVM references; Ninja validates the complete artifact set for FP32 and Q8 fixtures. The emitted stage is explicitly `compiled-graph` with zero weights until model serialization and complete invocation scheduling are implemented.
 * **Goal**: Added the [complete OCaml serving goal](goal-serving-runtime.md), which tracks compiler coverage, package ABI, native Metal ownership, model/tokenizer serving, physical KV storage, radix integration, and benchmark evidence separately.
 * **Benchmark correction**: The 350M saved needle outputs are `RAVEN-4271Lottery` in all positions. Corrected the grader and documentation to report 6/6 control-code retrieval and 0/6 exact-only response formatting instead of conflating both as 0/6 retrieval.
 * **Experiment**: Recorded the [pre-integration ERS observation](experiments/exp-0010-preintegration-ers.md): eager and llmopt ERS were both 0.0, exact tensor/token parity held, and cached prompt tokens remained zero because the OCaml cache is not connected yet.

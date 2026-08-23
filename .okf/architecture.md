@@ -18,6 +18,9 @@ sources:
   - id: local-q8-lowering
     resource: /lib/metal.ml
     title: Q8 weight-only linear lowering
+  - id: local-package-abi
+    resource: /lib/serving_package.ml
+    title: Versioned serving-package representation and validator
   - id: local-metal-runtime
     resource: /native/metal_runtime.cpp
     title: PyTorch MPS Metal library bridge
@@ -64,6 +67,7 @@ optional Metal source plus textual LLVM IR.[^local-python-backend]
 | op support, shape checks, effect planning | OCaml planner |
 | graph transforms | Pure OCaml passes |
 | Metal/LLVM source generation | OCaml backends |
+| compiled graph package manifest and artifact validation | OCaml compiler and Ninja |
 | direct FX execution and device dispatch | Python FX GraphModule plus PyTorch MPS |
 | generated Q8 library loading and tensor binding | Python loader plus PyTorch MPS C++ bridge |
 | custom Metal buffers and command submission | PyTorch MPS stream through the bridge |
@@ -103,6 +107,16 @@ The KV layout accepts FP16 or grouped Q8 and defaults to Q8 at the serving
 configuration boundary. Current Q8 support defines typed policy, capacity, and
 byte accounting (int8 values plus FP16 group scales); physical Metal buffers
 and quantize/dequantize kernels are not connected to the cache in this slice.
+
+The FX compiler now emits a versioned `llmopt.serving-package` manifest beside
+the copied FX graph, optimized plan, MSL, and LLVM IR, with a declared metallib
+path that Ninja materializes. Kernel entry points carry an operation,
+input/output dtype, and threadgroup shape. Package construction rejects
+duplicate entry points, invalid relative artifact paths, unsupported cache
+policies, and a `serving` stage without weights. The current Ninja fixtures
+intentionally emit the `compiled-graph` stage with zero weights; model weight
+serialization and complete scheduled invocation metadata remain separate
+compiler work rather than being represented as finished serving data.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the

@@ -134,6 +134,78 @@ let () =
   | Ok source ->
       expect (String.contains source 'q') "Q8 Metal source emitted";
       expect (String.contains source 'c') "Q8 Metal char storage emitted");
+  let q8_program = expect_ok (Metal.lower q8_graph) in
+  let q8_entries = Metal.Program.kernels q8_program in
+  expect (List.length q8_entries = 4) "Q8 Metal kernel ABI entries";
+  let package_artifact path =
+    expect_ok (Serving_package.Artifact.create path)
+  in
+  let package_files =
+    Serving_package.Files.create ~fx:(package_artifact "fx.json")
+      ~plan:(package_artifact "plan.txt")
+      ~metal_source:(package_artifact "kernel.metal")
+      ~metal_library:(package_artifact "kernel.metallib")
+      ~llvm_ir:(package_artifact "kernel.ll")
+  in
+  let compiled_package =
+    expect_ok
+      (Serving_package.compiled_graph ~files:package_files ~kernels:q8_entries
+         ~cache:Serving_package.Cache.default ())
+  in
+  let package_round_trip =
+    expect_ok
+      (Serving_package.of_yojson
+         (Serving_package.to_yojson compiled_package))
+  in
+  expect
+    (Serving_package.stage package_round_trip
+    = Serving_package.Stage.Compiled_graph)
+    "compiled graph package stage";
+  expect
+    (List.length (Serving_package.kernels package_round_trip) = 4)
+    "compiled graph package kernel round trip";
+  expect
+    (Serving_package.Cache.default_kv
+       (Serving_package.cache package_round_trip)
+    = Kv_cache.Format.default)
+    "serving package defaults to Q8 KV";
+  expect
+    (List.mem Kv_cache.Format.f16
+       (Serving_package.Cache.supported_kv
+          (Serving_package.cache package_round_trip)))
+    "serving package supports F16 KV";
+  (match Serving_package.Artifact.create "../weights.bin" with
+  | Error _ -> ()
+  | Ok _ -> fail "serving package accepted a traversal path");
+  let first_entry = List.hd q8_entries in
+  (match
+     Serving_package.compiled_graph ~files:package_files
+       ~kernels:[ first_entry; first_entry ]
+       ~cache:Serving_package.Cache.default ()
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "serving package accepted duplicate kernel entries");
+  (match
+     Serving_package.serving ~files:package_files ~kernels:q8_entries
+       ~weights:[] ~cache:Serving_package.Cache.default ()
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "serving-stage package accepted missing weights");
+  let q8_weight =
+    expect_ok
+      (Serving_package.Weight.create ~name:"model.weight"
+         ~data:(package_artifact "weights/model.weight.q8")
+         ~dtype:Ir.Dtype.Int8 ~shape:[ 3; 4 ]
+         ~encoding:
+           (Serving_package.Weight.Encoding.Q8_per_output_channel
+              { scale = package_artifact "weights/model.weight.scale.f16";
+                scale_dtype = Ir.Dtype.Float16;
+                axis = 0 }))
+  in
+  ignore
+    (expect_ok
+       (Serving_package.serving ~files:package_files ~kernels:q8_entries
+          ~weights:[ q8_weight ] ~cache:Serving_package.Cache.default ()));
   (match Llvm_ir.emit q8_graph with
   | Error message -> fail message
   | Ok source ->

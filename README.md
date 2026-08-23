@@ -30,6 +30,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   FP16 activations by default; FP16 weights remain an explicit fallback.
 - Textual LLVM IR emission for inspection and a tiled Metal Shading Language
   emitter for the executable backend boundary.
+- A versioned OCaml serving-package ABI. The FX compiler emits a copied graph,
+  optimized plan, MSL, metallib reference, LLVM IR, typed kernel entries, and
+  mandatory radix/Q8-default cache policy; current output is explicitly the
+  weightless `compiled-graph` stage.
 - A Ninja-built PyTorch MPS C++ bridge that loads generated Q8 `.metallib`
   files, binds MPS tensors, and dispatches either the Phase 2 tiled kernel or
   the exact generated dequantization path with PyTorch-MPS linear.
@@ -81,10 +85,12 @@ The demo writes generated sources to `_build/llmopt-demo/` and prints the CPU
 reference result, capture summary, and fusion summary. `metal` compiles the
 small reference kernel with the installed Xcode Metal toolchain. `fx-smoke`
 plans `python/examples/linear_fx.json` and validates its LLVM and Metal
-artifacts. `bench-mps` loads LFM2.5-350M with Q8 weight-only quantization by
-default, runs eager MPS and the llmopt direct FX GraphModule executor, checks
-exact logits, and writes a JSON measurement. Pass `--quantization fp16` for
-the explicit fallback.
+artifacts, metallib, and serving-package manifest. `q8-fx-smoke` performs the
+same validation for the Q8 fixture. `_build/bin/llmopt-package-check` validates
+the package schema and every referenced file. `bench-mps` loads LFM2.5-350M
+with Q8 weight-only quantization by default, runs eager MPS and the llmopt
+direct FX GraphModule executor, checks exact logits, and writes a JSON
+measurement. Pass `--quantization fp16` for the explicit fallback.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -148,8 +154,9 @@ typed graph + schedule timeline
         ├── generated Q8 Metal library + MPS bridge (current execution probe)
         └── tiled Metal Shading Language (artifact)
 
-generated serving package (planned boundary)
-        │ metallib + graph/weight/cache metadata
+generated compiled-graph package (implemented boundary)
+        │ metallib + graph/kernel/cache metadata
+        │ weight export and serving stage (next)
         ▼
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
