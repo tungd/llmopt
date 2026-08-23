@@ -20,3 +20,4 @@ module Config : sig
 end
 
 val linear_kernel : config:Config.t -> rows:int -> unit -> unit
+val rms_norm_kernel : config:Config.t -> rows:int -> epsilon:float -> unit -> unit

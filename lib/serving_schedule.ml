@@ -40,16 +40,22 @@ let validate_command seen_values command =
         (Printf.sprintf "schedule node %d reads undefined value %d"
            command.Command.node_id id)
   | None ->
-      let argument_ids =
+      let referenced_ids =
         match command.Command.op with
         | Ir.Op.Opaque { arguments; keyword_arguments; _ } ->
-            arguments @ List.map snd keyword_arguments
-            |> List.concat_map Ir.Argument.values |> List.map value_id
-            |> List.sort_uniq Int.compare
-        | _ -> []
+            let ids =
+              arguments @ List.map snd keyword_arguments
+              |> List.concat_map Ir.Argument.values |> List.map value_id
+              |> List.sort_uniq Int.compare
+            in
+            if ids = [] then None else Some ids
+        | Ir.Op.Primitive (Ir.Primitive.Pointwise operation) ->
+            operation |> Ir.Pointwise.values |> List.map value_id
+            |> List.sort_uniq Int.compare |> Option.some
+        | _ -> None
       in
       let declared_ids = List.sort_uniq Int.compare input_ids in
-      if argument_ids <> [] && argument_ids <> declared_ids then
+      if Option.exists (fun ids -> ids <> declared_ids) referenced_ids then
         Error
           (Printf.sprintf
              "schedule node %d argument values disagree with its input table"
@@ -221,6 +227,7 @@ let rec write_argument writer = function
       Binary.Writer.u8 writer 0;
       Binary.Writer.u32 writer (value_id value)
   | Ir.Argument.Null -> Binary.Writer.u8 writer 1
+  | Ir.Argument.Ellipsis -> Binary.Writer.u8 writer 11
   | Ir.Argument.Bool value ->
       Binary.Writer.u8 writer 2;
       Binary.Writer.bool writer value
@@ -274,6 +281,7 @@ let rec read_argument ~depth values reader =
         let* id = Binary.Reader.u32 reader in
         find_value values id |> Result.map (fun value -> Ir.Argument.Value value)
     | 1 -> Ok Ir.Argument.Null
+    | 11 -> Ok Ir.Argument.Ellipsis
     | 2 -> Binary.Reader.bool reader |> Result.map (fun value -> Ir.Argument.Bool value)
     | 3 -> Binary.Reader.i64 reader |> Result.map (fun value -> Ir.Argument.Int value)
     | 4 ->
@@ -334,6 +342,176 @@ let read_named_arguments values reader =
   in
   loop [] count
 
+let write_scalar writer = function
+  | Ir.Scalar.Bool value ->
+      Binary.Writer.u8 writer 0;
+      Binary.Writer.bool writer value
+  | Ir.Scalar.Int value ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.i64 writer value
+  | Ir.Scalar.Float value ->
+      Binary.Writer.u8 writer 2;
+      Binary.Writer.float64 writer value
+
+let read_scalar reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> Binary.Reader.bool reader |> Result.map (fun value -> Ir.Scalar.Bool value)
+  | 1 -> Binary.Reader.i64 reader |> Result.map (fun value -> Ir.Scalar.Int value)
+  | 2 ->
+      let* value = Binary.Reader.float64 reader in
+      if Float.is_finite value then Ok (Ir.Scalar.Float value)
+      else Error "schedule contains a non-finite pointwise scalar"
+  | _ -> Error (Printf.sprintf "unknown pointwise scalar tag: %d" tag)
+
+let write_pointwise_operand writer = function
+  | Ir.Pointwise.Tensor value ->
+      Binary.Writer.u8 writer 0;
+      Binary.Writer.u32 writer (value_id value)
+  | Ir.Pointwise.Scalar scalar ->
+      Binary.Writer.u8 writer 1;
+      write_scalar writer scalar
+
+let read_pointwise_operand values reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 ->
+      let* id = Binary.Reader.u32 reader in
+      find_value values id |> Result.map (fun value -> Ir.Pointwise.Tensor value)
+  | 1 ->
+      read_scalar reader |> Result.map (fun scalar -> Ir.Pointwise.Scalar scalar)
+  | _ -> Error (Printf.sprintf "unknown pointwise operand tag: %d" tag)
+
+let write_pointwise writer = function
+  | Ir.Pointwise.Unary (operator, input) ->
+      Binary.Writer.u8 writer 0;
+      (match operator with
+      | Ir.Pointwise.Neg -> Binary.Writer.u8 writer 0
+      | Ir.Pointwise.Rsqrt -> Binary.Writer.u8 writer 1
+      | Ir.Pointwise.Silu -> Binary.Writer.u8 writer 2
+      | Ir.Pointwise.Cos -> Binary.Writer.u8 writer 3
+      | Ir.Pointwise.Sin -> Binary.Writer.u8 writer 4
+      | Ir.Pointwise.Pow exponent ->
+          Binary.Writer.u8 writer 5;
+          write_scalar writer exponent);
+      Binary.Writer.u32 writer (value_id input)
+  | Ir.Pointwise.Binary (operator, left, right) ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.u8 writer
+        (match operator with
+        | Ir.Pointwise.Add -> 0
+        | Ir.Pointwise.Mul -> 1
+        | Ir.Pointwise.Sub -> 2
+        | Ir.Pointwise.Logical_and -> 3
+        | Ir.Pointwise.Equal -> 4
+        | Ir.Pointwise.Not_equal -> 5
+        | Ir.Pointwise.Less_equal -> 6);
+      write_pointwise_operand writer left;
+      write_pointwise_operand writer right
+
+let read_pointwise values reader =
+  let* kind = Binary.Reader.u8 reader in
+  match kind with
+  | 0 ->
+      let* tag = Binary.Reader.u8 reader in
+      let* operator =
+        match tag with
+        | 0 -> Ok Ir.Pointwise.Neg
+        | 1 -> Ok Ir.Pointwise.Rsqrt
+        | 2 -> Ok Ir.Pointwise.Silu
+        | 3 -> Ok Ir.Pointwise.Cos
+        | 4 -> Ok Ir.Pointwise.Sin
+        | 5 -> read_scalar reader |> Result.map (fun scalar -> Ir.Pointwise.Pow scalar)
+        | _ -> Error (Printf.sprintf "unknown pointwise unary tag: %d" tag)
+      in
+      let* id = Binary.Reader.u32 reader in
+      let* input = find_value values id in
+      Ok (Ir.Pointwise.Unary (operator, input))
+  | 1 ->
+      let* tag = Binary.Reader.u8 reader in
+      let* operator =
+        match tag with
+        | 0 -> Ok Ir.Pointwise.Add
+        | 1 -> Ok Ir.Pointwise.Mul
+        | 2 -> Ok Ir.Pointwise.Sub
+        | 3 -> Ok Ir.Pointwise.Logical_and
+        | 4 -> Ok Ir.Pointwise.Equal
+        | 5 -> Ok Ir.Pointwise.Not_equal
+        | 6 -> Ok Ir.Pointwise.Less_equal
+        | _ -> Error (Printf.sprintf "unknown pointwise binary tag: %d" tag)
+      in
+      let* left = read_pointwise_operand values reader in
+      let* right = read_pointwise_operand values reader in
+      Ok (Ir.Pointwise.Binary (operator, left, right))
+  | _ -> Error (Printf.sprintf "unknown pointwise operation tag: %d" kind)
+
+let write_primitive writer = function
+  | Ir.Primitive.Pointwise operation ->
+      Binary.Writer.u8 writer 0;
+      write_pointwise writer operation
+  | Ir.Primitive.Cast dtype ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.u8 writer (dtype_tag dtype)
+  | Ir.Primitive.Reduce { operator = Ir.Reduction.Mean; axes; keepdim } ->
+      Binary.Writer.u8 writer 2;
+      Binary.Writer.u16 writer (List.length axes);
+      List.iter (Binary.Writer.u16 writer) axes;
+      Binary.Writer.bool writer keepdim
+  | Ir.Primitive.Movement movement ->
+      Binary.Writer.u8 writer 3;
+      (match movement with
+      | Ir.Movement.View -> Binary.Writer.u8 writer 0
+      | Ir.Movement.Reshape -> Binary.Writer.u8 writer 1
+      | Ir.Movement.Transpose { axis0; axis1 } ->
+          Binary.Writer.u8 writer 2;
+          Binary.Writer.u16 writer axis0;
+          Binary.Writer.u16 writer axis1
+      | Ir.Movement.Unsqueeze axis ->
+          Binary.Writer.u8 writer 3;
+          Binary.Writer.u16 writer axis
+      | Ir.Movement.Expand -> Binary.Writer.u8 writer 4
+      | Ir.Movement.Contiguous -> Binary.Writer.u8 writer 5)
+
+let read_primitive values reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> read_pointwise values reader |> Result.map (fun value -> Ir.Primitive.Pointwise value)
+  | 1 ->
+      let* tag = Binary.Reader.u8 reader in
+      dtype_of_tag tag |> Result.map (fun dtype -> Ir.Primitive.Cast dtype)
+  | 2 ->
+      let* count = Binary.Reader.u16 reader in
+      let rec axes acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* axis = Binary.Reader.u16 reader in
+          axes (axis :: acc) (remaining - 1)
+      in
+      let* axes = axes [] count in
+      let* keepdim = Binary.Reader.bool reader in
+      Ok
+        (Ir.Primitive.Reduce
+           { Ir.Reduction.operator = Mean; axes; keepdim })
+  | 3 ->
+      let* movement_tag = Binary.Reader.u8 reader in
+      let* movement =
+        match movement_tag with
+        | 0 -> Ok Ir.Movement.View
+        | 1 -> Ok Ir.Movement.Reshape
+        | 2 ->
+            let* axis0 = Binary.Reader.u16 reader in
+            let* axis1 = Binary.Reader.u16 reader in
+            Ok (Ir.Movement.Transpose { axis0; axis1 })
+        | 3 ->
+            Binary.Reader.u16 reader
+            |> Result.map (fun axis -> Ir.Movement.Unsqueeze axis)
+        | 4 -> Ok Ir.Movement.Expand
+        | 5 -> Ok Ir.Movement.Contiguous
+        | _ -> Error (Printf.sprintf "unknown movement tag: %d" movement_tag)
+      in
+      Ok (Ir.Primitive.Movement movement)
+  | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
+
 let write_op writer = function
   | Ir.Op.Input { name; source } ->
       Binary.Writer.u8 writer 0;
@@ -363,6 +541,12 @@ let write_op writer = function
       Binary.Writer.u8 writer (match broadcast with Shape.Same -> 0 | Shape.Row -> 1)
   | Ir.Op.Gelu -> Binary.Writer.u8 writer 6
   | Ir.Op.Relu -> Binary.Writer.u8 writer 7
+  | Ir.Op.Rms_norm { epsilon } ->
+      Binary.Writer.u8 writer 16;
+      Binary.Writer.float64 writer epsilon
+  | Ir.Op.Primitive primitive ->
+      Binary.Writer.u8 writer 15;
+      write_primitive writer primitive
   | Ir.Op.Opaque { op; target; arguments; keyword_arguments } ->
       Binary.Writer.u8 writer 8;
       Binary.Writer.string writer op;
@@ -455,6 +639,11 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Q8_linear { m; n; k; bias })
+  | 15 -> read_primitive values reader |> Result.map (fun value -> Ir.Op.Primitive value)
+  | 16 ->
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm { epsilon })
+      else Error "schedule contains a non-finite RMSNorm epsilon"
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"
@@ -462,7 +651,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 1;
+  Binary.Writer.u16 writer 2;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -482,7 +671,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 1 then
+    if version <> 1 && version <> 2 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else
       let* count = Binary.Reader.u32 reader in

@@ -51,6 +51,13 @@ type unary = {
   shape : Shape.t;
   logical_shape : Tensor_shape.t;
 }
+type primitive = {
+  operation : Ir.Primitive.t;
+  inputs : Ir.Value.t list;
+  shape : Shape.t;
+  logical_shape : Tensor_shape.t;
+  dtype : Ir.Dtype.t;
+}
 type opaque = {
   op : string;
   target : string;
@@ -79,6 +86,7 @@ type _ Effect.t +=
   | Add : add -> Ir.Value.t Effect.t
   | Gelu : unary -> Ir.Value.t Effect.t
   | Relu : unary -> Ir.Value.t Effect.t
+  | Primitive : primitive -> Ir.Value.t Effect.t
   | Opaque : opaque -> Ir.Value.t Effect.t
   | Output : { name : string; value : Ir.Value.t } -> unit Effect.t
   | Barrier_create : string -> Barrier.t Effect.t
@@ -101,6 +109,7 @@ let q8_linear request = Effect.perform (Q8_linear request)
 let add request = Effect.perform (Add request)
 let gelu request = Effect.perform (Gelu request)
 let relu request = Effect.perform (Relu request)
+let primitive request = Effect.perform (Primitive request)
 let opaque request = Effect.perform (Opaque request)
 let output ~name ~value = Effect.perform (Output { name; value })
 let create_barrier name = Effect.perform (Barrier_create name)

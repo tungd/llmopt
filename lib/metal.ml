@@ -12,13 +12,18 @@ module Program = struct
   let kernels program = program.kernels
 end
 
-let kernel_entry ~name ~operation ~input_dtype ~output_dtype =
+let kernel_entry_with_threadgroup ~threadgroup ~name ~operation ~input_dtype
+    ~output_dtype =
   match
     Kernel_abi.Entry.create ~name ~operation ~input_dtype ~output_dtype
-      ~threadgroup:(16, 16, 1)
+      ~threadgroup
   with
   | Ok entry -> entry
   | Error message -> invalid_arg ("invalid built-in Metal kernel: " ^ message)
+
+let kernel_entry ~name ~operation ~input_dtype ~output_dtype =
+  kernel_entry_with_threadgroup ~threadgroup:(16, 16, 1) ~name ~operation
+    ~input_dtype ~output_dtype
 
 let find_input_name graph value =
   Ir.Graph.nodes graph
@@ -119,7 +124,59 @@ let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
   ^ "  }\n"
   ^ "}\n"
 
-let lower graph =
+let rms_norm_source =
+  "\nstruct RmsNormParams { uint rows; uint width; float epsilon; };\n\n"
+  ^ "kernel void llmopt_rms_norm_f32_f16(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint row [[thread_position_in_grid]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = 0; col < params.width; ++col) {\n"
+  ^ "    const float value = input[base + col];\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = 0; col < params.width; ++col)\n"
+  ^ "    output[base + col] = half(input[base + col] * inverse * float(weight[col]));\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f16(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint row [[thread_position_in_grid]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = 0; col < params.width; ++col) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = 0; col < params.width; ++col)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse * float(weight[col]));\n"
+  ^ "}\n"
+
+let rms_norm_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_rms_norm_f32_f16"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_rms_norm_f16"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let has_rms_norm graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with Ir.Op.Rms_norm _ -> true | _ -> false)
+
+let lower_primary graph =
   let kernel =
     Ir.Graph.nodes graph
     |> List.find_map (fun node ->
@@ -337,5 +394,21 @@ let lower graph =
                  ~operation:Kernel_abi.Operation.Linear
                  ~input_dtype:Ir.Dtype.Float32
                  ~output_dtype:Ir.Dtype.Float32 ])
+
+let lower graph =
+  let include_rms_norm = has_rms_norm graph in
+  match lower_primary graph with
+  | Ok program when include_rms_norm ->
+      Ok
+        (Program.make
+           ~source:(Program.source program ^ rms_norm_source)
+           ~kernels:(Program.kernels program @ rms_norm_entries))
+  | Ok program -> Ok program
+  | Error _ when include_rms_norm ->
+      Ok
+        (Program.make
+           ~source:("#include <metal_stdlib>\nusing namespace metal;\n" ^ rms_norm_source)
+           ~kernels:rms_norm_entries)
+  | Error message -> Error message
 
 let emit graph = Result.map Program.source (lower graph)

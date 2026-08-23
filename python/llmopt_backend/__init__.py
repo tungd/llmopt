@@ -125,6 +125,8 @@ def _argument(value: Any) -> dict[str, Any]:
         return {"kind": "node", "name": str(value.name)}
     if value is None:
         return {"kind": "null"}
+    if value is Ellipsis:
+        return {"kind": "ellipsis"}
     if type(value) is bool:
         return {"kind": "bool", "value": value}
     if type(value) is int:
@@ -206,6 +208,10 @@ def _metadata(node: Any, fallback: Any = None) -> tuple[list[int] | None, str]:
     candidate = meta.get("val")
     if candidate is None:
         candidate = meta.get("tensor_meta")
+    if candidate is None:
+        # Dynamo's compiled GraphModule commonly records FakeTensor results
+        # under ``example_value`` rather than ``val`` or ``tensor_meta``.
+        candidate = meta.get("example_value")
     if candidate is None:
         candidate = fallback
     return _shape(candidate), _dtype(candidate)

@@ -32,6 +32,46 @@ let expect_int_array actual expected message =
      Array.for_all2 ( = ) actual expected)
     message
 
+let fx_argument kind fields = `Assoc (("kind", `String kind) :: fields)
+let fx_node_argument name = fx_argument "node" [ ("name", `String name) ]
+let fx_int_argument value = fx_argument "int" [ ("value", `Int value) ]
+let fx_float_argument value = fx_argument "float" [ ("value", `Float value) ]
+let fx_bool_argument value = fx_argument "bool" [ ("value", `Bool value) ]
+let fx_symbol_argument value = fx_argument "symbol" [ ("value", `String value) ]
+
+let fx_node ?(op = "call_method") ?(inputs = []) ?(arguments = [])
+    ?(keywords = []) ?(dtype = "float16") ~name ~target ~shape () =
+  `Assoc
+    [ ("name", `String name);
+      ("op", `String op);
+      ("target", `String target);
+      ("inputs", `List (List.map (fun value -> `String value) inputs));
+      ("shape", `List (List.map (fun value -> `Int value) shape));
+      ("dtype", `String dtype);
+      ( "binding",
+        `Assoc
+          [ ( "kind",
+              `String (if op = "placeholder" then "runtime" else "computed") ) ] );
+      ( "arguments",
+        `Assoc
+          [ ("args", `List arguments);
+            ( "kwargs",
+              `List
+                (List.map
+                   (fun (name, value) ->
+                     `Assoc [ ("name", `String name); ("value", value) ])
+                   keywords) ) ] ) ]
+
+let primitive_value ~operation ~inputs ~logical_shape ~dtype =
+  Tile_effect.primitive
+    {
+      operation;
+      inputs;
+      shape = Tensor_shape.matrix_exn logical_shape;
+      logical_shape;
+      dtype;
+    }
+
 let () =
   let rank_three = Tensor_shape.of_ints_exn [ 2; 3; 4 ] in
   expect (Tensor_shape.rank rank_three = 3) "rank-three tensor shape";
@@ -45,6 +85,107 @@ let () =
   expect
     (Tensor_shape.equal (Ir.Value.logical_shape rank_three_value) rank_three)
     "IR value preserves logical rank";
+  let broadcast_shape =
+    expect_ok
+      (Tensor_shape.broadcast (Tensor_shape.of_ints_exn [ 1; 2; 4 ])
+         (Tensor_shape.of_ints_exn [ 4 ])
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect
+    (Tensor_shape.dimensions broadcast_shape = [ 1; 2; 4 ])
+    "N-D trailing-axis broadcast";
+  let reduced_shape =
+    expect_ok
+      (Tensor_shape.reduce broadcast_shape ~axes:[ 2 ] ~keepdim:true
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect
+    (Tensor_shape.dimensions reduced_shape = [ 1; 2; 1 ])
+    "N-D keepdim reduction";
+  let primitive_kernel () =
+    let input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
+    let channel_shape = Tensor_shape.of_ints_exn [ 4 ] in
+    let row_shape = Tensor_shape.of_ints_exn [ 1; 2; 1 ] in
+    let input =
+      Tile_effect.tensor_input ~name:"primitive_input"
+        ~source:Ir.Input_source.Runtime ~shape:input_shape
+        ~dtype:Ir.Dtype.Float32
+    in
+    let weight =
+      Tile_effect.tensor_input ~name:"primitive_weight"
+        ~source:Ir.Input_source.Runtime ~shape:channel_shape
+        ~dtype:Ir.Dtype.Float32
+    in
+    let square =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Pointwise
+             (Ir.Pointwise.Unary
+                (Ir.Pointwise.Pow (Ir.Scalar.Int 2), input)))
+        ~inputs:[ input ] ~logical_shape:input_shape ~dtype:Ir.Dtype.Float32
+    in
+    let mean =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Reduce
+             { Ir.Reduction.operator = Mean; axes = [ 2 ]; keepdim = true })
+        ~inputs:[ square ] ~logical_shape:row_shape ~dtype:Ir.Dtype.Float32
+    in
+    let stabilized =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Pointwise
+             (Ir.Pointwise.Binary
+                ( Ir.Pointwise.Add,
+                  Ir.Pointwise.Tensor mean,
+                  Ir.Pointwise.Scalar (Ir.Scalar.Float 0.0) )))
+        ~inputs:[ mean ] ~logical_shape:row_shape ~dtype:Ir.Dtype.Float32
+    in
+    let inverse =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Pointwise
+             (Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, stabilized)))
+        ~inputs:[ stabilized ] ~logical_shape:row_shape ~dtype:Ir.Dtype.Float32
+    in
+    let normalized =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Pointwise
+             (Ir.Pointwise.Binary
+                ( Ir.Pointwise.Mul,
+                  Ir.Pointwise.Tensor input,
+                  Ir.Pointwise.Tensor inverse )))
+        ~inputs:[ input; inverse ] ~logical_shape:input_shape
+        ~dtype:Ir.Dtype.Float32
+    in
+    let scaled =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Pointwise
+             (Ir.Pointwise.Binary
+                ( Ir.Pointwise.Mul,
+                  Ir.Pointwise.Tensor normalized,
+                  Ir.Pointwise.Tensor weight )))
+        ~inputs:[ normalized; weight ] ~logical_shape:input_shape
+        ~dtype:Ir.Dtype.Float32
+    in
+    Tile_effect.output ~name:"primitive_output" ~value:scaled
+  in
+  let primitive_inputs =
+    [ ( "primitive_input",
+        Cpu.Tensor.of_rows
+          [| [| 1.; 1.; 1.; 1. |]; [| 2.; 2.; 2.; 2. |] |] );
+      ( "primitive_weight",
+        Cpu.Tensor.of_rows [| [| 1.; 2.; 3.; 4. |] |] ) ]
+  in
+  (match Cpu.run ~inputs:primitive_inputs primitive_kernel with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      let output = Cpu.output execution "primitive_output" |> Option.get in
+      let rows = Cpu.Tensor.to_rows output in
+      expect (rows = [| [| 1.; 2.; 3.; 4. |]; [| 1.; 2.; 3.; 4. |] |])
+        "CPU reference interprets rank-aware RMSNorm primitives");
   let left = Shape.of_ints_exn ~rows:2 ~cols:4 in
   let right = Shape.of_ints_exn ~rows:4 ~cols:3 in
   let result =
@@ -371,8 +512,15 @@ let () =
     = List.length (Ir.Graph.nodes argument_graph))
     "binary schedule preserves every command";
   expect
-    (Serving_schedule.opaque_count argument_schedule_round_trip = 1)
-    "binary schedule preserves opaque operator status";
+    (Serving_schedule.opaque_count argument_schedule_round_trip = 0)
+    "view lowers to a typed movement command";
+  expect
+    (Serving_schedule.commands argument_schedule_round_trip
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.View) -> true
+           | _ -> false))
+    "binary schedule preserves typed view movement";
   let round_trip_input =
     Serving_schedule.runtime_inputs argument_schedule_round_trip
     |> List.assoc "x"
@@ -381,6 +529,119 @@ let () =
     (Tensor_shape.dimensions (Ir.Value.logical_shape round_trip_input)
     = [ 2; 3; 4 ])
     "binary schedule preserves logical rank";
+  let primitive_fx =
+    let nodes =
+      [ fx_node ~op:"placeholder" ~name:"x" ~target:"x"
+          ~shape:[ 1; 2; 4 ] ();
+        fx_node ~op:"placeholder" ~name:"weight" ~target:"weight"
+          ~shape:[ 4 ] ();
+        fx_node ~name:"square" ~target:"pow" ~inputs:[ "x" ]
+          ~arguments:[ fx_node_argument "x"; fx_int_argument 2 ]
+          ~shape:[ 1; 2; 4 ] ();
+        fx_node ~name:"mean" ~target:"mean" ~inputs:[ "square" ]
+          ~arguments:
+            [ fx_node_argument "square"; fx_int_argument (-1);
+              fx_bool_argument true ]
+          ~shape:[ 1; 2; 1 ] ();
+        fx_node ~op:"call_function" ~name:"epsilon" ~target:"aten.add.Tensor"
+          ~inputs:[ "mean" ]
+          ~arguments:[ fx_node_argument "mean"; fx_float_argument 1e-5 ]
+          ~shape:[ 1; 2; 1 ] ();
+        fx_node ~op:"call_function" ~name:"inverse"
+          ~target:"torch._VariableFunctionsClass.rsqrt" ~inputs:[ "epsilon" ]
+          ~arguments:[ fx_node_argument "epsilon" ] ~shape:[ 1; 2; 1 ] ();
+        fx_node ~op:"call_function" ~name:"normalized" ~target:"aten.mul.Tensor"
+          ~inputs:[ "x"; "inverse" ]
+          ~arguments:[ fx_node_argument "x"; fx_node_argument "inverse" ]
+          ~shape:[ 1; 2; 4 ] ();
+        fx_node ~name:"cast" ~target:"to" ~inputs:[ "normalized" ]
+          ~arguments:
+            [ fx_node_argument "normalized"; fx_symbol_argument "torch.float16" ]
+          ~shape:[ 1; 2; 4 ] ();
+        fx_node ~op:"call_function" ~name:"scaled" ~target:"aten.mul.Tensor"
+          ~inputs:[ "weight"; "cast" ]
+          ~arguments:[ fx_node_argument "weight"; fx_node_argument "cast" ]
+          ~shape:[ 1; 2; 4 ] ();
+        fx_node ~name:"transposed" ~target:"transpose" ~inputs:[ "scaled" ]
+          ~arguments:
+            [ fx_node_argument "scaled"; fx_int_argument 1; fx_int_argument 2 ]
+          ~shape:[ 1; 4; 2 ] ();
+        fx_node ~name:"contiguous" ~target:"contiguous"
+          ~inputs:[ "transposed" ] ~arguments:[ fx_node_argument "transposed" ]
+          ~shape:[ 1; 4; 2 ] () ]
+    in
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2); ("nodes", `List nodes);
+             ("outputs", `List [ `String "contiguous" ]) ]))
+  in
+  let primitive_graph = expect_ok (Fx_plan.plan primitive_fx) in
+  let primitive_optimized = Passes.fuse_rms_norm primitive_graph in
+  expect
+    (List.length (Ir.Graph.nodes primitive_optimized)
+    = List.length (Ir.Graph.nodes primitive_graph) - 6)
+    "RMSNorm fusion removes six intermediate commands";
+  expect
+    (Ir.Graph.nodes primitive_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Rms_norm { epsilon } -> Float.abs (epsilon -. 1e-5) < 1e-12
+           | _ -> false))
+    "optimizer emits a typed RMSNorm command";
+  let rms_program = expect_ok (Metal.lower primitive_optimized) in
+  expect
+    (Metal.Program.kernels rms_program
+    |> List.for_all (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm))
+    "fused RMSNorm graph emits only RMSNorm kernel entries";
+  expect
+    (Metal.Program.kernels rms_program |> List.length = 2)
+    "Metal emitter provides float32-to-float16 and float16 RMSNorm kernels";
+  let primitive_schedule =
+    primitive_graph |> Serving_schedule.of_graph |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count primitive_schedule = 0)
+    "RMSNorm and movement primitives avoid opaque commands";
+  let primitive_round_trip =
+    primitive_schedule |> Serving_schedule.to_bytes
+    |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count primitive_round_trip = 0)
+    "typed primitives survive the binary schedule";
+  expect
+    (Serving_schedule.commands primitive_round_trip
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive
+               (Ir.Primitive.Reduce
+                 { Ir.Reduction.operator = Mean; axes = [ 2 ]; keepdim = true }) ->
+               true
+           | _ -> false))
+    "binary schedule preserves rank-normalized reduction axes";
+  let optimized_schedule =
+    primitive_optimized |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands optimized_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Rms_norm { epsilon } -> Float.abs (epsilon -. 1e-5) < 1e-12
+           | _ -> false))
+    "binary schedule preserves fused RMSNorm";
+  let rms_package =
+    expect_ok
+      (Serving_package.compiled_graph ~files:package_files
+         ~kernels:(Metal.Program.kernels rms_program)
+         ~schedule:optimized_schedule ~cache:Serving_package.Cache.default ())
+    |> Serving_package.to_bytes |> Serving_package.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_package.kernels rms_package
+    |> List.for_all (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm))
+    "binary package preserves the RMSNorm kernel ABI";
   (match Llvm_ir.emit q8_graph with
   | Error message -> fail message
   | Ok source ->

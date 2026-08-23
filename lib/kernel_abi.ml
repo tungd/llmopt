@@ -1,5 +1,11 @@
 module Operation = struct
-  type t = Matmul | Fused_linear | Linear | Q8_linear | Q8_dequantize
+  type t =
+    | Matmul
+    | Fused_linear
+    | Linear
+    | Q8_linear
+    | Q8_dequantize
+    | Rms_norm
 
   let to_string = function
     | Matmul -> "matmul"
@@ -7,6 +13,7 @@ module Operation = struct
     | Linear -> "linear"
     | Q8_linear -> "q8-linear"
     | Q8_dequantize -> "q8-dequantize"
+    | Rms_norm -> "rms-norm"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -14,6 +21,7 @@ module Operation = struct
     | "linear" -> Ok Linear
     | "q8-linear" -> Ok Q8_linear
     | "q8-dequantize" -> Ok Q8_dequantize
+    | "rms-norm" -> Ok Rms_norm
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 

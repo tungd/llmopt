@@ -15,3 +15,4 @@
 * [Safetensors mapped Metal dispatch](exp-0013-safetensors-metal-mapping.md) - one binary tensor archive mapped and bound directly by the OCaml runtime.
 * [LFM2.5-350M Q8 tensor export](exp-0014-lfm25-350m-tensor-export.md) - complete captured static state in one validated serving archive.
 * [Binary serving schedule](exp-0015-binary-serving-schedule.md) - versioned rank-aware command stream and JSON-free native startup.
+* [Rank-aware primitives and fused RMSNorm](exp-0016-rank-primitives-rmsnorm.md) - Dynamo metadata correction, typed N-D commands, RMSNorm fusion, and Metal compilation.

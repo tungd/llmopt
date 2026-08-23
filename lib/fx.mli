@@ -8,6 +8,7 @@ module Argument : sig
   type t =
     | Node of string
     | Null
+    | Ellipsis
     | Bool of bool
     | Int of int
     | Float of float
@@ -35,6 +36,7 @@ module Node : sig
 end
 
 type t
+val version : t -> int
 val nodes : t -> Node.t list
 val outputs : t -> string list
 val of_json : Yojson.Basic.t -> (t, string) result

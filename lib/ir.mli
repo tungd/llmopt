@@ -40,10 +40,56 @@ module Value : sig
   val equal : t -> t -> bool
 end
 
+module Scalar : sig
+  type t = Bool of bool | Int of int | Float of float
+  val to_float : t -> float
+  val to_string : t -> string
+end
+
+module Pointwise : sig
+  type operand = Tensor of Value.t | Scalar of Scalar.t
+  type unary = Neg | Rsqrt | Silu | Cos | Sin | Pow of Scalar.t
+  type binary = Add | Mul | Sub | Logical_and | Equal | Not_equal | Less_equal
+  type t = Unary of unary * Value.t | Binary of binary * operand * operand
+
+  val values : t -> Value.t list
+  val to_string : t -> string
+end
+
+module Reduction : sig
+  type operator = Mean
+  type t = { operator : operator; axes : int list; keepdim : bool }
+  val to_string : t -> string
+end
+
+module Movement : sig
+  type t =
+    | View
+    | Reshape
+    | Transpose of { axis0 : int; axis1 : int }
+    | Unsqueeze of int
+    | Expand
+    | Contiguous
+
+  val to_string : t -> string
+end
+
+module Primitive : sig
+  type t =
+    | Pointwise of Pointwise.t
+    | Cast of Dtype.t
+    | Reduce of Reduction.t
+    | Movement of Movement.t
+
+  val values : t -> Value.t list
+  val to_string : t -> string
+end
+
 module Argument : sig
   type t =
     | Value of Value.t
     | Null
+    | Ellipsis
     | Bool of bool
     | Int of int
     | Float of float
@@ -69,6 +115,8 @@ module Op : sig
     | Add of { broadcast : Shape.broadcast }
     | Gelu
     | Relu
+    | Rms_norm of { epsilon : float }
+    | Primitive of Primitive.t
     | Opaque of {
         op : string;
         target : string;

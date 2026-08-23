@@ -1,3 +1,5 @@
+let ( let* ) = Result.bind
+
 let contains haystack needle =
   let haystack_length = String.length haystack in
   let needle_length = String.length needle in
@@ -72,6 +74,7 @@ let rec argument_for env = function
   | Fx.Argument.Node name ->
       value_for env name |> Result.map (fun value -> Ir.Argument.Value value)
   | Fx.Argument.Null -> Ok Ir.Argument.Null
+  | Fx.Argument.Ellipsis -> Ok Ir.Argument.Ellipsis
   | Fx.Argument.Bool value -> Ok (Ir.Argument.Bool value)
   | Fx.Argument.Int value -> Ok (Ir.Argument.Int value)
   | Fx.Argument.Float value -> Ok (Ir.Argument.Float value)
@@ -121,6 +124,111 @@ let keyword_arguments_for env fields =
   in
   loop [] fields
 
+let scalar_for = function
+  | Fx.Argument.Bool value -> Ok (Ir.Scalar.Bool value)
+  | Fx.Argument.Int value -> Ok (Ir.Scalar.Int value)
+  | Fx.Argument.Float value when Float.is_finite value ->
+      Ok (Ir.Scalar.Float value)
+  | _ -> Error "expected a finite scalar FX argument"
+
+let pointwise_operand_for env = function
+  | Fx.Argument.Node name ->
+      value_for env name |> Result.map (fun value -> Ir.Pointwise.Tensor value)
+  | argument ->
+      scalar_for argument |> Result.map (fun scalar -> Ir.Pointwise.Scalar scalar)
+
+let pointwise_operands_for env node inputs =
+  match Fx.Node.arguments node with
+  | [] -> Ok (List.map (fun value -> Ir.Pointwise.Tensor value) inputs)
+  | arguments ->
+      let rec loop acc = function
+        | [] -> Ok (List.rev acc)
+        | argument :: rest ->
+            let* operand = pointwise_operand_for env argument in
+            loop (operand :: acc) rest
+      in
+      loop [] arguments
+
+let operand_shape = function
+  | Ir.Pointwise.Tensor value -> Some (Ir.Value.logical_shape value)
+  | Ir.Pointwise.Scalar _ -> None
+
+let pointwise_shape operands =
+  let shapes = List.filter_map operand_shape operands in
+  match shapes with
+  | [] -> Error "pointwise operation has no tensor operand"
+  | first :: rest ->
+      List.fold_left
+        (fun result shape ->
+          let* result = result in
+          Tensor_shape.broadcast result shape
+          |> Result.map_error Tensor_shape.error_to_string)
+        (Ok first) rest
+
+let declared_or_inferred node inferred =
+  match logical_shape_for node with
+  | Error _ -> Ok inferred
+  | Ok declared when Tensor_shape.equal declared inferred -> Ok declared
+  | Ok declared ->
+      Error
+        (Printf.sprintf "FX node %s declares shape %s but inference gives %s"
+           (Fx.Node.name node) (Tensor_shape.to_string declared)
+           (Tensor_shape.to_string inferred))
+
+let primitive_shape logical_shape =
+  Tensor_shape.matrix logical_shape
+  |> Result.map_error Tensor_shape.error_to_string
+
+let emit_primitive node ~operation ~inputs ~logical_shape =
+  let* shape = primitive_shape logical_shape in
+  let value =
+    Tile_effect.primitive
+      {
+        operation;
+        inputs;
+        shape;
+        logical_shape;
+        dtype = Fx.Node.dtype node;
+      }
+  in
+  Ok value
+
+let keyword name node =
+  Fx.Node.keyword_arguments node |> List.assoc_opt name
+
+let scalar_is_one = function
+  | Fx.Argument.Int 1 | Fx.Argument.Float 1.0 -> true
+  | _ -> false
+
+let add_alpha_is_supported node =
+  match keyword "alpha" node with None -> true | Some value -> scalar_is_one value
+
+let axis_argument = function
+  | Fx.Argument.Int axis -> Ok axis
+  | _ -> Error "expected an integer axis"
+
+let axes_argument shape = function
+  | Fx.Argument.Int axis ->
+      Tensor_shape.normalize_axes shape [ axis ]
+      |> Result.map_error Tensor_shape.error_to_string
+  | Fx.Argument.List axes | Fx.Argument.Tuple axes ->
+      let rec loop acc = function
+        | [] ->
+            Tensor_shape.normalize_axes shape (List.rev acc)
+            |> Result.map_error Tensor_shape.error_to_string
+        | argument :: rest ->
+            let* axis = axis_argument argument in
+            loop (axis :: acc) rest
+      in
+      loop [] axes
+  | Fx.Argument.Null ->
+      Ok (List.init (Tensor_shape.rank shape) Fun.id)
+  | _ -> Error "expected an integer or sequence of reduction axes"
+
+let bool_argument = function
+  | Fx.Argument.Bool value -> Ok value
+  | _ -> Error "expected a bool argument"
+
 let fail_unsupported node reason =
   Error
     (Printf.sprintf "unsupported FX node %s (%s): %s" (Fx.Node.name node)
@@ -128,6 +236,7 @@ let fail_unsupported node reason =
 
 let plan fx_graph =
   let env = Hashtbl.create (List.length (Fx.nodes fx_graph)) in
+  let typed_manifest = Fx.version fx_graph >= 2 in
   let lower () =
     let lower_node node =
       let name = Fx.Node.name node in
@@ -154,6 +263,163 @@ let plan fx_graph =
             in
             Hashtbl.replace env name value;
             Ok ()
+      in
+      let bind_primitive = function
+        | Error _ as error -> error
+        | Ok value ->
+            Hashtbl.replace env name value;
+            Ok ()
+      in
+      let lower_or_opaque inputs result =
+        match result with
+        | Ok _ -> bind_primitive result
+        | Error _ -> lower_opaque inputs
+      in
+      let lower_pointwise_binary operator inputs =
+        let* operands = pointwise_operands_for env node inputs in
+        match operands with
+        | [ left; right ] ->
+            let* inferred = pointwise_shape operands in
+            let* logical_shape = declared_or_inferred node inferred in
+            emit_primitive node
+              ~operation:
+                (Ir.Primitive.Pointwise
+                   (Ir.Pointwise.Binary (operator, left, right)))
+              ~inputs ~logical_shape
+        | _ -> Error "binary pointwise operation does not have two operands"
+      in
+      let lower_pointwise_unary operator inputs =
+        match inputs with
+        | [ input ] ->
+            let inferred = Ir.Value.logical_shape input in
+            let* logical_shape = declared_or_inferred node inferred in
+            emit_primitive node
+              ~operation:
+                (Ir.Primitive.Pointwise
+                   (Ir.Pointwise.Unary (operator, input)))
+              ~inputs ~logical_shape
+        | _ -> Error "unary pointwise operation does not have one tensor input"
+      in
+      let lower_pow inputs =
+        match inputs, Fx.Node.arguments node with
+        | [ input ], _self :: exponent :: _ ->
+            let* exponent = scalar_for exponent in
+            lower_pointwise_unary (Ir.Pointwise.Pow exponent) inputs
+        | _ -> Error "pow requires one tensor and one scalar exponent"
+      in
+      let lower_cast dtype inputs =
+        match inputs with
+        | [ input ] ->
+            let inferred = Ir.Value.logical_shape input in
+            let* logical_shape = declared_or_inferred node inferred in
+            emit_primitive node ~operation:(Ir.Primitive.Cast dtype) ~inputs
+              ~logical_shape
+        | _ -> Error "cast requires one tensor input"
+      in
+      let lower_mean inputs =
+        match inputs with
+        | [ input ] ->
+            let input_shape = Ir.Value.logical_shape input in
+            let positional =
+              match Fx.Node.arguments node with _self :: rest -> rest | [] -> []
+            in
+            let dim =
+              match keyword "dim" node, positional with
+              | Some value, _ -> value
+              | None, value :: _ -> value
+              | None, [] -> Fx.Argument.Null
+            in
+            let keepdim =
+              match keyword "keepdim" node, positional with
+              | Some value, _ -> bool_argument value
+              | None, _dim :: value :: _ -> bool_argument value
+              | None, _ -> Ok false
+            in
+            let* axes = axes_argument input_shape dim in
+            let* keepdim = keepdim in
+            let* inferred =
+              Tensor_shape.reduce input_shape ~axes ~keepdim
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            let* logical_shape = declared_or_inferred node inferred in
+            emit_primitive node
+              ~operation:
+                (Ir.Primitive.Reduce
+                   { Ir.Reduction.operator = Mean; axes; keepdim })
+              ~inputs ~logical_shape
+        | _ -> Error "mean requires one tensor input"
+      in
+      let lower_movement movement inferred inputs =
+        match inputs with
+        | [ _ ] ->
+            let* logical_shape = declared_or_inferred node inferred in
+            emit_primitive node ~operation:(Ir.Primitive.Movement movement)
+              ~inputs ~logical_shape
+        | _ -> Error "movement operation requires one tensor input"
+      in
+      let lower_reshape movement inputs =
+        match inputs with
+        | [ input ] ->
+            let source = Ir.Value.logical_shape input in
+            let* target = logical_shape_for node in
+            let* inferred =
+              Tensor_shape.reshape source target
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            lower_movement movement inferred inputs
+        | _ -> Error "reshape requires one tensor input"
+      in
+      let lower_transpose inputs =
+        match inputs, Fx.Node.arguments node with
+        | [ input ], _self :: axis0 :: axis1 :: _ ->
+            let* axis0 = axis_argument axis0 in
+            let* axis1 = axis_argument axis1 in
+            let source = Ir.Value.logical_shape input in
+            let* normalized_axis0 =
+              Tensor_shape.normalize_axis source axis0
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            let* normalized_axis1 =
+              Tensor_shape.normalize_axis source axis1
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            let* inferred =
+              Tensor_shape.transpose source ~axis0:normalized_axis0
+                ~axis1:normalized_axis1
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            lower_movement
+              (Ir.Movement.Transpose
+                 { axis0 = normalized_axis0; axis1 = normalized_axis1 })
+              inferred inputs
+        | _ -> Error "transpose requires one tensor and two axes"
+      in
+      let lower_unsqueeze inputs =
+        match inputs, Fx.Node.arguments node with
+        | [ input ], _self :: axis :: _ ->
+            let* axis = axis_argument axis in
+            let source = Ir.Value.logical_shape input in
+            let* normalized_axis =
+              Tensor_shape.normalize_axis ~allow_end:true source axis
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            let* inferred =
+              Tensor_shape.unsqueeze source ~axis:normalized_axis
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            lower_movement (Ir.Movement.Unsqueeze normalized_axis) inferred inputs
+        | _ -> Error "unsqueeze requires one tensor and one axis"
+      in
+      let lower_expand inputs =
+        match inputs with
+        | [ input ] ->
+            let* target = logical_shape_for node in
+            let* inferred =
+              Tensor_shape.expand (Ir.Value.logical_shape input) ~target
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            lower_movement Ir.Movement.Expand inferred inputs
+        | _ -> Error "expand requires one tensor input"
       in
       match Fx.Node.op node with
       | "placeholder" | "get_attr" ->
@@ -184,109 +450,194 @@ let plan fx_graph =
           | Error message -> Error message
           | Ok inputs ->
               let target = String.lowercase_ascii (Fx.Node.target node) in
-              if contains target "q8_linear" && (List.length inputs = 3 || List.length inputs = 4) then
-                let input, weight, scale, bias =
-                  match inputs with
-                  | [ input; weight; scale ] -> input, weight, scale, None
-                  | [ input; weight; scale; bias ] -> input, weight, scale, Some bias
-                  | _ -> assert false
+              if contains target "q8_linear" then
+                let lower_q8 input weight scale bias =
+                  if Ir.Value.dtype weight <> Ir.Dtype.Int8 then
+                    fail_unsupported node
+                      "q8_linear weight must have int8 storage"
+                  else if
+                    Ir.Value.dtype scale <> Ir.Dtype.Float16
+                    && Ir.Value.dtype scale <> Ir.Dtype.Float32
+                  then
+                    fail_unsupported node
+                      "q8_linear scale must be float16 or float32"
+                  else
+                    let output_shapes =
+                      match shapes_for node with
+                      | Ok shapes -> Ok shapes
+                      | Error _ ->
+                          Shape.create
+                            ~rows:(Shape.rows (Ir.Value.shape input))
+                            ~cols:(Shape.rows (Ir.Value.shape weight))
+                          |> Result.map (declared_or_matrix node)
+                    in
+                    match output_shapes with
+                    | Error error -> Error (Shape.error_to_string error)
+                    | Ok (logical_shape, shape) ->
+                        let value =
+                          Tile_effect.q8_linear
+                            { input; weight; scale; bias; shape; logical_shape }
+                        in
+                        Hashtbl.replace env name value;
+                        Ok ()
                 in
-                if Ir.Value.dtype weight <> Ir.Dtype.Int8 then
-                  fail_unsupported node "q8_linear weight must have int8 storage"
-                else if Ir.Value.dtype scale <> Ir.Dtype.Float16
-                        && Ir.Value.dtype scale <> Ir.Dtype.Float32 then
-                  fail_unsupported node "q8_linear scale must be float16 or float32"
-                else
+                (match inputs with
+                | [ input; weight; scale ] -> lower_q8 input weight scale None
+                | [ input; weight; scale; bias ] ->
+                    lower_q8 input weight scale (Some bias)
+                | _ -> lower_opaque inputs)
+              else if
+                typed_manifest
+                &&
+                target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]
+                && add_alpha_is_supported node
+              then
+                lower_pointwise_binary Ir.Pointwise.Add inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "mul"; "mul.tensor"; "aten.mul.tensor" ] then
+                lower_pointwise_binary Ir.Pointwise.Mul inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "sub"; "sub.tensor"; "aten.sub.tensor" ] then
+                lower_pointwise_binary Ir.Pointwise.Sub inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "_operator.and_"; "and"; "aten.bitwise_and.tensor" ] then
+                lower_pointwise_binary Ir.Pointwise.Logical_and inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "_operator.eq"; "eq"; "aten.eq.tensor" ] then
+                lower_pointwise_binary Ir.Pointwise.Equal inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "_operator.ne"; "ne"; "aten.ne.tensor" ] then
+                lower_pointwise_binary Ir.Pointwise.Not_equal inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "_operator.le"; "le"; "aten.le.tensor" ] then
+                lower_pointwise_binary Ir.Pointwise.Less_equal inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "_operator.neg"; "neg"; "aten.neg.default" ] then
+                lower_pointwise_unary Ir.Pointwise.Neg inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "rsqrt"; "aten.rsqrt.default"; "torch._variablefunctionsclass.rsqrt" ] then
+                lower_pointwise_unary Ir.Pointwise.Rsqrt inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "silu"; "torch.nn.functional.silu"; "aten.silu.default" ] then
+                lower_pointwise_unary Ir.Pointwise.Silu inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "cos"; "aten.cos.default" ] then
+                lower_pointwise_unary Ir.Pointwise.Cos inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "sin"; "aten.sin.default" ] then
+                lower_pointwise_unary Ir.Pointwise.Sin inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "pow"; "aten.pow.tensor_scalar" ] then
+                lower_pow inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "mean"; "aten.mean.dim" ] then
+                lower_mean inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "to"; "_to_copy"; "aten._to_copy.default" ] then
+                lower_cast (Fx.Node.dtype node) inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "float" ] then
+                lower_cast Ir.Dtype.Float32 inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "view"; "aten.view.default" ] then
+                lower_reshape Ir.Movement.View inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "reshape"; "aten.reshape.default" ] then
+                lower_reshape Ir.Movement.Reshape inputs
+                |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "transpose"; "aten.transpose.int" ] then
+                lower_transpose inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "unsqueeze"; "aten.unsqueeze.default" ] then
+                lower_unsqueeze inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "expand"; "aten.expand.default" ] then
+                lower_expand inputs |> lower_or_opaque inputs
+              else if typed_manifest && target_is target [ "contiguous"; "aten.contiguous.default" ] then
+                (match inputs with
+                | [ input ] ->
+                    lower_movement Ir.Movement.Contiguous
+                      (Ir.Value.logical_shape input) inputs
+                    |> lower_or_opaque inputs
+                | _ -> lower_opaque inputs)
+              else if
+                (not typed_manifest)
+                && target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]
+              then
+                (match inputs with
+                | [ lhs; rhs ] ->
+                    (match Shape.add (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
+                    | Error _ -> lower_opaque inputs
+                    | Ok (inferred_shape, broadcast) ->
+                        let logical_shape, shape =
+                          declared_or_matrix node inferred_shape
+                        in
+                        let value =
+                          Tile_effect.add
+                            { lhs; rhs; shape; logical_shape; broadcast }
+                        in
+                        Hashtbl.replace env name value;
+                        Ok ())
+                | _ -> lower_opaque inputs)
+              else if contains target "linear" then
+                let lower_linear input weight bias =
                   let output_shapes =
                     match shapes_for node with
                     | Ok shapes -> Ok shapes
                     | Error _ ->
-                        Shape.create ~rows:(Shape.rows (Ir.Value.shape input))
-                          ~cols:(Shape.rows (Ir.Value.shape weight))
-                        |> Result.map (declared_or_matrix node)
+                        (match
+                           Shape.create
+                             ~rows:(Shape.rows (Ir.Value.shape input))
+                             ~cols:(Shape.rows (Ir.Value.shape weight))
+                         with
+                        | Ok shape -> Ok (declared_or_matrix node shape)
+                        | Error error -> Error (Shape.error_to_string error))
                   in
-                  (match output_shapes with
-                  | Error error -> Error (Shape.error_to_string error)
+                  match output_shapes with
+                  | Error message -> Error message
                   | Ok (logical_shape, shape) ->
                       let value =
-                        Tile_effect.q8_linear
-                          { input; weight; scale; bias; shape; logical_shape }
+                        Tile_effect.linear
+                          { input; weight; bias; shape; logical_shape }
                       in
                       Hashtbl.replace env name value;
-                      Ok ())
-              else if contains target "linear" && (List.length inputs = 2 || List.length inputs = 3) then
-                let input, weight, bias =
-                  match inputs with
-                  | [ input; weight ] -> input, weight, None
-                  | [ input; weight; bias ] -> input, weight, Some bias
-                  | _ -> assert false
+                      Ok ()
                 in
-                let output_shapes =
-                  match shapes_for node with
-                  | Ok shapes -> Ok shapes
-                  | Error _ ->
-                      (match
-                         Shape.create ~rows:(Shape.rows (Ir.Value.shape input))
-                           ~cols:(Shape.rows (Ir.Value.shape weight))
-                       with
-                      | Ok shape -> Ok (declared_or_matrix node shape)
-                      | Error error -> Error (Shape.error_to_string error))
-                in
-                (match output_shapes with
-                | Error message -> Error message
-                | Ok (logical_shape, shape) ->
-                    let value =
-                      Tile_effect.linear
-                        { input; weight; bias; shape; logical_shape }
-                    in
-                    Hashtbl.replace env name value;
-                    Ok ())
+                (match inputs with
+                | [ input; weight ] -> lower_linear input weight None
+                | [ input; weight; bias ] ->
+                    lower_linear input weight (Some bias)
+                | _ -> lower_opaque inputs)
               else if
                 target_is target [ "mm"; "matmul"; "aten.mm.default"; "aten.matmul.default" ]
-                && List.length inputs = 2
               then
-                let lhs, rhs = List.nth inputs 0, List.nth inputs 1 in
-                (match Shape.matmul (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
-                | Error _ -> lower_opaque inputs
-                | Ok inferred_shape ->
+                (match inputs with
+                | [ lhs; rhs ] ->
+                    (match Shape.matmul (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
+                    | Error _ -> lower_opaque inputs
+                    | Ok inferred_shape ->
+                        let logical_shape, shape =
+                          declared_or_matrix node inferred_shape
+                        in
+                        let value =
+                          Tile_effect.matmul { lhs; rhs; shape; logical_shape }
+                        in
+                        Hashtbl.replace env name value;
+                        Ok ())
+                | _ -> lower_opaque inputs)
+              else if target_is target [ "relu"; "aten.relu.default" ] then
+                (match inputs with
+                | [ input ] ->
                     let logical_shape, shape =
-                      declared_or_matrix node inferred_shape
+                      declared_or_matrix node (Ir.Value.shape input)
                     in
-                    let value =
-                      Tile_effect.matmul { lhs; rhs; shape; logical_shape }
-                    in
+                    let value = Tile_effect.relu { input; shape; logical_shape } in
                     Hashtbl.replace env name value;
-                    Ok ())
-              else if target_is target [ "add"; "add.tensor"; "aten.add.tensor" ] && List.length inputs = 2 then
-                let lhs, rhs = List.nth inputs 0, List.nth inputs 1 in
-                (match Shape.add (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
-                | Error _ -> lower_opaque inputs
-                | Ok (inferred_shape, broadcast) ->
+                    Ok ()
+                | _ -> lower_opaque inputs)
+              else if target_is target [ "gelu"; "aten.gelu.default" ] then
+                (match inputs with
+                | [ input ] ->
                     let logical_shape, shape =
-                      declared_or_matrix node inferred_shape
+                      declared_or_matrix node (Ir.Value.shape input)
                     in
-                    let value =
-                      Tile_effect.add
-                        { lhs; rhs; shape; logical_shape; broadcast }
-                    in
+                    let value = Tile_effect.gelu { input; shape; logical_shape } in
                     Hashtbl.replace env name value;
-                    Ok ())
-              else if target_is target [ "relu"; "aten.relu.default" ] && List.length inputs = 1 then
-                let input = List.hd inputs in
-                let logical_shape, shape =
-                  declared_or_matrix node (Ir.Value.shape input)
-                in
-                let value = Tile_effect.relu { input; shape; logical_shape } in
-                Hashtbl.replace env name value;
-                Ok ()
-              else if target_is target [ "gelu"; "aten.gelu.default" ] && List.length inputs = 1 then
-                let input = List.hd inputs in
-                let logical_shape, shape =
-                  declared_or_matrix node (Ir.Value.shape input)
-                in
-                let value = Tile_effect.gelu { input; shape; logical_shape } in
-                Hashtbl.replace env name value;
-                Ok ()
+                    Ok ()
+                | _ -> lower_opaque inputs)
               else lower_opaque inputs)
       | _op ->
           (match values_for env (Fx.Node.inputs node) with

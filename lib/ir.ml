@@ -73,10 +73,106 @@ module Value = struct
   let equal left right = left.id = right.id
 end
 
+module Scalar = struct
+  type t = Bool of bool | Int of int | Float of float
+
+  let to_float = function
+    | Bool false -> 0.0
+    | Bool true -> 1.0
+    | Int value -> Float.of_int value
+    | Float value -> value
+
+  let to_string = function
+    | Bool value -> string_of_bool value
+    | Int value -> string_of_int value
+    | Float value -> Printf.sprintf "%.17g" value
+end
+
+module Pointwise = struct
+  type operand = Tensor of Value.t | Scalar of Scalar.t
+  type unary = Neg | Rsqrt | Silu | Cos | Sin | Pow of Scalar.t
+  type binary = Add | Mul | Sub | Logical_and | Equal | Not_equal | Less_equal
+  type t = Unary of unary * Value.t | Binary of binary * operand * operand
+
+  let values = function
+    | Unary (_, value) -> [ value ]
+    | Binary (_, left, right) ->
+        [ left; right ]
+        |> List.filter_map (function Tensor value -> Some value | Scalar _ -> None)
+
+  let unary_to_string = function
+    | Neg -> "neg"
+    | Rsqrt -> "rsqrt"
+    | Silu -> "silu"
+    | Cos -> "cos"
+    | Sin -> "sin"
+    | Pow exponent -> "pow(" ^ Scalar.to_string exponent ^ ")"
+
+  let binary_to_string = function
+    | Add -> "add"
+    | Mul -> "mul"
+    | Sub -> "sub"
+    | Logical_and -> "and"
+    | Equal -> "eq"
+    | Not_equal -> "ne"
+    | Less_equal -> "le"
+
+  let to_string = function
+    | Unary (operator, _) -> unary_to_string operator
+    | Binary (operator, _, _) -> binary_to_string operator
+end
+
+module Reduction = struct
+  type operator = Mean
+  type t = { operator : operator; axes : int list; keepdim : bool }
+
+  let to_string reduction =
+    let axes = reduction.axes |> List.map string_of_int |> String.concat "," in
+    Printf.sprintf "mean(axes=[%s],keepdim=%b)" axes reduction.keepdim
+end
+
+module Movement = struct
+  type t =
+    | View
+    | Reshape
+    | Transpose of { axis0 : int; axis1 : int }
+    | Unsqueeze of int
+    | Expand
+    | Contiguous
+
+  let to_string = function
+    | View -> "view"
+    | Reshape -> "reshape"
+    | Transpose { axis0; axis1 } ->
+        Printf.sprintf "transpose(%d,%d)" axis0 axis1
+    | Unsqueeze axis -> Printf.sprintf "unsqueeze(%d)" axis
+    | Expand -> "expand"
+    | Contiguous -> "contiguous"
+end
+
+module Primitive = struct
+  type t =
+    | Pointwise of Pointwise.t
+    | Cast of Dtype.t
+    | Reduce of Reduction.t
+    | Movement of Movement.t
+
+  let values = function
+    | Pointwise operation -> Pointwise.values operation
+    | Cast _ | Reduce _ | Movement _ -> []
+
+  let to_string = function
+    | Pointwise operation -> Pointwise.to_string operation
+    | Cast dtype -> "cast(" ^ Dtype.to_string dtype ^ ")"
+    | Reduce reduction -> Reduction.to_string reduction
+    | Movement movement -> Movement.to_string movement
+end
+
 module Argument = struct
   type t =
     | Value of Value.t
     | Null
+    | Ellipsis
     | Bool of bool
     | Int of int
     | Float of float
@@ -89,7 +185,7 @@ module Argument = struct
 
   let rec values = function
     | Value value -> [ value ]
-    | Null | Bool _ | Int _ | Float _ | String _ | Symbol _ -> []
+    | Null | Ellipsis | Bool _ | Int _ | Float _ | String _ | Symbol _ -> []
     | List arguments | Tuple arguments -> List.concat_map values arguments
     | Mapping fields -> fields |> List.map snd |> List.concat_map values
     | Slice { start; stop; step } -> values start @ values stop @ values step
@@ -105,6 +201,8 @@ module Op = struct
     | Add of { broadcast : Shape.broadcast }
     | Gelu
     | Relu
+    | Rms_norm of { epsilon : float }
+    | Primitive of Primitive.t
     | Opaque of {
         op : string;
         target : string;
@@ -139,6 +237,8 @@ module Op = struct
     | Add { broadcast = Shape.Row } -> "add[row-broadcast]"
     | Gelu -> "gelu"
     | Relu -> "relu"
+    | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
+    | Primitive primitive -> Primitive.to_string primitive
     | Opaque { op; target; _ } -> Printf.sprintf "opaque(%s,%s)" op target
     | Output { name } -> Printf.sprintf "output(%s)" name
     | Barrier_create { id; name } -> Printf.sprintf "barrier-create(%d,%s)" id name

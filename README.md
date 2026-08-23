@@ -13,8 +13,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 
 - A Python `torch.compile` backend registered as `llmopt`, receiving the
   `GraphModule, example_inputs` Dynamo contract.
-- A JSON FX manifest ABI preserving node names, op kinds, targets, references,
-  static shapes, and dtypes.
+- A compile-time JSON FX manifest ABI preserving node names, op kinds, targets,
+  references, Dynamo `example_value` shapes, dtypes, and typed arguments;
+  serving uses the binary schedule instead.
 - An OCaml FX importer and effect-based planner. The internal effect vocabulary
   covers inputs, allocation, copies, barriers, matrix multiply, linear, add,
   GELU, ReLU, opaque FX actions, and outputs.
@@ -24,7 +25,8 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - Capture handler producing a deterministic SSA-like dataflow graph plus an
   explicit schedule timeline.
 - CPU Bigarray reference handler for correctness checks without Metal.
-- A pure linear-bias fusion pass.
+- Pure linear-bias and LFM RMSNorm fusion passes. RMSNorm lowers a seven-op
+  arithmetic chain to one typed command and two initial Metal entry points.
 - A Q8 weight-only linear lowering pass, typed compiler fixture, and Python
   model-rewrite boundary: int8 weights, per-output-channel float16 scales, and
   FP16 activations by default; FP16 weights remain an explicit fallback.
@@ -56,7 +58,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - An OKF bundle under `.okf/` for decisions, experiments, benchmark protocol,
   and model provenance.
 
-The current complete-model executable target is PyTorch MPS: the direct callable runs the
+The typed effect vocabulary now also covers N-dimensional pointwise,
+reduction, cast, and movement primitives; its CPU reference and schedule-v2
+codecs are tested. The current complete-model executable target is PyTorch MPS: the direct callable runs the
 captured FX GraphModule and lets each operation dispatch to MPS. Q8 graphs can
 also activate the generated tiled Metal library through the bridge; unsupported
 operations and inputs use the PyTorch MPS fallback. The intended serving stack
@@ -81,6 +85,7 @@ ninja -f ninja.build demo
 ninja -f ninja.build metal
 ninja -f ninja.build fx-smoke
 ninja -f ninja.build q8-smoke
+ninja -f ninja.build rms-norm-smoke
 ninja -f ninja.build q8-serving-smoke
 ninja -f ninja.build ocaml-metal-runtime
 ninja -f ninja.build ocaml-metal-runtime-smoke
@@ -100,6 +105,8 @@ plans `python/examples/linear_fx.json` and validates its LLVM and Metal
 artifacts, metallib, and binary serving package. `q8-fx-smoke` performs the
 same validation for the Q8 fixture. `_build/bin/llmopt-package-check` validates
 the versioned command stream, kernel ABI, tensor bindings, and runtime files.
+`rms-norm-smoke` captures and fuses a model-shaped RMSNorm chain, then compiles
+the emitted float32-to-float16 and float16 kernels with Xcode Metal.
 `bench-mps` loads LFM2.5-350M
 with Q8 weight-only quantization by default, runs eager MPS and the llmopt
 direct FX GraphModule executor, checks exact logits, and writes a JSON
@@ -166,7 +173,9 @@ OCaml FX importer
 typed graph + schedule timeline
         │ pure passes
         ├── linear/bias fusion
-        ├── layout and staging passes (next)
+        ├── RMSNorm fusion (implemented)
+        ├── typed N-D movement/pointwise/reduction lowering (implemented)
+        ├── layout materialization and staging passes (next)
         └── async schedule synthesis (next)
         │
         ├── textual LLVM IR (inspection / future lowering)

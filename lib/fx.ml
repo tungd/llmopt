@@ -16,6 +16,7 @@ module Argument = struct
   type t =
     | Node of string
     | Null
+    | Ellipsis
     | Bool of bool
     | Int of int
     | Float of float
@@ -28,7 +29,7 @@ module Argument = struct
 
   let rec node_references = function
     | Node name -> [ name ]
-    | Null | Bool _ | Int _ | Float _ | String _ | Symbol _ -> []
+    | Null | Ellipsis | Bool _ | Int _ | Float _ | String _ | Symbol _ -> []
     | List values | Tuple values -> List.concat_map node_references values
     | Mapping fields ->
         fields |> List.map snd |> List.concat_map node_references
@@ -60,8 +61,9 @@ module Node = struct
   let keyword_arguments node = node.keyword_arguments
 end
 
-type t = { nodes : Node.t list; outputs : string list }
+type t = { version : int; nodes : Node.t list; outputs : string list }
 
+let version graph = graph.version
 let nodes graph = graph.nodes
 let outputs graph = graph.outputs
 
@@ -135,6 +137,7 @@ let rec parse_argument json =
     match json |> member "kind" |> to_string with
     | "node" -> Ok (Argument.Node (json |> member "name" |> to_string))
     | "null" -> Ok Argument.Null
+    | "ellipsis" -> Ok Argument.Ellipsis
     | "bool" -> Ok (Argument.Bool (json |> member "value" |> to_bool))
     | "int" -> Ok (Argument.Int (json |> member "value" |> to_int))
     | "float" -> Ok (Argument.Float (json |> member "value" |> to_float))
@@ -163,9 +166,10 @@ let rec parse_argument json =
     | kind -> Error ("unsupported FX argument kind: " ^ kind)
   with Type_error (message, _) -> Error ("invalid FX argument: " ^ message)
 
-let parse_arguments json =
+let parse_arguments ~version json =
   match member_opt "arguments" json with
-  | None -> Ok ([], [])
+  | None when version = 1 -> Ok ([], [])
+  | None -> Error "FX manifest v2 node is missing typed arguments"
   | Some arguments ->
       let rec positional acc = function
         | [] -> Ok (List.rev acc)
@@ -186,7 +190,7 @@ let parse_arguments json =
       in
       Ok (args, kwargs)
 
-let parse_node json =
+let parse_node ~version json =
   let name = json |> member "name" |> to_string in
   let op = json |> member "op" |> to_string in
   let target = json |> member "target" |> to_string_option |> Option.value ~default:"" in
@@ -197,7 +201,7 @@ let parse_node json =
     |> parse_dtype
   in
   let binding = parse_binding ~op json in
-  let arguments = parse_arguments json in
+  let arguments = parse_arguments ~version json in
   match inputs, shape, dtype, binding, arguments with
   | ( Ok inputs,
       Ok shape,
@@ -254,12 +258,12 @@ let of_json json =
       let rec parse_nodes acc = function
         | [] -> Ok (List.rev acc)
         | value :: rest ->
-            (match parse_node value with
+            (match parse_node ~version value with
             | Ok node -> parse_nodes (node :: acc) rest
             | Error message -> Error message)
       in
       match parse_nodes [] nodes_json, parse_outputs json with
-      | Ok nodes, Ok outputs -> Ok { nodes; outputs }
+      | Ok nodes, Ok outputs -> Ok { version; nodes; outputs }
       | Error message, _ | _, Error message -> Error message
   with
   | Yojson.Json_error message -> Error ("invalid FX manifest: " ^ message)

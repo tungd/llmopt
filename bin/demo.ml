@@ -53,6 +53,20 @@ let emit_graph ~directory ~stem graph =
     (List.length (Ir.Graph.nodes optimized));
   Format.printf "%a" Ir.Graph.pp optimized
 
+let emit_metal_graph ~directory ~stem graph =
+  let optimized = Passes.optimize graph in
+  let program =
+    match Metal.lower optimized with
+    | Ok program -> program
+    | Error message -> failwith ("Metal emission failed: " ^ message)
+  in
+  write_file (Filename.concat directory (stem ^ ".metal"))
+    (Metal.Program.source program);
+  Printf.printf "%s graph: %d nodes -> %d nodes after optimization\n" stem
+    (List.length (Ir.Graph.nodes graph))
+    (List.length (Ir.Graph.nodes optimized));
+  Format.printf "%a" Ir.Graph.pp optimized
+
 let () =
   let emit_directory = ref "_build/llmopt-demo" in
   let rec parse index =
@@ -85,4 +99,12 @@ let () =
            Lfm25.linear_kernel ~config:Lfm25.Config.default ~rows:1 ()))
   in
   emit_graph ~directory:!emit_directory ~stem:"lfm25_linear" target_graph;
+  let rms_norm_graph =
+    snd
+      (capture_or_fail (fun () ->
+           Lfm25.rms_norm_kernel ~config:Lfm25.Config.default ~rows:2
+             ~epsilon:1e-5 ()))
+  in
+  emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_rms_norm"
+    rms_norm_graph;
   Printf.printf "generated sources in %s\n" !emit_directory

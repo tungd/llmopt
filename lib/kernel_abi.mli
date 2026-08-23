@@ -1,5 +1,11 @@
 module Operation : sig
-  type t = Matmul | Fused_linear | Linear | Q8_linear | Q8_dequantize
+  type t =
+    | Matmul
+    | Fused_linear
+    | Linear
+    | Q8_linear
+    | Q8_dequantize
+    | Rms_norm
 
   val to_string : t -> string
   val of_string : string -> (t, string) result

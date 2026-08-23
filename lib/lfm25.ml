@@ -91,3 +91,89 @@ let linear_kernel ~config ~rows () =
       in
       let output = Tile.q8_linear input weight scale ~bias in
       Tile.output ~name:"linear_output" output
+
+let primitive ~operation ~inputs ~logical_shape ~dtype =
+  Tile_effect.primitive
+    {
+      operation;
+      inputs;
+      shape = Tensor_shape.matrix_exn logical_shape;
+      logical_shape;
+      dtype;
+    }
+
+let rms_norm_kernel ~config ~rows ~epsilon () =
+  if not (Float.is_finite epsilon) then invalid_arg "RMSNorm epsilon must be finite";
+  let tensor_shape =
+    Tensor_shape.of_ints_exn [ rows; config.Config.hidden_size ]
+  in
+  let row_shape = Tensor_shape.of_ints_exn [ rows; 1 ] in
+  let weight_shape = Tensor_shape.of_ints_exn [ config.Config.hidden_size ] in
+  let input =
+    Tile_effect.tensor_input ~name:"rms_input" ~source:Ir.Input_source.Runtime
+      ~shape:tensor_shape ~dtype:Ir.Dtype.Float32
+  in
+  let weight =
+    Tile_effect.tensor_input ~name:"rms_weight" ~source:Ir.Input_source.Runtime
+      ~shape:weight_shape ~dtype:config.Config.dtype
+  in
+  let square =
+    primitive
+      ~operation:
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Unary
+              (Ir.Pointwise.Pow (Ir.Scalar.Int 2), input)))
+      ~inputs:[ input ] ~logical_shape:tensor_shape ~dtype:Ir.Dtype.Float32
+  in
+  let mean =
+    primitive
+      ~operation:
+        (Ir.Primitive.Reduce
+           { Ir.Reduction.operator = Mean; axes = [ 1 ]; keepdim = true })
+      ~inputs:[ square ] ~logical_shape:row_shape ~dtype:Ir.Dtype.Float32
+  in
+  let stabilized =
+    primitive
+      ~operation:
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Binary
+              ( Ir.Pointwise.Add,
+                Ir.Pointwise.Tensor mean,
+                Ir.Pointwise.Scalar (Ir.Scalar.Float epsilon) )))
+      ~inputs:[ mean ] ~logical_shape:row_shape ~dtype:Ir.Dtype.Float32
+  in
+  let inverse =
+    primitive
+      ~operation:
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, stabilized)))
+      ~inputs:[ stabilized ] ~logical_shape:row_shape ~dtype:Ir.Dtype.Float32
+  in
+  let normalized =
+    primitive
+      ~operation:
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Binary
+              ( Ir.Pointwise.Mul,
+                Ir.Pointwise.Tensor input,
+                Ir.Pointwise.Tensor inverse )))
+      ~inputs:[ input; inverse ] ~logical_shape:tensor_shape
+      ~dtype:Ir.Dtype.Float32
+  in
+  let cast =
+    primitive ~operation:(Ir.Primitive.Cast config.Config.dtype)
+      ~inputs:[ normalized ] ~logical_shape:tensor_shape
+      ~dtype:config.Config.dtype
+  in
+  let output =
+    primitive
+      ~operation:
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Binary
+              ( Ir.Pointwise.Mul,
+                Ir.Pointwise.Tensor weight,
+                Ir.Pointwise.Tensor cast )))
+      ~inputs:[ weight; cast ] ~logical_shape:tensor_shape
+      ~dtype:config.Config.dtype
+  in
+  Tile_effect.output ~name:"rms_output" ~value:output

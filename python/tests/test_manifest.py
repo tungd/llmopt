@@ -82,7 +82,7 @@ class ManifestTest(unittest.TestCase):
             "item",
             "call_function",
             "operator.getitem",
-            args=(view, (slice(None), 1, slice(0, 4, 2))),
+            args=(view, (Ellipsis, 1, slice(0, 4, 2))),
             meta={"val": FakeTensor((2, 2))},
         )
         output = FakeNode("output", "output", "output", args=((item,),))
@@ -102,8 +102,27 @@ class ManifestTest(unittest.TestCase):
         )
         index = manifest["nodes"][2]["arguments"]["args"][1]
         self.assertEqual(index["kind"], "tuple")
-        self.assertEqual(index["items"][0]["kind"], "slice")
+        self.assertEqual(index["items"][0]["kind"], "ellipsis")
         self.assertEqual(index["items"][2]["step"], {"kind": "int", "value": 2})
+
+    def test_dynamo_example_value_supplies_computed_shape_and_dtype(self):
+        x = FakeNode("x", "placeholder", "x")
+        square = FakeNode(
+            "square",
+            "call_method",
+            "pow",
+            args=(x, 2),
+            meta={"example_value": FakeTensor((1, 6, 1024), "torch.float16")},
+        )
+        output = FakeNode("output", "output", "output", args=((square,),))
+
+        manifest = manifest_from_fx(
+            FakeGraphModule([x, square, output]),
+            [FakeTensor((1, 6, 1024), "torch.float16")],
+        )
+
+        self.assertEqual(manifest["nodes"][1]["shape"], [1, 6, 1024])
+        self.assertEqual(manifest["nodes"][1]["dtype"], "float16")
 
 
 if __name__ == "__main__":

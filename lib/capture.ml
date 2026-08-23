@@ -148,6 +148,16 @@ let run thunk =
                   Ir.Graph.append state.graph ~op:Ir.Op.Relu ~inputs:[ input ]
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
+          | Tile_effect.Primitive
+              { operation; inputs; shape; logical_shape; dtype } ->
+              Some
+                (fun (continuation : (a, _) Effect.Deep.continuation) ->
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape ~dtype
+                  in
+                  Ir.Graph.append state.graph ~op:(Ir.Op.Primitive operation)
+                    ~inputs ~output:(Some output);
+                  Effect.Deep.continue continuation output)
           | Tile_effect.Opaque
               {
                 op;

@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T18:05:24Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:34:45Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -23,9 +23,10 @@ The authoritative end state and requirement-level evidence are tracked in the
 |---|---|---|
 | Ninja-built OCaml 5 effect/IR prototype | implemented | `ninja test` passes |
 | Python Dynamo/FX manifest exporter | implemented | v2 captures rank plus typed node, integer, float, bool, null, string, symbol, sequence, mapping, and slice arguments; Python unittest passes |
-| OCaml FX importer and effect planner | implemented | typed arguments and N-dimensional logical shapes survive effect capture and binary schedule round-trip |
+| OCaml FX importer and effect planner | implemented for the current primitive vocabulary; real v2 model recapture pending | typed arguments, ellipsis, N-dimensional logical shapes, pointwise/reduction/cast/movement primitives, and fused RMSNorm survive effect capture and binary schedule round-trip |
 | LLVM textual emitter | implemented | `clang -x ir` accepts the linear smoke |
 | Metal source emitter | implemented | Xcode `metal` accepts the linear smoke |
+| Fused LFM RMSNorm pass and Metal kernel | implemented; real-model count pending | synthetic LFM chain fuses from 10 commands to four; float32-to-float16 and float16 kernels pass `rms-norm-smoke` |
 | Direct FX GraphModule MPS callable returned to PyTorch | implemented | fixed direct-forward logits match eager MPS exactly; generation routing is now explicit |
 | LFM2.5 short-convolution lowering | open | executed as opaque FX nodes through PyTorch MPS |
 | LFM2.5 GQA/KV-cache lowering | open | executed as opaque FX nodes through PyTorch MPS |
@@ -39,7 +40,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Versioned generated package ABI | partial; real graph serialized | `llmopt-fx` emits `package.llmopt` with commands, logical shapes, arguments, kernel ABI, cache policy, and tensor bindings. The saved 350M graph became a 116,861-byte package with 1,115 commands and 241 validated bindings; 736 commands remain opaque and native interpretation remains open |
 | OCaml tensor-store ownership | partial; full archive validated and fixture mapped | Dynamo streams static inputs one tensor at a time; the real 350M archive contains 241 tensors and 422,104,704 payload bytes. OCaml validates all binding dtypes/shapes, while the fixture proves no-copy Metal mapping; full-model dispatch is not implemented |
 | OCaml Metal serving loader and dispatch | partial; binary-only startup verified | With 56% memory free, a minimal three-file directory containing only the binary package, metallib, and safetensors archive returned `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro; the model schedule still runs through Python/PyTorch |
-| Complete 350M operation schedule | partial | The binary command ABI is implemented, but the exported no-cache forward still has 1,115 IR nodes: 379 typed/lowered and 736 opaque. Decode/KV-state graphs and native command interpretation remain open |
+| Complete 350M operation schedule | partial | Schedule v2 and the first rank-aware primitive/fusion families are implemented. The only real no-cache forward remains the v1 capture with 1,115 IR nodes: 379 typed/lowered and 736 opaque; its missing computed shapes/constants are not reinterpreted. The one v2 recapture stopped on ellipsis before the codec correction and was not retried. Decode/KV-state graphs and native command interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule

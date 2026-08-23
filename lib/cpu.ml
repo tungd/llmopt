@@ -22,6 +22,12 @@ module Tensor = struct
 
   let get tensor row col = Array2.get tensor row col
   let set tensor row col value = Array2.set tensor row col value
+  let get_linear tensor index =
+    let cols = Array2.dim2 tensor in
+    get tensor (index / cols) (index mod cols)
+  let set_linear tensor index value =
+    let cols = Array2.dim2 tensor in
+    set tensor (index / cols) (index mod cols) value
   let fill tensor value = Array2.fill tensor value
   let shape tensor =
     Shape.of_ints_exn ~rows:(Array2.dim1 tensor) ~cols:(Array2.dim2 tensor)
@@ -177,6 +183,161 @@ let relu input output =
     done
   done
 
+let coordinates dimensions linear =
+  let coordinates = Array.make (Array.length dimensions) 0 in
+  let remaining = ref linear in
+  for axis = Array.length dimensions - 1 downto 0 do
+    let dimension = dimensions.(axis) in
+    coordinates.(axis) <- !remaining mod dimension;
+    remaining := !remaining / dimension
+  done;
+  coordinates
+
+let linear_index dimensions coordinates =
+  let index = ref 0 in
+  Array.iteri
+    (fun axis coordinate -> index := (!index * dimensions.(axis)) + coordinate)
+    coordinates;
+  !index
+
+let broadcast_index ~source_shape ~output_dimensions output_coordinates =
+  let source_dimensions =
+    Ir.Value.logical_shape source_shape |> Tensor_shape.dimensions |> Array.of_list
+  in
+  let rank_delta = Array.length output_dimensions - Array.length source_dimensions in
+  let source_coordinates =
+    Array.mapi
+      (fun axis dimension ->
+        if dimension = 1 then 0 else output_coordinates.(axis + rank_delta))
+      source_dimensions
+  in
+  linear_index source_dimensions source_coordinates
+
+let scalar_truth value = value <> 0.0
+
+let pointwise_unary operator value =
+  match operator with
+  | Ir.Pointwise.Neg -> -.value
+  | Ir.Pointwise.Rsqrt -> 1.0 /. sqrt value
+  | Ir.Pointwise.Silu -> value /. (1.0 +. exp (-.value))
+  | Ir.Pointwise.Cos -> cos value
+  | Ir.Pointwise.Sin -> sin value
+  | Ir.Pointwise.Pow exponent -> value ** Ir.Scalar.to_float exponent
+
+let pointwise_binary operator left right =
+  match operator with
+  | Ir.Pointwise.Add -> left +. right
+  | Ir.Pointwise.Mul -> left *. right
+  | Ir.Pointwise.Sub -> left -. right
+  | Ir.Pointwise.Logical_and ->
+      if scalar_truth left && scalar_truth right then 1.0 else 0.0
+  | Ir.Pointwise.Equal -> if left = right then 1.0 else 0.0
+  | Ir.Pointwise.Not_equal -> if left <> right then 1.0 else 0.0
+  | Ir.Pointwise.Less_equal -> if left <= right then 1.0 else 0.0
+
+let pointwise state operation output_value output =
+  let output_shape = Ir.Value.logical_shape output_value in
+  let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
+  let operand_value output_coordinates = function
+    | Ir.Pointwise.Scalar scalar -> Ir.Scalar.to_float scalar
+    | Ir.Pointwise.Tensor value ->
+        let source_index =
+          broadcast_index ~source_shape:value ~output_dimensions output_coordinates
+        in
+        Tensor.get_linear (find state value) source_index
+  in
+  for index = 0 to Tensor_shape.numel output_shape - 1 do
+    let output_coordinates = coordinates output_dimensions index in
+    let value =
+      match operation with
+      | Ir.Pointwise.Unary (operator, input) ->
+          pointwise_unary operator
+            (operand_value output_coordinates (Ir.Pointwise.Tensor input))
+      | Ir.Pointwise.Binary (operator, left, right) ->
+          pointwise_binary operator (operand_value output_coordinates left)
+            (operand_value output_coordinates right)
+    in
+    Tensor.set_linear output index value
+  done
+
+let reduce_mean state reduction input_value output_value output =
+  let input_shape = Ir.Value.logical_shape input_value in
+  let output_shape = Ir.Value.logical_shape output_value in
+  let input_dimensions = Tensor_shape.dimensions input_shape |> Array.of_list in
+  let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
+  let reduced = Array.make (Array.length input_dimensions) false in
+  List.iter (fun axis -> reduced.(axis) <- true) reduction.Ir.Reduction.axes;
+  let counts = Array.make (Tensor_shape.numel output_shape) 0 in
+  Tensor.fill output 0.0;
+  for input_index = 0 to Tensor_shape.numel input_shape - 1 do
+    let input_coordinates = coordinates input_dimensions input_index in
+    let output_coordinates =
+      if reduction.keepdim then
+        Array.mapi
+          (fun axis coordinate -> if reduced.(axis) then 0 else coordinate)
+          input_coordinates
+      else
+        input_coordinates |> Array.to_list
+        |> List.mapi (fun axis coordinate -> axis, coordinate)
+        |> List.filter_map (fun (axis, coordinate) ->
+               if reduced.(axis) then None else Some coordinate)
+        |> Array.of_list
+    in
+    let output_index = linear_index output_dimensions output_coordinates in
+    Tensor.set_linear output output_index
+      (Tensor.get_linear output output_index
+      +. Tensor.get_linear (find state input_value) input_index);
+    counts.(output_index) <- counts.(output_index) + 1
+  done;
+  Array.iteri
+    (fun index count ->
+      Tensor.set_linear output index
+        (Tensor.get_linear output index /. Float.of_int count))
+    counts
+
+let apply_movement state movement input_value output_value output =
+  let input_shape = Ir.Value.logical_shape input_value in
+  let output_shape = Ir.Value.logical_shape output_value in
+  let input_dimensions = Tensor_shape.dimensions input_shape |> Array.of_list in
+  let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
+  let source = find state input_value in
+  match movement with
+  | Ir.Movement.View | Ir.Movement.Reshape | Ir.Movement.Unsqueeze _
+  | Ir.Movement.Contiguous ->
+      for index = 0 to Tensor_shape.numel output_shape - 1 do
+        Tensor.set_linear output index (Tensor.get_linear source index)
+      done
+  | Ir.Movement.Expand ->
+      for index = 0 to Tensor_shape.numel output_shape - 1 do
+        let output_coordinates = coordinates output_dimensions index in
+        let input_index =
+          broadcast_index ~source_shape:input_value ~output_dimensions
+            output_coordinates
+        in
+        Tensor.set_linear output index (Tensor.get_linear source input_index)
+      done
+  | Ir.Movement.Transpose { axis0; axis1 } ->
+      for index = 0 to Tensor_shape.numel output_shape - 1 do
+        let input_coordinates = coordinates output_dimensions index in
+        let temporary = input_coordinates.(axis0) in
+        input_coordinates.(axis0) <- input_coordinates.(axis1);
+        input_coordinates.(axis1) <- temporary;
+        let input_index = linear_index input_dimensions input_coordinates in
+        Tensor.set_linear output index (Tensor.get_linear source input_index)
+      done
+
+let primitive state operation inputs output_value output =
+  match operation, inputs with
+  | Ir.Primitive.Pointwise operation, _ ->
+      pointwise state operation output_value output
+  | Ir.Primitive.Cast _, [ input ] -> copy_into (find state input) output
+  | Ir.Primitive.Reduce ({ operator = Ir.Reduction.Mean; _ } as reduction),
+    [ input ] ->
+      reduce_mean state reduction input output_value output
+  | Ir.Primitive.Movement movement, [ input ] ->
+      apply_movement state movement input output_value output
+  | _ -> failf "invalid primitive input arity"
+
 let run ~inputs thunk =
   let input_values = Hashtbl.create (List.length inputs) in
   List.iter (fun (name, tensor) -> Hashtbl.replace input_values name tensor) inputs;
@@ -292,6 +453,15 @@ let run ~inputs thunk =
                   in
                   let tensor = Tensor.create shape in
                   relu (find state input) tensor;
+                  bind state value tensor;
+                  Effect.Deep.continue continuation value)
+          | Tile_effect.Primitive
+              { operation; inputs; shape; logical_shape; dtype } ->
+              Some
+                (fun (continuation : (a, _) Effect.Deep.continuation) ->
+                  let value = fresh_value state ~logical_shape ~shape ~dtype in
+                  let tensor = Tensor.create shape in
+                  primitive state operation inputs value tensor;
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
           | Tile_effect.Output { name; value } ->

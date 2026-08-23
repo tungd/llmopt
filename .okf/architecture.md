@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T18:05:24Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:34:45Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -63,8 +63,9 @@ backend with an FX `GraphModule` and example inputs, and the backend returns a
 callable with the same forward contract.[^pytorch-backend-contract]
 
 The Python adapter serializes a deliberately small manifest containing node
-names, op kinds, targets, references, static shape metadata, dtypes, and an
-explicit runtime-input or tensor-store binding. Dynamo's lifted-static-input
+names, op kinds, targets, references, static shape metadata from `val`,
+`tensor_meta`, or Dynamo `example_value`, dtypes, lossless typed arguments, and
+an explicit runtime-input or tensor-store binding. Dynamo's lifted-static-input
 metadata identifies model parameters and buffers; `get_attr` nodes are static
 by construction. The
 OCaml executable parses that manifest, lowers supported nodes by performing
@@ -97,9 +98,13 @@ complete LFM2.5 Q8 archive and schedule have not moved into the OCaml process.
 
 # Current scope
 
-The cross-language planner supports static matrix-like placeholders, `linear`,
-`mm`/`matmul`, `add`, `relu`, and `gelu`, and preserves other FX nodes as
-opaque plan nodes. The first runtime optimization pass returns the captured FX
+The cross-language planner supports N-dimensional placeholders, `linear`,
+Q8 linear, `mm`/`matmul`, pointwise arithmetic/comparison and common unary
+operators, mean, casts, views, reshape, transpose, unsqueeze, expand,
+contiguous, `relu`, and `gelu`, and preserves other FX nodes as opaque plan
+nodes. A pure pass fuses the LFM RMSNorm chain into one typed command, and its
+float32-to-float16 and float16 Metal kernels compile with Xcode. The first
+runtime optimization pass returns the captured FX
 GraphModule directly, removing per-node `torch.fx.Interpreter` dispatch while
 the complete LFM2.5 forward still runs through PyTorch MPS. Short-convolution
 and GQA are therefore executed by PyTorch rather than custom OCaml effects in
@@ -153,6 +158,11 @@ archive-to-command boundary, not complete model execution. A later minimal
 probe repeated the exact result from a directory containing only
 `package.llmopt`, `kernel.metallib`, and `weights.safetensors`, proving that
 neither FX JSON nor the textual plan is part of native startup.
+
+The one bounded v2 model recapture stopped before package generation on a
+previously unrepresented Python ellipsis argument. Ellipsis is now an explicit
+typed argument covered by offline tests; the model was not retried, so the real
+operator counts remain those of the saved v1 capture.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the
