@@ -47,8 +47,12 @@ type state = {
 
 let failf format = Printf.ksprintf (fun message -> raise (Failure message)) format
 
-let fresh_value state ~shape ~dtype =
-  let value = Ir.Value.make ~id:state.next_value ~shape ~dtype in
+let fresh_value state ~logical_shape ~shape ~dtype =
+  let value =
+    Ir.Value.make_tensor ~id:state.next_value ~shape:logical_shape ~dtype
+  in
+  if not (Shape.equal (Ir.Value.shape value) shape) then
+    invalid_arg "effect logical shape does not match CPU tile shape";
   state.next_value <- state.next_value + 1;
   value
 
@@ -191,7 +195,8 @@ let run ~inputs thunk =
       effc =
         (fun (type a) (eff : a Effect.t) ->
           match eff with
-          | Tile_effect.Input { name; source = _; shape; dtype } ->
+          | Tile_effect.Input
+              { name; source = _; shape; logical_shape; dtype } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
                   let source =
@@ -199,13 +204,13 @@ let run ~inputs thunk =
                     | Some tensor -> tensor
                     | None -> failf "CPU input %s is not bound" name
                   in
-                  let value = fresh_value state ~shape ~dtype in
+                  let value = fresh_value state ~logical_shape ~shape ~dtype in
                   bind state value source;
                   Effect.Deep.continue continuation value)
-          | Tile_effect.Alloc { shape; dtype; _ } ->
+          | Tile_effect.Alloc { shape; logical_shape; dtype; _ } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = fresh_value state ~shape ~dtype in
+                  let value = fresh_value state ~logical_shape ~shape ~dtype in
                   let tensor = Tensor.create shape in
                   Tensor.fill tensor 0.0;
                   bind state value tensor;
@@ -220,52 +225,71 @@ let run ~inputs thunk =
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
                   copy_into (find state src) (find state dst);
                   Effect.Deep.continue continuation ())
-          | Tile_effect.Matmul { lhs; rhs; shape } ->
+          | Tile_effect.Matmul { lhs; rhs; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = fresh_value state ~shape ~dtype:(Ir.Value.dtype lhs) in
+                  let value =
+                    fresh_value state ~logical_shape ~shape
+                      ~dtype:(Ir.Value.dtype lhs)
+                  in
                   let tensor = Tensor.create shape in
                   matmul (find state lhs) (find state rhs) tensor;
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
-          | Tile_effect.Linear { input; weight; bias; shape } ->
+          | Tile_effect.Linear { input; weight; bias; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = fresh_value state ~shape ~dtype:(Ir.Value.dtype input) in
+                  let value =
+                    fresh_value state ~logical_shape ~shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   let tensor = Tensor.create shape in
                   linear (find state input) (find state weight) tensor
                     (Option.map (find state) bias);
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
-          | Tile_effect.Q8_linear { input; weight; scale; bias; shape } ->
+          | Tile_effect.Q8_linear
+              { input; weight; scale; bias; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = fresh_value state ~shape ~dtype:(Ir.Value.dtype input) in
+                  let value =
+                    fresh_value state ~logical_shape ~shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   let tensor = Tensor.create shape in
                   q8_linear (find state input) (find state weight) (find state scale)
                     tensor (Option.map (find state) bias);
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
-          | Tile_effect.Add { lhs; rhs; shape; broadcast } ->
+          | Tile_effect.Add { lhs; rhs; shape; logical_shape; broadcast } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = fresh_value state ~shape ~dtype:(Ir.Value.dtype lhs) in
+                  let value =
+                    fresh_value state ~logical_shape ~shape
+                      ~dtype:(Ir.Value.dtype lhs)
+                  in
                   let tensor = Tensor.create shape in
                   add ~left:(find state lhs) ~right:(find state rhs) ~output:tensor ~broadcast;
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
-          | Tile_effect.Gelu { input; shape } ->
+          | Tile_effect.Gelu { input; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = fresh_value state ~shape ~dtype:(Ir.Value.dtype input) in
+                  let value =
+                    fresh_value state ~logical_shape ~shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   let tensor = Tensor.create shape in
                   gelu (find state input) tensor;
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
-          | Tile_effect.Relu { input; shape } ->
+          | Tile_effect.Relu { input; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = fresh_value state ~shape ~dtype:(Ir.Value.dtype input) in
+                  let value =
+                    fresh_value state ~logical_shape ~shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   let tensor = Tensor.create shape in
                   relu (find state input) tensor;
                   bind state value tensor;

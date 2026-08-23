@@ -17,29 +17,41 @@ let contains haystack needle =
 let target_is target needles =
   List.exists (fun needle -> target = needle || String.ends_with ~suffix:needle target) needles
 
-let matrix_shape dims =
-  match List.rev dims with
-  | [] -> Error "FX tensor has no dimensions"
-  | last :: leading ->
-      let rows = List.fold_left ( * ) 1 leading in
-      (match Shape.create ~rows:(max 1 rows) ~cols:last with
-      | Ok shape -> Ok shape
-      | Error error -> Error (Shape.error_to_string error))
-
-let shape_for node =
+let logical_shape_for node =
   match Fx.Node.shape node with
-  | Some dims -> matrix_shape dims
+  | Some dimensions ->
+      (match Tensor_shape.create dimensions with
+      | Ok shape -> Ok shape
+      | Error error -> Error (Tensor_shape.error_to_string error))
   | None -> Error ("missing static shape for FX node " ^ Fx.Node.name node)
+
+let shapes_for node =
+  match logical_shape_for node with
+  | Error _ as error -> error
+  | Ok logical_shape ->
+      (match Tensor_shape.matrix logical_shape with
+      | Ok shape -> Ok (logical_shape, shape)
+      | Error error -> Error (Tensor_shape.error_to_string error))
 
 let fallback_shape inputs =
   match inputs with
   | value :: _ -> Ir.Value.shape value
   | [] -> Shape.of_ints_exn ~rows:1 ~cols:1
 
-let shape_or_fallback node inputs =
-  match shape_for node with
-  | Ok shape -> shape
-  | Error _ -> fallback_shape inputs
+let fallback_logical_shape inputs =
+  match inputs with
+  | value :: _ -> Ir.Value.logical_shape value
+  | [] -> Tensor_shape.of_ints_exn [ 1; 1 ]
+
+let shapes_or_fallback node inputs =
+  match shapes_for node with
+  | Ok shapes -> shapes
+  | Error _ -> fallback_logical_shape inputs, fallback_shape inputs
+
+let declared_or_matrix node shape =
+  match shapes_for node with
+  | Ok shapes -> shapes
+  | Error _ -> Tensor_shape.of_matrix shape, shape
 
 let value_for env name =
   match Hashtbl.find_opt env name with
@@ -56,6 +68,59 @@ let values_for env names =
   in
   collect [] names
 
+let rec argument_for env = function
+  | Fx.Argument.Node name ->
+      value_for env name |> Result.map (fun value -> Ir.Argument.Value value)
+  | Fx.Argument.Null -> Ok Ir.Argument.Null
+  | Fx.Argument.Bool value -> Ok (Ir.Argument.Bool value)
+  | Fx.Argument.Int value -> Ok (Ir.Argument.Int value)
+  | Fx.Argument.Float value -> Ok (Ir.Argument.Float value)
+  | Fx.Argument.String value -> Ok (Ir.Argument.String value)
+  | Fx.Argument.Symbol value -> Ok (Ir.Argument.Symbol value)
+  | Fx.Argument.List values ->
+      arguments_for env values |> Result.map (fun values -> Ir.Argument.List values)
+  | Fx.Argument.Tuple values ->
+      arguments_for env values |> Result.map (fun values -> Ir.Argument.Tuple values)
+  | Fx.Argument.Mapping fields ->
+      let rec loop acc = function
+        | [] -> Ok (Ir.Argument.Mapping (List.rev acc))
+        | (name, value) :: rest ->
+            (match argument_for env value with
+            | Error _ as error -> error
+            | Ok value -> loop ((name, value) :: acc) rest)
+      in
+      loop [] fields
+  | Fx.Argument.Slice { start; stop; step } ->
+      (match
+         argument_for env start,
+         argument_for env stop,
+         argument_for env step
+       with
+      | Ok start, Ok stop, Ok step ->
+          Ok (Ir.Argument.Slice { start; stop; step })
+      | Error message, _, _ | _, Error message, _ | _, _, Error message ->
+          Error message)
+
+and arguments_for env values =
+  let rec loop acc = function
+    | [] -> Ok (List.rev acc)
+    | value :: rest ->
+        (match argument_for env value with
+        | Error _ as error -> error
+        | Ok value -> loop (value :: acc) rest)
+  in
+  loop [] values
+
+let keyword_arguments_for env fields =
+  let rec loop acc = function
+    | [] -> Ok (List.rev acc)
+    | (name, value) :: rest ->
+        (match argument_for env value with
+        | Error _ as error -> error
+        | Ok value -> loop ((name, value) :: acc) rest)
+  in
+  loop [] fields
+
 let fail_unsupported node reason =
   Error
     (Printf.sprintf "unsupported FX node %s (%s): %s" (Fx.Node.name node)
@@ -67,19 +132,28 @@ let plan fx_graph =
     let lower_node node =
       let name = Fx.Node.name node in
       let lower_opaque inputs =
-        let shape = shape_or_fallback node inputs in
-        let value =
-          Tile_effect.opaque
-            {
-              op = Fx.Node.op node;
-              target = Fx.Node.target node;
-              inputs;
-              shape;
-              dtype = Fx.Node.dtype node;
-            }
-        in
-        Hashtbl.replace env name value;
-        Ok ()
+        match
+          arguments_for env (Fx.Node.arguments node),
+          keyword_arguments_for env (Fx.Node.keyword_arguments node)
+        with
+        | Error message, _ | _, Error message -> Error message
+        | Ok arguments, Ok keyword_arguments ->
+            let logical_shape, shape = shapes_or_fallback node inputs in
+            let value =
+              Tile_effect.opaque
+                {
+                  op = Fx.Node.op node;
+                  target = Fx.Node.target node;
+                  arguments;
+                  keyword_arguments;
+                  inputs;
+                  shape;
+                  logical_shape;
+                  dtype = Fx.Node.dtype node;
+                }
+            in
+            Hashtbl.replace env name value;
+            Ok ()
       in
       match Fx.Node.op node with
       | "placeholder" | "get_attr" ->
@@ -87,18 +161,19 @@ let plan fx_graph =
           | None ->
               Error ("FX input has a computed binding: " ^ Fx.Node.name node)
           | Some source ->
-          match shape_for node with
+          match shapes_for node with
           | Error _ ->
               let shape = Shape.of_ints_exn ~rows:1 ~cols:1 in
+              let logical_shape = Tensor_shape.of_matrix shape in
               let value =
-                Tile_effect.input ~name ~source ~shape
+                Tile_effect.tensor_input ~name ~source ~shape:logical_shape
                   ~dtype:(Fx.Node.dtype node)
               in
               Hashtbl.replace env name value;
               Ok ()
-          | Ok shape ->
+          | Ok (logical_shape, shape) ->
               let value =
-                Tile_effect.input ~name ~source ~shape
+                Tile_effect.tensor_input ~name ~source ~shape:logical_shape
                   ~dtype:(Fx.Node.dtype node)
               in
               Hashtbl.replace env name value;
@@ -122,19 +197,20 @@ let plan fx_graph =
                         && Ir.Value.dtype scale <> Ir.Dtype.Float32 then
                   fail_unsupported node "q8_linear scale must be float16 or float32"
                 else
-                  let output_shape =
-                    match shape_for node with
-                    | Ok shape -> Ok shape
+                  let output_shapes =
+                    match shapes_for node with
+                    | Ok shapes -> Ok shapes
                     | Error _ ->
                         Shape.create ~rows:(Shape.rows (Ir.Value.shape input))
                           ~cols:(Shape.rows (Ir.Value.shape weight))
+                        |> Result.map (declared_or_matrix node)
                   in
-                  (match output_shape with
+                  (match output_shapes with
                   | Error error -> Error (Shape.error_to_string error)
-                  | Ok shape ->
+                  | Ok (logical_shape, shape) ->
                       let value =
                         Tile_effect.q8_linear
-                          { input; weight; scale; bias; shape }
+                          { input; weight; scale; bias; shape; logical_shape }
                       in
                       Hashtbl.replace env name value;
                       Ok ())
@@ -145,23 +221,23 @@ let plan fx_graph =
                   | [ input; weight; bias ] -> input, weight, Some bias
                   | _ -> assert false
                 in
-                let output_shape =
-                  match shape_for node with
-                  | Ok shape -> Ok shape
+                let output_shapes =
+                  match shapes_for node with
+                  | Ok shapes -> Ok shapes
                   | Error _ ->
                       (match
                          Shape.create ~rows:(Shape.rows (Ir.Value.shape input))
                            ~cols:(Shape.rows (Ir.Value.shape weight))
                        with
-                      | Ok shape -> Ok shape
+                      | Ok shape -> Ok (declared_or_matrix node shape)
                       | Error error -> Error (Shape.error_to_string error))
                 in
-                (match output_shape with
+                (match output_shapes with
                 | Error message -> Error message
-                | Ok shape ->
+                | Ok (logical_shape, shape) ->
                     let value =
                       Tile_effect.linear
-                        { input; weight; bias; shape }
+                        { input; weight; bias; shape; logical_shape }
                     in
                     Hashtbl.replace env name value;
                     Ok ())
@@ -173,10 +249,12 @@ let plan fx_graph =
                 (match Shape.matmul (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
                 | Error _ -> lower_opaque inputs
                 | Ok inferred_shape ->
-                    let shape =
-                      match shape_for node with Ok shape -> shape | Error _ -> inferred_shape
+                    let logical_shape, shape =
+                      declared_or_matrix node inferred_shape
                     in
-                    let value = Tile_effect.matmul { lhs; rhs; shape } in
+                    let value =
+                      Tile_effect.matmul { lhs; rhs; shape; logical_shape }
+                    in
                     Hashtbl.replace env name value;
                     Ok ())
               else if target_is target [ "add"; "add.tensor"; "aten.add.tensor" ] && List.length inputs = 2 then
@@ -184,26 +262,29 @@ let plan fx_graph =
                 (match Shape.add (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
                 | Error _ -> lower_opaque inputs
                 | Ok (inferred_shape, broadcast) ->
-                    let shape =
-                      match shape_for node with Ok shape -> shape | Error _ -> inferred_shape
+                    let logical_shape, shape =
+                      declared_or_matrix node inferred_shape
                     in
-                    let value = Tile_effect.add { lhs; rhs; shape; broadcast } in
+                    let value =
+                      Tile_effect.add
+                        { lhs; rhs; shape; logical_shape; broadcast }
+                    in
                     Hashtbl.replace env name value;
                     Ok ())
               else if target_is target [ "relu"; "aten.relu.default" ] && List.length inputs = 1 then
                 let input = List.hd inputs in
-                let shape =
-                  match shape_for node with Ok shape -> shape | Error _ -> Ir.Value.shape input
+                let logical_shape, shape =
+                  declared_or_matrix node (Ir.Value.shape input)
                 in
-                let value = Tile_effect.relu { input; shape } in
+                let value = Tile_effect.relu { input; shape; logical_shape } in
                 Hashtbl.replace env name value;
                 Ok ()
               else if target_is target [ "gelu"; "aten.gelu.default" ] && List.length inputs = 1 then
                 let input = List.hd inputs in
-                let shape =
-                  match shape_for node with Ok shape -> shape | Error _ -> Ir.Value.shape input
+                let logical_shape, shape =
+                  declared_or_matrix node (Ir.Value.shape input)
                 in
-                let value = Tile_effect.gelu { input; shape } in
+                let value = Tile_effect.gelu { input; shape; logical_shape } in
                 Hashtbl.replace env name value;
                 Ok ()
               else lower_opaque inputs)

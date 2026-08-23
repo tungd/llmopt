@@ -4,6 +4,23 @@ module Binding : sig
   val input_source : t -> Ir.Input_source.t option
 end
 
+module Argument : sig
+  type t =
+    | Node of string
+    | Null
+    | Bool of bool
+    | Int of int
+    | Float of float
+    | String of string
+    | Symbol of string
+    | List of t list
+    | Tuple of t list
+    | Mapping of (string * t) list
+    | Slice of { start : t; stop : t; step : t }
+
+  val node_references : t -> string list
+end
+
 module Node : sig
   type t
   val name : t -> string
@@ -13,6 +30,8 @@ module Node : sig
   val shape : t -> int list option
   val dtype : t -> Ir.Dtype.t
   val binding : t -> Binding.t
+  val arguments : t -> Argument.t list
+  val keyword_arguments : t -> (string * Argument.t) list
 end
 
 type t

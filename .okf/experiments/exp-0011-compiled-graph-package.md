@@ -4,7 +4,7 @@ title: 'Versioned compiled-graph serving package'
 description: 'Define the OCaml package boundary and prove that Ninja emits and validates its referenced FX, plan, Metal, metallib, and LLVM artifacts.'
 tags: [experiment, package, abi, ocaml, ninja, metal, q8]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T16:42:04Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:05:24Z' }
 sources:
   - id: package
     resource: /lib/serving_package.ml
@@ -51,3 +51,11 @@ packages; the separate serving fixture and mapped execution evidence are in
 [exp-0013](exp-0013-safetensors-metal-mapping.md).
 
 No model process or benchmark was launched for this compiler-only slice.
+
+# Superseded package encoding
+
+The JSON control manifest and runtime references to FX/plan diagnostics were
+replaced by the binary command package in
+[exp-0015](exp-0015-binary-serving-schedule.md). This experiment remains the
+historical record for the original typed lifecycle, kernel, cache, and artifact
+invariants.

@@ -52,13 +52,58 @@ class ManifestTest(unittest.TestCase):
             [FakeTensor((2, 4)), FakeTensor((3, 4)), FakeTensor((3,))],
         )
 
-        self.assertEqual(manifest["version"], 1)
+        self.assertEqual(manifest["version"], 2)
         self.assertEqual(manifest["outputs"], ["linear"])
         self.assertEqual(manifest["nodes"][0]["shape"], [2, 4])
         self.assertEqual(manifest["nodes"][0]["binding"], {"kind": "runtime"})
         self.assertEqual(manifest["nodes"][3]["inputs"], ["x", "weight", "bias"])
+        self.assertEqual(
+            manifest["nodes"][3]["arguments"]["args"],
+            [
+                {"kind": "node", "name": "x"},
+                {"kind": "node", "name": "weight"},
+                {"kind": "node", "name": "bias"},
+            ],
+        )
         self.assertEqual(manifest["nodes"][3]["binding"], {"kind": "computed"})
         json.dumps(manifest)
+
+    def test_rank_and_operator_constants_are_lossless(self):
+        x = FakeNode("x", "placeholder", "x")
+        view = FakeNode(
+            "view",
+            "call_method",
+            "view",
+            args=(x, 2, -1, 4),
+            kwargs={"memory_format": "contiguous"},
+            meta={"val": FakeTensor((2, 3, 4))},
+        )
+        item = FakeNode(
+            "item",
+            "call_function",
+            "operator.getitem",
+            args=(view, (slice(None), 1, slice(0, 4, 2))),
+            meta={"val": FakeTensor((2, 2))},
+        )
+        output = FakeNode("output", "output", "output", args=((item,),))
+
+        manifest = manifest_from_fx(
+            FakeGraphModule([x, view, item, output]), [FakeTensor((6, 4))]
+        )
+
+        self.assertEqual(manifest["nodes"][1]["shape"], [2, 3, 4])
+        self.assertEqual(
+            manifest["nodes"][1]["arguments"]["args"][1:],
+            [
+                {"kind": "int", "value": 2},
+                {"kind": "int", "value": -1},
+                {"kind": "int", "value": 4},
+            ],
+        )
+        index = manifest["nodes"][2]["arguments"]["args"][1]
+        self.assertEqual(index["kind"], "tuple")
+        self.assertEqual(index["items"][0]["kind"], "slice")
+        self.assertEqual(index["items"][2]["step"], {"kind": "int", "value": 2})
 
 
 if __name__ == "__main__":

@@ -137,11 +137,14 @@ rule lfm25_benchsuite_smoke
 build _build/ocaml/shape.cmi: ocaml_interface lib/shape.mli
 build _build/ocaml/shape.cmx: ocaml_module lib/shape.ml | _build/ocaml/shape.cmi
 
-build _build/ocaml/ir.cmi: ocaml_interface lib/ir.mli | _build/ocaml/shape.cmi
-build _build/ocaml/ir.cmx: ocaml_module lib/ir.ml | _build/ocaml/ir.cmi _build/ocaml/shape.cmx
+build _build/ocaml/tensor_shape.cmi: ocaml_interface lib/tensor_shape.mli | _build/ocaml/shape.cmi
+build _build/ocaml/tensor_shape.cmx: ocaml_module lib/tensor_shape.ml | _build/ocaml/tensor_shape.cmi _build/ocaml/shape.cmx
 
-build _build/ocaml/tile_effect.cmi: ocaml_interface lib/tile_effect.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
-build _build/ocaml/tile_effect.cmx: ocaml_module lib/tile_effect.ml | _build/ocaml/tile_effect.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx
+build _build/ocaml/ir.cmi: ocaml_interface lib/ir.mli | _build/ocaml/shape.cmi _build/ocaml/tensor_shape.cmi
+build _build/ocaml/ir.cmx: ocaml_module lib/ir.ml | _build/ocaml/ir.cmi _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx
+
+build _build/ocaml/tile_effect.cmi: ocaml_interface lib/tile_effect.mli | _build/ocaml/shape.cmi _build/ocaml/tensor_shape.cmi _build/ocaml/ir.cmi
+build _build/ocaml/tile_effect.cmx: ocaml_module lib/tile_effect.ml | _build/ocaml/tile_effect.cmi _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx
 
 build _build/ocaml/tile.cmi: ocaml_interface lib/tile.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi _build/ocaml/tile_effect.cmi
 build _build/ocaml/tile.cmx: ocaml_module lib/tile.ml | _build/ocaml/tile.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx
@@ -176,61 +179,67 @@ build _build/ocaml/radix_cache.cmx: ocaml_module lib/radix_cache.ml | _build/oca
 build _build/ocaml/serving_cache.cmi: ocaml_interface lib/serving_cache.mli | _build/ocaml/lfm25.cmi _build/ocaml/kv_cache.cmi _build/ocaml/radix_cache.cmi
 build _build/ocaml/serving_cache.cmx: ocaml_module lib/serving_cache.ml | _build/ocaml/serving_cache.cmi _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx
 
-build _build/ocaml/serving_package.cmi: ocaml_interface lib/serving_package.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/kv_cache.cmi
-build _build/ocaml/serving_package.cmx: ocaml_module lib/serving_package.ml | _build/ocaml/serving_package.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx
+build _build/ocaml/binary.cmi: ocaml_interface lib/binary.mli
+build _build/ocaml/binary.cmx: ocaml_module lib/binary.ml | _build/ocaml/binary.cmi
+
+build _build/ocaml/serving_schedule.cmi: ocaml_interface lib/serving_schedule.mli | _build/ocaml/ir.cmi
+build _build/ocaml/serving_schedule.cmx: ocaml_module lib/serving_schedule.ml | _build/ocaml/serving_schedule.cmi _build/ocaml/binary.cmx _build/ocaml/ir.cmx _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx
+
+build _build/ocaml/serving_package.cmi: ocaml_interface lib/serving_package.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/kv_cache.cmi _build/ocaml/serving_schedule.cmi
+build _build/ocaml/serving_package.cmx: ocaml_module lib/serving_package.ml | _build/ocaml/serving_package.cmi _build/ocaml/binary.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_schedule.cmx
 
 build _build/ocaml/safetensors.cmi: ocaml_interface lib/safetensors.mli
 build _build/ocaml/safetensors.cmx: ocaml_module lib/safetensors.ml | _build/ocaml/safetensors.cmi
 
 build _build/native/ocaml_metal_stubs.o: objective_c_stub native/ocaml_metal_stubs.m
-build _build/ocaml/metal_runtime.cmi: ocaml_interface lib/metal_runtime.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/serving_package.cmi _build/ocaml/safetensors.cmi _build/ocaml/fx.cmi _build/ocaml/serving_validation.cmi
-build _build/ocaml/metal_runtime.cmx: ocaml_module lib/metal_runtime.ml | _build/ocaml/metal_runtime.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/fx.cmx _build/ocaml/serving_validation.cmx
+build _build/ocaml/metal_runtime.cmi: ocaml_interface lib/metal_runtime.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/serving_package.cmi _build/ocaml/safetensors.cmi _build/ocaml/serving_validation.cmi
+build _build/ocaml/metal_runtime.cmx: ocaml_module lib/metal_runtime.ml | _build/ocaml/metal_runtime.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/serving_validation.cmx
 
 build _build/ocaml/fx.cmi: ocaml_interface lib/fx.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
 build _build/ocaml/fx.cmx: ocaml_module lib/fx.ml | _build/ocaml/fx.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx
 
-build _build/ocaml/serving_validation.cmi: ocaml_interface lib/serving_validation.mli | _build/ocaml/serving_package.cmi _build/ocaml/fx.cmi _build/ocaml/safetensors.cmi
-build _build/ocaml/serving_validation.cmx: ocaml_module lib/serving_validation.ml | _build/ocaml/serving_validation.cmi _build/ocaml/serving_package.cmx _build/ocaml/fx.cmx _build/ocaml/safetensors.cmx _build/ocaml/ir.cmx
+build _build/ocaml/serving_validation.cmi: ocaml_interface lib/serving_validation.mli | _build/ocaml/serving_package.cmi _build/ocaml/safetensors.cmi
+build _build/ocaml/serving_validation.cmx: ocaml_module lib/serving_validation.ml | _build/ocaml/serving_validation.cmi _build/ocaml/serving_package.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/safetensors.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx
 
 build _build/ocaml/fx_plan.cmi: ocaml_interface lib/fx_plan.mli | _build/ocaml/fx.cmi _build/ocaml/capture.cmi _build/ocaml/tile_effect.cmi
 build _build/ocaml/fx_plan.cmx: ocaml_module lib/fx_plan.ml | _build/ocaml/fx_plan.cmi _build/ocaml/fx.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/ir.cmx _build/ocaml/shape.cmx
 
 build _build/ocaml/demo.cmx: ocaml_module bin/demo.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
-build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/demo.cmx
+build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/demo.cmx
 
-build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx
-build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/test.cmx
+build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx
+build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/test.cmx
 
-build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/passes.cmx _build/ocaml/serving_package.cmx
-build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
+build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/passes.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
+build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
 
-build _build/ocaml/package_check.cmx: ocaml_module bin/package_check.ml | _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/fx.cmx _build/ocaml/serving_validation.cmx
-build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/fx.cmx _build/ocaml/serving_validation.cmx _build/ocaml/package_check.cmx
+build _build/ocaml/package_check.cmx: ocaml_module bin/package_check.ml | _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/serving_validation.cmx
+build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/serving_validation.cmx _build/ocaml/package_check.cmx
 
 build _build/ocaml/ocaml_metal_smoke.cmx: ocaml_module bin/ocaml_metal_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/safetensors.cmx
-build _build/bin/llmopt-ocaml-metal-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/fx.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_smoke.cmx _build/native/ocaml_metal_stubs.o
+build _build/bin/llmopt-ocaml-metal-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_smoke.cmx _build/native/ocaml_metal_stubs.o
 
-build _build/fx-example/fx.json _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.json: fx_manifest python/examples/linear_fx.json | _build/bin/llmopt-fx
+build _build/fx-example/fx.json _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest python/examples/linear_fx.json | _build/bin/llmopt-fx
 build _build/fx-example/kernel.ll.o: llvm_check _build/fx-example/kernel.ll
 build _build/fx-example/kernel.air: metal_check _build/fx-example/kernel.metal
 build _build/fx-example/kernel.metallib: metal_lib _build/fx-example/kernel.air
-build _build/fx-example/package.ok: package_check _build/fx-example/package.json _build/fx-example/fx.json _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.metallib _build/fx-example/kernel.ll | _build/bin/llmopt-package-check
+build _build/fx-example/package.ok: package_check _build/fx-example/package.llmopt _build/fx-example/kernel.metallib | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
   directory = _build/fx-example
 
-build _build/q8-fx-example/fx.json _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.ll _build/q8-fx-example/package.json: q8_fx_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx
+build _build/q8-fx-example/fx.json _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.ll _build/q8-fx-example/package.llmopt: q8_fx_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx
 build _build/q8-fx-example/kernel.ll.o: llvm_check _build/q8-fx-example/kernel.ll
 build _build/q8-fx-example/kernel.air: metal_check _build/q8-fx-example/kernel.metal
 build _build/q8-fx-example/kernel.metallib: metal_lib _build/q8-fx-example/kernel.air
-build _build/q8-fx-example/package.ok: package_check _build/q8-fx-example/package.json _build/q8-fx-example/fx.json _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.metallib _build/q8-fx-example/kernel.ll | _build/bin/llmopt-package-check
+build _build/q8-fx-example/package.ok: package_check _build/q8-fx-example/package.llmopt _build/q8-fx-example/kernel.metallib | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
   directory = _build/q8-fx-example
 build _build/q8-serving-example/weights.safetensors: q8_tensor_store python/examples/write_q8_safetensors_fixture.py
-build _build/q8-serving-example/fx.json _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.ll _build/q8-serving-example/package.json: q8_serving_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx _build/q8-serving-example/weights.safetensors
+build _build/q8-serving-example/fx.json _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.ll _build/q8-serving-example/package.llmopt: q8_serving_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx _build/q8-serving-example/weights.safetensors
 build _build/q8-serving-example/kernel.ll.o: llvm_check _build/q8-serving-example/kernel.ll
 build _build/q8-serving-example/kernel.air: metal_check _build/q8-serving-example/kernel.metal
 build _build/q8-serving-example/kernel.metallib: metal_lib _build/q8-serving-example/kernel.air
-build _build/q8-serving-example/package.ok: package_check _build/q8-serving-example/package.json _build/q8-serving-example/fx.json _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.metallib _build/q8-serving-example/kernel.ll _build/q8-serving-example/weights.safetensors | _build/bin/llmopt-package-check
+build _build/q8-serving-example/package.ok: package_check _build/q8-serving-example/package.llmopt _build/q8-serving-example/kernel.metallib _build/q8-serving-example/weights.safetensors | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
   directory = _build/q8-serving-example
 build _build/q8-serving-example/ocaml-metal-smoke.json: run_ocaml_metal_smoke _build/q8-serving-example/package.ok | _build/bin/llmopt-ocaml-metal-smoke

@@ -2,23 +2,31 @@ type input = {
   name : string;
   source : Ir.Input_source.t;
   shape : Shape.t;
+  logical_shape : Tensor_shape.t;
   dtype : Ir.Dtype.t;
 }
 
 type allocation = {
   shape : Shape.t;
+  logical_shape : Tensor_shape.t;
   dtype : Ir.Dtype.t;
   space : Ir.Memory_space.t;
   layout : Ir.Layout.t;
 }
 
-type matmul = { lhs : Ir.Value.t; rhs : Ir.Value.t; shape : Shape.t }
+type matmul = {
+  lhs : Ir.Value.t;
+  rhs : Ir.Value.t;
+  shape : Shape.t;
+  logical_shape : Tensor_shape.t;
+}
 
 type linear = {
   input : Ir.Value.t;
   weight : Ir.Value.t;
   bias : Ir.Value.t option;
   shape : Shape.t;
+  logical_shape : Tensor_shape.t;
 }
 
 type q8_linear = {
@@ -27,21 +35,30 @@ type q8_linear = {
   scale : Ir.Value.t;
   bias : Ir.Value.t option;
   shape : Shape.t;
+  logical_shape : Tensor_shape.t;
 }
 
 type add = {
   lhs : Ir.Value.t;
   rhs : Ir.Value.t;
   shape : Shape.t;
+  logical_shape : Tensor_shape.t;
   broadcast : Shape.broadcast;
 }
 
-type unary = { input : Ir.Value.t; shape : Shape.t }
+type unary = {
+  input : Ir.Value.t;
+  shape : Shape.t;
+  logical_shape : Tensor_shape.t;
+}
 type opaque = {
   op : string;
   target : string;
+  arguments : Ir.Argument.t list;
+  keyword_arguments : (string * Ir.Argument.t) list;
   inputs : Ir.Value.t list;
   shape : Shape.t;
+  logical_shape : Tensor_shape.t;
   dtype : Ir.Dtype.t;
 }
 
@@ -69,7 +86,12 @@ type _ Effect.t +=
   | Barrier_wait : Barrier.t -> unit Effect.t
 
 let input ~name ~source ~shape ~dtype =
-  Effect.perform (Input { name; source; shape; dtype })
+  let logical_shape = Tensor_shape.of_matrix shape in
+  Effect.perform (Input { name; source; shape; logical_shape; dtype })
+
+let tensor_input ~name ~source ~shape:logical_shape ~dtype =
+  let shape = Tensor_shape.matrix_exn logical_shape in
+  Effect.perform (Input { name; source; shape; logical_shape; dtype })
 let alloc allocation = Effect.perform (Alloc allocation)
 let copy ~src ~dst = Effect.perform (Copy { src; dst })
 let async_copy ~src ~dst ~barrier = Effect.perform (Async_copy { src; dst; barrier })

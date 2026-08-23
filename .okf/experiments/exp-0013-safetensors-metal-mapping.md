@@ -4,7 +4,7 @@ title: 'Single-archive safetensors mapping into Metal'
 description: 'Replace duplicated per-tensor package records and raw files with one indexed binary archive, then dispatch its tensor views from OCaml.'
 tags: [experiment, ocaml, safetensors, mmap, metal, package, q8]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T17:11:04Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:05:24Z' }
 sources:
   - id: format
     resource: https://github.com/huggingface/safetensors/blob/main/README.md
@@ -25,7 +25,7 @@ sources:
 
 # Storage boundary
 
-The serving package has one small JSON control manifest for artifact paths,
+At the time of this experiment, the serving package had one small JSON control manifest for artifact paths,
 kernel ABI, and cache policy. It contains no per-tensor dtype, shape, encoding,
 or payload path records. Its `tensor_store` points to one
 `weights.safetensors` file. Safetensors itself stores a length-prefixed compact
@@ -55,5 +55,9 @@ M4 Pro.
 This fixture proves archive parsing, no-copy ownership, tensor-offset binding,
 and command execution. It does not export the complete LFM2.5-350M Q8 tensors
 or provide the complete prefill/decode invocation schedule.
+
+The JSON control manifest was subsequently replaced by the binary schedule in
+[exp-0015](exp-0015-binary-serving-schedule.md). The one-file safetensors
+storage and mmap ownership described here are unchanged.
 
 [^format]: Hugging Face safetensors format README.

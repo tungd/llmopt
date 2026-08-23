@@ -97,9 +97,10 @@ The demo writes generated sources to `_build/llmopt-demo/` and prints the CPU
 reference result, capture summary, and fusion summary. `metal` compiles the
 small reference kernel with the installed Xcode Metal toolchain. `fx-smoke`
 plans `python/examples/linear_fx.json` and validates its LLVM and Metal
-artifacts, metallib, and serving-package manifest. `q8-fx-smoke` performs the
+artifacts, metallib, and binary serving package. `q8-fx-smoke` performs the
 same validation for the Q8 fixture. `_build/bin/llmopt-package-check` validates
-the package schema and every referenced file. `bench-mps` loads LFM2.5-350M
+the versioned command stream, kernel ABI, tensor bindings, and runtime files.
+`bench-mps` loads LFM2.5-350M
 with Q8 weight-only quantization by default, runs eager MPS and the llmopt
 direct FX GraphModule executor, checks exact logits, and writes a JSON
 measurement. Pass `--quantization fp16` for the explicit fallback.
@@ -157,7 +158,7 @@ PyTorch model
         │ torch.compile(backend=llmopt)
         ▼
 FX GraphModule + example inputs
-        │ JSON manifest ABI
+        │ compile-time FX manifest (JSON diagnostic/import boundary)
         ▼
 OCaml FX importer
         │ effect-based planned execution
@@ -174,15 +175,19 @@ typed graph + schedule timeline
         └── tiled Metal Shading Language (artifact)
 
 generated serving package (fixture boundary implemented)
-        │ package.json: metallib + graph/kernel/cache control metadata
+        │ package.llmopt: binary schedule + kernel/cache/runtime metadata
         │ weights.safetensors: one indexed binary tensor archive
         ▼
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout (implemented; Q8 default)
         ├── Metal package loading/mapped weights/Q8 dispatch (implemented)
-        └── full model archive, schedule, and request loop (next slices)
+        └── complete model lowering, schedule execution, and request loop (next)
 ```
+
+`fx.json` and `plan.txt` are compiler diagnostics, not serving inputs. The
+native runtime consumes only `package.llmopt`, the declared `.metallib`, and
+`weights.safetensors`.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

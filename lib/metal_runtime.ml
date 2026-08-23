@@ -48,7 +48,6 @@ type t = {
   context : context_handle;
   library : library_handle;
   package : Serving_package.t;
-  fx : Fx.t;
   tensor_store : (Safetensors.t * buffer_handle) option;
 }
 
@@ -66,11 +65,6 @@ let load_package ~root package =
   match Serving_package.validate_files ~root package with
   | Error _ as error -> error
   | Ok () ->
-      let fx_path =
-        Serving_package.files package |> Serving_package.Files.fx
-        |> Serving_package.Artifact.path |> Filename.concat root
-      in
-      let fx = Fx.of_file fx_path in
       let archive =
         match Serving_package.tensor_store package with
         | None -> Ok None
@@ -81,9 +75,8 @@ let load_package ~root package =
             in
             Safetensors.of_file path |> Result.map Option.some
       in
-      let* fx = fx in
       let* archive = archive in
-      let* () = Serving_validation.validate ~package ~fx ~archive in
+      let* () = Serving_validation.validate ~package ~archive in
       let* (context, library, tensor_store) =
         protect (fun () ->
             let context = create_context_stub () in
@@ -105,7 +98,7 @@ let load_package ~root package =
       let* () =
         validate_declared_functions library (Serving_package.kernels package)
       in
-      Ok { context; library; package; fx; tensor_store }
+      Ok { context; library; package; tensor_store }
 
 let device_name runtime = device_name_stub runtime.context
 

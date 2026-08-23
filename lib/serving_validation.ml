@@ -9,51 +9,46 @@ let dtype_matches fx_dtype archive_dtype =
   | Ir.Dtype.Bool, Safetensors.Dtype.Bool -> true
   | _ -> false
 
-let validate_tensor archive node key =
+let validate_tensor archive input =
+  let key = Serving_schedule.Tensor_input.key input in
+  let value = Serving_schedule.Tensor_input.value input in
   match Safetensors.find archive key with
-  | None -> Error ("serving tensor store is missing FX binding: " ^ key)
+  | None -> Error ("serving tensor store is missing schedule binding: " ^ key)
   | Some tensor ->
-      if not (dtype_matches (Fx.Node.dtype node) (Safetensors.Tensor.dtype tensor))
+      if
+        not
+          (dtype_matches (Ir.Value.dtype value) (Safetensors.Tensor.dtype tensor))
       then
         Error
-          (Printf.sprintf "serving tensor %s dtype does not match FX node %s" key
-             (Fx.Node.name node))
+          (Printf.sprintf
+             "serving tensor %s dtype does not match the binary schedule" key)
       else
-        (match Fx.Node.shape node with
-        | None ->
-            Error ("serving tensor binding has no static FX shape: " ^ key)
-        | Some shape when shape <> Safetensors.Tensor.shape tensor ->
-            Error
-              (Printf.sprintf "serving tensor %s shape does not match FX node %s"
-                 key (Fx.Node.name node))
-        | Some _ -> Ok ())
+        let shape =
+          Ir.Value.logical_shape value |> Tensor_shape.dimensions
+        in
+        if shape <> Safetensors.Tensor.shape tensor then
+          Error
+            (Printf.sprintf
+               "serving tensor %s shape does not match the binary schedule" key)
+        else Ok ()
 
-let validate ~package ~fx ~archive =
-  let rec nodes = function
+let validate ~package ~archive =
+  let rec inputs = function
     | [] -> Ok ()
-    | node :: rest ->
-        (match Fx.Node.binding node with
-        | Fx.Binding.Computed | Fx.Binding.Runtime -> nodes rest
-        | Fx.Binding.Tensor_store { key } ->
-            if Fx.Node.op node <> "placeholder" && Fx.Node.op node <> "get_attr"
-            then
-              Error
-                ("only FX placeholders and get_attr nodes may bind tensors: "
-                ^ Fx.Node.name node)
-            else
-              (match archive with
-              | None ->
-                  if Serving_package.stage package
-                     = Serving_package.Stage.Compiled_graph
-                  then nodes rest
-                  else Error "serving package has tensor bindings but no archive"
-              | Some archive ->
-                  Result.bind (validate_tensor archive node key) (fun () ->
-                      nodes rest)))
+    | input :: rest ->
+        (match archive with
+        | None ->
+            if
+              Serving_package.stage package
+              = Serving_package.Stage.Compiled_graph
+            then inputs rest
+            else Error "serving package has tensor bindings but no archive"
+        | Some archive ->
+            Result.bind (validate_tensor archive input) (fun () -> inputs rest))
   in
   match Serving_package.stage package, archive with
   | Serving_package.Stage.Serving, None ->
       Error "serving package tensor archive was not loaded"
   | Serving_package.Stage.Compiled_graph, Some _ ->
       Error "compiled-graph package unexpectedly loaded a tensor archive"
-  | _ -> nodes (Fx.nodes fx)
+  | _ -> inputs (Serving_package.schedule package |> Serving_schedule.tensor_inputs)

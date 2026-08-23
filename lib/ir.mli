@@ -32,10 +32,29 @@ end
 module Value : sig
   type t
   val make : id:int -> shape:Shape.t -> dtype:Dtype.t -> t
+  val make_tensor : id:int -> shape:Tensor_shape.t -> dtype:Dtype.t -> t
   val id : t -> Value_id.t
   val shape : t -> Shape.t
+  val logical_shape : t -> Tensor_shape.t
   val dtype : t -> Dtype.t
   val equal : t -> t -> bool
+end
+
+module Argument : sig
+  type t =
+    | Value of Value.t
+    | Null
+    | Bool of bool
+    | Int of int
+    | Float of float
+    | String of string
+    | Symbol of string
+    | List of t list
+    | Tuple of t list
+    | Mapping of (string * t) list
+    | Slice of { start : t; stop : t; step : t }
+
+  val values : t -> Value.t list
 end
 
 type node
@@ -50,7 +69,12 @@ module Op : sig
     | Add of { broadcast : Shape.broadcast }
     | Gelu
     | Relu
-    | Opaque of { op : string; target : string }
+    | Opaque of {
+        op : string;
+        target : string;
+        arguments : Argument.t list;
+        keyword_arguments : (string * Argument.t) list;
+      }
     | Output of { name : string }
     | Barrier_create of { id : int; name : string }
     | Barrier_arrive of int
@@ -72,11 +96,19 @@ module Graph : sig
 
   val create : unit -> t
   val fresh_value : t -> shape:Shape.t -> dtype:Dtype.t -> Value.t
+  val fresh_tensor_value : t -> shape:Tensor_shape.t -> dtype:Dtype.t -> Value.t
   val input :
     t ->
     name:string ->
     source:Input_source.t ->
     shape:Shape.t ->
+    dtype:Dtype.t ->
+    Value.t
+  val tensor_input :
+    t ->
+    name:string ->
+    source:Input_source.t ->
+    shape:Tensor_shape.t ->
     dtype:Dtype.t ->
     Value.t
   val allocate :

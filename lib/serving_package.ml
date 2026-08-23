@@ -1,5 +1,3 @@
-open Yojson.Basic.Util
-
 let ( let* ) = Result.bind
 
 module Stage = struct
@@ -8,11 +6,6 @@ module Stage = struct
   let to_string = function
     | Compiled_graph -> "compiled-graph"
     | Serving -> "serving"
-
-  let of_string = function
-    | "compiled-graph" -> Ok Compiled_graph
-    | "serving" -> Ok Serving
-    | value -> Error ("unsupported serving-package stage: " ^ value)
 end
 
 module Artifact = struct
@@ -36,45 +29,11 @@ module Artifact = struct
   let path artifact = artifact
 end
 
-let artifact_of_json json =
-  try json |> to_string |> Artifact.create
-  with Type_error (message, _) -> Error ("invalid artifact path: " ^ message)
-
 module Files = struct
-  type t = {
-    fx : Artifact.t;
-    plan : Artifact.t;
-    metal_source : Artifact.t;
-    metal_library : Artifact.t;
-    llvm_ir : Artifact.t;
-  }
+  type t = { metal_library : Artifact.t }
 
-  let create ~fx ~plan ~metal_source ~metal_library ~llvm_ir =
-    { fx; plan; metal_source; metal_library; llvm_ir }
-
-  let fx files = files.fx
-  let plan files = files.plan
-  let metal_source files = files.metal_source
+  let create ~metal_library = { metal_library }
   let metal_library files = files.metal_library
-  let llvm_ir files = files.llvm_ir
-  let all files =
-    [ files.fx; files.plan; files.metal_source; files.metal_library; files.llvm_ir ]
-
-  let to_yojson files =
-    `Assoc
-      [ ("fx", `String (Artifact.path files.fx));
-        ("plan", `String (Artifact.path files.plan));
-        ("metal_source", `String (Artifact.path files.metal_source));
-        ("metal_library", `String (Artifact.path files.metal_library));
-        ("llvm_ir", `String (Artifact.path files.llvm_ir)) ]
-
-  let of_yojson json =
-    let* fx = artifact_of_json (member "fx" json) in
-    let* plan = artifact_of_json (member "plan" json) in
-    let* metal_source = artifact_of_json (member "metal_source" json) in
-    let* metal_library = artifact_of_json (member "metal_library" json) in
-    let* llvm_ir = artifact_of_json (member "llvm_ir" json) in
-    Ok (create ~fx ~plan ~metal_source ~metal_library ~llvm_ir)
 end
 
 module Tensor_store = struct
@@ -82,21 +41,6 @@ module Tensor_store = struct
 
   let safetensors ~file = Safetensors { file }
   let file (Safetensors { file }) = file
-
-  let to_yojson (Safetensors { file }) =
-    `Assoc
-      [ ("format", `String "safetensors");
-        ("file", `String (Artifact.path file)) ]
-
-  let of_yojson json =
-    try
-      match json |> member "format" |> to_string with
-      | "safetensors" ->
-          let* file = artifact_of_json (member "file" json) in
-          Ok (safetensors ~file)
-      | value -> Error ("unsupported tensor-store format: " ^ value)
-    with Type_error (message, _) ->
-      Error ("invalid serving-package tensor store: " ^ message)
 end
 
 module Cache = struct
@@ -128,56 +72,6 @@ module Cache = struct
   let page_size cache = cache.page_size
   let default_kv cache = cache.default_kv
   let supported_kv cache = cache.supported_kv
-
-  let format_to_yojson = function
-    | Kv_cache.Format.F16 -> `Assoc [ ("format", `String "f16") ]
-    | Kv_cache.Format.Q8 { group_size } ->
-        `Assoc
-          [ ("format", `String "q8"); ("group_size", `Int group_size) ]
-
-  let format_of_yojson json =
-    try
-      match json |> member "format" |> to_string with
-      | "f16" -> Ok Kv_cache.Format.f16
-      | "q8" ->
-          json |> member "group_size" |> to_int |> fun group_size ->
-          Kv_cache.Format.q8 ~group_size
-      | value -> Error ("unsupported serving-package KV format: " ^ value)
-    with Type_error (message, _) ->
-      Error ("invalid serving-package KV format: " ^ message)
-
-  let to_yojson cache =
-    `Assoc
-      [ ( "radix",
-          `Assoc
-            [ ("mode", `String "required");
-              ("page_size", `Int cache.page_size) ] );
-        ( "kv",
-          `Assoc
-            [ ("default", format_to_yojson cache.default_kv);
-              ( "supported",
-                `List (List.map format_to_yojson cache.supported_kv) ) ] ) ]
-
-  let of_yojson json =
-    try
-      let radix = member "radix" json in
-      let mode = radix |> member "mode" |> to_string in
-      if mode <> "required" then
-        Error "serving-package radix cache must be required"
-      else
-        let page_size = radix |> member "page_size" |> to_int in
-        let kv = member "kv" json in
-        let* default_kv = format_of_yojson (member "default" kv) in
-        let rec parse_formats acc = function
-          | [] -> Ok (List.rev acc)
-          | value :: rest ->
-              let* format = format_of_yojson value in
-              parse_formats (format :: acc) rest
-        in
-        let* supported_kv = parse_formats [] (kv |> member "supported" |> to_list) in
-        create ~page_size ~default_kv ~supported_kv
-    with Type_error (message, _) ->
-      Error ("invalid serving-package cache policy: " ^ message)
 end
 
 type t = {
@@ -185,115 +79,257 @@ type t = {
   model : string option;
   files : Files.t;
   kernels : Kernel_abi.Entry.t list;
+  schedule : Serving_schedule.t;
   tensor_store : Tensor_store.t option;
   cache : Cache.t;
 }
 
-let create ~stage ?model ~files ~kernels ~tensor_store ~cache () =
+let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
+  let tensor_inputs = Serving_schedule.tensor_inputs schedule in
   if Option.exists (fun value -> String.trim value = "") model then
     Error "serving-package model identifier cannot be empty"
   else if kernels = [] then Error "serving-package must declare at least one kernel"
-  else if List.length kernel_names <> List.length (List.sort_uniq String.compare kernel_names)
+  else if
+    List.length kernel_names
+    <> List.length (List.sort_uniq String.compare kernel_names)
   then Error "serving-package kernel entry-point names must be unique"
   else if stage = Stage.Compiled_graph && Option.is_some tensor_store then
     Error "compiled-graph package cannot declare a tensor store"
   else if stage = Stage.Serving && Option.is_none tensor_store then
     Error "serving-stage package must declare a tensor store"
-  else Ok { stage; model; files; kernels; tensor_store; cache }
+  else if stage = Stage.Serving && tensor_inputs = [] then
+    Error "serving-stage package schedule has no tensor-store inputs"
+  else Ok { stage; model; files; kernels; schedule; tensor_store; cache }
 
-let compiled_graph ?model ~files ~kernels ~cache () =
-  create ~stage:Stage.Compiled_graph ?model ~files ~kernels ~tensor_store:None
-    ~cache ()
+let compiled_graph ?model ~files ~kernels ~schedule ~cache () =
+  create ~stage:Stage.Compiled_graph ?model ~files ~kernels ~schedule
+    ~tensor_store:None ~cache ()
 
-let serving ?model ~files ~kernels ~tensor_store ~cache () =
-  create ~stage:Stage.Serving ?model ~files ~kernels
+let serving ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
+  create ~stage:Stage.Serving ?model ~files ~kernels ~schedule
     ~tensor_store:(Some tensor_store) ~cache ()
 
 let stage package = package.stage
 let model package = package.model
 let files package = package.files
 let kernels package = package.kernels
+let schedule package = package.schedule
 let tensor_store package = package.tensor_store
 let cache package = package.cache
 
-let to_yojson package =
-  `Assoc
-    [ ("schema", `String "llmopt.serving-package");
-      ("version", `Int 1);
-      ("stage", `String (Stage.to_string package.stage));
-      ("target", `Assoc [ ("platform", `String "metal") ]);
-      ("model", Option.fold ~none:`Null ~some:(fun value -> `String value) package.model);
-      ("files", Files.to_yojson package.files);
-      ("kernels", `List (List.map Kernel_abi.Entry.to_yojson package.kernels));
-      ( "tensor_store",
-        Option.fold ~none:`Null ~some:Tensor_store.to_yojson
-          package.tensor_store );
-      ("cache", Cache.to_yojson package.cache) ]
+let write_option writer write = function
+  | None -> Binary.Writer.u8 writer 0
+  | Some value ->
+      Binary.Writer.u8 writer 1;
+      write writer value
 
-let parse_list parse values =
-  let rec loop acc = function
-    | [] -> Ok (List.rev acc)
-    | value :: rest ->
-        let* parsed = parse value in
-        loop (parsed :: acc) rest
-  in
-  loop [] values
+let read_option reader read =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> Ok None
+  | 1 -> read reader |> Result.map Option.some
+  | _ -> Error (Printf.sprintf "unknown serving-package option tag: %d" tag)
 
-let of_yojson json =
-  try
-    let schema = json |> member "schema" |> to_string in
-    let version = json |> member "version" |> to_int in
-    let platform = json |> member "target" |> member "platform" |> to_string in
-    if schema <> "llmopt.serving-package" then
-      Error ("unsupported serving-package schema: " ^ schema)
-    else if version <> 1 then
-      Error (Printf.sprintf "unsupported serving-package version: %d" version)
-    else if platform <> "metal" then
-      Error ("unsupported serving-package target: " ^ platform)
+let write_artifact writer artifact =
+  Binary.Writer.string writer (Artifact.path artifact)
+
+let read_artifact reader =
+  let* path = Binary.Reader.string reader in
+  Artifact.create path
+
+let operation_tag = function
+  | Kernel_abi.Operation.Matmul -> 0
+  | Kernel_abi.Operation.Fused_linear -> 1
+  | Kernel_abi.Operation.Linear -> 2
+  | Kernel_abi.Operation.Q8_linear -> 3
+  | Kernel_abi.Operation.Q8_dequantize -> 4
+
+let operation_of_tag = function
+  | 0 -> Ok Kernel_abi.Operation.Matmul
+  | 1 -> Ok Kernel_abi.Operation.Fused_linear
+  | 2 -> Ok Kernel_abi.Operation.Linear
+  | 3 -> Ok Kernel_abi.Operation.Q8_linear
+  | 4 -> Ok Kernel_abi.Operation.Q8_dequantize
+  | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
+
+let dtype_tag = function
+  | Ir.Dtype.Float32 -> 0
+  | Ir.Dtype.Float16 -> 1
+  | Ir.Dtype.Bfloat16 -> 2
+  | Ir.Dtype.Int64 -> 3
+  | Ir.Dtype.Int32 -> 4
+  | Ir.Dtype.Int8 -> 5
+  | Ir.Dtype.Bool -> 6
+
+let dtype_of_tag = function
+  | 0 -> Ok Ir.Dtype.Float32
+  | 1 -> Ok Ir.Dtype.Float16
+  | 2 -> Ok Ir.Dtype.Bfloat16
+  | 3 -> Ok Ir.Dtype.Int64
+  | 4 -> Ok Ir.Dtype.Int32
+  | 5 -> Ok Ir.Dtype.Int8
+  | 6 -> Ok Ir.Dtype.Bool
+  | tag -> Error (Printf.sprintf "unknown kernel dtype tag: %d" tag)
+
+let write_kernel writer entry =
+  Binary.Writer.string writer (Kernel_abi.Entry.name entry);
+  Binary.Writer.u8 writer (operation_tag (Kernel_abi.Entry.operation entry));
+  Binary.Writer.u8 writer (dtype_tag (Kernel_abi.Entry.input_dtype entry));
+  Binary.Writer.u8 writer (dtype_tag (Kernel_abi.Entry.output_dtype entry));
+  let x, y, z = Kernel_abi.Entry.threadgroup entry in
+  List.iter (Binary.Writer.u32 writer) [ x; y; z ]
+
+let read_kernel reader =
+  let* name = Binary.Reader.string reader in
+  let* operation_tag = Binary.Reader.u8 reader in
+  let* operation = operation_of_tag operation_tag in
+  let* input_tag = Binary.Reader.u8 reader in
+  let* input_dtype = dtype_of_tag input_tag in
+  let* output_tag = Binary.Reader.u8 reader in
+  let* output_dtype = dtype_of_tag output_tag in
+  let* x = Binary.Reader.u32 reader in
+  let* y = Binary.Reader.u32 reader in
+  let* z = Binary.Reader.u32 reader in
+  Kernel_abi.Entry.create ~name ~operation ~input_dtype ~output_dtype
+    ~threadgroup:(x, y, z)
+
+let write_kv_format writer = function
+  | Kv_cache.Format.F16 -> Binary.Writer.u8 writer 0
+  | Kv_cache.Format.Q8 { group_size } ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.u32 writer group_size
+
+let read_kv_format reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> Ok Kv_cache.Format.f16
+  | 1 ->
+      let* group_size = Binary.Reader.u32 reader in
+      Kv_cache.Format.q8 ~group_size
+  | _ -> Error (Printf.sprintf "unknown KV format tag: %d" tag)
+
+let write_cache writer cache =
+  Binary.Writer.u32 writer cache.Cache.page_size;
+  write_kv_format writer cache.default_kv;
+  Binary.Writer.u16 writer (List.length cache.supported_kv);
+  List.iter (write_kv_format writer) cache.supported_kv
+
+let read_cache reader =
+  let* page_size = Binary.Reader.u32 reader in
+  let* default_kv = read_kv_format reader in
+  let* count = Binary.Reader.u16 reader in
+  let rec formats acc remaining =
+    if remaining = 0 then Ok (List.rev acc)
     else
-      let* stage = json |> member "stage" |> to_string |> Stage.of_string in
-      let model = json |> member "model" |> to_string_option in
-      let* files = Files.of_yojson (member "files" json) in
-      let* kernels =
-        json |> member "kernels" |> to_list
-        |> parse_list Kernel_abi.Entry.of_yojson
+      let* format = read_kv_format reader in
+      formats (format :: acc) (remaining - 1)
+  in
+  let* supported_kv = formats [] count in
+  Cache.create ~page_size ~default_kv ~supported_kv
+
+let write_tensor_store writer (Tensor_store.Safetensors { file }) =
+  Binary.Writer.u8 writer 0;
+  write_artifact writer file
+
+let read_tensor_store reader =
+  let* tag = Binary.Reader.u8 reader in
+  if tag <> 0 then Error (Printf.sprintf "unknown tensor-store tag: %d" tag)
+  else
+    let* file = read_artifact reader in
+    Ok (Tensor_store.safetensors ~file)
+
+let magic = "LLMOPTPK"
+
+let to_bytes package =
+  let writer = Binary.Writer.create () in
+  Binary.Writer.raw_string writer magic;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u8 writer
+    (match package.stage with Stage.Compiled_graph -> 0 | Stage.Serving -> 1);
+  Binary.Writer.u8 writer 0;
+  write_option writer Binary.Writer.string package.model;
+  write_artifact writer (Files.metal_library package.files);
+  Binary.Writer.u16 writer (List.length package.kernels);
+  List.iter (write_kernel writer) package.kernels;
+  write_option writer write_tensor_store package.tensor_store;
+  write_cache writer package.cache;
+  package.schedule |> Serving_schedule.to_bytes |> Binary.Writer.bytes writer;
+  Binary.Writer.contents writer
+
+let of_bytes bytes =
+  let reader = Binary.Reader.create bytes in
+  let* actual_magic =
+    Binary.Reader.raw_string reader ~length:(String.length magic)
+  in
+  if actual_magic <> magic then Error "invalid serving-package magic"
+  else
+    let* version = Binary.Reader.u16 reader in
+    if version <> 1 then
+      Error (Printf.sprintf "unsupported serving-package version: %d" version)
+    else
+      let* stage_tag = Binary.Reader.u8 reader in
+      let* stage =
+        match stage_tag with
+        | 0 -> Ok Stage.Compiled_graph
+        | 1 -> Ok Stage.Serving
+        | _ ->
+            Error
+              (Printf.sprintf "unknown serving-package stage tag: %d" stage_tag)
       in
-      let* tensor_store =
-        match member "tensor_store" json with
-        | `Null -> Ok None
-        | value -> Tensor_store.of_yojson value |> Result.map Option.some
-      in
-      let* cache = Cache.of_yojson (member "cache" json) in
-      create ~stage ?model ~files ~kernels ~tensor_store ~cache ()
-  with
-  | Type_error (message, _) -> Error ("invalid serving package: " ^ message)
-  | Yojson.Json_error message -> Error ("invalid serving package: " ^ message)
+      let* target = Binary.Reader.u8 reader in
+      if target <> 0 then
+        Error
+          (Printf.sprintf "unsupported serving-package target tag: %d" target)
+      else
+        let* model = read_option reader Binary.Reader.string in
+        let* metal_library = read_artifact reader in
+        let files = Files.create ~metal_library in
+        let* kernel_count = Binary.Reader.u16 reader in
+        let rec kernels acc remaining =
+          if remaining = 0 then Ok (List.rev acc)
+          else
+            let* kernel = read_kernel reader in
+            kernels (kernel :: acc) (remaining - 1)
+        in
+        let* kernels = kernels [] kernel_count in
+        let* tensor_store = read_option reader read_tensor_store in
+        let* cache = read_cache reader in
+        let* schedule_bytes = Binary.Reader.bytes reader in
+        let* schedule = Serving_schedule.of_bytes schedule_bytes in
+        let* () = Binary.Reader.finish reader in
+        create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache ()
 
 let write_file path package =
   try
-    let channel = open_out path in
+    let channel = open_out_bin path in
     Fun.protect
       ~finally:(fun () -> close_out_noerr channel)
       (fun () ->
-        Yojson.Basic.pretty_to_channel channel (to_yojson package);
-        output_char channel '\n';
+        output_bytes channel (to_bytes package);
+        flush channel;
         Ok ())
   with Sys_error message -> Error ("cannot write serving package: " ^ message)
 
 let of_file path =
-  try of_yojson (Yojson.Basic.from_file path)
+  try
+    let channel = open_in_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_in_noerr channel)
+      (fun () ->
+        let bytes = really_input_string channel (in_channel_length channel) in
+        of_bytes (Bytes.of_string bytes))
   with
   | Sys_error message -> Error ("cannot read serving package: " ^ message)
-  | Yojson.Json_error message -> Error ("invalid serving package: " ^ message)
+  | End_of_file -> Error "serving package ended unexpectedly"
 
 let validate_files ~root package =
-  let tensor_store_artifacts =
-    Option.fold ~none:[]
-      ~some:(fun tensor_store -> [ Tensor_store.file tensor_store ])
-      package.tensor_store
+  let artifacts =
+    Files.metal_library package.files
+    :: Option.fold ~none:[]
+         ~some:(fun tensor_store -> [ Tensor_store.file tensor_store ])
+         package.tensor_store
   in
-  let artifacts = Files.all package.files @ tensor_store_artifacts in
   let rec check = function
     | [] -> Ok ()
     | artifact :: rest ->

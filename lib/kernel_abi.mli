@@ -21,6 +21,4 @@ module Entry : sig
   val input_dtype : t -> Ir.Dtype.t
   val output_dtype : t -> Ir.Dtype.t
   val threadgroup : t -> int * int * int
-  val to_yojson : t -> Yojson.Basic.t
-  val of_yojson : Yojson.Basic.t -> (t, string) result
 end

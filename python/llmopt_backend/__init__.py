@@ -6,8 +6,10 @@ planner, and returns an MPS executable for the captured graph.
 
 from __future__ import annotations
 
+import enum
 import json
 import itertools
+import math
 import operator
 import os
 import subprocess
@@ -114,6 +116,55 @@ def _node_refs(value: Any) -> Iterable[str]:
     elif isinstance(value, Mapping):
         for item in value.values():
             yield from _node_refs(item)
+
+
+def _argument(value: Any) -> dict[str, Any]:
+    """Encode an FX argument without collapsing constants into display text."""
+
+    if hasattr(value, "op") and hasattr(value, "name"):
+        return {"kind": "node", "name": str(value.name)}
+    if value is None:
+        return {"kind": "null"}
+    if type(value) is bool:
+        return {"kind": "bool", "value": value}
+    if type(value) is int:
+        return {"kind": "int", "value": value}
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise TypeError(f"FX argument contains a non-finite float: {value!r}")
+        return {"kind": "float", "value": value}
+    if isinstance(value, str):
+        return {"kind": "string", "value": value}
+    if isinstance(value, slice):
+        return {
+            "kind": "slice",
+            "start": _argument(value.start),
+            "stop": _argument(value.stop),
+            "step": _argument(value.step),
+        }
+    if isinstance(value, tuple):
+        return {"kind": "tuple", "items": [_argument(item) for item in value]}
+    if isinstance(value, list):
+        return {"kind": "list", "items": [_argument(item) for item in value]}
+    if isinstance(value, Mapping):
+        items: list[dict[str, Any]] = []
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"FX argument mapping key is not a string: {key!r}")
+            items.append({"name": key, "value": _argument(item)})
+        return {"kind": "mapping", "items": items}
+    if isinstance(value, enum.Enum):
+        return {
+            "kind": "symbol",
+            "value": f"{type(value).__module__}.{type(value).__qualname__}.{value.name}",
+        }
+    module = type(value).__module__
+    if module == "torch" or module.startswith("torch."):
+        return {"kind": "symbol", "value": str(value)}
+    raise TypeError(
+        "unsupported FX argument type "
+        f"{type(value).__module__}.{type(value).__qualname__}: {value!r}"
+    )
 
 
 def _first_tensor(value: Any) -> Any:
@@ -256,10 +307,19 @@ def capture_from_fx(gm: Any, example_inputs: Sequence[Any]) -> CapturedFx:
                 "shape": shape,
                 "dtype": dtype,
                 "binding": binding,
+                "arguments": {
+                    "args": [
+                        _argument(value) for value in getattr(node, "args", ())
+                    ],
+                    "kwargs": [
+                        {"name": str(key), "value": _argument(value)}
+                        for key, value in getattr(node, "kwargs", {}).items()
+                    ],
+                },
             }
         )
     return CapturedFx(
-        manifest={"version": 1, "nodes": serialized, "outputs": output_names},
+        manifest={"version": 2, "nodes": serialized, "outputs": output_names},
         tensors=tensors,
     )
 

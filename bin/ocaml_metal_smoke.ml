@@ -27,7 +27,7 @@ let () =
   let root = Sys.argv.(1) in
   let package =
     expect_ok
-      (Serving_package.of_file (Filename.concat root "package.json"))
+      (Serving_package.of_file (Filename.concat root "package.llmopt"))
   in
   let runtime = expect_ok (Metal_runtime.load_package ~root package) in
   let m, n, k = 2, 3, 4 in

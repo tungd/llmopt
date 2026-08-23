@@ -1,6 +1,8 @@
 open Yojson.Basic
 open Yojson.Basic.Util
 
+let ( let* ) = Result.bind
+
 module Binding = struct
   type t = Computed | Runtime | Tensor_store of { key : string }
 
@@ -8,6 +10,30 @@ module Binding = struct
     | Computed -> None
     | Runtime -> Some Ir.Input_source.Runtime
     | Tensor_store { key } -> Some (Ir.Input_source.Tensor_store { key })
+end
+
+module Argument = struct
+  type t =
+    | Node of string
+    | Null
+    | Bool of bool
+    | Int of int
+    | Float of float
+    | String of string
+    | Symbol of string
+    | List of t list
+    | Tuple of t list
+    | Mapping of (string * t) list
+    | Slice of { start : t; stop : t; step : t }
+
+  let rec node_references = function
+    | Node name -> [ name ]
+    | Null | Bool _ | Int _ | Float _ | String _ | Symbol _ -> []
+    | List values | Tuple values -> List.concat_map node_references values
+    | Mapping fields ->
+        fields |> List.map snd |> List.concat_map node_references
+    | Slice { start; stop; step } ->
+        node_references start @ node_references stop @ node_references step
 end
 
 module Node = struct
@@ -19,6 +45,8 @@ module Node = struct
     shape : int list option;
     dtype : Ir.Dtype.t;
     binding : Binding.t;
+    arguments : Argument.t list;
+    keyword_arguments : (string * Argument.t) list;
   }
 
   let name node = node.name
@@ -28,6 +56,8 @@ module Node = struct
   let shape node = node.shape
   let dtype node = node.dtype
   let binding node = node.binding
+  let arguments node = node.arguments
+  let keyword_arguments node = node.keyword_arguments
 end
 
 type t = { nodes : Node.t list; outputs : string list }
@@ -91,6 +121,71 @@ let parse_binding ~op json =
           else Ok (Binding.Tensor_store { key })
       | kind -> Error ("unsupported FX binding kind: " ^ kind))
 
+let rec parse_argument json =
+  let parse_values values =
+    let rec loop acc = function
+      | [] -> Ok (List.rev acc)
+      | value :: rest ->
+          let* value = parse_argument value in
+          loop (value :: acc) rest
+    in
+    loop [] values
+  in
+  try
+    match json |> member "kind" |> to_string with
+    | "node" -> Ok (Argument.Node (json |> member "name" |> to_string))
+    | "null" -> Ok Argument.Null
+    | "bool" -> Ok (Argument.Bool (json |> member "value" |> to_bool))
+    | "int" -> Ok (Argument.Int (json |> member "value" |> to_int))
+    | "float" -> Ok (Argument.Float (json |> member "value" |> to_float))
+    | "string" -> Ok (Argument.String (json |> member "value" |> to_string))
+    | "symbol" -> Ok (Argument.Symbol (json |> member "value" |> to_string))
+    | "list" ->
+        let* values = json |> member "items" |> to_list |> parse_values in
+        Ok (Argument.List values)
+    | "tuple" ->
+        let* values = json |> member "items" |> to_list |> parse_values in
+        Ok (Argument.Tuple values)
+    | "mapping" ->
+        let rec fields acc = function
+          | [] -> Ok (Argument.Mapping (List.rev acc))
+          | field :: rest ->
+              let name = field |> member "name" |> to_string in
+              let* value = field |> member "value" |> parse_argument in
+              fields ((name, value) :: acc) rest
+        in
+        fields [] (json |> member "items" |> to_list)
+    | "slice" ->
+        let* start = json |> member "start" |> parse_argument in
+        let* stop = json |> member "stop" |> parse_argument in
+        let* step = json |> member "step" |> parse_argument in
+        Ok (Argument.Slice { start; stop; step })
+    | kind -> Error ("unsupported FX argument kind: " ^ kind)
+  with Type_error (message, _) -> Error ("invalid FX argument: " ^ message)
+
+let parse_arguments json =
+  match member_opt "arguments" json with
+  | None -> Ok ([], [])
+  | Some arguments ->
+      let rec positional acc = function
+        | [] -> Ok (List.rev acc)
+        | value :: rest ->
+            let* value = parse_argument value in
+            positional (value :: acc) rest
+      in
+      let rec keywords acc = function
+        | [] -> Ok (List.rev acc)
+        | field :: rest ->
+            let name = field |> member "name" |> to_string in
+            let* value = field |> member "value" |> parse_argument in
+            keywords ((name, value) :: acc) rest
+      in
+      let* args = arguments |> member "args" |> to_list |> positional [] in
+      let* kwargs =
+        arguments |> member "kwargs" |> to_list |> keywords []
+      in
+      Ok (args, kwargs)
+
 let parse_node json =
   let name = json |> member "name" |> to_string in
   let op = json |> member "op" |> to_string in
@@ -102,13 +197,39 @@ let parse_node json =
     |> parse_dtype
   in
   let binding = parse_binding ~op json in
-  match inputs, shape, dtype, binding with
-  | Ok inputs, Ok shape, Ok dtype, Ok binding ->
-      Ok { Node.name; op; target; inputs; shape; dtype; binding }
-  | Error message, _, _, _
-  | _, Error message, _, _
-  | _, _, Error message, _
-  | _, _, _, Error message -> Error message
+  let arguments = parse_arguments json in
+  match inputs, shape, dtype, binding, arguments with
+  | ( Ok inputs,
+      Ok shape,
+      Ok dtype,
+      Ok binding,
+      Ok (arguments, keyword_arguments) ) ->
+      let argument_inputs =
+        arguments @ List.map snd keyword_arguments
+        |> List.concat_map Argument.node_references
+        |> List.sort_uniq String.compare
+      in
+      let declared_inputs = List.sort_uniq String.compare inputs in
+      if argument_inputs <> [] && argument_inputs <> declared_inputs then
+        Error ("FX node argument references disagree with inputs: " ^ name)
+      else
+        Ok
+          {
+            Node.name;
+            op;
+            target;
+            inputs;
+            shape;
+            dtype;
+            binding;
+            arguments;
+            keyword_arguments;
+          }
+  | Error message, _, _, _, _
+  | _, Error message, _, _, _
+  | _, _, Error message, _, _
+  | _, _, _, Error message, _
+  | _, _, _, _, Error message -> Error message
 
 let parse_outputs json =
   match json |> member "outputs" with
@@ -123,17 +244,23 @@ let parse_outputs json =
 
 let of_json json =
   try
-    let nodes_json = json |> member "nodes" |> to_list in
-    let rec parse_nodes acc = function
-      | [] -> Ok (List.rev acc)
-      | value :: rest ->
-          (match parse_node value with
-          | Ok node -> parse_nodes (node :: acc) rest
-          | Error message -> Error message)
+    let version =
+      json |> member "version" |> to_int_option |> Option.value ~default:1
     in
-    match parse_nodes [] nodes_json, parse_outputs json with
-    | Ok nodes, Ok outputs -> Ok { nodes; outputs }
-    | Error message, _ | _, Error message -> Error message
+    if version <> 1 && version <> 2 then
+      Error (Printf.sprintf "unsupported FX manifest version: %d" version)
+    else
+      let nodes_json = json |> member "nodes" |> to_list in
+      let rec parse_nodes acc = function
+        | [] -> Ok (List.rev acc)
+        | value :: rest ->
+            (match parse_node value with
+            | Ok node -> parse_nodes (node :: acc) rest
+            | Error message -> Error message)
+      in
+      match parse_nodes [] nodes_json, parse_outputs json with
+      | Ok nodes, Ok outputs -> Ok { nodes; outputs }
+      | Error message, _ | _, Error message -> Error message
   with
   | Yojson.Json_error message -> Error ("invalid FX manifest: " ^ message)
   | Type_error (message, _) -> Error ("invalid FX manifest: " ^ message)

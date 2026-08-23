@@ -1,0 +1,20 @@
+type t
+
+type error =
+  | Negative_dimension of { axis : int; value : int }
+  | Element_count_overflow of int list
+  | Matrix_projection_has_zero_elements of t
+  | Matrix_projection_overflow of t
+
+val create : int list -> (t, error) result
+val of_ints_exn : int list -> t
+val scalar : t
+val of_matrix : Shape.t -> t
+val dimensions : t -> int list
+val rank : t -> int
+val numel : t -> int
+val equal : t -> t -> bool
+val matrix : t -> (Shape.t, error) result
+val matrix_exn : t -> Shape.t
+val to_string : t -> string
+val error_to_string : error -> string

@@ -2,6 +2,22 @@ let fail message = raise (Failure message)
 
 let expect condition message = if not condition then fail message
 
+let contains_substring haystack needle =
+  let haystack_length = String.length haystack in
+  let needle_length = String.length needle in
+  let rec equal_at offset index =
+    index = needle_length
+    ||
+    (offset + index < haystack_length
+    && haystack.[offset + index] = needle.[index]
+    && equal_at offset (index + 1))
+  in
+  let rec search offset =
+    offset + needle_length <= haystack_length
+    && (equal_at offset 0 || search (offset + 1))
+  in
+  needle_length = 0 || search 0
+
 let expect_ok = function
   | Ok value -> value
   | Error message -> fail message
@@ -17,6 +33,18 @@ let expect_int_array actual expected message =
     message
 
 let () =
+  let rank_three = Tensor_shape.of_ints_exn [ 2; 3; 4 ] in
+  expect (Tensor_shape.rank rank_three = 3) "rank-three tensor shape";
+  expect (Tensor_shape.numel rank_three = 24) "rank-three tensor elements";
+  expect
+    (Shape.to_string (Tensor_shape.matrix_exn rank_three) = "6x4")
+    "rank-three matrix projection";
+  let rank_three_value =
+    Ir.Value.make_tensor ~id:0 ~shape:rank_three ~dtype:Ir.Dtype.Float16
+  in
+  expect
+    (Tensor_shape.equal (Ir.Value.logical_shape rank_three_value) rank_three)
+    "IR value preserves logical rank";
   let left = Shape.of_ints_exn ~rows:2 ~cols:4 in
   let right = Shape.of_ints_exn ~rows:4 ~cols:3 in
   let result =
@@ -136,26 +164,24 @@ let () =
       expect (String.contains source 'c') "Q8 Metal char storage emitted");
   let q8_program = expect_ok (Metal.lower q8_graph) in
   let q8_entries = Metal.Program.kernels q8_program in
+  let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
   expect (List.length q8_entries = 4) "Q8 Metal kernel ABI entries";
   let package_artifact path =
     expect_ok (Serving_package.Artifact.create path)
   in
   let package_files =
-    Serving_package.Files.create ~fx:(package_artifact "fx.json")
-      ~plan:(package_artifact "plan.txt")
-      ~metal_source:(package_artifact "kernel.metal")
+    Serving_package.Files.create
       ~metal_library:(package_artifact "kernel.metallib")
-      ~llvm_ir:(package_artifact "kernel.ll")
   in
   let compiled_package =
     expect_ok
       (Serving_package.compiled_graph ~files:package_files ~kernels:q8_entries
-         ~cache:Serving_package.Cache.default ())
+         ~schedule:q8_schedule ~cache:Serving_package.Cache.default ())
   in
   let package_round_trip =
     expect_ok
-      (Serving_package.of_yojson
-         (Serving_package.to_yojson compiled_package))
+      (compiled_package |> Serving_package.to_bytes
+      |> Serving_package.of_bytes)
   in
   expect
     (Serving_package.stage package_round_trip
@@ -181,35 +207,44 @@ let () =
   (match
      Serving_package.compiled_graph ~files:package_files
        ~kernels:[ first_entry; first_entry ]
-       ~cache:Serving_package.Cache.default ()
+       ~schedule:q8_schedule ~cache:Serving_package.Cache.default ()
    with
   | Error _ -> ()
   | Ok _ -> fail "serving package accepted duplicate kernel entries");
-  (match
-     Serving_package.of_yojson
-       (Serving_package.to_yojson compiled_package
-       |> function
-       | `Assoc fields ->
-           `Assoc
-             (("stage", `String "serving")
-             :: List.remove_assoc "stage" fields)
-       | json -> json)
-   with
+  let corrupted_package = Serving_package.to_bytes compiled_package in
+  Bytes.set corrupted_package 0 'X';
+  (match Serving_package.of_bytes corrupted_package with
   | Error _ -> ()
-  | Ok _ -> fail "serving-stage package accepted a missing tensor store");
+  | Ok _ -> fail "serving package accepted an invalid binary magic");
   let tensor_store =
     Serving_package.Tensor_store.safetensors
       ~file:(package_artifact "weights.safetensors")
   in
+  let tensor_graph =
+    match
+      Capture.run (fun () ->
+          let weight =
+            Tile_effect.tensor_input ~name:"weight_q8"
+              ~source:(Ir.Input_source.Tensor_store { key = "weight_q8" })
+              ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ])
+              ~dtype:Ir.Dtype.Int8
+          in
+          Tile_effect.output ~name:"weight" ~value:weight)
+    with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  let tensor_schedule = expect_ok (Serving_schedule.of_graph tensor_graph) in
   let serving_package =
     expect_ok
       (Serving_package.serving ~files:package_files ~kernels:q8_entries
-         ~tensor_store ~cache:Serving_package.Cache.default ())
+         ~schedule:tensor_schedule ~tensor_store
+         ~cache:Serving_package.Cache.default ())
   in
   let serving_round_trip =
     expect_ok
-      (serving_package |> Serving_package.to_yojson
-      |> Serving_package.of_yojson)
+      (serving_package |> Serving_package.to_bytes
+      |> Serving_package.of_bytes)
   in
   expect
     (Serving_package.tensor_store serving_round_trip
@@ -217,6 +252,23 @@ let () =
     |> Option.map Serving_package.Artifact.path
     = Some "weights.safetensors")
     "serving package keeps one safetensors archive";
+  let serving_bytes = Serving_package.to_bytes serving_package in
+  let serving_binary = Bytes.to_string serving_bytes in
+  expect
+    (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
+    "serving package has binary magic";
+  expect
+    (not (contains_substring serving_binary "fx.json"))
+    "binary serving package excludes FX diagnostics";
+  expect
+    (not (contains_substring serving_binary "plan.txt"))
+    "binary serving package excludes textual plans";
+  (match
+     Serving_package.of_bytes
+       (Bytes.sub serving_bytes 0 (Bytes.length serving_bytes - 1))
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "serving package accepted truncated binary input");
   let bound_fx =
     expect_ok
       (Fx.of_json
@@ -249,6 +301,86 @@ let () =
          | _ -> false)
        (Ir.Graph.nodes bound_graph))
     "FX tensor binding reaches the captured execution plan";
+  let argument_fx =
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2);
+             ( "nodes",
+               `List
+                 [ `Assoc
+                     [ ("name", `String "x");
+                       ("op", `String "placeholder");
+                       ("target", `String "x");
+                       ("inputs", `List []);
+                       ("shape", `List [ `Int 2; `Int 3; `Int 4 ]);
+                       ("dtype", `String "float16");
+                       ("binding", `Assoc [ ("kind", `String "runtime") ]);
+                       ( "arguments",
+                         `Assoc [ ("args", `List []); ("kwargs", `List []) ] ) ];
+                   `Assoc
+                     [ ("name", `String "view");
+                       ("op", `String "call_method");
+                       ("target", `String "view");
+                       ("inputs", `List [ `String "x" ]);
+                       ("shape", `List [ `Int 6; `Int 4 ]);
+                       ("dtype", `String "float16");
+                       ("binding", `Assoc [ ("kind", `String "computed") ]);
+                       ( "arguments",
+                         `Assoc
+                           [ ( "args",
+                               `List
+                                 [ `Assoc
+                                     [ ("kind", `String "node");
+                                       ("name", `String "x") ];
+                                   `Assoc
+                                     [ ("kind", `String "int");
+                                       ("value", `Int 6) ];
+                                   `Assoc
+                                     [ ("kind", `String "int");
+                                       ("value", `Int 4) ] ] );
+                             ("kwargs", `List []) ] ) ] ] );
+             ("outputs", `List [ `String "view" ]) ]))
+  in
+  let argument_node = List.nth (Fx.nodes argument_fx) 1 in
+  expect
+    (Fx.Node.arguments argument_node
+    = [ Fx.Argument.Node "x"; Fx.Argument.Int 6; Fx.Argument.Int 4 ])
+    "FX v2 preserves operator constants";
+  let argument_graph = expect_ok (Fx_plan.plan argument_fx) in
+  let input_value =
+    Ir.Graph.nodes argument_graph
+    |> List.find_map (fun node ->
+           match Ir.node_op node, Ir.node_output node with
+           | Ir.Op.Input _, Some value -> Some value
+           | _ -> None)
+    |> Option.get
+  in
+  expect
+    (Tensor_shape.dimensions (Ir.Value.logical_shape input_value) = [ 2; 3; 4 ])
+    "FX planner preserves input rank";
+  let argument_schedule =
+    expect_ok (Serving_schedule.of_graph argument_graph)
+  in
+  let argument_schedule_round_trip =
+    argument_schedule |> Serving_schedule.to_bytes
+    |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (List.length (Serving_schedule.commands argument_schedule_round_trip)
+    = List.length (Ir.Graph.nodes argument_graph))
+    "binary schedule preserves every command";
+  expect
+    (Serving_schedule.opaque_count argument_schedule_round_trip = 1)
+    "binary schedule preserves opaque operator status";
+  let round_trip_input =
+    Serving_schedule.runtime_inputs argument_schedule_round_trip
+    |> List.assoc "x"
+  in
+  expect
+    (Tensor_shape.dimensions (Ir.Value.logical_shape round_trip_input)
+    = [ 2; 3; 4 ])
+    "binary schedule preserves logical rank";
   (match Llvm_ir.emit q8_graph with
   | Error message -> fail message
   | Ok source ->

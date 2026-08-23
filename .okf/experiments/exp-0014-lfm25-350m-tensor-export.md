@@ -4,7 +4,7 @@ title: 'Complete LFM2.5-350M Q8 tensor export'
 description: 'Bind every Dynamo-lifted model tensor in the captured forward to one streaming safetensors archive and validate it from OCaml.'
 tags: [experiment, lfm25, q8, fx, safetensors, ocaml, package]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T17:34:00Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:05:24Z' }
 sources:
   - id: capture
     resource: /python/llmopt_backend/__init__.py
@@ -63,7 +63,11 @@ times are retained in the result artifact but do not support a speed claim.
 
 # Remaining boundary
 
-The current package describes a no-cache forward only. Its textual plan has
+The captured package describes a no-cache forward only. Its textual plan has
 379 typed/lowered nodes and 736 opaque nodes. Decode/KV-state graph capture,
-machine-executable invocation serialization, native full-model dispatch,
-tokenization, and request serving remain open.
+native full-model dispatch, tokenization, and request serving remain open. The
+binary command serialization now exists, but it preserves rather than executes
+those 736 opaque operations.
+
+The package format and shape/argument capture boundary were subsequently
+replaced by the binary command stream recorded in [exp-0015](exp-0015-binary-serving-schedule.md).

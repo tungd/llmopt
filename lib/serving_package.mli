@@ -14,19 +14,8 @@ end
 module Files : sig
   type t
 
-  val create :
-    fx:Artifact.t ->
-    plan:Artifact.t ->
-    metal_source:Artifact.t ->
-    metal_library:Artifact.t ->
-    llvm_ir:Artifact.t ->
-    t
-
-  val fx : t -> Artifact.t
-  val plan : t -> Artifact.t
-  val metal_source : t -> Artifact.t
+  val create : metal_library:Artifact.t -> t
   val metal_library : t -> Artifact.t
-  val llvm_ir : t -> Artifact.t
 end
 
 module Tensor_store : sig
@@ -57,6 +46,7 @@ val compiled_graph :
   ?model:string ->
   files:Files.t ->
   kernels:Kernel_abi.Entry.t list ->
+  schedule:Serving_schedule.t ->
   cache:Cache.t ->
   unit ->
   (t, string) result
@@ -65,6 +55,7 @@ val serving :
   ?model:string ->
   files:Files.t ->
   kernels:Kernel_abi.Entry.t list ->
+  schedule:Serving_schedule.t ->
   tensor_store:Tensor_store.t ->
   cache:Cache.t ->
   unit ->
@@ -74,11 +65,12 @@ val stage : t -> Stage.t
 val model : t -> string option
 val files : t -> Files.t
 val kernels : t -> Kernel_abi.Entry.t list
+val schedule : t -> Serving_schedule.t
 val tensor_store : t -> Tensor_store.t option
 val cache : t -> Cache.t
 
-val to_yojson : t -> Yojson.Basic.t
-val of_yojson : Yojson.Basic.t -> (t, string) result
+val to_bytes : t -> bytes
+val of_bytes : bytes -> (t, string) result
 val write_file : string -> t -> (unit, string) result
 val of_file : string -> (t, string) result
 val validate_files : root:string -> t -> (unit, string) result

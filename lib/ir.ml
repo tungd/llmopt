@@ -56,14 +56,43 @@ module Value = struct
   type t = {
     id : Value_id.t;
     shape : Shape.t;
+    logical_shape : Tensor_shape.t;
     dtype : Dtype.t;
   }
 
-  let make ~id ~shape ~dtype = { id; shape; dtype }
+  let make ~id ~shape ~dtype =
+    { id; shape; logical_shape = Tensor_shape.of_matrix shape; dtype }
+
+  let make_tensor ~id ~shape ~dtype =
+    { id; shape = Tensor_shape.matrix_exn shape; logical_shape = shape; dtype }
+
   let id value = value.id
   let shape value = value.shape
+  let logical_shape value = value.logical_shape
   let dtype value = value.dtype
   let equal left right = left.id = right.id
+end
+
+module Argument = struct
+  type t =
+    | Value of Value.t
+    | Null
+    | Bool of bool
+    | Int of int
+    | Float of float
+    | String of string
+    | Symbol of string
+    | List of t list
+    | Tuple of t list
+    | Mapping of (string * t) list
+    | Slice of { start : t; stop : t; step : t }
+
+  let rec values = function
+    | Value value -> [ value ]
+    | Null | Bool _ | Int _ | Float _ | String _ | Symbol _ -> []
+    | List arguments | Tuple arguments -> List.concat_map values arguments
+    | Mapping fields -> fields |> List.map snd |> List.concat_map values
+    | Slice { start; stop; step } -> values start @ values stop @ values step
 end
 
 module Op = struct
@@ -76,7 +105,12 @@ module Op = struct
     | Add of { broadcast : Shape.broadcast }
     | Gelu
     | Relu
-    | Opaque of { op : string; target : string }
+    | Opaque of {
+        op : string;
+        target : string;
+        arguments : Argument.t list;
+        keyword_arguments : (string * Argument.t) list;
+      }
     | Output of { name : string }
     | Barrier_create of { id : int; name : string }
     | Barrier_arrive of int
@@ -105,7 +139,7 @@ module Op = struct
     | Add { broadcast = Shape.Row } -> "add[row-broadcast]"
     | Gelu -> "gelu"
     | Relu -> "relu"
-    | Opaque { op; target } -> Printf.sprintf "opaque(%s,%s)" op target
+    | Opaque { op; target; _ } -> Printf.sprintf "opaque(%s,%s)" op target
     | Output { name } -> Printf.sprintf "output(%s)" name
     | Barrier_create { id; name } -> Printf.sprintf "barrier-create(%d,%s)" id name
     | Barrier_arrive id -> Printf.sprintf "barrier-arrive(%d)" id
@@ -147,6 +181,11 @@ module Graph = struct
     graph.next_value <- graph.next_value + 1;
     value
 
+  let fresh_tensor_value graph ~shape ~dtype =
+    let value = Value.make_tensor ~id:graph.next_value ~shape ~dtype in
+    graph.next_value <- graph.next_value + 1;
+    value
+
   let append graph ~op ~inputs ~output =
     let node = { id = graph.next_node; op; inputs; output } in
     graph.next_node <- graph.next_node + 1;
@@ -154,6 +193,11 @@ module Graph = struct
 
   let input graph ~name ~source ~shape ~dtype =
     let value = fresh_value graph ~shape ~dtype in
+    append graph ~op:(Op.Input { name; source }) ~inputs:[] ~output:(Some value);
+    value
+
+  let tensor_input graph ~name ~source ~shape ~dtype =
+    let value = fresh_tensor_value graph ~shape ~dtype in
     append graph ~op:(Op.Input { name; source }) ~inputs:[] ~output:(Some value);
     value
 
@@ -175,7 +219,7 @@ module Graph = struct
     let pp_value formatter value =
       Format.fprintf formatter "%%%d:%s:%s"
         (Value_id.to_int (Value.id value))
-        (Shape.to_string (Value.shape value))
+        (Tensor_shape.to_string (Value.logical_shape value))
         (Dtype.to_string (Value.dtype value))
     in
     List.iter

@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-24
+* **Binary serving schedule**: Replaced runtime `package.json` plus FX/text-plan loading with a versioned `package.llmopt` command stream. FX manifest v2 now preserves N-dimensional shapes and typed operator constants through effect capture. Offline recompilation of the saved 350M capture emitted 1,115 commands and validated 241 archive bindings in a 116,861-byte package. With 56% memory free, the one three-file Apple M4 Pro probe loaded only the binary package, metallib, and safetensors archive and returned `[3.5, 8, 1, 1.5, 4, 2]` exactly.
 * **Complete 350M tensor export**: Dynamo now marks each FX value as runtime-bound or tensor-store-bound and streams lifted parameters/buffers into one safetensors archive. The real Q8 capture emitted 241 bindings and 241 archive tensors: 148 F16, 92 I8, and 1 F32, with 422,104,704 payload bytes and a 422,144,400-byte file. Only `input_ids` remained runtime-bound.
 * **Model-package evidence**: The one memory-checked 350M probe started with 58% system memory free and ended with 53%. It captured 1,115 FX/IR nodes, converted 92 linear modules to Q8, passed the OCaml package validator, and preserved bit-exact eager/compiled logits. It ran no ERS or needle workload, and its single latency samples are not a comparative result.
 * **Schedule inventory**: Of the 1,115 no-cache forward-plan nodes, 736 are still opaque and 379 are typed/lowered. Decode/KV-state graphs, machine-executable invocation serialization, and native model execution remain open.

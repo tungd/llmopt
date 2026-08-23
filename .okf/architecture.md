@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T16:03:35Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:05:24Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -21,6 +21,9 @@ sources:
   - id: local-package-abi
     resource: /lib/serving_package.ml
     title: Versioned serving-package representation and validator
+  - id: local-serving-schedule
+    resource: /lib/serving_schedule.ml
+    title: Binary typed command schedule
   - id: local-metal-runtime
     resource: /native/metal_runtime.cpp
     title: PyTorch MPS Metal library bridge
@@ -122,30 +125,34 @@ configuration boundary. Current Q8 support defines typed policy, capacity, and
 byte accounting (int8 values plus FP16 group scales); physical Metal buffers
 and quantize/dequantize kernels are not connected to the cache in this slice.
 
-The FX compiler emits a versioned `llmopt.serving-package` control manifest
-beside the copied FX graph, optimized plan, MSL, and LLVM IR, with a declared
-metallib path that Ninja materializes. Kernel entry points carry an operation,
+The FX compiler emits a versioned binary `package.llmopt` containing the typed
+command stream, N-dimensional value shapes, operator arguments, kernel ABI,
+cache policy, metallib path, and optional tensor-store path. The copied
+`fx.json`, pretty-printed `plan.txt`, MSL, and LLVM IR are diagnostics and are
+not referenced by the serving runtime. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--tensor-store weights.safetensors` emits a serving package that
-references exactly one binary tensor archive. Tensor names, dtypes, shapes,
-and offsets are read from the archive header rather than duplicated in a
-second JSON file or split across per-tensor payloads. Complete model export and
-scheduled invocation metadata remain separate compiler work.
+references exactly one binary tensor archive. Tensor payload metadata remains
+authoritative in that archive rather than being split into per-tensor files.
 
 When a captured graph contains static tensors, the Python adapter streams them
 into `weights.safetensors` one at a time. This bounds CPU staging to the current
 tensor instead of retaining a second whole-model CPU copy. The real 350M Q8
 capture emitted 241 tensor keys totaling 422,104,704 payload bytes. The OCaml
-package validator resolves every FX tensor binding against archive dtype and
-shape before runtime loading.
+package validator resolves every binary-schedule tensor binding against archive
+dtype and N-dimensional shape before runtime loading.
 
-The Ninja-built OCaml runtime consumes that manifest directly, validates every
-referenced artifact and declared entry point, parses the safetensors index,
+The Ninja-built OCaml runtime consumes that binary package directly, validates
+the metallib, tensor archive, schedule bindings, and declared entry points,
+parses the safetensors index,
 maps the archive once, and creates retained Metal views at tensor byte offsets.
 A standalone 2x3x4 FP32/Q8 fixture bound its int8 weight, FP16 scale, and FP16
 bias from the mapped archive; `llmopt_q8_linear_f32` returned
 `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves the binary
-archive-to-command boundary, not complete model execution.
+archive-to-command boundary, not complete model execution. A later minimal
+probe repeated the exact result from a directory containing only
+`package.llmopt`, `kernel.metallib`, and `weights.safetensors`, proving that
+neither FX JSON nor the textual plan is part of native startup.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the

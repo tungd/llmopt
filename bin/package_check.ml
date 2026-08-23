@@ -5,7 +5,7 @@ let usage () =
 let () =
   if Array.length Sys.argv <> 2 then usage ();
   let root = Sys.argv.(1) in
-  let manifest = Filename.concat root "package.json" in
+  let manifest = Filename.concat root "package.llmopt" in
   match Serving_package.of_file manifest with
   | Error message ->
       prerr_endline message;
@@ -16,17 +16,6 @@ let () =
           prerr_endline message;
           exit 3
       | Ok () ->
-          let fx_path =
-            Serving_package.files package |> Serving_package.Files.fx
-            |> Serving_package.Artifact.path |> Filename.concat root
-          in
-          let fx =
-            match Fx.of_file fx_path with
-            | Ok fx -> fx
-            | Error message ->
-                prerr_endline message;
-                exit 4
-          in
           let archive =
             match Serving_package.tensor_store package with
             | None -> None
@@ -39,19 +28,23 @@ let () =
                 | Ok archive -> Some archive
                 | Error message ->
                     prerr_endline message;
-                    exit 5)
+                    exit 4)
           in
-          (match Serving_validation.validate ~package ~fx ~archive with
+          (match Serving_validation.validate ~package ~archive with
           | Error message ->
               prerr_endline message;
-              exit 6
+              exit 5
           | Ok () -> ());
           let tensor_count =
             archive |> Option.map Safetensors.tensors
             |> Option.map List.length |> Option.map string_of_int
             |> Option.value ~default:"none"
           in
-          Printf.printf "valid %s package: %d kernels, tensor-store=%s\n"
+          let schedule = Serving_package.schedule package in
+          Printf.printf
+            "valid %s package: %d kernels, %d commands, %d opaque, tensor-store=%s\n"
             (Serving_package.Stage.to_string (Serving_package.stage package))
             (List.length (Serving_package.kernels package))
+            (List.length (Serving_schedule.commands schedule))
+            (Serving_schedule.opaque_count schedule)
             tensor_count)

@@ -3,6 +3,12 @@ type state = {
   mutable next_barrier : int;
 }
 
+let fresh_tensor_value graph ~shape ~logical_shape ~dtype =
+  let value = Ir.Graph.fresh_tensor_value graph ~shape:logical_shape ~dtype in
+  if not (Shape.equal (Ir.Value.shape value) shape) then
+    invalid_arg "effect logical shape does not match tile shape";
+  value
+
 let run thunk =
   let state = { graph = Ir.Graph.create (); next_barrier = 0 } in
   Effect.Deep.match_with thunk ()
@@ -12,17 +18,24 @@ let run thunk =
       effc =
         (fun (type a) (eff : a Effect.t) ->
           match eff with
-          | Tile_effect.Input { name; source; shape; dtype } ->
+          | Tile_effect.Input { name; source; shape; logical_shape; dtype } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
                   let value =
-                    Ir.Graph.input state.graph ~name ~source ~shape ~dtype
+                    Ir.Graph.tensor_input state.graph ~name ~source
+                      ~shape:logical_shape ~dtype
                   in
+                  if not (Shape.equal (Ir.Value.shape value) shape) then
+                    invalid_arg "effect logical shape does not match tile shape";
                   Effect.Deep.continue continuation value)
-          | Tile_effect.Alloc { shape; dtype; space; layout } ->
+          | Tile_effect.Alloc { shape; logical_shape; dtype; space; layout } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = Ir.Graph.allocate state.graph ~shape ~dtype ~space ~layout in
+                  let value =
+                    fresh_tensor_value state.graph ~shape ~logical_shape ~dtype
+                  in
+                  Ir.Graph.append state.graph ~op:(Ir.Op.Alloc { space; layout })
+                    ~inputs:[] ~output:(Some value);
                   Effect.Deep.continue continuation value)
           | Tile_effect.Copy { src; dst } ->
               Some
@@ -43,12 +56,15 @@ let run thunk =
                          })
                     ~inputs:[ src; dst ] ~output:None;
                   Effect.Deep.continue continuation ())
-          | Tile_effect.Matmul { lhs; rhs; shape } ->
+          | Tile_effect.Matmul { lhs; rhs; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
                   let lhs_shape = Ir.Value.shape lhs in
                   let rhs_shape = Ir.Value.shape rhs in
-                  let output = Ir.Graph.fresh_value state.graph ~shape ~dtype:(Ir.Value.dtype lhs) in
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape
+                      ~dtype:(Ir.Value.dtype lhs)
+                  in
                   Ir.Graph.append state.graph
                     ~op:
                       (Ir.Op.Matmul
@@ -59,12 +75,15 @@ let run thunk =
                          })
                     ~inputs:[ lhs; rhs ] ~output:(Some output);
                   Effect.Deep.continue continuation output)
-          | Tile_effect.Linear { input; weight; bias; shape } ->
+          | Tile_effect.Linear { input; weight; bias; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
                   let input_shape = Ir.Value.shape input in
                   let weight_shape = Ir.Value.shape weight in
-                  let output = Ir.Graph.fresh_value state.graph ~shape ~dtype:(Ir.Value.dtype input) in
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   Ir.Graph.append state.graph
                     ~op:
                       (Ir.Op.Linear
@@ -77,12 +96,16 @@ let run thunk =
                     ~inputs:(input :: weight :: Option.to_list bias)
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
-          | Tile_effect.Q8_linear { input; weight; scale; bias; shape } ->
+          | Tile_effect.Q8_linear
+              { input; weight; scale; bias; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
                   let input_shape = Ir.Value.shape input in
                   let weight_shape = Ir.Value.shape weight in
-                  let output = Ir.Graph.fresh_value state.graph ~shape ~dtype:(Ir.Value.dtype input) in
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   Ir.Graph.append state.graph
                     ~op:
                       (Ir.Op.Q8_linear
@@ -95,33 +118,57 @@ let run thunk =
                     ~inputs:(input :: weight :: scale :: Option.to_list bias)
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
-          | Tile_effect.Add { lhs; rhs; shape; broadcast } ->
+          | Tile_effect.Add { lhs; rhs; shape; logical_shape; broadcast } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let output = Ir.Graph.fresh_value state.graph ~shape ~dtype:(Ir.Value.dtype lhs) in
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape
+                      ~dtype:(Ir.Value.dtype lhs)
+                  in
                   Ir.Graph.append state.graph ~op:(Ir.Op.Add { broadcast })
                     ~inputs:[ lhs; rhs ] ~output:(Some output);
                   Effect.Deep.continue continuation output)
-          | Tile_effect.Gelu { input; shape } ->
+          | Tile_effect.Gelu { input; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let output = Ir.Graph.fresh_value state.graph ~shape ~dtype:(Ir.Value.dtype input) in
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   Ir.Graph.append state.graph ~op:Ir.Op.Gelu ~inputs:[ input ]
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
-          | Tile_effect.Relu { input; shape } ->
+          | Tile_effect.Relu { input; shape; logical_shape } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let output = Ir.Graph.fresh_value state.graph ~shape ~dtype:(Ir.Value.dtype input) in
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
                   Ir.Graph.append state.graph ~op:Ir.Op.Relu ~inputs:[ input ]
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
-          | Tile_effect.Opaque { op; target; inputs; shape; dtype } ->
+          | Tile_effect.Opaque
+              {
+                op;
+                target;
+                arguments;
+                keyword_arguments;
+                inputs;
+                shape;
+                logical_shape;
+                dtype;
+              } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let output = Ir.Graph.fresh_value state.graph ~shape ~dtype in
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape ~dtype
+                  in
                   Ir.Graph.append state.graph
-                    ~op:(Ir.Op.Opaque { op; target }) ~inputs
+                    ~op:
+                      (Ir.Op.Opaque
+                         { op; target; arguments; keyword_arguments })
+                    ~inputs
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
           | Tile_effect.Output { name; value } ->

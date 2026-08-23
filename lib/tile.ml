@@ -60,7 +60,13 @@ let input ?(dtype = Ir.Dtype.Float32) ~name ~shape () =
 let alloc ?(dtype = Ir.Dtype.Float32) ~shape ~space ~layout () =
   let value =
     Tile_effect.alloc
-      { shape; dtype; space = Space.to_ir space; layout = Layout.to_ir layout }
+      {
+        shape;
+        logical_shape = Tensor_shape.of_matrix shape;
+        dtype;
+        space = Space.to_ir space;
+        layout = Layout.to_ir layout;
+      }
   in
   { value; shape; dtype; space; layout }
 
@@ -81,7 +87,13 @@ let shape_or_invalid context = function
 let matmul left right =
   let result_shape = shape_or_invalid "matmul" (Shape.matmul left.shape right.shape) in
   let value =
-    Tile_effect.matmul { lhs = left.value; rhs = right.value; shape = result_shape }
+    Tile_effect.matmul
+      {
+        lhs = left.value;
+        rhs = right.value;
+        shape = result_shape;
+        logical_shape = Tensor_shape.of_matrix result_shape;
+      }
   in
   {
     value;
@@ -126,6 +138,7 @@ let q8_linear input weight scale ?bias =
                 scale = scale.value;
                 bias = Option.map (fun tile -> tile.value) bias;
                 shape = output_shape;
+                logical_shape = Tensor_shape.of_matrix output_shape;
               }
           in
           {
@@ -148,6 +161,7 @@ let add left right =
         lhs = left.value;
         rhs = right.value;
         shape = result_shape;
+        logical_shape = Tensor_shape.of_matrix result_shape;
         broadcast;
       }
   in
@@ -160,7 +174,14 @@ let add left right =
   }
 
 let gelu tile =
-  let value = Tile_effect.gelu { input = tile.value; shape = tile.shape } in
+  let value =
+    Tile_effect.gelu
+      {
+        input = tile.value;
+        shape = tile.shape;
+        logical_shape = Tensor_shape.of_matrix tile.shape;
+      }
+  in
   {
     value;
     shape = tile.shape;
