@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T21:42:00Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T21:58:38Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -32,7 +32,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | LFM2.5 short-convolution lowering | typed, compiled, and native-dispatched | all ten saved prefill `conv1d` nodes lower to ShortConv commands; the shared native probe executes the same kernel ABI and matches the 12-element fixture output exactly |
 | LFM2.5 GQA/KV-cache lowering | prefill attention native-dispatched; decode/KV open | all six saved SDPA nodes lower to masked-attention commands; the shared native probe matches a fully masked 2x2 fixture exactly, while physical decode KV remains open |
 | LFM2.5 token embedding lowering | typed, compiled, and native-dispatched | the int64-to-float16 lookup lowers to a validated command and the shared native probe gathers four float16 elements exactly |
-| LFM2.5 position and mask lowering | typed and compiled; native dispatch open | five aranges, prepended diff, bool-to-int64 cumsum, scalar bool fill, and two broadcast gathers lower through schedule v7; exact CPU references and `mask-position-smoke` pass, while the exact unused PyTorch telemetry call is elided |
+| LFM2.5 position and mask lowering | typed, compiled, and native-dispatched | five aranges, prepended diff, bool-to-int64 cumsum, scalar bool fill, and two broadcast gathers lower through schedule v7; exact CPU references and the shared native probe pass, while the exact unused PyTorch telemetry call is elided |
 | model weight loading for the MPS probe | implemented | Transformers checkpoint loads on MPS |
 | end-to-end PyTorch MPS comparison | implemented | short smoke proves routed generation; semantic 5x3 result has exact fixed-forward digest and exact generated-token parity |
 | ERS trace/report benchsuite | implemented; 350M baseline recorded | racebench score math, reference-style HTTP runner, shape-matched semantic 5x3 and full 70x6 profiles, distinct warmup, isolated reports, exact token-ID parity, and `/bench/results/lfm25-350m-racebench-baseline.json` with `engine_pass: true`, eager ERS `0.0003597708408867709`, and 15/15 successful requests per candidate |
@@ -40,10 +40,10 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, and `ninja -f ninja.build q8-smoke` pass; the bounded Q8 result has exact digest/token parity, and its saved outputs prove 6/6 control-code retrieval with 0/6 exact-only formatting |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
-| Versioned generated package ABI | partial; ABI-v4 prefill and decode packages validated | Package ABI v4 adds exact-name pointwise entries while retaining ABI-v2/v3 reads. Binary-input replanning writes 872-command/26-kernel prefill and 926-command/22-kernel decode packages with zero opaque operations and 241 validated bindings each; complete native interpretation remains open |
+| Versioned generated package ABI | partial; ABI-v5 prefill and decode packages validated | Package ABI v5 adds exact-name movement entries while retaining ABI-v2/v3/v4 reads. Binary-input replanning writes 872-command/37-kernel prefill and 926-command/33-kernel decode packages with zero opaque operations and 241 validated bindings each; complete native interpretation remains open |
 | OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
-| OCaml Metal serving loader and dispatch | partial; built-ins, casts, and LFM pointwise execute | The archive-backed Q8 schedule remains exact. The ABI-v4 fixture has 81 commands and 25 declarations; one 58%-free-memory Apple M4 Pro run dispatched 24 kernels and matched 24/24 outputs, including all nine pointwise forms required by the preserved plans. Movement, reduction, recurrent commands, float16 vocabulary projection, and batched submission remain open |
-| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Binary-input ABI-v4 replans have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 26-kernel/22-kernel metallibs; movement/reduction/recurrent/final-projection execution and full native interpretation remain open |
+| OCaml Metal serving loader and dispatch | partial; built-ins, casts, pointwise, and LFM movement execute | The archive-backed Q8 schedule remains exact. The ABI-v5 fixture has 118 commands and 36 declarations; one 29.8%-reclaimable-memory Apple M4 Pro run dispatched 35 kernels and matched 36/36 outputs, including every movement form required by the preserved plans plus a zero-copy contiguous alias. Reduction, recurrent update, float16 vocabulary projection, and batched submission remain open |
+| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Binary-input ABI-v5 replans have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 37-kernel/33-kernel metallibs; reduction/recurrent/final-projection execution and full native interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule
@@ -70,7 +70,7 @@ measurement into a release gate.
   falling back to PyTorch dequantization?
 - Which reduction schedule or MPS-compatible matmul lowering can make the
   native Phase 2 float32 Q8 path match the exact generated dequantization path?
-- Which typed view/layout operations should be represented as zero-cost
-  schedule metadata before lowering the remaining compute nodes?
+- Which reduction and recurrent-update kernels should precede persistent KV
+  allocation and batched command-buffer submission?
 - What grouped-Q8 scale layout and Metal quantize/dequantize kernels should
   back the cache's current Q8 ownership and byte-accounting policy?

@@ -40,6 +40,9 @@ let primitive graph operation inputs shape dtype =
 
 let output graph name value = Ir.Graph.add_output graph ~name value
 
+let index selectors =
+  Tensor_shape.Index.of_selectors selectors |> expect_ok
+
 let graph () =
   let graph = Ir.Graph.create () in
 
@@ -187,6 +190,89 @@ let graph () =
     (Ir.Primitive.Pointwise (Ir.Pointwise.Unary (Ir.Pointwise.Sin, sin_f32)))
     [ sin_f32 ] [ 1 ] Ir.Dtype.Float32
   |> output graph "sin_f32";
+
+  let transpose_f16_input =
+    input graph "transpose_f16_input" [ 2; 3 ] Ir.Dtype.Float16
+  in
+  let transpose_f16 =
+    primitive graph
+      (Ir.Primitive.Movement (Ir.Movement.Transpose { axis0 = 0; axis1 = 1 }))
+      [ transpose_f16_input ] [ 3; 2 ] Ir.Dtype.Float16
+  in
+  output graph "transpose_f16" transpose_f16;
+  primitive graph (Ir.Primitive.Movement Ir.Movement.Contiguous)
+    [ transpose_f16 ] [ 3; 2 ] Ir.Dtype.Float16
+  |> output graph "contiguous_f16";
+  let transpose_f32_input =
+    input graph "transpose_f32_input" [ 2; 3 ] Ir.Dtype.Float32
+  in
+  primitive graph
+    (Ir.Primitive.Movement (Ir.Movement.Transpose { axis0 = 0; axis1 = 1 }))
+    [ transpose_f32_input ] [ 3; 2 ] Ir.Dtype.Float32
+  |> output graph "transpose_f32";
+
+  let index_f16_input = input graph "index_f16_input" [ 2; 3 ] Ir.Dtype.Float16 in
+  let index_f16 =
+    index
+      [ Tensor_shape.Index.At 1;
+        Tensor_shape.Index.Slice { start = 0; step = 2; length = 2 };
+        Tensor_shape.Index.New_axis ]
+  in
+  primitive graph (Ir.Primitive.Movement (Ir.Movement.Index index_f16))
+    [ index_f16_input ] [ 2; 1 ] Ir.Dtype.Float16
+  |> output graph "index_f16";
+  let index_f32_input = input graph "index_f32_input" [ 2; 3 ] Ir.Dtype.Float32 in
+  let index_f32 =
+    index
+      [ Tensor_shape.Index.New_axis;
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.At 1 ]
+  in
+  primitive graph (Ir.Primitive.Movement (Ir.Movement.Index index_f32))
+    [ index_f32_input ] [ 1; 2 ] Ir.Dtype.Float32
+  |> output graph "index_f32";
+  let index_i64_input = input graph "index_i64_input" [ 2; 3 ] Ir.Dtype.Int64 in
+  let index_i64 =
+    index
+      [ Tensor_shape.Index.New_axis;
+        Tensor_shape.Index.Slice { start = 1; step = -1; length = 2 };
+        Tensor_shape.Index.Slice { start = 0; step = 2; length = 2 } ]
+  in
+  primitive graph (Ir.Primitive.Movement (Ir.Movement.Index index_i64))
+    [ index_i64_input ] [ 1; 2; 2 ] Ir.Dtype.Int64
+  |> output graph "index_i64";
+
+  let expand_f16_input = input graph "expand_f16_input" [ 2; 1 ] Ir.Dtype.Float16 in
+  primitive graph (Ir.Primitive.Movement Ir.Movement.Expand)
+    [ expand_f16_input ] [ 2; 3 ] Ir.Dtype.Float16
+  |> output graph "expand_f16";
+  let expand_f32_input = input graph "expand_f32_input" [] Ir.Dtype.Float32 in
+  primitive graph (Ir.Primitive.Movement Ir.Movement.Expand)
+    [ expand_f32_input ] [ 2; 2 ] Ir.Dtype.Float32
+  |> output graph "expand_f32";
+  let expand_bool_input = input graph "expand_bool_input" [ 1; 2 ] Ir.Dtype.Bool in
+  primitive graph (Ir.Primitive.Movement Ir.Movement.Expand)
+    [ expand_bool_input ] [ 2; 2 ] Ir.Dtype.Bool
+  |> output graph "expand_bool";
+
+  let concat_f16_left = input graph "concat_f16_left" [ 1; 2 ] Ir.Dtype.Float16 in
+  let concat_f16_right = input graph "concat_f16_right" [ 1; 1 ] Ir.Dtype.Float16 in
+  primitive graph
+    (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 1 }))
+    [ concat_f16_left; concat_f16_right ] [ 1; 3 ] Ir.Dtype.Float16
+  |> output graph "concat_f16";
+  let concat_f32_left = input graph "concat_f32_left" [ 2; 1 ] Ir.Dtype.Float32 in
+  let concat_f32_right = input graph "concat_f32_right" [ 2; 2 ] Ir.Dtype.Float32 in
+  primitive graph
+    (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 1 }))
+    [ concat_f32_left; concat_f32_right ] [ 2; 3 ] Ir.Dtype.Float32
+  |> output graph "concat_f32";
+
+  let roll_f16_input = input graph "roll_f16_input" [ 1; 1; 4 ] Ir.Dtype.Float16 in
+  primitive graph
+    (Ir.Primitive.Movement (Ir.Movement.Roll { axis = 2; shift = -1 }))
+    [ roll_f16_input ] [ 1; 1; 4 ] Ir.Dtype.Float16
+  |> output graph "roll_f16";
 
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in

@@ -50,3 +50,4 @@ okf_version: '0.2'
 * [Native typed cast dispatch](experiments/exp-0028-native-cast-dispatch.md) - package ABI v3 adds and executes the three cast directions used by LFM2.5.
 * [Native LFM pointwise dispatch](experiments/exp-0029-native-pointwise-dispatch.md) - package ABI v4 executes the nine pointwise forms required by the preserved plans.
 * [Binary Dynamo/FX compiler transport](experiments/exp-0030-binary-fx-transport.md) - default capture and offline replanning now cross a versioned binary graph boundary.
+* [Native LFM movement dispatch](experiments/exp-0031-native-movement-dispatch.md) - package ABI v5 materializes every movement form observed in the preserved plans.

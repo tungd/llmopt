@@ -219,6 +219,7 @@ let dispatch runtime entry ~buffers ~parameters ~grid =
       name)
 
 module Parameters = struct
+  let max_rank = 8
   let max_u32 = 0xffff_ffffL
 
   let set_u32 bytes offset value =
@@ -294,6 +295,149 @@ module Parameters = struct
     | dimension :: rest ->
         let* () = set_u32 bytes offset dimension in
         write_shape bytes (offset + 4) rest
+
+  let dimensions ~operation shape =
+    let dimensions = Tensor_shape.dimensions shape in
+    if List.length dimensions > max_rank then
+      Error
+        (Printf.sprintf "Metal %s supports rank at most %d" operation max_rank)
+    else Ok dimensions
+
+  let pad_shape dimensions =
+    dimensions @ List.init (max_rank - List.length dimensions) (Fun.const 1)
+
+  let write_i64s bytes offset values =
+    List.iteri
+      (fun index value ->
+        Bytes.set_int64_le bytes (offset + (8 * index)) (Int64.of_int value))
+      values
+
+  let movement ~input_dimensions ~output_dimensions ~axis0 ~axis1 =
+    let rank = List.length output_dimensions in
+    let bytes = Bytes.make 80 '\000' in
+    let* () = set_u32 bytes 0 (List.fold_left ( * ) 1 output_dimensions) in
+    let* () = set_u32 bytes 4 rank in
+    let* () = set_u32 bytes 8 axis0 in
+    let* () = set_u32 bytes 12 axis1 in
+    let* () = write_shape bytes 16 (pad_shape input_dimensions) in
+    let* () = write_shape bytes 48 (pad_shape output_dimensions) in
+    Ok bytes
+
+  let transpose ~input_shape ~output_shape ~axis0 ~axis1 =
+    let* input_dimensions = dimensions ~operation:"transpose" input_shape in
+    let* output_dimensions = dimensions ~operation:"transpose" output_shape in
+    let* axis0 =
+      Tensor_shape.normalize_axis input_shape axis0
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    let* axis1 =
+      Tensor_shape.normalize_axis input_shape axis1
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    let* inferred =
+      Tensor_shape.transpose input_shape ~axis0 ~axis1
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    if not (Tensor_shape.equal inferred output_shape) then
+      Error "Metal transpose output shape is inconsistent"
+    else
+      movement ~input_dimensions ~output_dimensions ~axis0 ~axis1
+
+  let expand ~input_shape ~output_shape =
+    let* input_dimensions = dimensions ~operation:"expand" input_shape in
+    let* output_dimensions = dimensions ~operation:"expand" output_shape in
+    let* _ =
+      Tensor_shape.expand input_shape ~target:output_shape
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    let rank = List.length output_dimensions in
+    let aligned_input =
+      List.init (rank - List.length input_dimensions) (Fun.const 1)
+      @ input_dimensions
+    in
+    movement ~input_dimensions:aligned_input ~output_dimensions ~axis0:0 ~axis1:0
+
+  let index ~input_shape ~output_shape index =
+    let* input_dimensions = dimensions ~operation:"index" input_shape in
+    let* output_dimensions = dimensions ~operation:"index" output_shape in
+    let selectors = Tensor_shape.Index.selectors index in
+    if List.length selectors > max_rank then
+      Error
+        (Printf.sprintf "Metal index supports at most %d selectors" max_rank)
+    else
+      let selector_kind, starts, steps =
+        List.fold_left
+          (fun (kinds, starts, steps) selector ->
+            match selector with
+            | Tensor_shape.Index.At value ->
+                0 :: kinds, value :: starts, 0 :: steps
+            | Tensor_shape.Index.Slice { start; step; length = _ } ->
+                1 :: kinds, start :: starts, step :: steps
+            | Tensor_shape.Index.New_axis ->
+                2 :: kinds, 0 :: starts, 0 :: steps)
+          ([], [], []) selectors
+      in
+      let selector_kind = List.rev selector_kind in
+      let starts = List.rev starts in
+      let steps = List.rev steps in
+      let pad values =
+        values @ List.init (max_rank - List.length values) (Fun.const 0)
+      in
+      let bytes = Bytes.make 240 '\000' in
+      let* () = set_u32 bytes 0 (Tensor_shape.numel output_shape) in
+      let* () = set_u32 bytes 4 (List.length input_dimensions) in
+      let* () = set_u32 bytes 8 (List.length output_dimensions) in
+      let* () = set_u32 bytes 12 (List.length selectors) in
+      let* () = write_shape bytes 16 (pad_shape input_dimensions) in
+      let* () = write_shape bytes 48 (pad_shape output_dimensions) in
+      let* () = write_shape bytes 80 (pad selector_kind) in
+      write_i64s bytes 112 (pad starts);
+      write_i64s bytes 176 (pad steps);
+      Ok bytes
+
+  let concat ~left_shape ~right_shape ~output_shape ~axis =
+    let* left_dimensions = dimensions ~operation:"concat" left_shape in
+    let* _right_dimensions = dimensions ~operation:"concat" right_shape in
+    let* output_dimensions = dimensions ~operation:"concat" output_shape in
+    let* axis =
+      Tensor_shape.normalize_axis output_shape axis
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    let* inferred =
+      Tensor_shape.concat [ left_shape; right_shape ] ~axis
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    if not (Tensor_shape.equal inferred output_shape) then
+      Error "Metal concat output shape is inconsistent"
+    else
+      let left_dimensions = Array.of_list left_dimensions in
+      let bytes = Bytes.make 48 '\000' in
+      let* () = set_u32 bytes 0 (Tensor_shape.numel output_shape) in
+      let* () = set_u32 bytes 4 (List.length output_dimensions) in
+      let* () = set_u32 bytes 8 axis in
+      let* () = set_u32 bytes 12 left_dimensions.(axis) in
+      let* () = write_shape bytes 16 (pad_shape output_dimensions) in
+      Ok bytes
+
+  let roll ~shape ~axis ~shift =
+    let* shape_dimensions = dimensions ~operation:"roll" shape in
+    let* axis =
+      Tensor_shape.normalize_axis shape axis
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    let encoded_shift = Int64.of_int shift in
+    if
+      Int64.compare encoded_shift (Int64.of_int32 Int32.min_int) < 0
+      || Int64.compare encoded_shift (Int64.of_int32 Int32.max_int) > 0
+    then Error "Metal roll shift does not fit int32"
+    else
+      let bytes = Bytes.make 48 '\000' in
+      let* () = set_u32 bytes 0 (Tensor_shape.numel shape) in
+      let* () = set_u32 bytes 4 (List.length shape_dimensions) in
+      let* () = set_u32 bytes 8 axis in
+      Bytes.set_int32_le bytes 12 (Int64.to_int32 encoded_shift);
+      let* () = write_shape bytes 16 (pad_shape shape_dimensions) in
+      Ok bytes
 
   let align_broadcast_shape ~output_dimensions = function
     | None -> Ok (List.init (List.length output_dimensions) (Fun.const 1))
@@ -508,6 +652,35 @@ let pointwise_operand_scalar = function
   | Ir.Pointwise.Tensor _ -> None
   | Ir.Pointwise.Scalar scalar -> Some scalar
 
+let movement_kernel movement input output =
+  let input_dtype = Ir.Value.dtype input in
+  let output_dtype = Ir.Value.dtype output in
+  if input_dtype <> output_dtype then
+    Error "Metal movement input and output dtypes differ"
+  else
+    let name =
+      match movement, input_dtype with
+      | Ir.Movement.Transpose _, Ir.Dtype.Float16 -> Some "llmopt_transpose_f16"
+      | Ir.Movement.Transpose _, Ir.Dtype.Float32 -> Some "llmopt_transpose_f32"
+      | Ir.Movement.Index _, Ir.Dtype.Float16 -> Some "llmopt_index_f16"
+      | Ir.Movement.Index _, Ir.Dtype.Float32 -> Some "llmopt_index_f32"
+      | Ir.Movement.Index _, Ir.Dtype.Int64 -> Some "llmopt_index_i64"
+      | Ir.Movement.Expand, Ir.Dtype.Float16 -> Some "llmopt_expand_f16"
+      | Ir.Movement.Expand, Ir.Dtype.Float32 -> Some "llmopt_expand_f32"
+      | Ir.Movement.Expand, Ir.Dtype.Bool -> Some "llmopt_expand_bool"
+      | Ir.Movement.Concat _, Ir.Dtype.Float16 -> Some "llmopt_concat_f16"
+      | Ir.Movement.Concat _, Ir.Dtype.Float32 -> Some "llmopt_concat_f32"
+      | Ir.Movement.Roll _, Ir.Dtype.Float16 -> Some "llmopt_roll_f16"
+      | _ -> None
+    in
+    match name with
+    | Some name -> Ok (name, input_dtype)
+    | None ->
+        Error
+          (Printf.sprintf "unsupported Metal movement kernel: %s %s"
+             (Ir.Movement.to_string movement)
+             (Ir.Dtype.to_string input_dtype))
+
 let execute runtime ~inputs =
   let* runtime_inputs = runtime_input_map inputs in
   let schedule = Serving_package.schedule runtime.package in
@@ -559,12 +732,91 @@ let execute runtime ~inputs =
         | ( Ir.Op.Primitive
               (Ir.Primitive.Movement
                 (Ir.Movement.View | Ir.Movement.Reshape
-                | Ir.Movement.Unsqueeze _)),
+                | Ir.Movement.Unsqueeze _ | Ir.Movement.Contiguous)),
             [ input ],
             Some output ) ->
             let* buffer = find_value state input in
             let* () = validate_buffer output buffer in
             continue (bind_value state output buffer)
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement
+                (Ir.Movement.Transpose { axis0; axis1 } as movement)),
+            [ input ],
+            Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* name, input_dtype = movement_kernel movement input output in
+            let* input_buffer = find_value state input in
+            let* parameters =
+              Parameters.transpose ~input_shape:(Ir.Value.logical_shape input)
+                ~output_shape:(Ir.Value.logical_shape output) ~axis0 ~axis1
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Movement ~input_dtype
+                 ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement
+                (Ir.Movement.Index index as movement)),
+            [ input ],
+            Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* name, input_dtype = movement_kernel movement input output in
+            let* input_buffer = find_value state input in
+            let* parameters =
+              Parameters.index ~input_shape:(Ir.Value.logical_shape input)
+                ~output_shape:(Ir.Value.logical_shape output) index
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Movement ~input_dtype
+                 ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement (Ir.Movement.Expand as movement)),
+            [ input ],
+            Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* name, input_dtype = movement_kernel movement input output in
+            let* input_buffer = find_value state input in
+            let* parameters =
+              Parameters.expand ~input_shape:(Ir.Value.logical_shape input)
+                ~output_shape:(Ir.Value.logical_shape output)
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Movement ~input_dtype
+                 ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement
+                (Ir.Movement.Concat { axis } as movement)),
+            [ left; right ],
+            Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* name, input_dtype = movement_kernel movement left output in
+            let* buffers = find_values state [ left; right ] in
+            let* parameters =
+              Parameters.concat ~left_shape:(Ir.Value.logical_shape left)
+                ~right_shape:(Ir.Value.logical_shape right)
+                ~output_shape:(Ir.Value.logical_shape output) ~axis
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Movement ~input_dtype ~buffers
+                 ~parameters ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement
+                (Ir.Movement.Roll { axis; shift } as movement)),
+            [ input ],
+            Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* name, input_dtype = movement_kernel movement input output in
+            let* input_buffer = find_value state input in
+            let* parameters =
+              Parameters.roll ~shape:(Ir.Value.logical_shape input) ~axis ~shift
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Movement ~input_dtype
+                 ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
         | Ir.Op.Primitive (Ir.Primitive.Cast dtype), [ input ], Some output
           when dtype = Ir.Value.dtype input ->
             let* buffer = find_value state input in

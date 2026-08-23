@@ -16,6 +16,7 @@ module Operation = struct
     | Gather2
     | Cast
     | Pointwise
+    | Movement
 
   let to_string = function
     | Matmul -> "matmul"
@@ -34,6 +35,7 @@ module Operation = struct
     | Gather2 -> "gather2"
     | Cast -> "cast"
     | Pointwise -> "pointwise"
+    | Movement -> "movement"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -52,6 +54,7 @@ module Operation = struct
     | "gather2" -> Ok Gather2
     | "cast" -> Ok Cast
     | "pointwise" -> Ok Pointwise
+    | "movement" -> Ok Movement
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 

@@ -109,6 +109,24 @@ let () =
           input runtime "silu_f16_input" (bytes_of_u16 [ 0x0000 ]);
           input runtime "cos_f32_input" (bytes_of_f32 [ 0. ]);
           input runtime "sin_f32_input" (bytes_of_f32 [ 0. ]);
+          input runtime "transpose_f16_input"
+            (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4500; 0x4600 ]);
+          input runtime "transpose_f32_input"
+            (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
+          input runtime "index_f16_input"
+            (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4500; 0x4600 ]);
+          input runtime "index_f32_input"
+            (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
+          input runtime "index_i64_input" (bytes_of_i64 [ 1; 2; 3; 4; 5; 6 ]);
+          input runtime "expand_f16_input" (bytes_of_u16 [ 0x3c00; 0x4000 ]);
+          input runtime "expand_f32_input" (bytes_of_f32 [ 2.5 ]);
+          input runtime "expand_bool_input" (bytes_of_bool [ true; false ]);
+          input runtime "concat_f16_left" (bytes_of_u16 [ 0x3c00; 0x4000 ]);
+          input runtime "concat_f16_right" (bytes_of_u16 [ 0x4200 ]);
+          input runtime "concat_f32_left" (bytes_of_f32 [ 1.; 4. ]);
+          input runtime "concat_f32_right" (bytes_of_f32 [ 2.; 3.; 5.; 6. ]);
+          input runtime "roll_f16_input"
+            (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
     |> expect_ok
@@ -147,14 +165,32 @@ let () =
   expect_bytes execution "silu_f16" (bytes_of_u16 [ 0x0000 ]);
   expect_bytes execution "cos_f32" (bytes_of_f32 [ 1. ]);
   expect_bytes execution "sin_f32" (bytes_of_f32 [ 0. ]);
+  expect_bytes execution "transpose_f16"
+    (bytes_of_u16 [ 0x3c00; 0x4400; 0x4000; 0x4500; 0x4200; 0x4600 ]);
+  expect_bytes execution "contiguous_f16"
+    (bytes_of_u16 [ 0x3c00; 0x4400; 0x4000; 0x4500; 0x4200; 0x4600 ]);
+  expect_bytes execution "transpose_f32" (bytes_of_f32 [ 1.; 4.; 2.; 5.; 3.; 6. ]);
+  expect_bytes execution "index_f16" (bytes_of_u16 [ 0x4400; 0x4600 ]);
+  expect_bytes execution "index_f32" (bytes_of_f32 [ 2.; 5. ]);
+  expect_bytes execution "index_i64" (bytes_of_i64 [ 4; 6; 1; 3 ]);
+  expect_bytes execution "expand_f16"
+    (bytes_of_u16 [ 0x3c00; 0x3c00; 0x3c00; 0x4000; 0x4000; 0x4000 ]);
+  expect_bytes execution "expand_f32" (bytes_of_f32 [ 2.5; 2.5; 2.5; 2.5 ]);
+  expect_bytes execution "expand_bool"
+    (bytes_of_bool [ true; false; true; false ]);
+  expect_bytes execution "concat_f16"
+    (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200 ]);
+  expect_bytes execution "concat_f32" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
+  expect_bytes execution "roll_f16"
+    (bytes_of_u16 [ 0x4000; 0x4200; 0x4400; 0x3c00 ]);
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 24 then
+  if List.length kernels <> 35 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 24"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 35"
          (List.length kernels));
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 24 exact\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 36 exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels)

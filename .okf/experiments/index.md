@@ -30,3 +30,4 @@
 * [Native typed cast dispatch](exp-0028-native-cast-dispatch.md) - ABI-v3 cast kernels and one exact 15-output execution probe.
 * [Native LFM pointwise dispatch](exp-0029-native-pointwise-dispatch.md) - ABI-v4 broadcast/scalar kernels and one exact 24-output execution probe.
 * [Binary Dynamo/FX compiler transport](exp-0030-binary-fx-transport.md) - `LLMOPTFX` replaces JSON on the default Python-to-OCaml compile path.
+* [Native LFM movement dispatch](exp-0031-native-movement-dispatch.md) - ABI-v5 movement kernels and one exact 36-output execution probe.

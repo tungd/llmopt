@@ -651,6 +651,174 @@ let pointwise_entries =
     entry "llmopt_cos_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_sin_f32" Ir.Dtype.Float32 Ir.Dtype.Float32 ]
 
+let movement_unary_kernel ~name ~value_type ~parameters ~body =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(1)]],\n"
+  ^ "    constant " ^ parameters ^ "& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ body ^ "}\n\n"
+
+let movement_transpose_kernel ~name ~value_type =
+  movement_unary_kernel ~name ~value_type ~parameters:"MovementParams"
+    ~body:
+      ("  if (gid >= params.count) return;\n"
+      ^ "  uint coordinates[8] = {};\n"
+      ^ "  uint remaining = gid;\n"
+      ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+      ^ "    coordinates[axis] = remaining % params.output_shape[axis];\n"
+      ^ "    remaining /= params.output_shape[axis];\n"
+      ^ "  }\n"
+      ^ "  uint offset = 0; uint stride = 1;\n"
+      ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+      ^ "    uint coordinate = coordinates[axis];\n"
+      ^ "    if (uint(axis) == params.axis0) coordinate = coordinates[params.axis1];\n"
+      ^ "    else if (uint(axis) == params.axis1) coordinate = coordinates[params.axis0];\n"
+      ^ "    offset += coordinate * stride;\n"
+      ^ "    stride *= params.input_shape[axis];\n"
+      ^ "  }\n"
+      ^ "  output[gid] = input[offset];\n")
+
+let movement_expand_kernel ~name ~value_type =
+  movement_unary_kernel ~name ~value_type ~parameters:"MovementParams"
+    ~body:
+      ("  if (gid >= params.count) return;\n"
+      ^ "  uint remaining = gid; uint offset = 0; uint stride = 1;\n"
+      ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+      ^ "    const uint coordinate = remaining % params.output_shape[axis];\n"
+      ^ "    remaining /= params.output_shape[axis];\n"
+      ^ "    const uint input_dimension = params.input_shape[axis];\n"
+      ^ "    offset += (input_dimension == 1 ? 0 : coordinate) * stride;\n"
+      ^ "    stride *= input_dimension;\n"
+      ^ "  }\n"
+      ^ "  output[gid] = input[offset];\n")
+
+let movement_index_kernel ~name ~value_type =
+  movement_unary_kernel ~name ~value_type ~parameters:"IndexParams"
+    ~body:
+      ("  if (gid >= params.count) return;\n"
+      ^ "  uint output_coordinates[8] = {};\n"
+      ^ "  uint remaining = gid;\n"
+      ^ "  for (int axis = int(params.output_rank) - 1; axis >= 0; --axis) {\n"
+      ^ "    output_coordinates[axis] = remaining % params.output_shape[axis];\n"
+      ^ "    remaining /= params.output_shape[axis];\n"
+      ^ "  }\n"
+      ^ "  long input_coordinates[8] = {};\n"
+      ^ "  uint input_axis = 0; uint output_axis = 0;\n"
+      ^ "  for (uint selector = 0; selector < params.selector_count; ++selector) {\n"
+      ^ "    const uint kind = params.selector_kind[selector];\n"
+      ^ "    if (kind == 0) {\n"
+      ^ "      input_coordinates[input_axis++] = params.starts[selector];\n"
+      ^ "    } else if (kind == 1) {\n"
+      ^ "      input_coordinates[input_axis++] = params.starts[selector]\n"
+      ^ "          + long(output_coordinates[output_axis++]) * params.steps[selector];\n"
+      ^ "    } else {\n"
+      ^ "      ++output_axis;\n"
+      ^ "    }\n"
+      ^ "  }\n"
+      ^ "  uint offset = 0; uint stride = 1;\n"
+      ^ "  for (int axis = int(params.input_rank) - 1; axis >= 0; --axis) {\n"
+      ^ "    offset += uint(input_coordinates[axis]) * stride;\n"
+      ^ "    stride *= params.input_shape[axis];\n"
+      ^ "  }\n"
+      ^ "  output[gid] = input[offset];\n")
+
+let movement_roll_kernel ~name ~value_type =
+  movement_unary_kernel ~name ~value_type ~parameters:"RollParams"
+    ~body:
+      ("  if (gid >= params.count) return;\n"
+      ^ "  uint coordinates[8] = {};\n"
+      ^ "  uint remaining = gid;\n"
+      ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+      ^ "    coordinates[axis] = remaining % params.shape[axis];\n"
+      ^ "    remaining /= params.shape[axis];\n"
+      ^ "  }\n"
+      ^ "  const uint width = params.shape[params.axis];\n"
+      ^ "  int shifted = (int(coordinates[params.axis]) - params.shift) % int(width);\n"
+      ^ "  if (shifted < 0) shifted += int(width);\n"
+      ^ "  coordinates[params.axis] = uint(shifted);\n"
+      ^ "  uint offset = 0; uint stride = 1;\n"
+      ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+      ^ "    offset += coordinates[axis] * stride;\n"
+      ^ "    stride *= params.shape[axis];\n"
+      ^ "  }\n"
+      ^ "  output[gid] = input[offset];\n")
+
+let movement_concat_kernel ~name ~value_type =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* left [[buffer(0)]],\n"
+  ^ "    device const " ^ value_type ^ "* right [[buffer(1)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(2)]],\n"
+  ^ "    constant ConcatParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.count) return;\n"
+  ^ "  uint coordinates[8] = {};\n"
+  ^ "  uint remaining = gid;\n"
+  ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+  ^ "    coordinates[axis] = remaining % params.output_shape[axis];\n"
+  ^ "    remaining /= params.output_shape[axis];\n"
+  ^ "  }\n"
+  ^ "  const bool use_left = coordinates[params.axis] < params.left_axis;\n"
+  ^ "  if (!use_left) coordinates[params.axis] -= params.left_axis;\n"
+  ^ "  uint offset = 0; uint stride = 1;\n"
+  ^ "  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {\n"
+  ^ "    const uint dimension = uint(axis) == params.axis\n"
+  ^ "        ? (use_left ? params.left_axis\n"
+  ^ "                    : params.output_shape[axis] - params.left_axis)\n"
+  ^ "        : params.output_shape[axis];\n"
+  ^ "    offset += coordinates[axis] * stride;\n"
+  ^ "    stride *= dimension;\n"
+  ^ "  }\n"
+  ^ "  output[gid] = use_left ? left[offset] : right[offset];\n"
+  ^ "}\n\n"
+
+let movement_source =
+  "\nstruct MovementParams {\n"
+  ^ "  uint count; uint rank; uint axis0; uint axis1;\n"
+  ^ "  uint input_shape[8]; uint output_shape[8];\n"
+  ^ "};\n\n"
+  ^ "struct IndexParams {\n"
+  ^ "  uint count; uint input_rank; uint output_rank; uint selector_count;\n"
+  ^ "  uint input_shape[8]; uint output_shape[8]; uint selector_kind[8];\n"
+  ^ "  long starts[8]; long steps[8];\n"
+  ^ "};\n\n"
+  ^ "struct ConcatParams {\n"
+  ^ "  uint count; uint rank; uint axis; uint left_axis;\n"
+  ^ "  uint output_shape[8];\n"
+  ^ "};\n\n"
+  ^ "struct RollParams {\n"
+  ^ "  uint count; uint rank; uint axis; int shift; uint shape[8];\n"
+  ^ "};\n\n"
+  ^ movement_transpose_kernel ~name:"llmopt_transpose_f16" ~value_type:"half"
+  ^ movement_transpose_kernel ~name:"llmopt_transpose_f32" ~value_type:"float"
+  ^ movement_index_kernel ~name:"llmopt_index_f16" ~value_type:"half"
+  ^ movement_index_kernel ~name:"llmopt_index_f32" ~value_type:"float"
+  ^ movement_index_kernel ~name:"llmopt_index_i64" ~value_type:"long"
+  ^ movement_expand_kernel ~name:"llmopt_expand_f16" ~value_type:"half"
+  ^ movement_expand_kernel ~name:"llmopt_expand_f32" ~value_type:"float"
+  ^ movement_expand_kernel ~name:"llmopt_expand_bool" ~value_type:"uchar"
+  ^ movement_concat_kernel ~name:"llmopt_concat_f16" ~value_type:"half"
+  ^ movement_concat_kernel ~name:"llmopt_concat_f32" ~value_type:"float"
+  ^ movement_roll_kernel ~name:"llmopt_roll_f16" ~value_type:"half"
+
+let movement_entries =
+  let entry name dtype =
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name
+      ~operation:Kernel_abi.Operation.Movement ~input_dtype:dtype
+      ~output_dtype:dtype
+  in
+  [ entry "llmopt_transpose_f16" Ir.Dtype.Float16;
+    entry "llmopt_transpose_f32" Ir.Dtype.Float32;
+    entry "llmopt_index_f16" Ir.Dtype.Float16;
+    entry "llmopt_index_f32" Ir.Dtype.Float32;
+    entry "llmopt_index_i64" Ir.Dtype.Int64;
+    entry "llmopt_expand_f16" Ir.Dtype.Float16;
+    entry "llmopt_expand_f32" Ir.Dtype.Float32;
+    entry "llmopt_expand_bool" Ir.Dtype.Bool;
+    entry "llmopt_concat_f16" Ir.Dtype.Float16;
+    entry "llmopt_concat_f32" Ir.Dtype.Float32;
+    entry "llmopt_roll_f16" Ir.Dtype.Float16 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -867,7 +1035,18 @@ let lower graph =
         cast_entries );
       ( has_primitive graph (function Ir.Primitive.Pointwise _ -> true | _ -> false),
         pointwise_source,
-        pointwise_entries ) ]
+        pointwise_entries );
+      ( has_primitive graph (function
+          | Ir.Primitive.Movement movement ->
+              (match movement with
+              | Ir.Movement.Transpose _ | Ir.Movement.Expand
+              | Ir.Movement.Index _ | Ir.Movement.Concat _
+              | Ir.Movement.Roll _ -> true
+              | Ir.Movement.View | Ir.Movement.Reshape
+              | Ir.Movement.Unsqueeze _ | Ir.Movement.Contiguous -> false)
+          | _ -> false),
+        movement_source,
+        movement_entries ) ]
   in
   let auxiliary_source, auxiliary_entries =
     List.fold_left

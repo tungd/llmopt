@@ -1096,8 +1096,11 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 4)
-    "serving package uses binary ABI version 4";
+    (Bytes.get_uint16_le serving_bytes 8 = 5)
+    "serving package uses binary ABI version 5";
+  let package_v4 = Bytes.copy serving_bytes in
+  Bytes.set_uint16_le package_v4 8 4;
+  ignore (Serving_package.of_bytes package_v4 |> expect_ok);
   let package_v3 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v3 8 3;
   ignore (Serving_package.of_bytes package_v3 |> expect_ok);
@@ -1320,12 +1323,16 @@ let () =
   let rms_program = expect_ok (Metal.lower primitive_optimized) in
   expect
     (Metal.Program.kernels rms_program
-    |> List.for_all (fun entry ->
-           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm))
-    "fused RMSNorm graph emits only RMSNorm kernel entries";
+    |> List.filter (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm)
+    |> List.length = 2)
+    "fused RMSNorm graph emits both RMSNorm kernel entries";
   expect
-    (Metal.Program.kernels rms_program |> List.length = 2)
-    "Metal emitter provides float32-to-float16 and float16 RMSNorm kernels";
+    (Metal.Program.kernels rms_program
+    |> List.filter (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Movement)
+    |> List.length = 11)
+    "RMSNorm graph emits the materialized movement kernel family";
   let primitive_schedule =
     primitive_graph |> Serving_schedule.of_graph |> expect_ok
   in
@@ -1603,9 +1610,14 @@ let () =
   in
   expect
     (Serving_package.kernels rms_package
-    |> List.for_all (fun entry ->
+    |> List.exists (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm))
     "binary package preserves the RMSNorm kernel ABI";
+  expect
+    (Serving_package.kernels rms_package
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Movement))
+    "binary package preserves the movement kernel ABI";
   let movement_fx =
     let nodes =
       [ fx_node ~op:"placeholder" ~dtype:"float32" ~name:"x" ~target:"x"
