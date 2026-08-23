@@ -41,13 +41,18 @@ rule python_test
   description = run Python FX and benchsuite tests
   pool = console
 
+rule fx_graph
+  command = mkdir -p $$(dirname $out) && PYTHONPATH=python python3.13 python/examples/json_to_fx_graph.py --input $in --output $out
+  description = encode binary FX graph $out
+  pool = console
+
 rule fx_manifest
-  command = mkdir -p _build/fx-example && _build/bin/llmopt-fx python/examples/linear_fx.json _build/fx-example
+  command = mkdir -p _build/fx-example && _build/bin/llmopt-fx $in _build/fx-example
   description = plan the static FX fixture
   pool = console
 
 rule q8_fx_manifest
-  command = mkdir -p _build/q8-fx-example && _build/bin/llmopt-fx python/examples/q8_linear_fx.json _build/q8-fx-example
+  command = mkdir -p _build/q8-fx-example && _build/bin/llmopt-fx $in _build/q8-fx-example
   description = plan the static Q8 FX fixture
   pool = console
 
@@ -57,7 +62,7 @@ rule q8_tensor_store
   pool = console
 
 rule q8_serving_manifest
-  command = mkdir -p _build/q8-serving-example && _build/bin/llmopt-fx --weights weights.llmopt python/examples/q8_linear_fx.json _build/q8-serving-example
+  command = mkdir -p _build/q8-serving-example && _build/bin/llmopt-fx --weights weights.llmopt $in _build/q8-serving-example
   description = plan the Q8 serving fixture
   pool = console
 
@@ -231,7 +236,7 @@ build _build/ocaml/metal_runtime.cmi: ocaml_interface lib/metal_runtime.mli | _b
 build _build/ocaml/metal_runtime.cmx: ocaml_module lib/metal_runtime.ml | _build/ocaml/metal_runtime.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx
 
 build _build/ocaml/fx.cmi: ocaml_interface lib/fx.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
-build _build/ocaml/fx.cmx: ocaml_module lib/fx.ml | _build/ocaml/fx.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx
+build _build/ocaml/fx.cmx: ocaml_module lib/fx.ml | _build/ocaml/fx.cmi _build/ocaml/binary.cmx _build/ocaml/shape.cmx _build/ocaml/ir.cmx
 
 build _build/ocaml/serving_validation.cmi: ocaml_interface lib/serving_validation.mli | _build/ocaml/serving_package.cmi _build/ocaml/weight_archive.cmi
 build _build/ocaml/serving_validation.cmx: ocaml_module lib/serving_validation.ml | _build/ocaml/serving_validation.cmi _build/ocaml/serving_package.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/weight_archive.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx
@@ -246,7 +251,7 @@ build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx 
 build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/test.cmx
 
 build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/passes.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
-build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
+build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/binary.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
 
 build _build/ocaml/package_check.cmx: ocaml_module bin/package_check.ml | _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx
 build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/package_check.cmx
@@ -260,7 +265,8 @@ build _build/bin/llmopt-native-schedule-fixture: ocaml_link _build/ocaml/shape.c
 build _build/ocaml/ocaml_metal_primitives_smoke.cmx: ocaml_module bin/ocaml_metal_primitives_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/weight_archive.cmx
 build _build/bin/llmopt-ocaml-metal-primitives-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_primitives_smoke.cmx _build/native/ocaml_metal_stubs.o
 
-build _build/fx-example/fx.json _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest python/examples/linear_fx.json | _build/bin/llmopt-fx
+build _build/fx-inputs/linear.graph.llmopt: fx_graph python/examples/linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
+build _build/fx-example/graph.llmopt _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest _build/fx-inputs/linear.graph.llmopt | _build/bin/llmopt-fx
 build _build/fx-example/kernel.ll.o: llvm_check _build/fx-example/kernel.ll
 build _build/fx-example/kernel.air: metal_check _build/fx-example/kernel.metal
 build _build/fx-example/kernel.metallib: metal_lib _build/fx-example/kernel.air
@@ -268,7 +274,8 @@ build _build/fx-example/package.ok: package_check _build/fx-example/package.llmo
   checker = _build/bin/llmopt-package-check
   directory = _build/fx-example
 
-build _build/q8-fx-example/fx.json _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.ll _build/q8-fx-example/package.llmopt: q8_fx_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx
+build _build/fx-inputs/q8-linear.graph.llmopt: fx_graph python/examples/q8_linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
+build _build/q8-fx-example/graph.llmopt _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.ll _build/q8-fx-example/package.llmopt: q8_fx_manifest _build/fx-inputs/q8-linear.graph.llmopt | _build/bin/llmopt-fx
 build _build/q8-fx-example/kernel.ll.o: llvm_check _build/q8-fx-example/kernel.ll
 build _build/q8-fx-example/kernel.air: metal_check _build/q8-fx-example/kernel.metal
 build _build/q8-fx-example/kernel.metallib: metal_lib _build/q8-fx-example/kernel.air
@@ -276,7 +283,7 @@ build _build/q8-fx-example/package.ok: package_check _build/q8-fx-example/packag
   checker = _build/bin/llmopt-package-check
   directory = _build/q8-fx-example
 build _build/q8-serving-example/weights.llmopt: q8_tensor_store python/examples/write_q8_weight_fixture.py
-build _build/q8-serving-example/fx.json _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.ll _build/q8-serving-example/package.llmopt: q8_serving_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx _build/q8-serving-example/weights.llmopt
+build _build/q8-serving-example/graph.llmopt _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.ll _build/q8-serving-example/package.llmopt: q8_serving_manifest _build/fx-inputs/q8-linear.graph.llmopt | _build/bin/llmopt-fx _build/q8-serving-example/weights.llmopt
 build _build/q8-serving-example/kernel.ll.o: llvm_check _build/q8-serving-example/kernel.ll
 build _build/q8-serving-example/kernel.air: metal_check _build/q8-serving-example/kernel.metal
 build _build/q8-serving-example/kernel.metallib: metal_lib _build/q8-serving-example/kernel.air

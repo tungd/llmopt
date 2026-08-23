@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import metal_runtime
+from .fx_graph import write_graph
 from .tensor_archive import ArchiveSummary, write_archive
 
 
@@ -434,6 +435,8 @@ def manifest_from_fx(gm: Any, example_inputs: Sequence[Any]) -> dict[str, Any]:
 
 
 def write_fx_manifest(gm: Any, example_inputs: Sequence[Any], path: str | Path) -> Path:
+    """Write an explicit human-readable diagnostic manifest."""
+
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
@@ -441,6 +444,12 @@ def write_fx_manifest(gm: Any, example_inputs: Sequence[Any], path: str | Path) 
         encoding="utf-8",
     )
     return destination
+
+
+def write_fx_graph(gm: Any, example_inputs: Sequence[Any], path: str | Path) -> Path:
+    """Write the versioned binary graph consumed by the OCaml compiler."""
+
+    return write_graph(manifest_from_fx(gm, example_inputs), path)
 
 
 def _compiler_path() -> Path | None:
@@ -505,57 +514,61 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
         tensor_archive = session_capture.tensor_archive
     elif captured.tensors:
         tensor_archive = write_archive(captured.tensors, tensor_store)
-    manifest = output_directory / "fx.json"
-    manifest.write_text(
-        json.dumps(captured.manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    graph_input = output_directory / "graph.llmopt"
+    write_graph(captured.manifest, graph_input)
+    diagnostics = os.environ.get("LLMOPT_FX_DIAGNOSTICS", "0") == "1"
+    if diagnostics:
+        (output_directory / "fx.json").write_text(
+            json.dumps(captured.manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     quantization = os.environ.get("LLMOPT_QUANTIZATION", "q8")
     metal_library: Path | None = None
     try:
         compiler_command = [str(compiler)]
         if tensor_archive is not None:
             compiler_command.extend(["--weights", tensor_store.name])
-        compiler_command.extend([str(manifest), str(output_directory)])
+        compiler_command.extend([str(graph_input), str(output_directory)])
         subprocess.run(
             compiler_command,
             check=True,
             text=True,
         )
         metal_library = metal_runtime.compile_library(output_directory / "kernel.metal")
-        (output_directory / "runtime.json").write_text(
-            json.dumps(
-                {
-                    "target": "pytorch-mps",
-                    "mode": "fx-graphmodule",
-                    "optimization": f"fx-direct-execution+{quantization}",
-                    "quantization": quantization,
-                    "runtime": (
-                        metal_runtime.runtime_kind()
-                        if metal_library is not None
-                        else "pytorch-mps-fallback"
-                    ),
-                    "metal_library": (
-                        None if metal_library is None else str(metal_library)
-                    ),
-                    "tensor_store": (
-                        None
-                        if tensor_archive is None
-                        else {
-                            "file": tensor_store.name,
-                            "tensors": tensor_archive.tensor_count,
-                            "index_bytes": tensor_archive.index_bytes,
-                            "data_bytes": tensor_archive.data_bytes,
-                            "padding_bytes": tensor_archive.padding_bytes,
-                            "file_bytes": tensor_archive.file_bytes,
-                        }
-                    ),
-                },
-                indent=2,
+        if diagnostics:
+            (output_directory / "runtime.json").write_text(
+                json.dumps(
+                    {
+                        "target": "pytorch-mps",
+                        "mode": "fx-graphmodule",
+                        "optimization": f"fx-direct-execution+{quantization}",
+                        "quantization": quantization,
+                        "runtime": (
+                            metal_runtime.runtime_kind()
+                            if metal_library is not None
+                            else "pytorch-mps-fallback"
+                        ),
+                        "metal_library": (
+                            None if metal_library is None else str(metal_library)
+                        ),
+                        "tensor_store": (
+                            None
+                            if tensor_archive is None
+                            else {
+                                "file": tensor_store.name,
+                                "tensors": tensor_archive.tensor_count,
+                                "index_bytes": tensor_archive.index_bytes,
+                                "data_bytes": tensor_archive.data_bytes,
+                                "padding_bytes": tensor_archive.padding_bytes,
+                                "file_bytes": tensor_archive.file_bytes,
+                            }
+                        ),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
     finally:
         if temporary_directory is not None and metal_library is None:
             # The compiler output is useful for debugging only when an artifact
@@ -592,4 +605,5 @@ __all__ = [
     "llmopt",
     "manifest_from_fx",
     "write_fx_manifest",
+    "write_fx_graph",
 ]

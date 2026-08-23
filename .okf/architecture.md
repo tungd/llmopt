@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T21:30:47Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T21:42:00Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -62,7 +62,7 @@ The public frontend is a PyTorch `torch.compile` backend. Dynamo calls the
 backend with an FX `GraphModule` and example inputs, and the backend returns a
 callable with the same forward contract.[^pytorch-backend-contract]
 
-The Python adapter currently serializes a deliberately small JSON manifest containing node
+The Python adapter serializes a versioned binary `graph.llmopt` containing node
 names, op kinds, targets, references, static shape metadata from `val`,
 `tensor_meta`, or Dynamo `example_value`, dtypes, lossless typed arguments, and
 an explicit runtime-input or tensor-store binding. Dynamo's lifted-static-input
@@ -74,17 +74,19 @@ the graph IR, with optional pure passes available for later slices, and emits
 optional Metal source plus textual LLVM IR.[^local-python-backend]
 [^local-ocaml-planner]
 
-That JSON file is a temporary compile-time subprocess bridge, not a serving
-format. The preserved prefill manifest is 776,844 bytes. The intended boundary
-is a versioned binary graph import with JSON retained only as an optional
-diagnostic dump.
+Binary transport ABI v1 carries manifest schema v2 with recursively tagged
+arguments, explicit bindings, fixed-width numeric fields, and length-prefixed
+UTF-8 strings. The OCaml importer detects the `LLMOPTFX` magic and rejects
+unknown versions, malformed tags, truncation, and trailing bytes. Legacy JSON
+input remains readable, while `LLMOPT_FX_DIAGNOSTICS=1` explicitly emits JSON
+diagnostics; neither format is read by serving.
 
 # Ownership
 
 | Concern | Owner |
 |---|---|
 | Python bytecode/Dynamo and FX graph acquisition | Python adapter |
-| FX manifest serialization and subprocess boundary | Python adapter |
+| Binary FX graph serialization and subprocess boundary | Python adapter |
 | op support, shape checks, effect planning | OCaml planner |
 | graph transforms | Pure OCaml passes |
 | Metal/LLVM source generation | OCaml backends |
@@ -137,11 +139,12 @@ configuration boundary. Current Q8 support defines typed policy, capacity, and
 byte accounting (int8 values plus FP16 group scales); physical Metal buffers
 and quantize/dequantize kernels are not connected to the cache in this slice.
 
-The FX compiler emits a versioned binary `package.llmopt` containing the typed
+The FX compiler consumes the versioned binary `graph.llmopt` and emits a
+versioned binary `package.llmopt` containing the typed
 command stream, N-dimensional value shapes, operator arguments, kernel ABI,
-cache policy, metallib path, and optional tensor-store path. The copied
-`fx.json`, pretty-printed `plan.txt`, MSL, and LLVM IR are diagnostics and are
-not referenced by the serving runtime. Kernel entry points carry an operation,
+cache policy, metallib path, and optional tensor-store path. The copied binary
+graph, pretty-printed `plan.txt`, MSL, and LLVM IR are compiler artifacts and
+are not referenced by the serving runtime; JSON diagnostics are opt-in. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
 exactly one binary tensor archive. Package ABI v4 names weight-archive ABI v1
@@ -238,6 +241,13 @@ Their 14-kernel and 10-kernel Metal programs compile to metallibs, and both
 packages validate all 241 archive bindings. The failed capture process did not
 write its parity result, so the preserved graphs provide structure and package
 evidence but no retained eager/compiled parity measurement.
+
+The same preserved manifests now round-trip exactly through binary FX
+transport ABI v1. Prefill occupies 253,354 bytes instead of 776,844 bytes of
+diagnostic JSON; decode occupies 259,928 instead of 796,970. Offline binary
+replanning writes JSON-free ABI-v4 artifact directories with 872/926 commands,
+26/22 kernels, zero opaque operations, and all 241 archive bindings validated.
+This conversion and replan loaded no model and launched no Metal device work.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

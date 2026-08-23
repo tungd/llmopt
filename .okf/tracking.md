@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T21:30:47Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T21:42:00Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -23,7 +23,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 |---|---|---|
 | Ninja-built OCaml 5 effect/IR prototype | implemented | `ninja test` passes |
 | Python Dynamo/FX manifest exporter | implemented | v2 captures rank plus typed node, integer, float, bool, null, string, symbol, sequence, mapping, and slice arguments; Python unittest passes |
-| Dynamo-to-OCaml compiler transport | partial; binary replacement open | capture currently writes a temporary JSON subprocess input; the preserved prefill instance is 776,844 bytes. Serving does not read it, but the compile boundary still needs a versioned binary `graph.llmopt` format with optional JSON diagnostics |
+| Dynamo-to-OCaml compiler transport | implemented | default capture writes `LLMOPTFX` ABI-v1 `graph.llmopt`; OCaml parses manifest-v2 typed fields and rejects malformed/truncated/trailing data. The preserved prefill/decode graphs round-trip exactly at 253,354/259,928 bytes versus 776,844/796,970 JSON bytes; JSON emission is opt-in |
 | OCaml FX importer and effect planner | implemented for the captured prefill and one-token decode vocabularies | typed arguments, ellipsis, N-dimensional shapes, pointwise/reduction/cast/movement primitives, cache crop/fill/copy, roll, functional slice update, sum, deferred chunk/getitem slices, concat identities, RMSNorm, position/mask construction, and telemetry elision survive real v2 captures and a schedule-v8 round trip |
 | LLVM textual emitter | implemented | `clang -x ir` accepts the linear smoke |
 | Metal source emitter | implemented | Xcode `metal` accepts the linear smoke |
@@ -40,10 +40,10 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, and `ninja -f ninja.build q8-smoke` pass; the bounded Q8 result has exact digest/token parity, and its saved outputs prove 6/6 control-code retrieval with 0/6 exact-only formatting |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
-| Versioned generated package ABI | partial; prefill and decode packages validated | Package ABI v4 adds exact-name pointwise entries while retaining ABI-v2/v3 reads. The preserved ABI-v2 350M packages validate with 872 prefill and 926 decode commands, zero opaque operations, and 241 bindings each; offline ABI-v4 replanning and complete native interpretation remain open |
+| Versioned generated package ABI | partial; ABI-v4 prefill and decode packages validated | Package ABI v4 adds exact-name pointwise entries while retaining ABI-v2/v3 reads. Binary-input replanning writes 872-command/26-kernel prefill and 926-command/22-kernel decode packages with zero opaque operations and 241 validated bindings each; complete native interpretation remains open |
 | OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
 | OCaml Metal serving loader and dispatch | partial; built-ins, casts, and LFM pointwise execute | The archive-backed Q8 schedule remains exact. The ABI-v4 fixture has 81 commands and 25 declarations; one 58%-free-memory Apple M4 Pro run dispatched 24 kernels and matched 24/24 outputs, including all nine pointwise forms required by the preserved plans. Movement, reduction, recurrent commands, float16 vocabulary projection, and batched submission remain open |
-| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Offline replans of the real use-cache manifests have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 14-kernel/10-kernel metallibs; kernels or zero-cost views for every command and native command interpretation remain open |
+| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Binary-input ABI-v4 replans have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 26-kernel/22-kernel metallibs; movement/reduction/recurrent/final-projection execution and full native interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule

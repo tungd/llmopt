@@ -71,6 +71,42 @@ let fx_node ?(op = "call_method") ?(inputs = []) ?(arguments = [])
                      `Assoc [ ("name", `String name); ("value", value) ])
                    keywords) ) ] ) ]
 
+let fx_binary_fixture () =
+  let writer = Binary.Writer.create () in
+  Binary.Writer.raw_string writer Fx.binary_magic;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u16 writer 2;
+  Binary.Writer.u32 writer 2;
+  Binary.Writer.u32 writer 1;
+  Binary.Writer.string writer "x";
+  Binary.Writer.string writer "placeholder";
+  Binary.Writer.string writer "x";
+  Binary.Writer.u8 writer 1;
+  Binary.Writer.u8 writer 1;
+  Binary.Writer.u8 writer 1;
+  Binary.Writer.u16 writer 2;
+  Binary.Writer.u64 writer 2;
+  Binary.Writer.u64 writer 3;
+  Binary.Writer.u32 writer 0;
+  Binary.Writer.u32 writer 0;
+  Binary.Writer.u32 writer 0;
+  Binary.Writer.string writer "output";
+  Binary.Writer.string writer "output";
+  Binary.Writer.string writer "output";
+  Binary.Writer.u8 writer 0;
+  Binary.Writer.u8 writer 0;
+  Binary.Writer.u8 writer 0;
+  Binary.Writer.u32 writer 1;
+  Binary.Writer.string writer "x";
+  Binary.Writer.u32 writer 1;
+  Binary.Writer.u8 writer 9;
+  Binary.Writer.u32 writer 1;
+  Binary.Writer.u8 writer 0;
+  Binary.Writer.string writer "x";
+  Binary.Writer.u32 writer 0;
+  Binary.Writer.string writer "x";
+  Binary.Writer.contents writer
+
 let primitive_value ~operation ~inputs ~logical_shape ~dtype =
   Tile_effect.primitive
     {
@@ -1074,12 +1110,34 @@ let () =
   expect
     (not (contains_substring serving_binary "plan.txt"))
     "binary serving package excludes textual plans";
+  expect
+    (not (contains_substring serving_binary "graph.llmopt"))
+    "binary serving package excludes compiler graph transport";
   (match
      Serving_package.of_bytes
        (Bytes.sub serving_bytes 0 (Bytes.length serving_bytes - 1))
    with
   | Error _ -> ()
   | Ok _ -> fail "serving package accepted truncated binary input");
+  let binary_fx_bytes = fx_binary_fixture () in
+  expect
+    (Bytes.sub_string binary_fx_bytes 0 8 = "LLMOPTFX")
+    "binary FX graph has binary magic";
+  let binary_fx = Fx.of_binary binary_fx_bytes |> expect_ok in
+  expect (Fx.version binary_fx = 2) "binary FX graph preserves schema version";
+  expect (Fx.outputs binary_fx = [ "x" ]) "binary FX graph preserves outputs";
+  let binary_input = List.hd (Fx.nodes binary_fx) in
+  expect
+    (Fx.Node.shape binary_input = Some [ 2; 3 ]
+    && Fx.Node.dtype binary_input = Ir.Dtype.Float16
+    && Fx.Node.binding binary_input = Fx.Binding.Runtime)
+    "binary FX graph preserves input metadata";
+  (match
+     Fx.of_binary
+       (Bytes.sub binary_fx_bytes 0 (Bytes.length binary_fx_bytes - 1))
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "binary FX graph accepted truncated input");
   let bound_fx =
     expect_ok
       (Fx.of_json

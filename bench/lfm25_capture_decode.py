@@ -14,10 +14,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-import torch
-from transformers import AutoModelForCausalLM
-
 sys.path.insert(0, str(Path(__file__).parents[1] / "python"))
+
+import torch
+
+from llmopt_backend.fx_graph import read_graph
+from transformers import AutoModelForCausalLM
 
 
 def memory_headroom() -> dict[str, Any]:
@@ -82,8 +84,8 @@ def graph_inventory(root: Path, checker: Path) -> list[dict[str, Any]]:
     graphs: list[dict[str, Any]] = []
     shared_archive = root / "weights.llmopt"
     for directory in sorted(path for path in root.glob("graph-*") if path.is_dir()):
-        manifest_path = directory / "fx.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_path = directory / "graph.llmopt"
+        manifest = read_graph(manifest_path)
         placeholders = [node for node in manifest["nodes"] if node["op"] == "placeholder"]
         static = [
             node

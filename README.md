@@ -13,10 +13,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 
 - A Python `torch.compile` backend registered as `llmopt`, receiving the
   `GraphModule, example_inputs` Dynamo contract.
-- A temporary compile-time JSON FX import boundary preserving node names, op
-  kinds, targets, references, Dynamo `example_value` shapes, dtypes, and typed
-  arguments. It is not used by serving and remains to be replaced by the
-  versioned binary graph boundary.
+- A versioned binary `graph.llmopt` FX transport preserving node names, op
+  kinds, targets, references, Dynamo `example_value` shapes, dtypes, bindings,
+  and recursively typed arguments. JSON is an explicit diagnostic/legacy
+  import only, not the default compiler subprocess path or serving path.
 - An OCaml FX importer and effect-based planner. The internal effect vocabulary
   covers inputs, allocation, copies, barriers, matrix multiply, linear, add,
   GELU, ReLU, opaque FX actions, and outputs.
@@ -106,8 +106,8 @@ package-check failure, so this capture adds no parity claim. The boundary is doc
 
 The repository intentionally uses Ninja as its only build orchestrator. The
 OCaml compiler is invoked directly by Ninja; the only OCaml package dependency
-is Yojson for the FX manifest boundary, alongside Bigarray and Unix from the
-standard distribution.
+is Yojson for backward-compatible diagnostic JSON imports, alongside Bigarray
+and Unix from the standard distribution.
 
 ```sh
 ninja -f ninja.build all
@@ -139,9 +139,10 @@ ninja -f ninja.build bench-suite
 The demo writes generated sources to `_build/llmopt-demo/` and prints the CPU
 reference result, capture summary, and fusion summary. `metal` compiles the
 small reference kernel with the installed Xcode Metal toolchain. `fx-smoke`
-plans `python/examples/linear_fx.json` and validates its LLVM and Metal
-artifacts, metallib, and binary serving package. `q8-fx-smoke` performs the
-same validation for the Q8 fixture. `_build/bin/llmopt-package-check` validates
+encodes `python/examples/linear_fx.json` into `graph.llmopt`, plans that binary
+input in OCaml, and validates its LLVM and Metal artifacts, metallib, and
+binary serving package. `q8-fx-smoke` performs the same cross-language binary
+validation for the Q8 fixture. `_build/bin/llmopt-package-check` validates
 the versioned command stream, kernel ABI, tensor bindings, and runtime files.
 `rms-norm-smoke` captures and fuses a model-shaped RMSNorm chain, then compiles
 the emitted float32-to-float16 and float16 kernels with Xcode Metal.
@@ -215,7 +216,7 @@ PyTorch model
         │ torch.compile(backend=llmopt)
         ▼
 FX GraphModule + example inputs
-        │ temporary compile-time JSON import (binary graph ABI open)
+        │ graph.llmopt: binary FX transport ABI v1 / manifest v2
         ▼
 OCaml FX importer
         │ effect-based planned execution
@@ -245,12 +246,20 @@ OCaml serving runtime
         └── complete model lowering, schedule execution, and request loop (next)
 ```
 
-`fx.json` and `plan.txt` are compiler diagnostics, not serving inputs. The
-native runtime consumes only `package.llmopt`, the declared `.metallib`, and
-`weights.llmopt`. Package ABI v4 references weight-archive ABI v1 and retains
+`graph.llmopt` is a compile-time transport and `plan.txt` is a compiler
+diagnostic; neither is a serving input. Set `LLMOPT_FX_DIAGNOSTICS=1` to emit
+optional `fx.json` and `runtime.json` files. The native runtime consumes only
+`package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI v4 references weight-archive ABI v1 and retains
 read compatibility with ABI v2 and v3; neither file contains JSON. The
 preserved 350M packages are ABI v2 and can be replanned without loading the
 model.
+
+The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
+776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
+bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
+binary-input replanning emits ABI-v4 packages with 872/926 commands, 26/22
+kernels, zero opaque commands, and all 241 tensor bindings validated. No model
+load or device dispatch was used for that replan.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

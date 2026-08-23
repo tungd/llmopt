@@ -8,7 +8,7 @@ let ensure_directory path =
   create path
 
 let write_file path contents =
-  let channel = open_out path in
+  let channel = open_out_bin path in
   Fun.protect
     ~finally:(fun () -> close_out_noerr channel)
     (fun () -> output_string channel contents)
@@ -30,28 +30,28 @@ let package_files =
 let usage () =
   prerr_endline
     "usage: llmopt-fx [--weights <weights.llmopt>] \
-     <fx-manifest.json> <output-directory>";
+     <graph.llmopt|legacy-fx.json> <output-directory>";
   exit 64
 
 let () =
-  let tensor_store, manifest, output_directory =
+  let tensor_store, graph_input, output_directory =
     match Array.to_list Sys.argv with
-    | [ _; manifest; output_directory ] -> None, manifest, output_directory
-    | [ _; "--weights"; path; manifest; output_directory ] ->
+    | [ _; graph_input; output_directory ] -> None, graph_input, output_directory
+    | [ _; "--weights"; path; graph_input; output_directory ] ->
         Some
           (Serving_package.Tensor_store.weights ~file:(artifact path)),
-        manifest,
+        graph_input,
         output_directory
     | _ -> usage ()
   in
-  let manifest_contents =
-    try read_file manifest
+  let graph_contents =
+    try read_file graph_input
     with Sys_error message ->
-      prerr_endline ("cannot read FX manifest: " ^ message);
+      prerr_endline ("cannot read FX graph: " ^ message);
       exit 2
   in
   ensure_directory output_directory;
-  match Fx.of_file manifest with
+  match Fx.of_file graph_input with
   | Error message ->
       prerr_endline message;
       exit 2
@@ -99,8 +99,17 @@ let () =
                         prerr_endline ("serving package failed: " ^ message);
                         exit 7
                   in
-                  write_file (Filename.concat output_directory "fx.json")
-                    manifest_contents;
+                  let graph_artifact =
+                    if
+                      String.starts_with ~prefix:Fx.binary_magic graph_contents
+                    then "graph.llmopt"
+                    else "fx.json"
+                  in
+                  let graph_destination =
+                    Filename.concat output_directory graph_artifact
+                  in
+                  if graph_input <> graph_destination then
+                    write_file graph_destination graph_contents;
                   write_file (Filename.concat output_directory "plan.txt") plan;
                   write_file (Filename.concat output_directory "kernel.metal")
                     (Metal.Program.source metal_program);
