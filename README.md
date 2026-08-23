@@ -44,7 +44,7 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   the binary command schedule through small Objective-C bindings. Native
   dispatch covers matmul, Q8 linear, RMSNorm, ShortConv, masked attention,
   embedding, range/fill, diff/cumsum, and two-index gather; compute pipelines
-  are cached per loaded library. Package ABI v6 also dispatches the model's
+  are cached per loaded library. Package ABI v7 also dispatches the model's
   float16/float32/int64 cast directions and its required broadcast/scalar
   pointwise add, multiply, comparison, activation, and rotary operations, then
   materializes transpose, index, expand, concat, and roll while treating dense
@@ -53,7 +53,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   normalized-slice update. A pure alias-aware liveness pass assigns
   256-byte-aligned offsets to materialized values; the executor allocates one
   retained Metal workspace and returns buffer views instead of allocating one
-  buffer per intermediate.
+  buffer per intermediate. Serving packages additionally declare native FP16
+  and grouped-Q8 pack/unpack kernels for attention KV and recurrent
+  checkpoints; the OCaml runtime owns their physical Metal pools.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -95,9 +97,10 @@ captured FX GraphModule and lets each operation dispatch to MPS. Q8 graphs can
 also activate the generated tiled Metal library through the bridge; unsupported
 operations and inputs use the PyTorch MPS fallback. The intended serving stack
 moves generated-library loading, Metal dispatch, request scheduling, and cache
-ownership into OCaml. Its radix/KV ownership and archive-backed Metal loader
-are implemented; complete schedule execution and physical KV
-quantize/dequantize remain open. The bounded use-cache capture produced
+ownership into OCaml. Its radix ownership, physical FP16/Q8 KV pools,
+archive-backed Metal loader, and cache conversion kernels are implemented;
+complete schedule execution and binding radix leases into generation remain
+open. The bounded use-cache capture produced
 separate prefill and one-token decode graphs with one physical
 422,137,216-byte archive. Offline replanning produces 872 prefill commands and
 926 decode commands, both with zero opaque operations; both generated MSL
@@ -173,7 +176,9 @@ PyTorch. `q8-serving-smoke` generates and validates one JSON-free binary weight
 archive. `ocaml-metal-runtime-smoke` maps that archive once, lets the OCaml
 executor bind runtime/static inputs and allocate outputs from the binary
 schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
-`_build/q8-serving-example/ocaml-metal-smoke.json`.
+`_build/q8-serving-example/ocaml-metal-smoke.txt`. The same probe executes
+twelve physical-cache dispatches and exactly round-trips separate attention
+key/value slots plus a recurrent checkpoint in Q8-group-64 and FP16.
 `native-schedule-smoke` generates a JSON-free, 129-command typed package and
 compiles its 39 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
@@ -254,27 +259,26 @@ generated serving package (fixture boundary implemented)
         ▼
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
-        ├── FP16 or Q8 KV ownership/layout (implemented; Q8 default)
+        ├── FP16 or Q8 KV ownership/layout and Metal pools (implemented; Q8 default)
         ├── Metal package loading/mapped weights/per-family dispatch (implemented)
         ├── alias-aware liveness workspace allocation (implemented)
-        └── full model execution, physical KV, and request loop (next)
+        └── full model execution, radix-to-pool binding, and request loop (next)
 ```
 
 `graph.llmopt` is a compile-time transport and `plan.txt` is a compiler
 diagnostic; neither is a serving input. Set `LLMOPT_FX_DIAGNOSTICS=1` to emit
 optional `fx.json` and `runtime.json` files. The native runtime consumes only
-`package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI v6
-references weight-archive ABI v1 and retains read compatibility with ABI v2,
-v3, v4, and v5; neither file contains JSON. The
-preserved 350M packages are ABI v2 and can be replanned without loading the
-model.
+`package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI v7
+references weight-archive ABI v1, declares cache conversion kernels, and
+retains read compatibility with ABI v2 through v6; neither file contains JSON.
 
 The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
 776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
 bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
-binary-input replanning emits ABI-v6 packages with 872/926 commands, 38/36
-kernels, zero opaque commands, and all 241 tensor bindings validated. No model
-load or device dispatch was used for that replan.
+binary-input replanning emits ABI-v7 packages with 872/926 commands, 46/44
+kernels, zero opaque commands, and all 241 tensor bindings validated. The eight
+additional entries implement FP16/Q8 attention and recurrent-cache conversion.
+No model load or device dispatch was used for that replan.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

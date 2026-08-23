@@ -177,6 +177,246 @@ let q8_entries =
       ~input_dtype:Ir.Dtype.Int8
       ~output_dtype:Ir.Dtype.Float32 ]
 
+let cache_source =
+  {|
+
+struct AttentionCacheParams {
+  uint items;
+  uint segment;
+  uint heads;
+  uint head_dim;
+  uint group_size;
+  uint token_elements;
+  uint token_groups;
+  uint token_stride;
+};
+
+struct CheckpointCacheParams {
+  uint checkpoint;
+  uint layer;
+  uint layer_elements;
+  uint group_size;
+  uint checkpoint_elements;
+  uint checkpoint_groups;
+  uint checkpoint_stride;
+};
+
+kernel void llmopt_cache_pack_attention_f16(
+    device const half* source [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device uchar* pool [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint segment_elements = params.heads * params.head_dim;
+  if (gid >= params.items * segment_elements) return;
+  const uint item = gid / segment_elements;
+  const uint local = gid - item * segment_elements;
+  const uint head = local / params.head_dim;
+  const uint within_head = local - head * params.head_dim;
+  const uint source_index =
+      (head * params.items + item) * params.head_dim + within_head;
+  device half* destination = reinterpret_cast<device half*>(
+      pool + slots[item] * params.token_stride);
+  destination[params.segment * segment_elements + local] = source[source_index];
+}
+
+kernel void llmopt_cache_unpack_attention_f16(
+    device const uchar* pool [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device half* destination [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint segment_elements = params.heads * params.head_dim;
+  if (gid >= params.items * segment_elements) return;
+  const uint item = gid / segment_elements;
+  const uint local = gid - item * segment_elements;
+  const uint head = local / params.head_dim;
+  const uint within_head = local - head * params.head_dim;
+  const uint destination_index =
+      (head * params.items + item) * params.head_dim + within_head;
+  device const half* source = reinterpret_cast<device const half*>(
+      pool + slots[item] * params.token_stride);
+  destination[destination_index] =
+      source[params.segment * segment_elements + local];
+}
+
+kernel void llmopt_cache_pack_attention_q8(
+    device const half* source [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device uchar* pool [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint groups_per_head = params.head_dim / params.group_size;
+  const uint segment_groups = params.heads * groups_per_head;
+  if (gid >= params.items * segment_groups) return;
+  const uint item = gid / segment_groups;
+  const uint local_group = gid - item * segment_groups;
+  const uint head = local_group / groups_per_head;
+  const uint group_in_head = local_group - head * groups_per_head;
+  const uint source_base =
+      (head * params.items + item) * params.head_dim
+      + group_in_head * params.group_size;
+  float maximum = 0.0f;
+  for (uint index = 0; index < params.group_size; ++index)
+    maximum = max(maximum, abs(float(source[source_base + index])));
+  const half stored_scale = half(
+      maximum == 0.0f ? 1.0f : maximum / 127.0f);
+  const float scale = float(stored_scale);
+  const uint slot_base = slots[item] * params.token_stride;
+  device char* values = reinterpret_cast<device char*>(pool + slot_base);
+  device half* scales = reinterpret_cast<device half*>(
+      pool + slot_base + params.token_elements);
+  const uint value_base =
+      params.segment * params.heads * params.head_dim
+      + head * params.head_dim + group_in_head * params.group_size;
+  for (uint index = 0; index < params.group_size; ++index) {
+    const int quantized = clamp(
+        int(rint(float(source[source_base + index]) / scale)), -127, 127);
+    values[value_base + index] = char(quantized);
+  }
+  scales[params.segment * segment_groups + local_group] = stored_scale;
+}
+
+kernel void llmopt_cache_unpack_attention_q8(
+    device const uchar* pool [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device half* destination [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint segment_elements = params.heads * params.head_dim;
+  if (gid >= params.items * segment_elements) return;
+  const uint item = gid / segment_elements;
+  const uint local = gid - item * segment_elements;
+  const uint head = local / params.head_dim;
+  const uint within_head = local - head * params.head_dim;
+  const uint groups_per_head = params.head_dim / params.group_size;
+  const uint segment_groups = params.heads * groups_per_head;
+  const uint local_group = head * groups_per_head
+      + within_head / params.group_size;
+  const uint slot_base = slots[item] * params.token_stride;
+  device const char* values =
+      reinterpret_cast<device const char*>(pool + slot_base);
+  device const half* scales = reinterpret_cast<device const half*>(
+      pool + slot_base + params.token_elements);
+  const uint value_index = params.segment * segment_elements + local;
+  const uint destination_index =
+      (head * params.items + item) * params.head_dim + within_head;
+  destination[destination_index] = half(
+      float(values[value_index])
+      * float(scales[params.segment * segment_groups + local_group]));
+}
+
+kernel void llmopt_cache_pack_checkpoint_f16(
+    device const half* source [[buffer(0)]],
+    device uchar* pool [[buffer(1)]],
+    constant CheckpointCacheParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.layer_elements) return;
+  device half* destination = reinterpret_cast<device half*>(
+      pool + params.checkpoint * params.checkpoint_stride);
+  destination[params.layer * params.layer_elements + gid] = source[gid];
+}
+
+kernel void llmopt_cache_unpack_checkpoint_f16(
+    device const uchar* pool [[buffer(0)]],
+    device half* destination [[buffer(1)]],
+    constant CheckpointCacheParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.layer_elements) return;
+  device const half* source = reinterpret_cast<device const half*>(
+      pool + params.checkpoint * params.checkpoint_stride);
+  destination[gid] = source[params.layer * params.layer_elements + gid];
+}
+
+kernel void llmopt_cache_pack_checkpoint_q8(
+    device const half* source [[buffer(0)]],
+    device uchar* pool [[buffer(1)]],
+    constant CheckpointCacheParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint layer_groups = params.layer_elements / params.group_size;
+  if (gid >= layer_groups) return;
+  const uint source_base = gid * params.group_size;
+  float maximum = 0.0f;
+  for (uint index = 0; index < params.group_size; ++index)
+    maximum = max(maximum, abs(float(source[source_base + index])));
+  const half stored_scale = half(
+      maximum == 0.0f ? 1.0f : maximum / 127.0f);
+  const float scale = float(stored_scale);
+  const uint checkpoint_base = params.checkpoint * params.checkpoint_stride;
+  device char* values =
+      reinterpret_cast<device char*>(pool + checkpoint_base);
+  device half* scales = reinterpret_cast<device half*>(
+      pool + checkpoint_base + params.checkpoint_elements);
+  const uint value_base =
+      params.layer * params.layer_elements + gid * params.group_size;
+  for (uint index = 0; index < params.group_size; ++index) {
+    const int quantized = clamp(
+        int(rint(float(source[source_base + index]) / scale)), -127, 127);
+    values[value_base + index] = char(quantized);
+  }
+  scales[params.layer * layer_groups + gid] = stored_scale;
+}
+
+kernel void llmopt_cache_unpack_checkpoint_q8(
+    device const uchar* pool [[buffer(0)]],
+    device half* destination [[buffer(1)]],
+    constant CheckpointCacheParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.layer_elements) return;
+  const uint checkpoint_base = params.checkpoint * params.checkpoint_stride;
+  device const char* values =
+      reinterpret_cast<device const char*>(pool + checkpoint_base);
+  device const half* scales = reinterpret_cast<device const half*>(
+      pool + checkpoint_base + params.checkpoint_elements);
+  const uint layer_groups = params.layer_elements / params.group_size;
+  const uint value_index = params.layer * params.layer_elements + gid;
+  const uint scale_index =
+      params.layer * layer_groups + gid / params.group_size;
+  destination[gid] = half(
+      float(values[value_index]) * float(scales[scale_index]));
+}
+|}
+
+let cache_entry name input_dtype output_dtype =
+  kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name
+    ~operation:Kernel_abi.Operation.Cache ~input_dtype ~output_dtype
+
+let cache_f16_entries =
+  [ cache_entry "llmopt_cache_pack_attention_f16" Ir.Dtype.Float16
+      Ir.Dtype.Float16;
+    cache_entry "llmopt_cache_unpack_attention_f16" Ir.Dtype.Float16
+      Ir.Dtype.Float16;
+    cache_entry "llmopt_cache_pack_checkpoint_f16" Ir.Dtype.Float16
+      Ir.Dtype.Float16;
+    cache_entry "llmopt_cache_unpack_checkpoint_f16" Ir.Dtype.Float16
+      Ir.Dtype.Float16 ]
+
+let cache_q8_entries =
+  [ cache_entry "llmopt_cache_pack_attention_q8" Ir.Dtype.Float16
+      Ir.Dtype.Int8;
+    cache_entry "llmopt_cache_unpack_attention_q8" Ir.Dtype.Int8
+      Ir.Dtype.Float16;
+    cache_entry "llmopt_cache_pack_checkpoint_q8" Ir.Dtype.Float16
+      Ir.Dtype.Int8;
+    cache_entry "llmopt_cache_unpack_checkpoint_q8" Ir.Dtype.Int8
+      Ir.Dtype.Float16 ]
+
+let add_cache_kernels ~formats program =
+  let has_f16 = List.mem Kv_cache.Format.f16 formats in
+  let has_q8 =
+    List.exists
+      (function Kv_cache.Format.Q8 _ -> true | Kv_cache.Format.F16 -> false)
+      formats
+  in
+  let entries =
+    (if has_f16 then cache_f16_entries else [])
+    @ if has_q8 then cache_q8_entries else []
+  in
+  if entries = [] then program
+  else
+    Program.make ~source:(Program.source program ^ cache_source)
+      ~kernels:(Program.kernels program @ entries)
+
 let linear_f16_source =
   "\nconstant uint LINEAR_SIMD_WIDTH = 32;\n"
   ^ "constant uint LINEAR_ROWS_PER_BLOCK = 8;\n\n"

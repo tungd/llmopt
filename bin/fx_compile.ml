@@ -73,6 +73,16 @@ let () =
               prerr_endline ("Metal emission failed: " ^ message);
               exit 5
           | Ok metal_program ->
+              let metal_program =
+                match tensor_store with
+                | None -> metal_program
+                | Some _ ->
+                    Metal.add_cache_kernels
+                      ~formats:
+                        (Serving_package.Cache.supported_kv
+                           Serving_package.Cache.default)
+                      metal_program
+              in
               (match Llvm_ir.emit planned with
               | Error message ->
                   prerr_endline ("LLVM emission failed: " ^ message);

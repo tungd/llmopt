@@ -511,6 +511,291 @@ module Parameters = struct
       Ok bytes
 end
 
+module Cache = struct
+  module Attention = struct
+    type t = Key | Value
+  end
+
+  type kernels = {
+    pack_attention : Kernel_abi.Entry.t;
+    unpack_attention : Kernel_abi.Entry.t;
+    pack_checkpoint : Kernel_abi.Entry.t;
+    unpack_checkpoint : Kernel_abi.Entry.t;
+  }
+
+  type t = {
+    runtime : runtime;
+    config : Kv_cache.Config.t;
+    layout : Kv_cache.Layout.t;
+    token_pool : Buffer.t;
+    checkpoint_pool : Buffer.t;
+    kernels : kernels;
+  }
+
+  let format cache = Kv_cache.Layout.format cache.layout
+  let token_pool_bytes cache = Kv_cache.Config.token_pool_bytes cache.config
+
+  let checkpoint_pool_bytes cache =
+    Kv_cache.Config.checkpoint_pool_bytes cache.config
+
+  let kernel_names format =
+    let suffix =
+      match format with
+      | Kv_cache.Format.F16 -> "f16"
+      | Kv_cache.Format.Q8 _ -> "q8"
+    in
+    ( "llmopt_cache_pack_attention_" ^ suffix,
+      "llmopt_cache_unpack_attention_" ^ suffix,
+      "llmopt_cache_pack_checkpoint_" ^ suffix,
+      "llmopt_cache_unpack_checkpoint_" ^ suffix )
+
+  let kernel_dtypes format =
+    match format with
+    | Kv_cache.Format.F16 ->
+        ( (Ir.Dtype.Float16, Ir.Dtype.Float16),
+          (Ir.Dtype.Float16, Ir.Dtype.Float16) )
+    | Kv_cache.Format.Q8 _ ->
+        ( (Ir.Dtype.Float16, Ir.Dtype.Int8),
+          (Ir.Dtype.Int8, Ir.Dtype.Float16) )
+
+  let cache_entry runtime name (input_dtype, output_dtype) =
+    kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Cache
+      ~input_dtype ~output_dtype
+
+  let create ~runtime ~config =
+    if Serving_package.stage runtime.package <> Serving_package.Stage.Serving then
+      Error "physical Metal cache requires a serving-stage package"
+    else
+      let layout = Kv_cache.Config.layout config in
+      let format = Kv_cache.Layout.format layout in
+      let supported =
+        runtime.package |> Serving_package.cache
+        |> Serving_package.Cache.supported_kv
+      in
+      if not (List.mem format supported) then
+        Error
+          ("serving package does not support physical cache format: "
+          ^ Kv_cache.Format.to_string format)
+      else
+        let pack_attention, unpack_attention, pack_checkpoint,
+            unpack_checkpoint =
+          kernel_names format
+        in
+        let pack_dtype, unpack_dtype = kernel_dtypes format in
+        let* pack_attention = cache_entry runtime pack_attention pack_dtype in
+        let* unpack_attention =
+          cache_entry runtime unpack_attention unpack_dtype
+        in
+        let* pack_checkpoint = cache_entry runtime pack_checkpoint pack_dtype in
+        let* unpack_checkpoint =
+          cache_entry runtime unpack_checkpoint unpack_dtype
+        in
+        let* token_pool =
+          Buffer.create ~runtime ~bytes:(Kv_cache.Config.token_pool_bytes config)
+        in
+        let* checkpoint_pool =
+          Buffer.create ~runtime
+            ~bytes:(Kv_cache.Config.checkpoint_pool_bytes config)
+        in
+        Ok
+          {
+            runtime;
+            config;
+            layout;
+            token_pool;
+            checkpoint_pool;
+            kernels =
+              {
+                pack_attention;
+                unpack_attention;
+                pack_checkpoint;
+                unpack_checkpoint;
+              };
+          }
+
+  let checked_product left right label =
+    if left < 0 || right < 0 || (right <> 0 && left > max_int / right) then
+      Error ("physical cache " ^ label ^ " overflows")
+    else Ok (left * right)
+
+  let exact_buffer_length buffer expected label =
+    let actual = Buffer.byte_length buffer in
+    if actual = expected then Ok ()
+    else
+      Error
+        (Printf.sprintf "physical cache %s requires %d bytes but received %d"
+           label expected actual)
+
+  let validate_layer layer count label =
+    if layer < 0 || layer >= count then
+      Error
+        (Printf.sprintf "physical cache %s layer %d is outside [0,%d)" label
+           layer count)
+    else Ok ()
+
+  let group_size format =
+    Kv_cache.Format.group_size format |> Option.value ~default:1
+
+  let slots_buffer cache slots =
+    let count = Array.length slots in
+    if count = 0 then Error "physical attention cache requires at least one slot"
+    else
+      let capacity = Kv_cache.Config.token_capacity cache.config in
+      let seen = Hashtbl.create count in
+      let rec validate index values =
+        if index = count then Parameters.u32s (List.rev values)
+        else
+          let slot = Kv_cache.Slot.to_int slots.(index) in
+          if slot < 0 || slot >= capacity then
+            Error
+              (Printf.sprintf "physical cache token slot %d is outside [0,%d)"
+                 slot capacity)
+          else if Hashtbl.mem seen slot then
+            Error (Printf.sprintf "physical cache token slot %d is duplicated" slot)
+          else (
+            Hashtbl.add seen slot ();
+            validate (index + 1) (slot :: values))
+      in
+      let* bytes = validate 0 [] in
+      Buffer.of_bytes ~runtime:cache.runtime bytes
+
+  let attention_parameters cache ~layer ~kind ~items =
+    let layout = cache.layout in
+    let heads = Kv_cache.Layout.kv_heads layout in
+    let head_dim = Kv_cache.Layout.head_dim layout in
+    let group_size = group_size (format cache) in
+    let token_elements =
+      2 * Kv_cache.Layout.attention_layers layout * heads * head_dim
+    in
+    let token_groups =
+      Kv_cache.Format.groups_for_elements (format cache)
+        ~elements:token_elements
+    in
+    let segment =
+      (2 * layer)
+      + match kind with Attention.Key -> 0 | Attention.Value -> 1
+    in
+    Parameters.u32s
+      [ items; segment; heads; head_dim; group_size; token_elements;
+        token_groups; Kv_cache.Layout.bytes_per_token layout ]
+
+  let attention_counts cache items =
+    let layout = cache.layout in
+    let* segment_elements =
+      checked_product (Kv_cache.Layout.kv_heads layout)
+        (Kv_cache.Layout.head_dim layout) "attention segment size"
+    in
+    let* elements =
+      checked_product items segment_elements "attention transfer size"
+    in
+    let groups =
+      match format cache with
+      | Kv_cache.Format.F16 -> elements
+      | Kv_cache.Format.Q8 { group_size } ->
+          elements / group_size
+    in
+    Ok (elements, groups)
+
+  let attention cache ~pack ~layer ~kind ~slots buffer =
+    let* () =
+      validate_layer layer (Kv_cache.Layout.attention_layers cache.layout)
+        "attention"
+    in
+    let items = Array.length slots in
+    let* elements, groups = attention_counts cache items in
+    let* expected_bytes = checked_product elements 2 "attention byte length" in
+    let* () =
+      exact_buffer_length buffer expected_bytes
+        (if pack then "attention source" else "attention destination")
+    in
+    let* slots_buffer = slots_buffer cache slots in
+    let* parameters = attention_parameters cache ~layer ~kind ~items in
+    let entry =
+      if pack then cache.kernels.pack_attention
+      else cache.kernels.unpack_attention
+    in
+    let buffers =
+      if pack then [ buffer; slots_buffer; cache.token_pool ]
+      else [ cache.token_pool; slots_buffer; buffer ]
+    in
+    let grid =
+      if pack then groups
+      else elements
+    in
+    dispatch cache.runtime entry ~buffers ~parameters ~grid:(grid, 1, 1)
+
+  let pack_attention cache ~layer ~kind ~slots ~source =
+    attention cache ~pack:true ~layer ~kind ~slots source
+
+  let unpack_attention cache ~layer ~kind ~slots ~destination =
+    attention cache ~pack:false ~layer ~kind ~slots destination
+
+  let checkpoint_parameters cache ~layer ~checkpoint =
+    let layout = cache.layout in
+    let layer_elements =
+      Kv_cache.Layout.recurrent_width layout
+      * Kv_cache.Layout.recurrent_window layout
+    in
+    let checkpoint_elements =
+      Kv_cache.Layout.recurrent_layers layout * layer_elements
+    in
+    let checkpoint_groups =
+      Kv_cache.Format.groups_for_elements (format cache)
+        ~elements:checkpoint_elements
+    in
+    Parameters.u32s
+      [ Kv_cache.Checkpoint.to_int checkpoint; layer; layer_elements;
+        group_size (format cache); checkpoint_elements; checkpoint_groups;
+        Kv_cache.Layout.bytes_per_checkpoint layout ]
+
+  let transfer_checkpoint cache ~pack ~layer ~checkpoint buffer =
+    let* () =
+      validate_layer layer (Kv_cache.Layout.recurrent_layers cache.layout)
+        "checkpoint"
+    in
+    let checkpoint_id = Kv_cache.Checkpoint.to_int checkpoint in
+    let capacity = Kv_cache.Config.checkpoint_capacity cache.config in
+    if checkpoint_id < 0 || checkpoint_id >= capacity then
+      Error
+        (Printf.sprintf "physical cache checkpoint %d is outside [0,%d)"
+           checkpoint_id capacity)
+    else
+      let* layer_elements =
+        checked_product (Kv_cache.Layout.recurrent_width cache.layout)
+          (Kv_cache.Layout.recurrent_window cache.layout)
+          "checkpoint layer size"
+      in
+      let* expected_bytes =
+        checked_product layer_elements 2 "checkpoint byte length"
+      in
+      let* () =
+        exact_buffer_length buffer expected_bytes
+          (if pack then "checkpoint source" else "checkpoint destination")
+      in
+      let* parameters = checkpoint_parameters cache ~layer ~checkpoint in
+      let entry =
+        if pack then cache.kernels.pack_checkpoint
+        else cache.kernels.unpack_checkpoint
+      in
+      let buffers =
+        if pack then [ buffer; cache.checkpoint_pool ]
+        else [ cache.checkpoint_pool; buffer ]
+      in
+      let grid =
+        match pack, format cache with
+        | true, Kv_cache.Format.Q8 { group_size } ->
+            layer_elements / group_size
+        | _ -> layer_elements
+      in
+      dispatch cache.runtime entry ~buffers ~parameters ~grid:(grid, 1, 1)
+
+  let pack_checkpoint cache ~layer ~checkpoint ~source =
+    transfer_checkpoint cache ~pack:true ~layer ~checkpoint source
+
+  let unpack_checkpoint cache ~layer ~checkpoint ~destination =
+    transfer_checkpoint cache ~pack:false ~layer ~checkpoint destination
+end
+
 module Value_map = Map.Make (struct
   type t = Ir.Value_id.t
   let compare = Ir.Value_id.compare

@@ -12,21 +12,58 @@ module Format = struct
     | F16 -> "f16"
     | Q8 { group_size } -> Printf.sprintf "q8-group-%d" group_size
 
+  let group_size = function
+    | F16 -> None
+    | Q8 { group_size } -> Some group_size
+
+  let groups_for_elements format ~elements =
+    if elements < 0 then invalid_arg "KV element count cannot be negative";
+    match format with
+    | F16 -> 0
+    | Q8 { group_size } ->
+        (elements / group_size)
+        + if elements mod group_size = 0 then 0 else 1
+
   let bytes_for_elements format ~elements =
     if elements < 0 then invalid_arg "KV element count cannot be negative";
     match format with
-    | F16 -> 2 * elements
-    | Q8 { group_size } ->
-        let groups = (elements + group_size - 1) / group_size in
-        elements + (2 * groups)
+    | F16 ->
+        if elements > max_int / 2 then
+          invalid_arg "FP16 KV byte length overflows"
+        else 2 * elements
+    | Q8 _ ->
+        let groups = groups_for_elements format ~elements in
+        if groups > (max_int - elements) / 2 then
+          invalid_arg "Q8 KV byte length overflows"
+        else elements + (2 * groups)
 end
 
 module Layout = struct
   type t = {
     format : Format.t;
+    attention_layers : int;
+    kv_heads : int;
+    head_dim : int;
+    recurrent_layers : int;
+    recurrent_width : int;
+    recurrent_window : int;
     bytes_per_token : int;
     bytes_per_checkpoint : int;
   }
+
+  let checked_product label factors =
+    let rec multiply product = function
+      | [] -> Ok product
+      | factor :: rest ->
+          if factor <> 0 && product > max_int / factor then
+            Error (label ^ " overflows")
+          else multiply (product * factor) rest
+    in
+    multiply 1 factors
+
+  let checked_bytes format ~elements label =
+    try Ok (Format.bytes_for_elements format ~elements)
+    with Invalid_argument _ -> Error (label ^ " byte length overflows")
 
   let create ~format ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
       ~recurrent_width ~recurrent_window =
@@ -45,22 +82,62 @@ module Layout = struct
         Error
           "recurrent checkpoint layout requires positive width and window"
     | None ->
-        let token_elements =
-          2 * attention_layers * kv_heads * head_dim
+        let open Result.Syntax in
+        let* token_elements =
+          checked_product "attention KV element count"
+            [ 2; attention_layers; kv_heads; head_dim ]
         in
-        let checkpoint_elements =
-          recurrent_layers * recurrent_width * recurrent_window
+        let* recurrent_layer_elements =
+          checked_product "recurrent layer checkpoint element count"
+            [ recurrent_width; recurrent_window ]
         in
-        Ok
-          {
-            format;
-            bytes_per_token =
-              Format.bytes_for_elements format ~elements:token_elements;
-            bytes_per_checkpoint =
-              Format.bytes_for_elements format ~elements:checkpoint_elements;
-          }
+        let* checkpoint_elements =
+          checked_product "recurrent checkpoint element count"
+            [ recurrent_layers; recurrent_layer_elements ]
+        in
+        let incompatible_segment =
+          match Format.group_size format with
+          | None -> None
+          | Some group_size
+            when attention_layers > 0 && head_dim mod group_size <> 0 ->
+              Some "Q8 KV group_size must divide attention head_dim"
+          | Some group_size
+            when recurrent_layers > 0
+                 && recurrent_layer_elements mod group_size <> 0 ->
+              Some
+                "Q8 KV group_size must divide each recurrent layer checkpoint"
+          | Some _ -> None
+        in
+        (match incompatible_segment with
+        | Some message -> Error message
+        | None ->
+            let* bytes_per_token =
+              checked_bytes format ~elements:token_elements "KV token"
+            in
+            let* bytes_per_checkpoint =
+              checked_bytes format ~elements:checkpoint_elements
+                "KV checkpoint"
+            in
+            Ok
+              {
+                format;
+                attention_layers;
+                kv_heads;
+                head_dim;
+                recurrent_layers;
+                recurrent_width;
+                recurrent_window;
+                bytes_per_token;
+                bytes_per_checkpoint;
+              })
 
   let format layout = layout.format
+  let attention_layers layout = layout.attention_layers
+  let kv_heads layout = layout.kv_heads
+  let head_dim layout = layout.head_dim
+  let recurrent_layers layout = layout.recurrent_layers
+  let recurrent_width layout = layout.recurrent_width
+  let recurrent_window layout = layout.recurrent_window
   let bytes_per_token layout = layout.bytes_per_token
   let bytes_per_checkpoint layout = layout.bytes_per_checkpoint
 end
@@ -80,17 +157,38 @@ module Config = struct
     layout : Layout.t;
     token_capacity : int;
     checkpoint_capacity : int;
+    token_pool_bytes : int;
+    checkpoint_pool_bytes : int;
   }
 
   let create ~layout ~token_capacity ~checkpoint_capacity =
+    let token_bytes = Layout.bytes_per_token layout in
+    let checkpoint_bytes = Layout.bytes_per_checkpoint layout in
     if token_capacity <= 0 then Error "KV token_capacity must be positive"
     else if checkpoint_capacity <= 0 then
       Error "KV checkpoint_capacity must be positive"
-    else Ok { layout; token_capacity; checkpoint_capacity }
+    else if token_bytes > 0 && token_capacity > max_int / token_bytes then
+      Error "KV token pool byte length overflows"
+    else if
+      checkpoint_bytes > 0
+      && checkpoint_capacity > max_int / checkpoint_bytes
+    then Error "KV checkpoint pool byte length overflows"
+    else
+      Ok
+        {
+          layout;
+          token_capacity;
+          checkpoint_capacity;
+          token_pool_bytes = token_capacity * token_bytes;
+          checkpoint_pool_bytes =
+            checkpoint_capacity * checkpoint_bytes;
+        }
 
   let layout config = config.layout
   let token_capacity config = config.token_capacity
   let checkpoint_capacity config = config.checkpoint_capacity
+  let token_pool_bytes config = config.token_pool_bytes
+  let checkpoint_pool_bytes config = config.checkpoint_pool_bytes
 end
 
 module Stats = struct

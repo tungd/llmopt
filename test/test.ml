@@ -988,6 +988,24 @@ let () =
            && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16
            && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
     "float16 linear declares its exact kernel ABI";
+  let cache_program =
+    Metal.add_cache_kernels
+      ~formats:[ Kv_cache.Format.default; Kv_cache.Format.f16 ]
+      f16_linear_program
+  in
+  let cache_entries =
+    Metal.Program.kernels cache_program
+    |> List.filter (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Cache)
+  in
+  expect (List.length cache_entries = 8)
+    "serving Metal program declares FP16 and Q8 cache kernels";
+  expect
+    (contains_substring (Metal.Program.source cache_program)
+       "llmopt_cache_pack_attention_q8"
+    && contains_substring (Metal.Program.source cache_program)
+         "llmopt_cache_unpack_checkpoint_f16")
+    "serving Metal program emits attention and recurrent cache source";
   let workspace_graph = Ir.Graph.create () in
   let workspace_shape = Tensor_shape.of_ints_exn [ 128 ] in
   let workspace_input name =
@@ -1263,8 +1281,11 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 6)
-    "serving package uses binary ABI version 6";
+    (Bytes.get_uint16_le serving_bytes 8 = 7)
+    "serving package uses binary ABI version 7";
+  let package_v6 = Bytes.copy serving_bytes in
+  Bytes.set_uint16_le package_v6 8 6;
+  ignore (Serving_package.of_bytes package_v6 |> expect_ok);
   let package_v5 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v5 8 5;
   ignore (Serving_package.of_bytes package_v5 |> expect_ok);
@@ -2033,6 +2054,8 @@ let () =
   in
   let f16_layout = Kv_cache.Config.layout (Serving_cache.Config.kv f16_serving) in
   let q8_layout = Kv_cache.Config.layout (Serving_cache.Config.kv q8_serving) in
+  let f16_kv_config = Serving_cache.Config.kv f16_serving in
+  let q8_kv_config = Serving_cache.Config.kv q8_serving in
   expect (Kv_cache.Layout.bytes_per_token f16_layout = 12_288)
     "F16 KV bytes per token";
   expect (Kv_cache.Layout.bytes_per_checkpoint f16_layout = 61_440)
@@ -2043,6 +2066,37 @@ let () =
     "Q8 ShortConv checkpoint bytes";
   expect (Kv_cache.Layout.format q8_layout = q8_kv)
     "Q8 group-64 is the default serving KV format";
+  expect
+    (Kv_cache.Layout.attention_layers q8_layout = 6
+    && Kv_cache.Layout.kv_heads q8_layout = 8
+    && Kv_cache.Layout.head_dim q8_layout = 64
+    && Kv_cache.Layout.recurrent_layers q8_layout = 10
+    && Kv_cache.Layout.recurrent_width q8_layout = 1_024
+    && Kv_cache.Layout.recurrent_window q8_layout = 3)
+    "physical KV layout preserves model geometry";
+  expect
+    (Kv_cache.Config.token_pool_bytes f16_kv_config = 393_216
+    && Kv_cache.Config.checkpoint_pool_bytes f16_kv_config = 491_520)
+    "F16 physical pool byte lengths";
+  expect
+    (Kv_cache.Config.token_pool_bytes q8_kv_config = 202_752
+    && Kv_cache.Config.checkpoint_pool_bytes q8_kv_config = 253_440)
+    "Q8 physical pool byte lengths";
+  let incompatible_q8 = expect_ok (Kv_cache.Format.q8 ~group_size:96) in
+  (match
+     Kv_cache.Layout.create ~format:incompatible_q8 ~attention_layers:6
+       ~kv_heads:8 ~head_dim:64 ~recurrent_layers:10
+       ~recurrent_width:1_024 ~recurrent_window:3
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "physical Q8 layout accepted a split attention head group");
+  (match
+     Kv_cache.Layout.create ~format:Kv_cache.Format.f16
+       ~attention_layers:max_int ~kv_heads:2 ~head_dim:2 ~recurrent_layers:0
+       ~recurrent_width:0 ~recurrent_window:0
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "physical KV layout accepted overflowing attention geometry");
   let serving = Serving_cache.create q8_serving in
   let slots_123 = expect_kv_ok (Serving_cache.reserve_tokens serving 3) in
   let checkpoint_123 = expect_kv_ok (Serving_cache.reserve_checkpoint serving) in

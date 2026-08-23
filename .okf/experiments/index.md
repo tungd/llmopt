@@ -34,3 +34,4 @@
 * [Native recurrent compute dispatch](exp-0032-native-recurrent-dispatch.md) - ABI-v6 sum and slice-update kernels with one exact 38-output probe.
 * [Native float16 vocabulary projection](exp-0033-native-f16-linear.md) - SIMD-reduced final projection with one exact 39-output probe and complete fixed-graph metallibs.
 * [Liveness-planned Metal workspace](exp-0034-liveness-workspace.md) - alias-aware interval allocation reduces the offline prefill/decode workspace while preserving one exact 39-output device probe.
+* [Physical Q8 and FP16 Metal KV cache](exp-0035-physical-kv-cache.md) - package-declared native pools and cache kernels round-trip attention and recurrent state exactly.

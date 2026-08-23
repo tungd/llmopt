@@ -17,6 +17,126 @@ let f16_values bytes =
   Array.init (Bytes.length bytes / 2) (fun index ->
       Bytes.get_uint16_le bytes (2 * index))
 
+let expect_kv = function
+  | Ok value -> value
+  | Error error -> fail (Kv_cache.error_to_string error)
+
+let expect_buffer label expected buffer =
+  let actual = expect_ok (Metal_runtime.Buffer.contents buffer) in
+  if not (Bytes.equal actual expected) then
+    let rec first_mismatch index =
+      if index = Bytes.length expected || index = Bytes.length actual then index
+      else if Bytes.get expected index <> Bytes.get actual index then index
+      else first_mismatch (index + 1)
+    in
+    let index = first_mismatch 0 in
+    let byte bytes =
+      if index < Bytes.length bytes then
+        Printf.sprintf "0x%02x" (Char.code (Bytes.get bytes index))
+      else "end-of-buffer"
+    in
+    fail
+      (Printf.sprintf
+         "%s physical-cache round trip mismatch at byte %d: expected=%s actual=%s"
+         label index (byte expected) (byte actual))
+
+let cache_values count =
+  Array.init count (fun index ->
+      match index mod 4 with
+      | 0 -> 0x57f0
+      | 1 -> 0xd7f0
+      | 2 -> 0x3c00
+      | _ -> 0xbc00)
+
+let opposite_cache_values values =
+  Array.map
+    (function
+      | 0x57f0 -> 0xd7f0
+      | 0xd7f0 -> 0x57f0
+      | 0x3c00 -> 0xbc00
+      | _ -> 0x3c00)
+    values
+
+let physical_cache_config format =
+  let layout =
+    Kv_cache.Layout.create ~format ~attention_layers:1 ~kv_heads:1
+      ~head_dim:64 ~recurrent_layers:1 ~recurrent_width:64
+      ~recurrent_window:1
+    |> expect_ok
+  in
+  Kv_cache.Config.create ~layout ~token_capacity:4 ~checkpoint_capacity:2
+  |> expect_ok
+
+let exercise_cache runtime format =
+  let config = physical_cache_config format in
+  let ownership = Kv_cache.create config in
+  let slots = Kv_cache.reserve_tokens ownership 2 |> expect_kv in
+  let checkpoint = Kv_cache.reserve_checkpoint ownership |> expect_kv in
+  let cache = Metal_runtime.Cache.create ~runtime ~config |> expect_ok in
+  let key_values = cache_values 128 in
+  let value_values = opposite_cache_values key_values in
+  let checkpoint_values = cache_values 64 in
+  let key_bytes = f16_bytes key_values in
+  let value_bytes = f16_bytes value_values in
+  let checkpoint_bytes = f16_bytes checkpoint_values in
+  let buffer contents =
+    Metal_runtime.Buffer.of_bytes ~runtime contents |> expect_ok
+  in
+  let destination bytes =
+    Metal_runtime.Buffer.create ~runtime ~bytes |> expect_ok
+  in
+  let key_source = buffer key_bytes in
+  let value_source = buffer value_bytes in
+  let checkpoint_source = buffer checkpoint_bytes in
+  let key_destination = destination (Bytes.length key_bytes) in
+  let value_destination = destination (Bytes.length value_bytes) in
+  let checkpoint_destination = destination (Bytes.length checkpoint_bytes) in
+  let pack_key =
+    Metal_runtime.Cache.pack_attention cache ~layer:0
+      ~kind:Metal_runtime.Cache.Attention.Key ~slots ~source:key_source
+    |> expect_ok
+  in
+  let pack_value =
+    Metal_runtime.Cache.pack_attention cache ~layer:0
+      ~kind:Metal_runtime.Cache.Attention.Value ~slots ~source:value_source
+    |> expect_ok
+  in
+  let unpack_key =
+    Metal_runtime.Cache.unpack_attention cache ~layer:0
+      ~kind:Metal_runtime.Cache.Attention.Key ~slots
+      ~destination:key_destination
+    |> expect_ok
+  in
+  let unpack_value =
+    Metal_runtime.Cache.unpack_attention cache ~layer:0
+      ~kind:Metal_runtime.Cache.Attention.Value ~slots
+      ~destination:value_destination
+    |> expect_ok
+  in
+  let pack_checkpoint =
+    Metal_runtime.Cache.pack_checkpoint cache ~layer:0 ~checkpoint
+      ~source:checkpoint_source
+    |> expect_ok
+  in
+  let unpack_checkpoint =
+    Metal_runtime.Cache.unpack_checkpoint cache ~layer:0 ~checkpoint
+      ~destination:checkpoint_destination
+    |> expect_ok
+  in
+  let kernels =
+    [ pack_key; pack_value; unpack_key; unpack_value; pack_checkpoint;
+      unpack_checkpoint ]
+  in
+  expect_buffer (Kv_cache.Format.to_string format ^ " attention key") key_bytes
+    key_destination;
+  expect_buffer (Kv_cache.Format.to_string format ^ " attention value")
+    value_bytes value_destination;
+  expect_buffer (Kv_cache.Format.to_string format ^ " recurrent checkpoint")
+    checkpoint_bytes checkpoint_destination;
+  ( kernels,
+    Metal_runtime.Cache.token_pool_bytes cache,
+    Metal_runtime.Cache.checkpoint_pool_bytes cache )
+
 let usage () =
   prerr_endline "usage: llmopt-ocaml-metal-smoke <package-directory>";
   exit 64
@@ -46,7 +166,6 @@ let () =
   in
   let actual = expect_ok (Metal_runtime.Buffer.contents output) |> f16_values in
   let expected_bits = [| 0x4300; 0x4800; 0x3c00; 0x3e00; 0x4400; 0x4000 |] in
-  let expected = [| 3.5; 8.; 1.; 1.5; 4.; 2. |] in
   if Array.length actual <> Array.length expected_bits then
     fail "OCaml Metal output length mismatch";
   Array.iteri
@@ -65,15 +184,17 @@ let () =
           (Printf.sprintf "OCaml Metal schedule dispatched %d kernels"
              (List.length kernels))
   in
-  Yojson.Basic.pretty_to_channel stdout
-    (`Assoc
-      [ ("device", `String (Metal_runtime.device_name runtime));
-        ("stage", `String (Serving_package.Stage.to_string (Serving_package.stage package)));
-        ("kernel", `String kernel);
-        ("shape", `List [ `Int 2; `Int 3; `Int 4 ]);
-        ( "output",
-          `List
-            (Array.to_list (Array.map (fun value -> `Float value) expected)) );
-        ("tensor_store", `String "weights.llmopt");
-        ("dispatch", `String "ocaml-metal-schedule") ]);
-  output_char stdout '\n'
+  let q8_kernels, q8_token_bytes, q8_checkpoint_bytes =
+    exercise_cache runtime Kv_cache.Format.default
+  in
+  let f16_kernels, f16_token_bytes, f16_checkpoint_bytes =
+    exercise_cache runtime Kv_cache.Format.f16
+  in
+  if List.length q8_kernels + List.length f16_kernels <> 12 then
+    fail "physical cache did not dispatch twelve pack/unpack kernels";
+  Printf.printf
+    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\ncache-formats: q8-group-64,f16\ncache-dispatches: 12\nq8-pools: %d token bytes, %d checkpoint bytes\nf16-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
+    (Metal_runtime.device_name runtime)
+    (Serving_package.Stage.to_string (Serving_package.stage package))
+    kernel q8_token_bytes q8_checkpoint_bytes f16_token_bytes
+    f16_checkpoint_bytes

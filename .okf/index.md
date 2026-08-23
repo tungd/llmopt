@@ -54,3 +54,4 @@ okf_version: '0.2'
 * [Native recurrent compute dispatch](experiments/exp-0032-native-recurrent-dispatch.md) - package ABI v6 executes decode sum and functional cache update.
 * [Native float16 vocabulary projection](experiments/exp-0033-native-f16-linear.md) - both fixed model schedules now declare every observed kernel family.
 * [Liveness-planned Metal workspace](experiments/exp-0034-liveness-workspace.md) - one retained workspace replaces per-intermediate Metal buffers using typed schedule liveness.
+* [Physical Q8 and FP16 Metal KV cache](experiments/exp-0035-physical-kv-cache.md) - native Q8/FP16 token and checkpoint pools with exact Metal pack/unpack evidence.

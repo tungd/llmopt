@@ -19,6 +19,7 @@ module Operation = struct
     | Movement
     | Reduction
     | Update_slice
+    | Cache
 
   let to_string = function
     | Matmul -> "matmul"
@@ -40,6 +41,7 @@ module Operation = struct
     | Movement -> "movement"
     | Reduction -> "reduction"
     | Update_slice -> "update-slice"
+    | Cache -> "cache"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -61,6 +63,7 @@ module Operation = struct
     | "movement" -> Ok Movement
     | "reduction" -> Ok Reduction
     | "update-slice" -> Ok Update_slice
+    | "cache" -> Ok Cache
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 

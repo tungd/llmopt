@@ -135,9 +135,12 @@ adapts the corresponding behavior from SGLang's radix and hybrid/Mamba cache
 implementations.[^sglang-radix-cache] [^sglang-mamba-radix-cache]
 
 The KV layout accepts FP16 or grouped Q8 and defaults to Q8 at the serving
-configuration boundary. Current Q8 support defines typed policy, capacity, and
-byte accounting (int8 values plus FP16 group scales); physical Metal buffers
-and quantize/dequantize kernels are not connected to the cache in this slice.
+configuration boundary. Native OCaml now owns physical token and recurrent
+checkpoint `MTLBuffer` pools. Package ABI v7 declares eight cache entries that
+pack and unpack attention or checkpoint state as direct FP16 or signed int8
+values with FP16 group scales. One fixed Apple M4 Pro probe exactly
+round-tripped both formats. The physical owner and radix-prefix owner remain
+separate until the request engine coordinates their leases and model inputs.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed
@@ -147,8 +150,8 @@ graph, pretty-printed `plan.txt`, MSL, and LLVM IR are compiler artifacts and
 are not referenced by the serving runtime; JSON diagnostics are opt-in. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v6 names weight-archive ABI v1
-and reads ABI-v2, ABI-v3, ABI-v4, and ABI-v5 packages.
+exactly one binary tensor archive. Package ABI v7 names weight-archive ABI v1,
+adds typed cache operations, and reads ABI-v2 through ABI-v6 packages.
 Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
 archive rather than being split into per-tensor files.
 
@@ -287,12 +290,13 @@ evidence but no retained eager/compiled parity measurement.
 The same preserved manifests now round-trip exactly through binary FX
 transport ABI v1. Prefill occupies 253,354 bytes instead of 776,844 bytes of
 diagnostic JSON; decode occupies 259,928 instead of 796,970. Offline binary
-replanning now writes JSON-free ABI-v6 artifact directories with 872/926
-commands, 38/36 kernels, zero opaque operations, and all 241 archive bindings
+replanning now writes JSON-free ABI-v7 artifact directories with 872/926
+commands, 46/44 kernels, zero opaque operations, and all 241 archive bindings
 validated. Both packages add the shared float16-linear entry for their
 `6x65536x1024` and `1x65536x1024` projections; decode also adds one sum and one
-slice-update entry shared across its ten recurrent blocks. This conversion and
-replan loaded no model and launched no Metal device work.
+slice-update entry shared across its ten recurrent blocks, and each package
+declares eight FP16/Q8 cache conversion entries. This conversion and replan
+loaded no model and launched no Metal device work.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

@@ -19,6 +19,7 @@ module Operation : sig
     | Movement
     | Reduction
     | Update_slice
+    | Cache
 
   val to_string : t -> string
   val of_string : string -> (t, string) result
