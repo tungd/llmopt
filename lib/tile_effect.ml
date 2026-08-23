@@ -1,4 +1,9 @@
-type input = { name : string; shape : Shape.t; dtype : Ir.Dtype.t }
+type input = {
+  name : string;
+  source : Ir.Input_source.t;
+  shape : Shape.t;
+  dtype : Ir.Dtype.t;
+}
 
 type allocation = {
   shape : Shape.t;
@@ -63,7 +68,8 @@ type _ Effect.t +=
   | Barrier_arrive : Barrier.t -> unit Effect.t
   | Barrier_wait : Barrier.t -> unit Effect.t
 
-let input ~name ~shape ~dtype = Effect.perform (Input { name; shape; dtype })
+let input ~name ~source ~shape ~dtype =
+  Effect.perform (Input { name; source; shape; dtype })
 let alloc allocation = Effect.perform (Alloc allocation)
 let copy ~src ~dst = Effect.perform (Copy { src; dst })
 let async_copy ~src ~dst ~barrier = Effect.perform (Async_copy { src; dst; barrier })

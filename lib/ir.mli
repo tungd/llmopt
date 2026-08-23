@@ -18,6 +18,11 @@ module Layout : sig
   val to_string : t -> string
 end
 
+module Input_source : sig
+  type t = Runtime | Tensor_store of { key : string }
+  val to_string : t -> string
+end
+
 module Value_id : sig
   type t
   val compare : t -> t -> int
@@ -37,7 +42,7 @@ type node
 
 module Op : sig
   type t =
-    | Input of { name : string }
+    | Input of { name : string; source : Input_source.t }
     | Alloc of { space : Memory_space.t; layout : Layout.t }
     | Copy of { asynchronous : bool; barrier : int option }
     | Matmul of { m : int; n : int; k : int }
@@ -67,7 +72,13 @@ module Graph : sig
 
   val create : unit -> t
   val fresh_value : t -> shape:Shape.t -> dtype:Dtype.t -> Value.t
-  val input : t -> name:string -> shape:Shape.t -> dtype:Dtype.t -> Value.t
+  val input :
+    t ->
+    name:string ->
+    source:Input_source.t ->
+    shape:Shape.t ->
+    dtype:Dtype.t ->
+    Value.t
   val allocate :
     t -> shape:Shape.t -> dtype:Dtype.t -> space:Memory_space.t -> layout:Layout.t -> Value.t
   val append : t -> op:Op.t -> inputs:Value.t list -> output:Value.t option -> unit

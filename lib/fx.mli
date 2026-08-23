@@ -1,3 +1,9 @@
+module Binding : sig
+  type t = Computed | Runtime | Tensor_store of { key : string }
+
+  val input_source : t -> Ir.Input_source.t option
+end
+
 module Node : sig
   type t
   val name : t -> string
@@ -6,6 +12,7 @@ module Node : sig
   val inputs : t -> string list
   val shape : t -> int list option
   val dtype : t -> Ir.Dtype.t
+  val binding : t -> Binding.t
 end
 
 type t

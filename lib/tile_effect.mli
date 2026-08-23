@@ -1,4 +1,9 @@
-type input = { name : string; shape : Shape.t; dtype : Ir.Dtype.t }
+type input = {
+  name : string;
+  source : Ir.Input_source.t;
+  shape : Shape.t;
+  dtype : Ir.Dtype.t;
+}
 type allocation = {
   shape : Shape.t;
   dtype : Ir.Dtype.t;
@@ -57,7 +62,12 @@ type _ Effect.t +=
   | Barrier_arrive : Barrier.t -> unit Effect.t
   | Barrier_wait : Barrier.t -> unit Effect.t
 
-val input : name:string -> shape:Shape.t -> dtype:Ir.Dtype.t -> Ir.Value.t
+val input :
+  name:string ->
+  source:Ir.Input_source.t ->
+  shape:Shape.t ->
+  dtype:Ir.Dtype.t ->
+  Ir.Value.t
 val alloc : allocation -> Ir.Value.t
 val copy : src:Ir.Value.t -> dst:Ir.Value.t -> unit
 val async_copy : src:Ir.Value.t -> dst:Ir.Value.t -> barrier:Barrier.t -> unit

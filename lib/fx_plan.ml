@@ -83,17 +83,23 @@ let plan fx_graph =
       in
       match Fx.Node.op node with
       | "placeholder" | "get_attr" ->
-          (match shape_for node with
+          (match node |> Fx.Node.binding |> Fx.Binding.input_source with
+          | None ->
+              Error ("FX input has a computed binding: " ^ Fx.Node.name node)
+          | Some source ->
+          match shape_for node with
           | Error _ ->
               let shape = Shape.of_ints_exn ~rows:1 ~cols:1 in
               let value =
-                Tile_effect.input ~name ~shape ~dtype:(Fx.Node.dtype node)
+                Tile_effect.input ~name ~source ~shape
+                  ~dtype:(Fx.Node.dtype node)
               in
               Hashtbl.replace env name value;
               Ok ()
           | Ok shape ->
               let value =
-                Tile_effect.input ~name ~shape ~dtype:(Fx.Node.dtype node)
+                Tile_effect.input ~name ~source ~shape
+                  ~dtype:(Fx.Node.dtype node)
               in
               Hashtbl.replace env name value;
               Ok ())

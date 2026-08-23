@@ -24,7 +24,8 @@ let find_input_name graph value =
   Ir.Graph.nodes graph
   |> List.find_map (fun node ->
          match Ir.node_op node, Ir.node_output node with
-         | Ir.Op.Input { name }, Some output when Ir.Value.equal output value -> Some name
+         | Ir.Op.Input { name; source = _ }, Some output
+           when Ir.Value.equal output value -> Some name
          | _ -> None)
 
 let input_name graph value =

@@ -191,7 +191,7 @@ let run ~inputs thunk =
       effc =
         (fun (type a) (eff : a Effect.t) ->
           match eff with
-          | Tile_effect.Input { name; shape; dtype } ->
+          | Tile_effect.Input { name; source = _; shape; dtype } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
                   let source =

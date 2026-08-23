@@ -217,6 +217,38 @@ let () =
     |> Option.map Serving_package.Artifact.path
     = Some "weights.safetensors")
     "serving package keeps one safetensors archive";
+  let bound_fx =
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 1);
+             ( "nodes",
+               `List
+                 [ `Assoc
+                     [ ("name", `String "weight");
+                       ("op", `String "get_attr");
+                       ("target", `String "weight");
+                       ("inputs", `List []);
+                       ("shape", `List [ `Int 3; `Int 4 ]);
+                       ("dtype", `String "int8");
+                       ( "binding",
+                         `Assoc
+                           [ ("kind", `String "tensor-store");
+                             ("key", `String "weight_q8") ] ) ] ] );
+             ("outputs", `List []) ]))
+  in
+  let bound_graph = expect_ok (Fx_plan.plan bound_fx) in
+  expect
+    (List.exists
+       (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Input
+             { name = "weight";
+               source = Ir.Input_source.Tensor_store { key = "weight_q8" } } ->
+             true
+         | _ -> false)
+       (Ir.Graph.nodes bound_graph))
+    "FX tensor binding reaches the captured execution plan";
   (match Llvm_ir.emit q8_graph with
   | Error message -> fail message
   | Ok source ->

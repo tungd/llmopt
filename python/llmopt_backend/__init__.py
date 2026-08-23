@@ -12,13 +12,21 @@ import operator
 import os
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import metal_runtime
+from .tensor_archive import ArchiveSummary, write_safetensors
 
 
 _compile_counter = itertools.count()
+
+
+@dataclass(frozen=True)
+class CapturedFx:
+    manifest: dict[str, Any]
+    tensors: dict[str, Any]
 
 
 class NaiveMpsExecutable:
@@ -162,8 +170,36 @@ def _unique(values: Iterable[str]) -> list[str]:
     return result
 
 
-def manifest_from_fx(gm: Any, example_inputs: Sequence[Any]) -> dict[str, Any]:
-    """Serialize the stable subset of an FX graph consumed by the OCaml side."""
+def _resolve_get_attr(gm: Any, target: Any) -> Any:
+    value = gm
+    for component in str(target).split("."):
+        value = getattr(value, component)
+    return value
+
+
+def _is_static_placeholder(node: Any) -> bool:
+    tensor_dict = getattr(node, "meta", {}).get("tensor_dict")
+    return isinstance(tensor_dict, Mapping) and bool(
+        tensor_dict.get("_dynamo_static_input_type")
+    )
+
+
+def _tensor_identity(tensor: Any) -> tuple[Any, ...]:
+    try:
+        return (
+            str(tensor.device),
+            int(tensor.data_ptr()),
+            int(tensor.storage_offset()),
+            tuple(int(dimension) for dimension in tensor.shape),
+            tuple(int(stride) for stride in tensor.stride()),
+            str(tensor.dtype),
+        )
+    except (AttributeError, RuntimeError, TypeError):
+        return ("object", id(tensor))
+
+
+def capture_from_fx(gm: Any, example_inputs: Sequence[Any]) -> CapturedFx:
+    """Capture the manifest and its canonical static tensor bindings together."""
 
     nodes = list(gm.graph.nodes)
     placeholders = [node for node in nodes if node.op == "placeholder"]
@@ -172,6 +208,26 @@ def manifest_from_fx(gm: Any, example_inputs: Sequence[Any]) -> dict[str, Any]:
         for index, node in enumerate(placeholders)
         if index < len(example_inputs)
     }
+    canonical_by_identity: dict[tuple[Any, ...], str] = {}
+    tensor_key_by_node: dict[str, str] = {}
+    tensors: dict[str, Any] = {}
+    for node in nodes:
+        tensor = None
+        if node.op == "get_attr":
+            tensor = _resolve_get_attr(gm, node.target)
+        elif node.op == "placeholder" and _is_static_placeholder(node):
+            tensor = fallback_by_name.get(node.name)
+        if tensor is None:
+            continue
+        if not hasattr(tensor, "shape") or not hasattr(tensor, "dtype"):
+            raise TypeError(f"static FX node {node.name} does not contain a tensor")
+        identity = _tensor_identity(tensor)
+        key = canonical_by_identity.get(identity)
+        if key is None:
+            key = str(node.name)
+            canonical_by_identity[identity] = key
+            tensors[key] = tensor
+        tensor_key_by_node[str(node.name)] = key
 
     serialized: list[dict[str, Any]] = []
     output_names: list[str] = []
@@ -184,6 +240,13 @@ def manifest_from_fx(gm: Any, example_inputs: Sequence[Any]) -> dict[str, Any]:
         )
         if node.op == "output":
             output_names = refs
+        tensor_key = tensor_key_by_node.get(str(node.name))
+        if tensor_key is not None:
+            binding = {"kind": "tensor-store", "key": tensor_key}
+        elif node.op == "placeholder":
+            binding = {"kind": "runtime"}
+        else:
+            binding = {"kind": "computed"}
         serialized.append(
             {
                 "name": str(node.name),
@@ -192,10 +255,18 @@ def manifest_from_fx(gm: Any, example_inputs: Sequence[Any]) -> dict[str, Any]:
                 "inputs": refs,
                 "shape": shape,
                 "dtype": dtype,
+                "binding": binding,
             }
         )
+    return CapturedFx(
+        manifest={"version": 1, "nodes": serialized, "outputs": output_names},
+        tensors=tensors,
+    )
 
-    return {"version": 1, "nodes": serialized, "outputs": output_names}
+
+def manifest_from_fx(gm: Any, example_inputs: Sequence[Any]) -> dict[str, Any]:
+    """Serialize the stable subset of an FX graph consumed by the OCaml side."""
+    return capture_from_fx(gm, example_inputs).manifest
 
 
 def write_fx_manifest(gm: Any, example_inputs: Sequence[Any], path: str | Path) -> Path:
@@ -238,13 +309,29 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
         temporary_directory = tempfile.TemporaryDirectory(prefix="llmopt-fx-")
         output_directory = Path(temporary_directory.name)
 
+    captured = capture_from_fx(gm, example_inputs)
     manifest = output_directory / "fx.json"
-    write_fx_manifest(gm, example_inputs, manifest)
+    manifest.write_text(
+        json.dumps(captured.manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tensor_archive: ArchiveSummary | None = None
+    tensor_store = output_directory / "weights.safetensors"
+    if captured.tensors:
+        tensor_archive = write_safetensors(
+            captured.tensors,
+            tensor_store,
+            metadata={"producer": "llmopt-dynamo-fx"},
+        )
     quantization = os.environ.get("LLMOPT_QUANTIZATION", "q8")
     metal_library: Path | None = None
     try:
+        compiler_command = [str(compiler)]
+        if tensor_archive is not None:
+            compiler_command.extend(["--tensor-store", tensor_store.name])
+        compiler_command.extend([str(manifest), str(output_directory)])
         subprocess.run(
-            [str(compiler), str(manifest), str(output_directory)],
+            compiler_command,
             check=True,
             text=True,
         )
@@ -263,6 +350,16 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
                     ),
                     "metal_library": (
                         None if metal_library is None else str(metal_library)
+                    ),
+                    "tensor_store": (
+                        None
+                        if tensor_archive is None
+                        else {
+                            "file": tensor_store.name,
+                            "tensors": tensor_archive.tensor_count,
+                            "data_bytes": tensor_archive.data_bytes,
+                            "file_bytes": tensor_archive.file_bytes,
+                        }
                     ),
                 },
                 indent=2,
@@ -296,8 +393,10 @@ except ImportError:
 
 
 __all__ = [
+    "CapturedFx",
     "DirectMpsExecutable",
     "NaiveMpsExecutable",
+    "capture_from_fx",
     "compile_fx",
     "llmopt",
     "manifest_from_fx",

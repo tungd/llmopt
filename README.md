@@ -39,6 +39,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   loads every declared metallib function, maps the tensor archive into one
   no-copy Metal buffer, creates tensor views by archive offset, and directly
   dispatches typed Q8 kernels through small Objective-C bindings.
+- Dynamo static-input capture that binds model parameters and buffers to stable
+  FX tensor keys, then streams them one tensor at a time into the single
+  archive. The first real 350M Q8 package contains all 241 captured tensors.
 - A Ninja-built PyTorch MPS C++ bridge that loads generated Q8 `.metallib`
   files, binds MPS tensors, and dispatches either the Phase 2 tiled kernel or
   the exact generated dequantization path with PyTorch-MPS linear.
@@ -59,8 +62,9 @@ also activate the generated tiled Metal library through the bridge; unsupported
 operations and inputs use the PyTorch MPS fallback. The intended serving stack
 moves generated-library loading, Metal dispatch, request scheduling, and cache
 ownership into OCaml. Its radix/KV ownership and archive-backed Metal loader
-are implemented; complete model export, schedule execution, and physical KV
-quantize/dequantize remain open. The boundary is documented in
+are implemented; complete schedule execution and physical KV
+quantize/dequantize remain open. The current no-cache model plan still has 736
+opaque nodes out of 1,115. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
 ## Build and run

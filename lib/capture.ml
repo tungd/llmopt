@@ -12,10 +12,12 @@ let run thunk =
       effc =
         (fun (type a) (eff : a Effect.t) ->
           match eff with
-          | Tile_effect.Input { name; shape; dtype } ->
+          | Tile_effect.Input { name; source; shape; dtype } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value = Ir.Graph.input state.graph ~name ~shape ~dtype in
+                  let value =
+                    Ir.Graph.input state.graph ~name ~source ~shape ~dtype
+                  in
                   Effect.Deep.continue continuation value)
           | Tile_effect.Alloc { shape; dtype; space; layout } ->
               Some

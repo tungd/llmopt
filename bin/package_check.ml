@@ -16,20 +16,40 @@ let () =
           prerr_endline message;
           exit 3
       | Ok () ->
-          let tensor_count =
+          let fx_path =
+            Serving_package.files package |> Serving_package.Files.fx
+            |> Serving_package.Artifact.path |> Filename.concat root
+          in
+          let fx =
+            match Fx.of_file fx_path with
+            | Ok fx -> fx
+            | Error message ->
+                prerr_endline message;
+                exit 4
+          in
+          let archive =
             match Serving_package.tensor_store package with
-            | None -> "none"
+            | None -> None
             | Some tensor_store ->
                 let path =
                   tensor_store |> Serving_package.Tensor_store.file
                   |> Serving_package.Artifact.path |> Filename.concat root
                 in
                 (match Safetensors.of_file path with
-                | Ok archive ->
-                    string_of_int (List.length (Safetensors.tensors archive))
+                | Ok archive -> Some archive
                 | Error message ->
                     prerr_endline message;
-                    exit 4)
+                    exit 5)
+          in
+          (match Serving_validation.validate ~package ~fx ~archive with
+          | Error message ->
+              prerr_endline message;
+              exit 6
+          | Ok () -> ());
+          let tensor_count =
+            archive |> Option.map Safetensors.tensors
+            |> Option.map List.length |> Option.map string_of_int
+            |> Option.value ~default:"none"
           in
           Printf.printf "valid %s package: %d kernels, tensor-store=%s\n"
             (Serving_package.Stage.to_string (Serving_package.stage package))

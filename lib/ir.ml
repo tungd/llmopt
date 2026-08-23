@@ -38,6 +38,14 @@ module Layout = struct
     | Xor_swizzle mask -> Printf.sprintf "xor-swizzle(0x%x)" mask
 end
 
+module Input_source = struct
+  type t = Runtime | Tensor_store of { key : string }
+
+  let to_string = function
+    | Runtime -> "runtime"
+    | Tensor_store { key } -> "tensor:" ^ key
+end
+
 module Value_id = struct
   type t = int
   let compare = Int.compare
@@ -60,7 +68,7 @@ end
 
 module Op = struct
   type t =
-    | Input of { name : string }
+    | Input of { name : string; source : Input_source.t }
     | Alloc of { space : Memory_space.t; layout : Layout.t }
     | Copy of { asynchronous : bool; barrier : int option }
     | Matmul of { m : int; n : int; k : int }
@@ -77,7 +85,8 @@ module Op = struct
     | Q8_linear of { m : int; n : int; k : int; bias : bool }
 
   let to_string = function
-    | Input { name } -> Printf.sprintf "input(%s)" name
+    | Input { name; source } ->
+        Printf.sprintf "input(%s,%s)" name (Input_source.to_string source)
     | Alloc { space; layout } ->
         Printf.sprintf "alloc(%s,%s)" (Memory_space.to_string space)
           (Layout.to_string layout)
@@ -143,9 +152,9 @@ module Graph = struct
     graph.next_node <- graph.next_node + 1;
     graph.nodes_rev <- node :: graph.nodes_rev
 
-  let input graph ~name ~shape ~dtype =
+  let input graph ~name ~source ~shape ~dtype =
     let value = fresh_value graph ~shape ~dtype in
-    append graph ~op:(Op.Input { name }) ~inputs:[] ~output:(Some value);
+    append graph ~op:(Op.Input { name; source }) ~inputs:[] ~output:(Some value);
     value
 
   let allocate graph ~shape ~dtype ~space ~layout =

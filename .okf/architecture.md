@@ -60,7 +60,10 @@ backend with an FX `GraphModule` and example inputs, and the backend returns a
 callable with the same forward contract.[^pytorch-backend-contract]
 
 The Python adapter serializes a deliberately small manifest containing node
-names, op kinds, targets, references, static shape metadata, and dtypes. The
+names, op kinds, targets, references, static shape metadata, dtypes, and an
+explicit runtime-input or tensor-store binding. Dynamo's lifted-static-input
+metadata identifies model parameters and buffers; `get_attr` nodes are static
+by construction. The
 OCaml executable parses that manifest, lowers supported nodes by performing
 typed tile effects, preserves other nodes as opaque effect actions, captures
 the graph IR, with optional pure passes available for later slices, and emits
@@ -128,6 +131,13 @@ references exactly one binary tensor archive. Tensor names, dtypes, shapes,
 and offsets are read from the archive header rather than duplicated in a
 second JSON file or split across per-tensor payloads. Complete model export and
 scheduled invocation metadata remain separate compiler work.
+
+When a captured graph contains static tensors, the Python adapter streams them
+into `weights.safetensors` one at a time. This bounds CPU staging to the current
+tensor instead of retaining a second whole-model CPU copy. The real 350M Q8
+capture emitted 241 tensor keys totaling 422,104,704 payload bytes. The OCaml
+package validator resolves every FX tensor binding against archive dtype and
+shape before runtime loading.
 
 The Ninja-built OCaml runtime consumes that manifest directly, validates every
 referenced artifact and declared entry point, parses the safetensors index,

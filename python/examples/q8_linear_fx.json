@@ -7,7 +7,8 @@
       "target": "input",
       "inputs": [],
       "shape": [2, 4],
-      "dtype": "float16"
+      "dtype": "float16",
+      "binding": {"kind": "runtime"}
     },
     {
       "name": "weight_q8",
@@ -15,7 +16,8 @@
       "target": "weight_q8",
       "inputs": [],
       "shape": [3, 4],
-      "dtype": "int8"
+      "dtype": "int8",
+      "binding": {"kind": "tensor-store", "key": "weight_q8"}
     },
     {
       "name": "weight_scale",
@@ -23,7 +25,8 @@
       "target": "weight_scale",
       "inputs": [],
       "shape": [1, 3],
-      "dtype": "float16"
+      "dtype": "float16",
+      "binding": {"kind": "tensor-store", "key": "weight_scale"}
     },
     {
       "name": "bias",
@@ -31,7 +34,8 @@
       "target": "bias",
       "inputs": [],
       "shape": [1, 3],
-      "dtype": "float16"
+      "dtype": "float16",
+      "binding": {"kind": "tensor-store", "key": "bias"}
     },
     {
       "name": "q8_linear",

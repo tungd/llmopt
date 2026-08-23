@@ -55,7 +55,9 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(manifest["version"], 1)
         self.assertEqual(manifest["outputs"], ["linear"])
         self.assertEqual(manifest["nodes"][0]["shape"], [2, 4])
+        self.assertEqual(manifest["nodes"][0]["binding"], {"kind": "runtime"})
         self.assertEqual(manifest["nodes"][3]["inputs"], ["x", "weight", "bias"])
+        self.assertEqual(manifest["nodes"][3]["binding"], {"kind": "computed"})
         json.dumps(manifest)
 
 

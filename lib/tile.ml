@@ -52,7 +52,9 @@ let shape tile = tile.shape
 let dtype tile = tile.dtype
 
 let input ?(dtype = Ir.Dtype.Float32) ~name ~shape () =
-  let value = Tile_effect.input ~name ~shape ~dtype in
+  let value =
+    Tile_effect.input ~name ~source:Ir.Input_source.Runtime ~shape ~dtype
+  in
   { value; shape; dtype; space = Space.global; layout = Layout.row_major }
 
 let alloc ?(dtype = Ir.Dtype.Float32) ~shape ~space ~layout () =

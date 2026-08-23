@@ -1,6 +1,15 @@
 open Yojson.Basic
 open Yojson.Basic.Util
 
+module Binding = struct
+  type t = Computed | Runtime | Tensor_store of { key : string }
+
+  let input_source = function
+    | Computed -> None
+    | Runtime -> Some Ir.Input_source.Runtime
+    | Tensor_store { key } -> Some (Ir.Input_source.Tensor_store { key })
+end
+
 module Node = struct
   type t = {
     name : string;
@@ -9,6 +18,7 @@ module Node = struct
     inputs : string list;
     shape : int list option;
     dtype : Ir.Dtype.t;
+    binding : Binding.t;
   }
 
   let name node = node.name
@@ -17,6 +27,7 @@ module Node = struct
   let inputs node = node.inputs
   let shape node = node.shape
   let dtype node = node.dtype
+  let binding node = node.binding
 end
 
 type t = { nodes : Node.t list; outputs : string list }
@@ -65,6 +76,21 @@ let parse_inputs json =
       collect [] values
   | Some _ -> Error "FX node inputs must be a list"
 
+let parse_binding ~op json =
+  match member_opt "binding" json with
+  | None ->
+      if op = "placeholder" || op = "get_attr" then Ok Binding.Runtime
+      else Ok Binding.Computed
+  | Some value ->
+      (match value |> member "kind" |> to_string with
+      | "computed" -> Ok Binding.Computed
+      | "runtime" -> Ok Binding.Runtime
+      | "tensor-store" ->
+          let key = value |> member "key" |> to_string in
+          if String.trim key = "" then Error "FX tensor binding key cannot be empty"
+          else Ok (Binding.Tensor_store { key })
+      | kind -> Error ("unsupported FX binding kind: " ^ kind))
+
 let parse_node json =
   let name = json |> member "name" |> to_string in
   let op = json |> member "op" |> to_string in
@@ -75,9 +101,14 @@ let parse_node json =
     json |> member "dtype" |> to_string_option |> Option.value ~default:"float32"
     |> parse_dtype
   in
-  match inputs, shape, dtype with
-  | Ok inputs, Ok shape, Ok dtype -> Ok { Node.name; op; target; inputs; shape; dtype }
-  | Error message, _, _ | _, Error message, _ | _, _, Error message -> Error message
+  let binding = parse_binding ~op json in
+  match inputs, shape, dtype, binding with
+  | Ok inputs, Ok shape, Ok dtype, Ok binding ->
+      Ok { Node.name; op; target; inputs; shape; dtype; binding }
+  | Error message, _, _, _
+  | _, Error message, _, _
+  | _, _, Error message, _
+  | _, _, _, Error message -> Error message
 
 let parse_outputs json =
   match json |> member "outputs" with

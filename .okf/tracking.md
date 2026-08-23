@@ -36,9 +36,10 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, and `ninja -f ninja.build q8-smoke` pass; the bounded Q8 result has exact digest/token parity, and its saved outputs prove 6/6 control-code retrieval with 0/6 exact-only formatting |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
-| Versioned generated package ABI | partial | `llmopt-fx` emits compiled-graph packages without storage or serving packages that reference one `weights.safetensors` archive. The manifest no longer duplicates per-tensor dtype/shape/encoding records or names separate payload files; complete model export and scheduled invocations remain open |
-| OCaml tensor-store ownership | partial; standalone fixture verified | OCaml validates the safetensors index, maps one archive into one no-copy `MTLBuffer`, and creates retained tensor views by archive offset; the complete LFM2.5-350M Q8 archive is not exported yet |
+| Versioned generated package ABI | partial; real model archive emitted | `llmopt-fx` emits compiled-graph packages without storage or serving packages that reference one `weights.safetensors` archive. The real 350M Q8 graph produced a serving package with 241 exact FX-to-archive bindings; executable invocation serialization remains open |
+| OCaml tensor-store ownership | partial; full archive validated and fixture mapped | Dynamo streams static inputs one tensor at a time; the real 350M archive contains 241 tensors and 422,104,704 payload bytes. OCaml validates all binding dtypes/shapes, while the fixture proves no-copy Metal mapping; full-model dispatch is not implemented |
 | OCaml Metal serving loader and dispatch | partial; standalone fixture verified | Ninja builds an OCaml executable plus Objective-C bindings that load every declared function and dispatch mapped tensor views. With 57% memory free, the 2x3x4 serving fixture returned `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro; the model schedule still runs through Python/PyTorch |
+| Complete 350M operation schedule | partial | The exported no-cache forward has 1,115 IR nodes: 379 typed/lowered and 736 opaque. Decode/KV-state graphs and a machine-executable invocation stream remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule
@@ -65,7 +66,7 @@ measurement into a release gate.
   falling back to PyTorch dequantization?
 - Which reduction schedule or MPS-compatible matmul lowering can make the
   native Phase 2 float32 Q8 path match the exact generated dequantization path?
-- How should FX placeholder names map deterministically to tensor keys while
-  exporting the complete LFM2.5 Q8 safetensors archive?
+- Which typed view/layout operations should be represented as zero-cost
+  schedule metadata before lowering the remaining compute nodes?
 - What grouped-Q8 scale layout and Metal quantize/dequantize kernels should
   back the cache's current Q8 ownership and byte-accounting policy?

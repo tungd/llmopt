@@ -1,6 +1,9 @@
 # Update Log
 
 ## 2026-08-24
+* **Complete 350M tensor export**: Dynamo now marks each FX value as runtime-bound or tensor-store-bound and streams lifted parameters/buffers into one safetensors archive. The real Q8 capture emitted 241 bindings and 241 archive tensors: 148 F16, 92 I8, and 1 F32, with 422,104,704 payload bytes and a 422,144,400-byte file. Only `input_ids` remained runtime-bound.
+* **Model-package evidence**: The one memory-checked 350M probe started with 58% system memory free and ended with 53%. It captured 1,115 FX/IR nodes, converted 92 linear modules to Q8, passed the OCaml package validator, and preserved bit-exact eager/compiled logits. It ran no ERS or needle workload, and its single latency samples are not a comparative result.
+* **Schedule inventory**: Of the 1,115 no-cache forward-plan nodes, 736 are still opaque and 379 are typed/lowered. Decode/KV-state graphs, machine-executable invocation serialization, and native model execution remain open.
 * **Single tensor archive**: Removed duplicated per-tensor descriptors and separate raw payload paths from `package.json`. A serving package now references one `weights.safetensors`; the archive owns tensor dtype, shape, and byte-offset metadata.
 * **Mapped OCaml Metal ownership**: Added an OCaml safetensors validator plus an Objective-C `mmap`/`MTLBuffer` path. With 57% system memory free, the only device probe bound Q8 weight, FP16 scale, and FP16 bias views directly from the 272-byte archive and returned `[3.5, 8, 1, 1.5, 4, 2]` exactly. No model was loaded.
 * **Boundary**: Complete LFM2.5-350M Q8 archive export, FX-value-to-tensor-key mapping, and full prefill/decode scheduling remain open.
