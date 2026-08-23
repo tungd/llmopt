@@ -160,18 +160,21 @@ probe repeated the exact result from a directory containing only
 `package.llmopt`, `kernel.metallib`, and `weights.safetensors`, proving that
 neither FX JSON nor the textual plan is part of native startup.
 
-The one bounded v2 model recapture stopped before package generation on a
-previously unrepresented Python ellipsis argument. Ellipsis is now an explicit
-typed argument covered by offline tests; the model was not retried, so the real
-operator counts remain those of the saved v1 capture.
+The memory-bounded manifest-v2 recapture now reaches package generation. Its
+1,115 FX nodes become 835 schedule commands: 793 typed and 42 opaque, compared
+with 379 typed and 736 opaque in the saved v1 package. Direct-FX execution is
+bit exact against eager MPS for the six-token probe. This is capture and
+planning evidence; PyTorch MPS, not the OCaml package runtime, executed the
+parity check.
 
-The saved capture measures 85 getitem, 10 chunk, and 13 concat nodes. For a v2
-graph, the planner now holds chunk partitions as compile-time descriptors and
+The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
+the planner now holds chunk partitions as compile-time descriptors and
 emits normalized slices directly at integer getitem consumers, avoiding a
 tuple-valued runtime command. Static tensor indices and concat survive the
-schedule-v3 binary round trip and CPU interpretation. This is synthetic
-compiler evidence; Metal emission and native dispatch for these commands, plus
-a real v2 operator count, remain open.
+schedule-v3 binary round trip and CPU interpretation. The real package
+structurally validates with 241 tensors but declares only three generated
+kernels; native Metal emission and command dispatch for the complete schedule
+remain open.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the

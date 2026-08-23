@@ -77,5 +77,6 @@ operator count remains the saved v1 result with 736 opaque commands.
 # Remaining boundary
 
 Index and concat Metal kernels and native command dispatch are not implemented.
-The real v2 recapture is also still pending, so this slice does not claim a new
-model-level opaque count, parity result, latency, or ERS score.
+The subsequent [real v2 recapture](exp-0018-lfm25-v2-recapture.md) measured 42
+opaque commands and exact direct-FX logits, but did not execute this schedule
+through the OCaml runtime or produce an ERS score.
