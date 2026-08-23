@@ -80,6 +80,7 @@ type error =
   | Invalid_chunk_count of int
   | Invalid_depthwise_conv1d of string
   | Convolution_dimension_overflow
+  | Invalid_attention of string
   | Malformed_index of string
 
 let to_string shape =
@@ -135,6 +136,7 @@ let error_to_string = function
   | Invalid_depthwise_conv1d message -> "invalid depthwise conv1d: " ^ message
   | Convolution_dimension_overflow ->
       "depthwise conv1d output dimension overflows"
+  | Invalid_attention message -> "invalid scaled-dot-product attention: " ^ message
   | Malformed_index message -> "malformed normalized tensor index: " ^ message
 
 let create dimensions =
@@ -277,6 +279,40 @@ let depthwise_conv1d source weight ~stride ~padding ~dilation ~groups =
               in
               create [ batch; channels; output_width ]
   | _ -> invalid "input and weight must both have rank three"
+
+let scaled_dot_product_attention query key value mask =
+  let invalid message = Error (Invalid_attention message) in
+  match
+    dimensions query,
+    dimensions key,
+    dimensions value,
+    dimensions mask
+  with
+  | ( [ batches; heads; query_length; head_dimension ],
+      [ key_batches; key_heads; key_length; key_dimension ],
+      [ value_batches; value_heads; value_length; value_dimension ],
+      [ mask_batches; mask_heads; mask_queries; mask_keys ] ) ->
+      if batches <= 0 || heads <= 0 || query_length <= 0
+         || head_dimension <= 0
+      then invalid "query dimensions must be positive"
+      else if key_length <= 0 then invalid "key length must be positive"
+      else if key_batches <> batches || value_batches <> batches then
+        invalid "query, key, and value batch dimensions differ"
+      else if key_heads <> heads || value_heads <> heads then
+        invalid "query, key, and value head dimensions differ"
+      else if key_length <> value_length then
+        invalid "key and value sequence lengths differ"
+      else if key_dimension <> head_dimension
+              || value_dimension <> head_dimension
+      then invalid "query, key, and value head widths differ"
+      else if mask_batches <> 1 && mask_batches <> batches then
+        invalid "mask batch dimension does not broadcast"
+      else if mask_heads <> 1 && mask_heads <> heads then
+        invalid "mask head dimension does not broadcast"
+      else if mask_queries <> query_length || mask_keys <> key_length then
+        invalid "mask sequence dimensions disagree with query and key"
+      else Ok query
+  | _ -> invalid "query, key, value, and mask must have rank four"
 
 let reduce shape ~axes ~keepdim =
   match normalize_axes shape axes with

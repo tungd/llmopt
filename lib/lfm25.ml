@@ -219,3 +219,44 @@ let short_conv_kernel ~config ~batch ~tokens () =
       ~dtype:config.Config.dtype
   in
   Tile_effect.output ~name:"short_conv_output" ~value:output
+
+let attention_kernel ~config ~batch ~tokens () =
+  if batch <= 0 then invalid_arg "attention batch must be positive";
+  if tokens <= 0 then invalid_arg "attention token count must be positive";
+  let head_dimension =
+    config.Config.hidden_size / config.Config.num_attention_heads
+  in
+  let tensor_shape =
+    Tensor_shape.of_ints_exn
+      [ batch; config.Config.num_attention_heads; tokens; head_dimension ]
+  in
+  let mask_shape = Tensor_shape.of_ints_exn [ batch; 1; tokens; tokens ] in
+  let query =
+    Tile_effect.tensor_input ~name:"attention_query"
+      ~source:Ir.Input_source.Runtime ~shape:tensor_shape ~dtype:config.Config.dtype
+  in
+  let key =
+    Tile_effect.tensor_input ~name:"attention_key"
+      ~source:Ir.Input_source.Runtime ~shape:tensor_shape ~dtype:config.Config.dtype
+  in
+  let value =
+    Tile_effect.tensor_input ~name:"attention_value"
+      ~source:Ir.Input_source.Runtime ~shape:tensor_shape ~dtype:config.Config.dtype
+  in
+  let mask =
+    Tile_effect.tensor_input ~name:"attention_mask"
+      ~source:Ir.Input_source.Runtime ~shape:mask_shape ~dtype:Ir.Dtype.Bool
+  in
+  let operation =
+    match
+      Ir.Attention.create
+        ~scale:(1.0 /. sqrt (Float.of_int head_dimension)) ~causal:false
+    with
+    | Ok config -> Ir.Primitive.Attention config
+    | Error message -> invalid_arg message
+  in
+  let output =
+    primitive ~operation ~inputs:[ query; key; value; mask ]
+      ~logical_shape:tensor_shape ~dtype:config.Config.dtype
+  in
+  Tile_effect.output ~name:"attention_output" ~value:output

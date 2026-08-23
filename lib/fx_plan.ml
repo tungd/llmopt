@@ -245,6 +245,11 @@ let bool_argument = function
   | Fx.Argument.Bool value -> Ok value
   | _ -> Error "expected a bool argument"
 
+let finite_float_argument = function
+  | Fx.Argument.Int value -> Ok (Float.of_int value)
+  | Fx.Argument.Float value when Float.is_finite value -> Ok value
+  | _ -> Error "expected a finite numeric argument"
+
 let optional_int_argument = function
   | Fx.Argument.Null -> Ok None
   | Fx.Argument.Int value -> Ok (Some value)
@@ -533,6 +538,61 @@ let plan fx_graph =
             Error
               "LFM short-conv requires input, weight, null bias, and static parameters"
       in
+      let lower_attention inputs =
+        match inputs with
+        | [ query; key; value; mask ] ->
+            if Ir.Value.dtype query <> Ir.Dtype.Float16
+               || Ir.Value.dtype key <> Ir.Dtype.Float16
+               || Ir.Value.dtype value <> Ir.Dtype.Float16
+            then Error "LFM attention query, key, and value must be float16"
+            else if Ir.Value.dtype mask <> Ir.Dtype.Bool then
+              Error "LFM attention mask must be boolean"
+            else
+              let dropout =
+                match keyword "dropout_p" node with
+                | None -> Ok 0.0
+                | Some argument -> finite_float_argument argument
+              in
+              let causal =
+                match keyword "is_causal" node with
+                | None -> Ok false
+                | Some argument -> bool_argument argument
+              in
+              let scale =
+                match keyword "scale" node with
+                | Some argument -> finite_float_argument argument
+                | None ->
+                    (match
+                       List.rev
+                         (Tensor_shape.dimensions
+                            (Ir.Value.logical_shape query))
+                     with
+                    | head_dimension :: _ when head_dimension > 0 ->
+                        Ok (1.0 /. sqrt (Float.of_int head_dimension))
+                    | _ -> Error "LFM attention has no positive head width")
+              in
+              let* dropout = dropout in
+              let* causal = causal in
+              let* scale = scale in
+              if dropout <> 0.0 then
+                Error "LFM inference attention requires zero dropout"
+              else if causal then
+                Error "LFM captured masked attention must be non-causal"
+              else
+                let* config = Ir.Attention.create ~scale ~causal in
+                let* inferred =
+                  Tensor_shape.scaled_dot_product_attention
+                    (Ir.Value.logical_shape query)
+                    (Ir.Value.logical_shape key)
+                    (Ir.Value.logical_shape value)
+                    (Ir.Value.logical_shape mask)
+                  |> Result.map_error Tensor_shape.error_to_string
+                in
+                let* logical_shape = declared_or_inferred node inferred in
+                emit_primitive node ~operation:(Ir.Primitive.Attention config)
+                  ~inputs ~logical_shape
+        | _ -> Error "LFM attention requires query, key, value, and mask"
+      in
       let lower_chunk () =
         match Fx.Node.inputs node with
         | [ input_name ] ->
@@ -785,6 +845,13 @@ let plan fx_graph =
                      [ "torch._variablefunctionsclass.conv1d";
                        "aten.conv1d.default" ]
               then lower_short_conv inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "torch._c._nn.scaled_dot_product_attention";
+                       "torch.nn.functional.scaled_dot_product_attention";
+                       "aten.scaled_dot_product_attention.default" ]
+              then lower_attention inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "contiguous"; "aten.contiguous.default" ] then
                 (match inputs with
                 | [ input ] ->

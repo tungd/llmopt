@@ -207,6 +207,92 @@ let short_conv_entries =
       ~operation:Kernel_abi.Operation.Short_conv
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let attention_source =
+  "\nstruct AttentionParams {\n"
+  ^ "  uint batches; uint heads; uint query_length; uint key_length;\n"
+  ^ "  uint head_dimension; uint mask_batches; uint mask_heads; uint causal;\n"
+  ^ "  float scale;\n"
+  ^ "};\n\n"
+  ^ "inline bool llmopt_attention_allowed(\n"
+  ^ "    device const uchar* mask, constant AttentionParams& params,\n"
+  ^ "    uint batch, uint head, uint query_position, uint key_position) {\n"
+  ^ "  const uint mask_batch = params.mask_batches == 1 ? 0 : batch;\n"
+  ^ "  const uint mask_head = params.mask_heads == 1 ? 0 : head;\n"
+  ^ "  const uint mask_index = (((mask_batch * params.mask_heads + mask_head)\n"
+  ^ "      * params.query_length + query_position) * params.key_length)\n"
+  ^ "      + key_position;\n"
+  ^ "  return mask[mask_index] != 0\n"
+  ^ "      && (params.causal == 0 || key_position <= query_position);\n"
+  ^ "}\n\n"
+  ^ "inline float llmopt_attention_score(\n"
+  ^ "    device const half* query, device const half* key,\n"
+  ^ "    constant AttentionParams& params, uint batch, uint head,\n"
+  ^ "    uint query_position, uint key_position) {\n"
+  ^ "  float result = 0.0f;\n"
+  ^ "  for (uint dimension = 0; dimension < params.head_dimension; ++dimension) {\n"
+  ^ "    const uint query_index = (((batch * params.heads + head)\n"
+  ^ "        * params.query_length + query_position) * params.head_dimension)\n"
+  ^ "        + dimension;\n"
+  ^ "    const uint key_index = (((batch * params.heads + head)\n"
+  ^ "        * params.key_length + key_position) * params.head_dimension)\n"
+  ^ "        + dimension;\n"
+  ^ "    result += float(query[query_index]) * float(key[key_index]);\n"
+  ^ "  }\n"
+  ^ "  return result * params.scale;\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_attention_f16(\n"
+  ^ "    device const half* query [[buffer(0)]],\n"
+  ^ "    device const half* key [[buffer(1)]],\n"
+  ^ "    device const half* value [[buffer(2)]],\n"
+  ^ "    device const uchar* mask [[buffer(3)]],\n"
+  ^ "    device half* output [[buffer(4)]],\n"
+  ^ "    constant AttentionParams& params [[buffer(5)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.batches * params.heads * params.query_length;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint query_position = gid % params.query_length;\n"
+  ^ "  const uint head = (gid / params.query_length) % params.heads;\n"
+  ^ "  const uint batch = gid / (params.query_length * params.heads);\n"
+  ^ "  float maximum = -INFINITY;\n"
+  ^ "  bool found = false;\n"
+  ^ "  for (uint key_position = 0; key_position < params.key_length; ++key_position) {\n"
+  ^ "    if (llmopt_attention_allowed(mask, params, batch, head, query_position, key_position)) {\n"
+  ^ "      found = true;\n"
+  ^ "      maximum = max(maximum, llmopt_attention_score(query, key, params,\n"
+  ^ "          batch, head, query_position, key_position));\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  float denominator = 0.0f;\n"
+  ^ "  if (found) {\n"
+  ^ "    for (uint key_position = 0; key_position < params.key_length; ++key_position)\n"
+  ^ "      if (llmopt_attention_allowed(mask, params, batch, head, query_position, key_position))\n"
+  ^ "        denominator += exp(llmopt_attention_score(query, key, params,\n"
+  ^ "            batch, head, query_position, key_position) - maximum);\n"
+  ^ "  }\n"
+  ^ "  for (uint dimension = 0; dimension < params.head_dimension; ++dimension) {\n"
+  ^ "    float result = 0.0f;\n"
+  ^ "    if (denominator != 0.0f) {\n"
+  ^ "      for (uint key_position = 0; key_position < params.key_length; ++key_position) {\n"
+  ^ "        if (llmopt_attention_allowed(mask, params, batch, head, query_position, key_position)) {\n"
+  ^ "          const float probability = exp(llmopt_attention_score(query, key, params,\n"
+  ^ "              batch, head, query_position, key_position) - maximum) / denominator;\n"
+  ^ "          const uint value_index = (((batch * params.heads + head)\n"
+  ^ "              * params.key_length + key_position) * params.head_dimension)\n"
+  ^ "              + dimension;\n"
+  ^ "          result += probability * float(value[value_index]);\n"
+  ^ "        }\n"
+  ^ "      }\n"
+  ^ "    }\n"
+  ^ "    output[gid * params.head_dimension + dimension] = half(result);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let attention_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_attention_f16"
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -217,6 +303,13 @@ let has_short_conv graph =
   |> List.exists (fun node ->
          match Ir.node_op node with
          | Ir.Op.Primitive (Ir.Primitive.Short_conv _) -> true
+         | _ -> false)
+
+let has_attention graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive (Ir.Primitive.Attention _) -> true
          | _ -> false)
 
 let lower_primary graph =
@@ -446,6 +539,12 @@ let lower graph =
     if has_short_conv graph then
       source ^ short_conv_source, entries @ short_conv_entries
     else source, entries
+  in
+  let auxiliary_source, auxiliary_entries =
+    if has_attention graph then
+      auxiliary_source ^ attention_source,
+      auxiliary_entries @ attention_entries
+    else auxiliary_source, auxiliary_entries
   in
   match lower_primary graph with
   | Ok program when auxiliary_entries <> [] ->

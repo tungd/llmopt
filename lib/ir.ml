@@ -179,6 +179,20 @@ module Short_conv = struct
       config.stride config.padding config.dilation config.groups
 end
 
+module Attention = struct
+  type t = { scale : float; causal : bool }
+
+  let create ~scale ~causal =
+    if Float.is_finite scale then Ok { scale; causal }
+    else Error "attention scale must be finite"
+
+  let scale config = config.scale
+  let causal config = config.causal
+
+  let to_string config =
+    Printf.sprintf "attention(scale=%.9g,causal=%b)" config.scale config.causal
+end
+
 module Primitive = struct
   type t =
     | Pointwise of Pointwise.t
@@ -186,10 +200,11 @@ module Primitive = struct
     | Reduce of Reduction.t
     | Movement of Movement.t
     | Short_conv of Short_conv.t
+    | Attention of Attention.t
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
-    | Cast _ | Reduce _ | Movement _ | Short_conv _ -> []
+    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _ -> []
 
   let to_string = function
     | Pointwise operation -> Pointwise.to_string operation
@@ -197,6 +212,7 @@ module Primitive = struct
     | Reduce reduction -> Reduction.to_string reduction
     | Movement movement -> Movement.to_string movement
     | Short_conv config -> Short_conv.to_string config
+    | Attention config -> Attention.to_string config
 end
 
 module Argument = struct

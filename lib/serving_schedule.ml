@@ -133,6 +133,30 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d short-conv metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Attention _),
+            [ query; key; value; mask ],
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.scaled_dot_product_attention
+                (Ir.Value.logical_shape query)
+                (Ir.Value.logical_shape key)
+                (Ir.Value.logical_shape value)
+                (Ir.Value.logical_shape mask)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype query = Ir.Dtype.Float16
+              && Ir.Value.dtype key = Ir.Dtype.Float16
+              && Ir.Value.dtype value = Ir.Dtype.Float16
+              && Ir.Value.dtype mask = Ir.Dtype.Bool
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d attention metadata is inconsistent"
+                   command.Command.node_id)
         | _ -> Ok ()
 
 let create commands =
@@ -585,6 +609,10 @@ let write_primitive writer = function
       Binary.Writer.u32 writer (Ir.Short_conv.padding config);
       Binary.Writer.u32 writer (Ir.Short_conv.dilation config);
       Binary.Writer.u32 writer (Ir.Short_conv.groups config)
+  | Ir.Primitive.Attention config ->
+      Binary.Writer.u8 writer 5;
+      Binary.Writer.float64 writer (Ir.Attention.scale config);
+      Binary.Writer.bool writer (Ir.Attention.causal config)
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -637,6 +665,11 @@ let read_primitive values reader =
       let* groups = Binary.Reader.u32 reader in
       Ir.Short_conv.create ~stride ~padding ~dilation ~groups
       |> Result.map (fun config -> Ir.Primitive.Short_conv config)
+  | 5 ->
+      let* scale = Binary.Reader.float64 reader in
+      let* causal = Binary.Reader.bool reader in
+      Ir.Attention.create ~scale ~causal
+      |> Result.map (fun config -> Ir.Primitive.Attention config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -778,7 +811,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 4;
+  Binary.Writer.u16 writer 5;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -798,7 +831,10 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 1 && version <> 2 && version <> 3 && version <> 4 then
+    if
+      version <> 1 && version <> 2 && version <> 3 && version <> 4
+      && version <> 5
+    then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else
       let* count = Binary.Reader.u32 reader in

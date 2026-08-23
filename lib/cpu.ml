@@ -432,6 +432,119 @@ let short_conv state config input_value weight_value output_value output =
       done
   | _ -> failf "invalid CPU short-conv tensor metadata"
 
+let attention state config query_value key_value value_value mask_value
+    output_value output =
+  match
+    Tensor_shape.dimensions (Ir.Value.logical_shape query_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape key_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape value_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape mask_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape output_value)
+  with
+  | ( [ batches; heads; query_length; head_dimension ],
+      [ key_batches; key_heads; key_length; key_dimension ],
+      [ value_batches; value_heads; value_length; value_dimension ],
+      [ mask_batches; mask_heads; mask_queries; mask_keys ],
+      [ output_batches; output_heads; output_queries; output_dimension ] )
+    when key_batches = batches && value_batches = batches
+         && output_batches = batches && key_heads = heads
+         && value_heads = heads && output_heads = heads
+         && key_dimension = head_dimension && value_dimension = head_dimension
+         && output_dimension = head_dimension && value_length = key_length
+         && mask_queries = query_length && mask_keys = key_length
+         && output_queries = query_length ->
+      let query = find state query_value in
+      let key = find state key_value in
+      let value = find state value_value in
+      let mask = find state mask_value in
+      let scale = Ir.Attention.scale config in
+      let allowed batch head query_position key_position =
+        let mask_batch = if mask_batches = 1 then 0 else batch in
+        let mask_head = if mask_heads = 1 then 0 else head in
+        let mask_index =
+          ((((mask_batch * mask_heads) + mask_head) * query_length)
+          + query_position)
+          * key_length
+          + key_position
+        in
+        Tensor.get_linear mask mask_index <> 0.0
+        && (not (Ir.Attention.causal config)
+           || key_position <= query_position)
+      in
+      let score batch head query_position key_position =
+        let accumulator = ref 0.0 in
+        for dimension = 0 to head_dimension - 1 do
+          let query_index =
+            ((((batch * heads) + head) * query_length) + query_position)
+            * head_dimension
+            + dimension
+          in
+          let key_index =
+            ((((batch * heads) + head) * key_length) + key_position)
+            * head_dimension
+            + dimension
+          in
+          accumulator :=
+            !accumulator
+            +. (Tensor.get_linear query query_index
+               *. Tensor.get_linear key key_index)
+        done;
+        !accumulator *. scale
+      in
+      for batch = 0 to batches - 1 do
+        for head = 0 to heads - 1 do
+          for query_position = 0 to query_length - 1 do
+            let maximum = ref Float.neg_infinity in
+            let found = ref false in
+            for key_position = 0 to key_length - 1 do
+              if allowed batch head query_position key_position then (
+                found := true;
+                maximum :=
+                  Float.max !maximum
+                    (score batch head query_position key_position))
+            done;
+            let denominator = ref 0.0 in
+            if !found then
+              for key_position = 0 to key_length - 1 do
+                if allowed batch head query_position key_position then
+                  denominator :=
+                    !denominator
+                    +. exp
+                         (score batch head query_position key_position
+                         -. !maximum)
+              done;
+            for dimension = 0 to head_dimension - 1 do
+              let result = ref 0.0 in
+              if !denominator <> 0.0 then
+                for key_position = 0 to key_length - 1 do
+                  if allowed batch head query_position key_position then
+                    let probability =
+                      exp
+                        (score batch head query_position key_position
+                        -. !maximum)
+                      /. !denominator
+                    in
+                    let value_index =
+                      ((((batch * heads) + head) * key_length) + key_position)
+                      * head_dimension
+                      + dimension
+                    in
+                    result :=
+                      !result
+                      +. (probability *. Tensor.get_linear value value_index)
+                done;
+              let output_index =
+                ((((batch * heads) + head) * query_length) + query_position)
+                * head_dimension
+                + dimension
+              in
+              Tensor.set_linear output output_index !result
+            done
+          done
+        done
+      done
+  | _ -> failf "invalid CPU attention tensor metadata"
+
 let primitive state operation inputs output_value output =
   match operation, inputs with
   | Ir.Primitive.Pointwise operation, _ ->
@@ -446,6 +559,8 @@ let primitive state operation inputs output_value output =
       apply_movement state movement input output_value output
   | Ir.Primitive.Short_conv config, [ input; weight ] ->
       short_conv state config input weight output_value output
+  | Ir.Primitive.Attention config, [ query; key; value; mask ] ->
+      attention state config query key value mask output_value output
   | _ -> failf "invalid primitive input arity"
 
 let run ~inputs thunk =

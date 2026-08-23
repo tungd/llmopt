@@ -236,6 +236,72 @@ let () =
     |> List.exists (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Short_conv))
     "ShortConv graph declares its Metal kernel ABI";
+  let attention_shape = Tensor_shape.of_ints_exn [ 1; 1; 2; 2 ] in
+  let inferred_attention =
+    expect_ok
+      (Tensor_shape.scaled_dot_product_attention attention_shape attention_shape
+         attention_shape attention_shape
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.equal inferred_attention attention_shape)
+    "masked attention shape inference";
+  let attention_config =
+    expect_ok (Ir.Attention.create ~scale:1.0 ~causal:false)
+  in
+  let attention_kernel () =
+    let input name dtype =
+      Tile_effect.tensor_input ~name ~source:Ir.Input_source.Runtime
+        ~shape:attention_shape ~dtype
+    in
+    let query = input "attention_query" Ir.Dtype.Float16 in
+    let key = input "attention_key" Ir.Dtype.Float16 in
+    let value = input "attention_value" Ir.Dtype.Float16 in
+    let mask = input "attention_mask" Ir.Dtype.Bool in
+    let output =
+      primitive_value ~operation:(Ir.Primitive.Attention attention_config)
+        ~inputs:[ query; key; value; mask ] ~logical_shape:attention_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    Tile_effect.output ~name:"attention_output" ~value:output
+  in
+  let attention_inputs =
+    [ ("attention_query", Cpu.Tensor.of_rows [| [| 1.; 0. |]; [| 0.; 1. |] |]);
+      ("attention_key", Cpu.Tensor.of_rows [| [| 1.; 0. |]; [| 0.; 1. |] |]);
+      ("attention_value", Cpu.Tensor.of_rows [| [| 10.; 0. |]; [| 0.; 20. |] |]);
+      ("attention_mask", Cpu.Tensor.of_rows [| [| 1.; 0. |]; [| 1.; 1. |] |]) ]
+  in
+  (match Cpu.run ~inputs:attention_inputs attention_kernel with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      let output = Cpu.output execution "attention_output" |> Option.get in
+      let rows = Cpu.Tensor.to_rows output in
+      let e = exp 1.0 in
+      expect (Float.abs (rows.(0).(0) -. 10.0) < 1e-5)
+        "attention masked query value";
+      expect (Float.abs rows.(0).(1) < 1e-5)
+        "attention masked query zero";
+      expect (Float.abs (rows.(1).(0) -. (10.0 /. (1.0 +. e))) < 1e-4)
+        "attention softmax first key";
+      expect
+        (Float.abs (rows.(1).(1) -. ((20.0 *. e) /. (1.0 +. e))) < 1e-4)
+        "attention softmax second key");
+  let attention_graph =
+    match Capture.run attention_kernel with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  let attention_schedule =
+    attention_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count attention_schedule = 0)
+    "attention survives the binary schedule as a typed command";
+  let attention_program = expect_ok (Metal.lower attention_graph) in
+  expect
+    (Metal.Program.kernels attention_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Attention))
+    "attention graph declares its Metal kernel ABI";
   let primitive_kernel () =
     let input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
     let channel_shape = Tensor_shape.of_ints_exn [ 4 ] in
@@ -889,6 +955,44 @@ let () =
   in
   expect (Serving_schedule.opaque_count short_conv_fx_schedule = 0)
     "captured LFM conv1d lowers to typed ShortConv";
+  let attention_fx =
+    let inputs =
+      [ fx_node ~op:"placeholder" ~name:"query" ~target:"query"
+          ~shape:[ 1; 1; 2; 2 ] ();
+        fx_node ~op:"placeholder" ~name:"key" ~target:"key"
+          ~shape:[ 1; 1; 2; 2 ] ();
+        fx_node ~op:"placeholder" ~name:"value" ~target:"value"
+          ~shape:[ 1; 1; 2; 2 ] ();
+        fx_node ~op:"placeholder" ~dtype:"bool" ~name:"mask" ~target:"mask"
+          ~shape:[ 1; 1; 2; 2 ] () ]
+    in
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2);
+             ( "nodes",
+               `List
+                 (inputs
+                 @ [ fx_node ~op:"call_function" ~name:"attention"
+                       ~target:"torch._C._nn.scaled_dot_product_attention"
+                       ~inputs:[ "query"; "key"; "value"; "mask" ]
+                       ~arguments:
+                         [ fx_node_argument "query"; fx_node_argument "key";
+                           fx_node_argument "value" ]
+                       ~keywords:
+                         [ ("attn_mask", fx_node_argument "mask");
+                           ("dropout_p", fx_float_argument 0.0);
+                           ("scale", fx_float_argument 1.0);
+                           ("is_causal", fx_bool_argument false) ]
+                       ~shape:[ 1; 1; 2; 2 ] () ]) );
+             ("outputs", `List [ `String "attention" ]) ]))
+  in
+  let attention_fx_schedule =
+    attention_fx |> Fx_plan.plan |> expect_ok |> Serving_schedule.of_graph
+    |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count attention_fx_schedule = 0)
+    "captured scaled-dot-product attention lowers to a typed command";
   let optimized_schedule =
     primitive_optimized |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok

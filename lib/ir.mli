@@ -93,6 +93,15 @@ module Short_conv : sig
   val to_string : t -> string
 end
 
+module Attention : sig
+  type t
+
+  val create : scale:float -> causal:bool -> (t, string) result
+  val scale : t -> float
+  val causal : t -> bool
+  val to_string : t -> string
+end
+
 module Primitive : sig
   type t =
     | Pointwise of Pointwise.t
@@ -100,6 +109,7 @@ module Primitive : sig
     | Reduce of Reduction.t
     | Movement of Movement.t
     | Short_conv of Short_conv.t
+    | Attention of Attention.t
 
   val values : t -> Value.t list
   val to_string : t -> string
