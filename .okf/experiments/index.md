@@ -25,3 +25,4 @@
 * [JSON-free binary weight archive](exp-0023-binary-weight-archive.md) - replaces the safetensors serving boundary with a versioned binary index and aligned payloads.
 * [Typed LFM position and mask construction](exp-0024-lfm-mask-position.md) - schedule-v7 lowering and compiled MSL remove the final opaque commands from saved no-cache prefill.
 * [Shared prefill/decode capture and recurrent state](exp-0025-lfm-prefill-decode.md) - one shared binary archive and schedule-v8 lowering produce zero-opaque prefill/decode packages.
+* [Native binary schedule execution](exp-0026-native-schedule-execution.md) - automatic OCaml input binding, Q8 dispatch, and output resolution against `weights.llmopt`.

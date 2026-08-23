@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:30:25Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:40:37Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -149,23 +149,24 @@ fields and each payload starts at a 256-byte boundary; neither the index nor the
 payload is JSON. This bounds CPU staging to the current tensor instead of
 retaining a second whole-model CPU copy. The preceding safetensors-based real
 350M Q8 capture emitted 241 tensor keys totaling 422,104,704 payload bytes. Its
-saved tensors were converted offline into a 422,137,216-byte `weights.llmopt`
-without loading the model; no fresh model capture under this ABI has run. The
+saved tensors were converted offline into a 422,137,216-byte `weights.llmopt`.
+The later use-cache capture wrote the same-sized binary archive directly and
+shared it across both specializations. The
 OCaml package validator resolves every binary-schedule tensor binding against
 archive dtype and N-dimensional shape before runtime loading.
 
 The Ninja-built OCaml runtime consumes that binary package directly, validates
 the metallib, tensor archive, schedule bindings, and declared entry points,
 parses the binary weight index, maps the archive once, and creates retained
-Metal views at tensor byte offsets. A standalone 2x3x4 FP32/Q8 fixture
-previously bound its int8 weight, FP16 scale, and FP16 bias from the safetensors
-archive; `llmopt_q8_linear_f32` returned
-`[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves the binary
-archive-to-command boundary for the superseded format, not complete model
-execution. The replacement `weights.llmopt` fixture passes cross-language
-writer/parser/package validation. Its one memory-checked native probe stopped
-before Metal dispatch on a now-fixed field-order mismatch and was not retried,
-so there is no device-dispatch result for the replacement archive yet.
+Metal views at tensor byte offsets. The runtime now walks the binary schedule
+for runtime and tensor-store inputs, allocation, exact buffer copies,
+metadata-only aliases, identity casts, Q8 linear, and named outputs. Pipeline
+states are cached per loaded library instead of rebuilt per dispatch. With 61%
+system memory free, one 2x3x4 float16/Q8 fixture loaded `weights.llmopt`, bound
+all schedule values, dispatched `llmopt_q8_linear`, and returned
+`[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves automatic
+execution of that schedule subset against the replacement archive; it does not
+prove complete model-schedule execution.
 
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,

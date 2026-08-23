@@ -27,6 +27,7 @@ typedef struct {
   id<MTLDevice> device;
   id<MTLLibrary> library;
   id<MTLCommandQueue> queue;
+  NSMutableDictionary *pipelines;
 } llmopt_metal_library;
 
 typedef struct {
@@ -69,6 +70,7 @@ static void finalize_library(value handle) {
   llmopt_metal_library **slot =
       (llmopt_metal_library **)Data_custom_val(handle);
   if (*slot != NULL) {
+    [(*slot)->pipelines release];
     [(*slot)->queue release];
     [(*slot)->library release];
     [(*slot)->device release];
@@ -203,6 +205,14 @@ CAMLprim value caml_llmopt_metal_load_library(value context_value,
     library->device = [context->device retain];
     library->library = metal_library;
     library->queue = [context->queue retain];
+    library->pipelines = [[NSMutableDictionary alloc] init];
+    if (library->pipelines == nil) {
+      [library->queue release];
+      [library->device release];
+      [metal_library release];
+      free(library);
+      caml_raise_out_of_memory();
+    }
     result = alloc_library(library);
   }
   CAMLreturn(result);
@@ -312,6 +322,23 @@ CAMLprim value caml_llmopt_metal_buffer_length(value buffer_value) {
     caml_failwith("Metal buffer has been finalized");
   }
   CAMLreturn(Val_long(buffer->length));
+}
+
+CAMLprim value caml_llmopt_metal_buffer_copy(value source_value,
+                                              value destination_value) {
+  CAMLparam2(source_value, destination_value);
+  llmopt_metal_buffer *source = Buffer_val(source_value);
+  llmopt_metal_buffer *destination = Buffer_val(destination_value);
+  if (source == NULL || destination == NULL) {
+    caml_failwith("Metal buffer has been finalized");
+  }
+  if (source->length != destination->length) {
+    caml_invalid_argument("Metal copy requires equal buffer lengths");
+  }
+  memmove((uint8_t *)destination->buffer.contents + destination->offset,
+          (const uint8_t *)source->buffer.contents + source->offset,
+          source->length);
+  CAMLreturn(Val_unit);
 }
 
 CAMLprim value caml_llmopt_metal_map_file(value context_value,
@@ -438,6 +465,30 @@ static void require_buffer_size(llmopt_metal_buffer *buffer, uint64_t required,
   }
 }
 
+static id<MTLComputePipelineState>
+pipeline_for_name(llmopt_metal_library *library, const char *kernel_name) {
+  NSString *name = [NSString stringWithUTF8String:kernel_name];
+  id<MTLComputePipelineState> pipeline =
+      [library->pipelines objectForKey:name];
+  if (pipeline != nil) {
+    return pipeline;
+  }
+  id<MTLFunction> function = [library->library newFunctionWithName:name];
+  if (function == nil) {
+    caml_failwith("Metal library does not contain the selected kernel");
+  }
+  NSError *pipeline_error = nil;
+  pipeline = [library->device newComputePipelineStateWithFunction:function
+                                                             error:&pipeline_error];
+  [function release];
+  if (pipeline == nil) {
+    fail_with_error("cannot create Metal compute pipeline", pipeline_error);
+  }
+  [library->pipelines setObject:pipeline forKey:name];
+  [pipeline release];
+  return [library->pipelines objectForKey:name];
+}
+
 CAMLprim value caml_llmopt_metal_dispatch_q8(value arguments) {
   CAMLparam1(arguments);
   llmopt_metal_library *library = Library_val(Field(arguments, 0));
@@ -473,24 +524,12 @@ CAMLprim value caml_llmopt_metal_dispatch_q8(value arguments) {
   require_buffer_size(output, m * n * element_size, "output");
 
   @autoreleasepool {
-    NSString *name = [NSString stringWithUTF8String:kernel_name];
-    id<MTLFunction> function = [library->library newFunctionWithName:name];
-    if (function == nil) {
-      caml_failwith("Metal library does not contain the selected Q8 kernel");
-    }
-    NSError *pipeline_error = nil;
     id<MTLComputePipelineState> pipeline =
-        [library->device newComputePipelineStateWithFunction:function
-                                                       error:&pipeline_error];
-    [function release];
-    if (pipeline == nil) {
-      fail_with_error("cannot create Metal compute pipeline", pipeline_error);
-    }
+        pipeline_for_name(library, kernel_name);
 
     id<MTLCommandBuffer> command = [library->queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
     if (command == nil || encoder == nil) {
-      [pipeline release];
       caml_failwith("Metal could not create a command buffer or encoder");
     }
     [encoder setComputePipelineState:pipeline];
@@ -515,7 +554,6 @@ CAMLprim value caml_llmopt_metal_dispatch_q8(value arguments) {
     MTLCommandBufferStatus status = command.status;
     NSError *command_error = [command.error retain];
     [command release];
-    [pipeline release];
     if (status != MTLCommandBufferStatusCompleted) {
       fail_with_error("Metal Q8 dispatch failed", command_error);
     }

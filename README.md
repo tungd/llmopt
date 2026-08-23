@@ -39,8 +39,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   both binary, without duplicated per-tensor records or separate payload files.
 - A standalone, Ninja-built OCaml Metal runtime that validates the package,
   loads every declared metallib function, maps the tensor archive into one
-  no-copy Metal buffer, creates tensor views by archive offset, and directly
-  dispatches typed Q8 kernels through small Objective-C bindings.
+  no-copy Metal buffer, creates tensor views by archive offset, and interprets
+  the binary input/Q8/output schedule through small Objective-C bindings.
+  Compute pipelines are cached per loaded library.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -149,9 +150,9 @@ measurement. Pass `--quantization fp16` for the explicit fallback.
 
 `ocaml-metal-runtime` builds the standalone package consumer without Python or
 PyTorch. `q8-serving-smoke` generates and validates one JSON-free binary weight
-archive. `ocaml-metal-runtime-smoke` maps that archive once, binds its Q8
-weight, FP16 scale, and FP16 bias views, dispatches
-`llmopt_q8_linear_f32`, and records the deterministic output in
+archive. `ocaml-metal-runtime-smoke` maps that archive once, lets the OCaml
+executor bind runtime/static inputs and allocate outputs from the binary
+schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.json`.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.

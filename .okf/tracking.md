@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T20:30:25Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T20:40:37Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -41,7 +41,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
 | Versioned generated package ABI | partial; prefill and decode packages validated | Package ABI v2 emits `package.llmopt` with schedule-v8 commands, logical shapes, kernel ABI, cache policy, and one `weights.llmopt` reference. The current 350M use-cache packages validate with 872 prefill and 926 decode commands, zero opaque operations, and 241 bindings each; native interpretation remains open |
 | OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
-| OCaml Metal serving loader and dispatch | partial | The superseded safetensors fixture returned `[3.5, 8, 1, 1.5, 4, 2]` exactly. The replacement binary archive passes package validation; its single memory-checked probe stopped before dispatch on a corrected index-field ordering mismatch and was not retried |
+| OCaml Metal serving loader and dispatch | partial; binary Q8 schedule executes | At 61% free memory, the native executor loaded the replacement archive, resolved runtime and static schedule inputs, allocated the output, dispatched the float16 Q8 command, and returned `[3.5, 8, 1, 1.5, 4, 2]` exactly. Pipelines are cached per library; complete model command coverage and batched submission remain open |
 | Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Offline replans of the real use-cache manifests have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 14-kernel/10-kernel metallibs; kernels or zero-cost views for every command and native command interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 

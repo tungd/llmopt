@@ -13,7 +13,19 @@ module Buffer : sig
   val create : runtime:runtime -> bytes:int -> (t, string) result
   val contents : t -> (bytes, string) result
   val byte_length : t -> int
+  val copy : source:t -> destination:t -> (unit, string) result
 end
+
+module Execution : sig
+  type t
+
+  val output : t -> name:string -> Buffer.t option
+  val outputs : t -> (string * Buffer.t) list
+  val kernels : t -> string list
+end
+
+val execute :
+  t -> inputs:(string * Buffer.t) list -> (Execution.t, string) result
 
 val tensor :
   t -> name:string -> (Buffer.t * Weight_archive.Tensor.t, string) result

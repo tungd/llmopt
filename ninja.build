@@ -267,7 +267,7 @@ build _build/q8-serving-example/kernel.metallib: metal_lib _build/q8-serving-exa
 build _build/q8-serving-example/package.ok: package_check _build/q8-serving-example/package.llmopt _build/q8-serving-example/kernel.metallib _build/q8-serving-example/weights.llmopt | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
   directory = _build/q8-serving-example
-build _build/q8-serving-example/ocaml-metal-smoke.json: run_ocaml_metal_smoke _build/q8-serving-example/package.ok | _build/bin/llmopt-ocaml-metal-smoke
+build _build/q8-serving-example/ocaml-metal-smoke.json: run_ocaml_metal_smoke _build/q8-serving-example/package.ok _build/bin/llmopt-ocaml-metal-smoke
   runner = _build/bin/llmopt-ocaml-metal-smoke
   directory = _build/q8-serving-example
 build _build/native/metal-runtime.stamp: native_runtime native/metal_runtime.cpp native/build_metal_runtime.py
