@@ -33,6 +33,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - A Ninja-built PyTorch MPS C++ bridge that loads generated Q8 `.metallib`
   files, binds MPS tensors, and dispatches either the Phase 2 tiled kernel or
   the exact generated dequantization path with PyTorch-MPS linear.
+- An OCaml serving-cache foundation with a mandatory compressed radix tree,
+  hybrid ShortConv-state checkpoints, protected-prefix leases, LRU leaf
+  eviction, and an owned KV-slot allocator. The KV layout is selectable as
+  FP16 or grouped Q8; Q8 is the default serving policy.
 - A direct FX GraphModule MPS executor as the first runtime optimization pass.
 - A racebench-compatible ERS benchsuite with validated warmup/scored traces,
   the adjacent HTTP runner contract, a full 70x6 trace profile, and a natural
@@ -43,8 +47,12 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 The current executable target is PyTorch MPS: the direct callable runs the
 captured FX GraphModule and lets each operation dispatch to MPS. Q8 graphs can
 also activate the generated tiled Metal library through the bridge; unsupported
-operations and inputs use the PyTorch MPS fallback. The boundary is documented
-in [the OKF decision](.okf/decisions/backend-boundary.md).
+operations and inputs use the PyTorch MPS fallback. The intended serving stack
+moves generated-library loading, Metal dispatch, request scheduling, and cache
+ownership into OCaml. Its radix/KV ownership layer is implemented; the OCaml
+Metal loader and physical KV-buffer quantize/dequantize path are the next
+runtime slice. The boundary is documented in
+[the OKF architecture](.okf/architecture.md).
 
 ## Build and run
 
@@ -136,8 +144,16 @@ typed graph + schedule timeline
         │
         ├── textual LLVM IR (inspection / future lowering)
         ├── direct PyTorch MPS FX executor (first optimization pass)
-        ├── generated Q8 Metal library + MPS bridge (runtime slice)
+        ├── generated Q8 Metal library + MPS bridge (current execution probe)
         └── tiled Metal Shading Language (artifact)
+
+generated serving package (planned boundary)
+        │ metallib + graph/weight/cache metadata
+        ▼
+OCaml serving runtime
+        ├── mandatory radix prefix cache (implemented)
+        ├── FP16 or Q8 KV ownership/layout (implemented; Q8 default)
+        └── Metal library loading and command dispatch (next slice)
 ```
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,

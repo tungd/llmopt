@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-08-23
+* **OCaml serving cache**: Added the mandatory compressed radix prefix cache, hybrid ShortConv-state checkpoints, protected-prefix leases, LRU leaf eviction, and the owned KV/checkpoint allocator. Serving KV layout is selectable as FP16 or grouped Q8, with Q8 as the default policy.
+* **Verification**: Focused tests cover LFM2.5 byte accounting, branching, exact prefix reuse, checkpoint-safe edge splitting, namespace isolation, page-sized keys, eviction protection, and allocator ownership. The OCaml Metal loader and physical Q8 KV-buffer path remain separate open slices.
+
 ## 2026-08-22
 * **Target consolidation & bandwidth physics**: Documented [decisions/target-lfm25-350m-bandwidth.md](decisions/target-lfm25-350m-bandwidth.md). Analyzed the Viettel Racebench ERS formula constraints ($\text{TPOT} \le 10\text{ ms}$, $\text{TTFT} \le 400\text{ ms}$) against Apple Silicon memory bandwidth (90–200 GB/s). Proved that 2.6B is physically bounded at $\approx 28.8\text{ ms}$ minimum TPOT ($< 35\text{ tok/s}$, $\text{tpot\_score} = 0.0$), whereas 350M has the physical memory bandwidth headroom ($\approx 1.75 - 3.88\text{ ms}$ TPOT, $250 - 600\text{ tok/s}$) to clear the benchmark floor and achieve a score $> 50$. Formally consolidated all docs, `Lfm25.Config.default` (10 conv + 6 attention layers, `hidden_size=1024`, `intermediate_size=6656`), test fixtures, and benchmark rules onto `LiquidAI/LFM2.5-350M`.
 

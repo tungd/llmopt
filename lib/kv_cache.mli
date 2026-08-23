@@ -1,0 +1,78 @@
+module Format : sig
+  type t = F16 | Q8 of { group_size : int }
+
+  val default : t
+  val f16 : t
+  val q8 : group_size:int -> (t, string) result
+  val to_string : t -> string
+  val bytes_for_elements : t -> elements:int -> int
+end
+
+module Layout : sig
+  type t
+
+  val create :
+    format:Format.t ->
+    attention_layers:int ->
+    kv_heads:int ->
+    head_dim:int ->
+    recurrent_layers:int ->
+    recurrent_width:int ->
+    recurrent_window:int ->
+    (t, string) result
+
+  val format : t -> Format.t
+  val bytes_per_token : t -> int
+  val bytes_per_checkpoint : t -> int
+end
+
+module Slot : sig
+  type t
+
+  val to_int : t -> int
+end
+
+module Checkpoint : sig
+  type t
+
+  val to_int : t -> int
+end
+
+module Config : sig
+  type t
+
+  val create :
+    layout:Layout.t ->
+    token_capacity:int ->
+    checkpoint_capacity:int ->
+    (t, string) result
+
+  val layout : t -> Layout.t
+  val token_capacity : t -> int
+  val checkpoint_capacity : t -> int
+end
+
+module Stats : sig
+  type t = {
+    token_capacity : int;
+    used_tokens : int;
+    checkpoint_capacity : int;
+    used_checkpoints : int;
+    allocated_bytes : int;
+  }
+end
+
+type t
+
+type error =
+  | Token_capacity_exhausted of { requested : int; available : int }
+  | Checkpoint_capacity_exhausted
+  | Invalid_release of string
+
+val create : Config.t -> t
+val reserve_tokens : t -> int -> (Slot.t array, error) result
+val release_tokens : t -> Slot.t array -> (unit, error) result
+val reserve_checkpoint : t -> (Checkpoint.t, error) result
+val release_checkpoint : t -> Checkpoint.t -> (unit, error) result
+val stats : t -> Stats.t
+val error_to_string : error -> string

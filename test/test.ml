@@ -2,6 +2,20 @@ let fail message = raise (Failure message)
 
 let expect condition message = if not condition then fail message
 
+let expect_ok = function
+  | Ok value -> value
+  | Error message -> fail message
+
+let expect_kv_ok = function
+  | Ok value -> value
+  | Error error -> fail (Kv_cache.error_to_string error)
+
+let expect_int_array actual expected message =
+  expect
+    (Array.length actual = Array.length expected &&
+     Array.for_all2 ( = ) actual expected)
+    message
+
 let () =
   let left = Shape.of_ints_exn ~rows:2 ~cols:4 in
   let right = Shape.of_ints_exn ~rows:4 ~cols:3 in
@@ -131,4 +145,118 @@ let () =
   expect
     (Lfm25.Config.default.quantization = Ir.Quantization.Q8_weight_only)
     "LFM2.5 default quantization";
+  let q8_kv = expect_ok (Kv_cache.Format.q8 ~group_size:64) in
+  let f16_serving =
+    expect_ok
+      (Serving_cache.Config.create ~model:Lfm25.Config.default
+         ~kv_format:Kv_cache.Format.f16 ~token_capacity:32
+         ~checkpoint_capacity:8 ~page_size:1 ())
+  in
+  let q8_serving =
+    expect_ok
+      (Serving_cache.Config.create ~model:Lfm25.Config.default
+         ~token_capacity:32 ~checkpoint_capacity:8 ~page_size:1 ())
+  in
+  let f16_layout = Kv_cache.Config.layout (Serving_cache.Config.kv f16_serving) in
+  let q8_layout = Kv_cache.Config.layout (Serving_cache.Config.kv q8_serving) in
+  expect (Kv_cache.Layout.bytes_per_token f16_layout = 12_288)
+    "F16 KV bytes per token";
+  expect (Kv_cache.Layout.bytes_per_checkpoint f16_layout = 61_440)
+    "F16 ShortConv checkpoint bytes";
+  expect (Kv_cache.Layout.bytes_per_token q8_layout = 6_336)
+    "Q8 KV bytes per token";
+  expect (Kv_cache.Layout.bytes_per_checkpoint q8_layout = 31_680)
+    "Q8 ShortConv checkpoint bytes";
+  expect (Kv_cache.Layout.format q8_layout = q8_kv)
+    "Q8 group-64 is the default serving KV format";
+  let serving = Serving_cache.create q8_serving in
+  let slots_123 = expect_kv_ok (Serving_cache.reserve_tokens serving 3) in
+  let checkpoint_123 = expect_kv_ok (Serving_cache.reserve_checkpoint serving) in
+  expect
+    (expect_ok
+       (Serving_cache.insert serving ~tokens:[| 1; 2; 3 |] ~slots:slots_123
+          ~checkpoint:checkpoint_123 ()) = 0)
+    "first radix insert has no prefix";
+  let slots_1245 = expect_kv_ok (Serving_cache.reserve_tokens serving 4) in
+  let checkpoint_1245 = expect_kv_ok (Serving_cache.reserve_checkpoint serving) in
+  expect
+    (expect_ok
+       (Serving_cache.insert serving ~tokens:[| 1; 2; 4; 5 |]
+          ~slots:slots_1245 ~checkpoint:checkpoint_1245 ()) = 2)
+    "branch insert reuses two KV slots";
+  expect_ok (Serving_cache.validate serving);
+  let exact =
+    Serving_cache.match_prefix serving ~reserve_tail:1 [| 1; 2; 4; 5; 9 |]
+  in
+  expect (Serving_cache.Match.tokens exact = 4) "exact radix prefix length";
+  expect
+    (Serving_cache.Match.checkpoint exact = Some checkpoint_1245)
+    "exact radix checkpoint";
+  expect_int_array
+    (Array.map Kv_cache.Slot.to_int (Serving_cache.Match.slots exact))
+    [| Kv_cache.Slot.to_int slots_123.(0); Kv_cache.Slot.to_int slots_123.(1);
+       Kv_cache.Slot.to_int slots_1245.(2); Kv_cache.Slot.to_int slots_1245.(3) |]
+    "radix branch keeps canonical KV slots";
+  expect_ok (Serving_cache.release_match serving exact);
+  let split_without_checkpoint =
+    Serving_cache.match_prefix serving ~reserve_tail:0 [| 1; 2; 4; 9 |]
+  in
+  expect (Serving_cache.Match.tokens split_without_checkpoint = 0)
+    "split node does not invent a recurrent checkpoint";
+  expect_ok (Serving_cache.release_match serving split_without_checkpoint);
+  let slots_12 = expect_kv_ok (Serving_cache.reserve_tokens serving 2) in
+  let checkpoint_12 = expect_kv_ok (Serving_cache.reserve_checkpoint serving) in
+  expect
+    (expect_ok
+       (Serving_cache.insert serving ~tokens:[| 1; 2 |] ~slots:slots_12
+          ~checkpoint:checkpoint_12 ()) = 2)
+    "internal checkpoint insert reuses full prefix";
+  let fallback =
+    Serving_cache.match_prefix serving ~reserve_tail:0 [| 1; 2; 4; 9 |]
+  in
+  expect (Serving_cache.Match.tokens fallback = 2)
+    "hybrid lookup falls back to deepest valid checkpoint";
+  expect (Serving_cache.Match.checkpoint fallback = Some checkpoint_12)
+    "hybrid fallback checkpoint";
+  expect_ok (Serving_cache.release_match serving fallback);
+  let isolated =
+    Serving_cache.match_prefix serving ~namespace:"adapter-a" ~reserve_tail:0
+      [| 1; 2; 3 |]
+  in
+  expect (Serving_cache.Match.tokens isolated = 0) "radix namespace isolation";
+  expect_ok (Serving_cache.release_match serving isolated);
+  let protected =
+    Serving_cache.match_prefix serving ~reserve_tail:0 [| 1; 2; 3; 9 |]
+  in
+  expect (Serving_cache.Match.tokens protected = 3) "protected radix branch";
+  expect (expect_ok (Serving_cache.evict serving ~target_tokens:32) = 2)
+    "eviction skips leased branch";
+  expect_ok (Serving_cache.validate serving);
+  expect_ok (Serving_cache.release_match serving protected);
+  expect (expect_ok (Serving_cache.evict serving ~target_tokens:32) = 3)
+    "released branch becomes evictable";
+  expect_ok (Serving_cache.validate serving);
+  let final_stats = Serving_cache.stats serving in
+  expect (final_stats.radix.cached_tokens = 0) "radix cache fully evicted";
+  expect (final_stats.kv.used_tokens = 0) "KV token pool fully released";
+  expect (final_stats.kv.used_checkpoints = 0)
+    "KV checkpoint pool fully released";
+  let page_cache = expect_ok (Radix_cache.create ~page_size:2) in
+  ignore
+    (expect_ok
+       (Radix_cache.insert page_cache
+          ~key:(Radix_cache.Key.create [| 7; 8 |]) ~values:[| 70; 80 |]
+          ~checkpoint:1));
+  ignore
+    (expect_ok
+       (Radix_cache.insert page_cache
+          ~key:(Radix_cache.Key.create [| 7; 9 |]) ~values:[| 70; 90 |]
+          ~checkpoint:2));
+  let page_match =
+    Radix_cache.match_prefix page_cache (Radix_cache.Key.create [| 7; 9 |])
+  in
+  expect (Radix_cache.matched_tokens page_match = 2)
+    "page-sized child key preserves branches";
+  expect_ok (Radix_cache.release page_cache page_match);
+  expect_ok (Radix_cache.validate page_cache);
   print_endline "llmopt tests passed"

@@ -136,6 +136,15 @@ build _build/ocaml/llvm_ir.cmx: ocaml_module lib/llvm_ir.ml | _build/ocaml/llvm_
 build _build/ocaml/lfm25.cmi: ocaml_interface lib/lfm25.mli | _build/ocaml/ir.cmi
 build _build/ocaml/lfm25.cmx: ocaml_module lib/lfm25.ml | _build/ocaml/lfm25.cmi _build/ocaml/ir.cmx _build/ocaml/shape.cmx _build/ocaml/tile.cmx
 
+build _build/ocaml/kv_cache.cmi: ocaml_interface lib/kv_cache.mli
+build _build/ocaml/kv_cache.cmx: ocaml_module lib/kv_cache.ml | _build/ocaml/kv_cache.cmi
+
+build _build/ocaml/radix_cache.cmi: ocaml_interface lib/radix_cache.mli
+build _build/ocaml/radix_cache.cmx: ocaml_module lib/radix_cache.ml | _build/ocaml/radix_cache.cmi
+
+build _build/ocaml/serving_cache.cmi: ocaml_interface lib/serving_cache.mli | _build/ocaml/lfm25.cmi _build/ocaml/kv_cache.cmi _build/ocaml/radix_cache.cmi
+build _build/ocaml/serving_cache.cmx: ocaml_module lib/serving_cache.ml | _build/ocaml/serving_cache.cmi _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx
+
 build _build/ocaml/fx.cmi: ocaml_interface lib/fx.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
 build _build/ocaml/fx.cmx: ocaml_module lib/fx.ml | _build/ocaml/fx.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx
 
@@ -143,10 +152,10 @@ build _build/ocaml/fx_plan.cmi: ocaml_interface lib/fx_plan.mli | _build/ocaml/f
 build _build/ocaml/fx_plan.cmx: ocaml_module lib/fx_plan.ml | _build/ocaml/fx_plan.cmi _build/ocaml/fx.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/ir.cmx _build/ocaml/shape.cmx
 
 build _build/ocaml/demo.cmx: ocaml_module bin/demo.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
-build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/demo.cmx
+build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/demo.cmx
 
-build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
-build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/test.cmx
+build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx
+build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/test.cmx
 
 build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/passes.cmx
 build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/fx_compile.cmx
