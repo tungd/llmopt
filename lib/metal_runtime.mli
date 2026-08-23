@@ -11,6 +11,7 @@ module Buffer : sig
 
   val of_bytes : runtime:runtime -> bytes -> (t, string) result
   val create : runtime:runtime -> bytes:int -> (t, string) result
+  val view : parent:t -> offset:int -> bytes:int -> (t, string) result
   val contents : t -> (bytes, string) result
   val byte_length : t -> int
   val copy : source:t -> destination:t -> (unit, string) result
@@ -22,6 +23,7 @@ module Execution : sig
   val output : t -> name:string -> Buffer.t option
   val outputs : t -> (string * Buffer.t) list
   val kernels : t -> string list
+  val workspace_bytes : t -> int
 end
 
 val execute :

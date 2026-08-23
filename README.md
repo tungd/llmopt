@@ -50,7 +50,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   materializes transpose, index, expand, concat, and roll while treating dense
   view, reshape, unsqueeze, and contiguous commands as metadata aliases. The
   decode-only recurrent path additionally executes float16 sum and functional
-  normalized-slice update.
+  normalized-slice update. A pure alias-aware liveness pass assigns
+  256-byte-aligned offsets to materialized values; the executor allocates one
+  retained Metal workspace and returns buffer views instead of allocating one
+  buffer per intermediate.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -101,8 +104,10 @@ separate prefill and one-token decode graphs with one physical
 programs compile and their serving packages validate all 241 static bindings.
 Native execution now covers every built-in, cast, pointwise, movement,
 reduction, recurrent-update, and final float16-linear kernel family required by
-those packages, but full-model and batched command-buffer execution remain
-open. Exact parity was computed during the
+those packages. Offline planning reduces the prefill workspace from 9,855,488
+aligned bytes without reuse to a 1,153,792-byte high-water mark and decode from
+2,151,680 to 271,360 bytes. Full-model and batched command-buffer execution
+remain open. Exact parity was computed during the
 capture process but its result file was not written after a post-capture
 package-check failure, so this capture adds no parity claim. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
@@ -148,7 +153,8 @@ encodes `python/examples/linear_fx.json` into `graph.llmopt`, plans that binary
 input in OCaml, and validates its LLVM and Metal artifacts, metallib, and
 binary serving package. `q8-fx-smoke` performs the same cross-language binary
 validation for the Q8 fixture. `_build/bin/llmopt-package-check` validates
-the versioned command stream, kernel ABI, tensor bindings, and runtime files.
+the versioned command stream, kernel ABI, tensor bindings, runtime files, and
+the liveness workspace plan; its report includes high-water and unreused bytes.
 `rms-norm-smoke` captures and fuses a model-shaped RMSNorm chain, then compiles
 the emitted float32-to-float16 and float16 kernels with Xcode Metal.
 `short-conv-smoke` captures the model-shaped depthwise prefill convolution and
@@ -173,8 +179,8 @@ compiles its 39 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
 executes 38 kernels across matmul, linear, normalization, convolution, attention,
 embedding, position/mask, fill, cast, pointwise, and movement forms and checks
-all 39 outputs, including float16 linear, sum, and slice update, byte for byte. It writes a
-plain-text report.
+all 39 outputs, including float16 linear, sum, and slice update, byte for byte
+from one 9,728-byte workspace. It writes a plain-text report.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -250,7 +256,8 @@ OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout (implemented; Q8 default)
         ├── Metal package loading/mapped weights/per-family dispatch (implemented)
-        └── full schedule execution, physical KV, and request loop (next)
+        ├── alias-aware liveness workspace allocation (implemented)
+        └── full model execution, physical KV, and request loop (next)
 ```
 
 `graph.llmopt` is a compile-time transport and `plan.txt` is a compiler

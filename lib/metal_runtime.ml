@@ -119,6 +119,9 @@ module Buffer = struct
   let create ~runtime ~bytes =
     protect (fun () -> create_buffer_stub runtime.context bytes)
 
+  let view ~parent ~offset ~bytes =
+    protect (fun () -> buffer_view_stub parent offset bytes)
+
   let contents buffer = protect (fun () -> buffer_contents_stub buffer)
   let byte_length = buffer_length_stub
 
@@ -519,30 +522,24 @@ module Execution = struct
   type t = {
     outputs : (string * Buffer.t) list;
     kernels : string list;
+    workspace_bytes : int;
   }
 
   let output execution ~name = List.assoc_opt name execution.outputs
   let outputs execution = execution.outputs
   let kernels execution = execution.kernels
+  let workspace_bytes execution = execution.workspace_bytes
 end
 
 type execution_state = {
   values : Buffer.t Value_map.t;
   outputs_rev : (string * Buffer.t) list;
   kernels_rev : string list;
+  memory_plan : Serving_memory_plan.t;
+  workspace : Buffer.t option;
 }
 
-let dtype_byte_width = function
-  | Ir.Dtype.Float32 | Ir.Dtype.Int32 -> 4
-  | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 -> 2
-  | Ir.Dtype.Int64 -> 8
-  | Ir.Dtype.Int8 | Ir.Dtype.Bool -> 1
-
-let value_byte_length value =
-  let elements = Tensor_shape.numel (Ir.Value.logical_shape value) in
-  let width = dtype_byte_width (Ir.Value.dtype value) in
-  if elements > max_int / width then Error "runtime tensor byte length overflows"
-  else Ok (elements * width)
+let value_byte_length = Serving_memory_plan.value_bytes
 
 let validate_buffer value buffer =
   let* expected = value_byte_length value in
@@ -581,6 +578,21 @@ let find_values state values =
 
 let bind_value state value buffer =
   { state with values = Value_map.add (Ir.Value.id value) buffer state.values }
+
+let workspace_buffer state value =
+  match
+    Serving_memory_plan.allocation state.memory_plan value,
+    state.workspace
+  with
+  | Some allocation, Some workspace ->
+      Buffer.view ~parent:workspace
+        ~offset:(Serving_memory_plan.Allocation.offset allocation)
+        ~bytes:(Serving_memory_plan.Allocation.bytes allocation)
+  | Some _, None -> Error "workspace allocation exists without a Metal buffer"
+  | None, _ ->
+      Error
+        (Printf.sprintf "runtime value %d has no workspace allocation"
+           (Ir.Value.id value |> Ir.Value_id.to_int))
 
 let round_up value multiple =
   if value > max_int - (multiple - 1) then
@@ -622,8 +634,7 @@ let dispatch_output ?name runtime state output ~operation ~input_dtype ~buffers
     ~parameters ~grid =
   let output_dtype = Ir.Value.dtype output in
   let* entry = kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype in
-  let* bytes = value_byte_length output in
-  let* output_buffer = Buffer.create ~runtime ~bytes in
+  let* output_buffer = workspace_buffer state output in
   let* kernel =
     dispatch runtime entry ~buffers:(buffers @ [ output_buffer ]) ~parameters
       ~grid
@@ -752,12 +763,19 @@ let update_slice_kernel destination source output =
 let execute runtime ~inputs =
   let* runtime_inputs = runtime_input_map inputs in
   let schedule = Serving_package.schedule runtime.package in
+  let* memory_plan = Serving_memory_plan.create schedule in
+  let workspace_bytes = Serving_memory_plan.workspace_bytes memory_plan in
+  let* workspace =
+    if workspace_bytes = 0 then Ok None
+    else Buffer.create ~runtime ~bytes:workspace_bytes |> Result.map Option.some
+  in
   let rec run state = function
     | [] ->
         Ok
           {
             Execution.outputs = List.rev state.outputs_rev;
             kernels = List.rev state.kernels_rev;
+            workspace_bytes;
           }
     | command :: rest ->
         let node_id = Serving_schedule.Command.node_id command in
@@ -789,8 +807,7 @@ let execute runtime ~inputs =
             let* () = validate_buffer output buffer in
             continue (bind_value state output buffer)
         | Ir.Op.Alloc _, [], Some output ->
-            let* bytes = value_byte_length output in
-            let* buffer = Buffer.create ~runtime ~bytes in
+            let* buffer = workspace_buffer state output in
             continue (bind_value state output buffer)
         | Ir.Op.Copy _, [ source; destination ], None ->
             let* source = find_value state source in
@@ -1220,8 +1237,7 @@ let execute runtime ~inputs =
                   Ok (input, weight, scale, Some bias)
               | _ -> Error "Q8 schedule command has inconsistent bias inputs"
             in
-            let* bytes = value_byte_length output in
-            let* output_buffer = Buffer.create ~runtime ~bytes in
+            let* output_buffer = workspace_buffer state output in
             let* kernel =
               dispatch_q8_linear runtime ~dtype:(Ir.Value.dtype output) ~input
                 ~weight ~scale ~bias ~output:output_buffer ~m ~n ~k
@@ -1234,5 +1250,12 @@ let execute runtime ~inputs =
               { state with outputs_rev = (name, buffer) :: state.outputs_rev }
         | _ -> unsupported ())
   in
-  run { values = Value_map.empty; outputs_rev = []; kernels_rev = [] }
+  run
+    {
+      values = Value_map.empty;
+      outputs_rev = [];
+      kernels_rev = [];
+      memory_plan;
+      workspace;
+    }
     (Serving_schedule.commands schedule)

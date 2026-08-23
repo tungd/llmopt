@@ -988,6 +988,139 @@ let () =
            && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16
            && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
     "float16 linear declares its exact kernel ABI";
+  let workspace_graph = Ir.Graph.create () in
+  let workspace_shape = Tensor_shape.of_ints_exn [ 128 ] in
+  let workspace_input name =
+    Ir.Graph.tensor_input workspace_graph ~name
+      ~source:Ir.Input_source.Runtime ~shape:workspace_shape
+      ~dtype:Ir.Dtype.Float16
+  in
+  let workspace_output operation inputs =
+    let output =
+      Ir.Graph.fresh_tensor_value workspace_graph ~shape:workspace_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append workspace_graph ~op:operation ~inputs ~output:(Some output);
+    output
+  in
+  let workspace_x = workspace_input "workspace_x" in
+  let workspace_y = workspace_input "workspace_y" in
+  let workspace_a =
+    workspace_output
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Neg, workspace_x))))
+      [ workspace_x ]
+  in
+  let workspace_a_alias =
+    workspace_output
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape))
+      [ workspace_a ]
+  in
+  let workspace_b =
+    workspace_output
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Neg, workspace_y))))
+      [ workspace_y ]
+  in
+  let workspace_c =
+    workspace_output
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor workspace_a_alias,
+                 Ir.Pointwise.Tensor workspace_b ))))
+      [ workspace_a_alias; workspace_b ]
+  in
+  let workspace_d =
+    workspace_output
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Neg, workspace_c))))
+      [ workspace_c ]
+  in
+  Ir.Graph.add_output workspace_graph ~name:"workspace_output" workspace_d;
+  let workspace_schedule =
+    workspace_graph |> Serving_schedule.of_graph |> expect_ok
+  in
+  let workspace_plan =
+    workspace_schedule |> Serving_memory_plan.create |> expect_ok
+  in
+  let workspace_allocation value =
+    match Serving_memory_plan.allocation workspace_plan value with
+    | Some allocation -> allocation
+    | None -> fail "materialized workspace value has no allocation"
+  in
+  let a_allocation = workspace_allocation workspace_a in
+  let alias_allocation = workspace_allocation workspace_a_alias in
+  let b_allocation = workspace_allocation workspace_b in
+  let c_allocation = workspace_allocation workspace_c in
+  let d_allocation = workspace_allocation workspace_d in
+  expect
+    (Serving_memory_plan.allocation workspace_plan workspace_x = None)
+    "external runtime input is not allocated in the workspace";
+  expect
+    (Serving_memory_plan.Allocation.offset a_allocation
+    = Serving_memory_plan.Allocation.offset alias_allocation)
+    "metadata reshape aliases its input allocation";
+  expect
+    (Serving_memory_plan.Allocation.offset a_allocation
+    <> Serving_memory_plan.Allocation.offset b_allocation
+    && Serving_memory_plan.Allocation.offset a_allocation
+       <> Serving_memory_plan.Allocation.offset c_allocation
+    && Serving_memory_plan.Allocation.offset b_allocation
+       <> Serving_memory_plan.Allocation.offset c_allocation)
+    "simultaneously live values have disjoint workspace allocations";
+  expect
+    (Serving_memory_plan.Allocation.offset d_allocation
+    = Serving_memory_plan.Allocation.offset a_allocation)
+    "expired workspace allocation is reused";
+  expect
+    (Serving_memory_plan.workspace_bytes workspace_plan = 768)
+    "workspace plan records its liveness high-water mark";
+  expect
+    (Serving_memory_plan.bytes_without_reuse workspace_plan = 1_024)
+    "workspace plan records allocation bytes without reuse";
+  expect
+    (Serving_memory_plan.allocation_count workspace_plan = 4)
+    "workspace plan excludes metadata aliases from allocation count";
+  let pinned_graph = Ir.Graph.create () in
+  let pinned_input =
+    Ir.Graph.tensor_input pinned_graph ~name:"pinned_input"
+      ~source:Ir.Input_source.Runtime ~shape:workspace_shape
+      ~dtype:Ir.Dtype.Float16
+  in
+  let pinned_output () =
+    let output =
+      Ir.Graph.fresh_tensor_value pinned_graph ~shape:workspace_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append pinned_graph
+      ~op:
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary (Ir.Pointwise.Neg, pinned_input))))
+      ~inputs:[ pinned_input ] ~output:(Some output);
+    output
+  in
+  let pinned_early = pinned_output () in
+  Ir.Graph.add_output pinned_graph ~name:"pinned_early" pinned_early;
+  let pinned_late = pinned_output () in
+  Ir.Graph.add_output pinned_graph ~name:"pinned_late" pinned_late;
+  let pinned_plan =
+    pinned_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_memory_plan.create |> expect_ok
+  in
+  let pinned_offset value =
+    match Serving_memory_plan.allocation pinned_plan value with
+    | Some allocation -> Serving_memory_plan.Allocation.offset allocation
+    | None -> fail "returned output has no workspace allocation"
+  in
+  expect
+    (pinned_offset pinned_early <> pinned_offset pinned_late)
+    "returned outputs remain live until schedule completion";
   let weight_archive_path = Filename.temp_file "llmopt-weights-" ".llmopt" in
   Fun.protect
     ~finally:(fun () -> Sys.remove weight_archive_path)

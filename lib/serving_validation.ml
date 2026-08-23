@@ -47,9 +47,16 @@ let validate ~package ~archive =
         | Some archive ->
             Result.bind (validate_tensor archive input) (fun () -> inputs rest))
   in
-  match Serving_package.stage package, archive with
-  | Serving_package.Stage.Serving, None ->
-      Error "serving package tensor archive was not loaded"
-  | Serving_package.Stage.Compiled_graph, Some _ ->
-      Error "compiled-graph package unexpectedly loaded a tensor archive"
-  | _ -> inputs (Serving_package.schedule package |> Serving_schedule.tensor_inputs)
+  let result =
+    match Serving_package.stage package, archive with
+    | Serving_package.Stage.Serving, None ->
+        Error "serving package tensor archive was not loaded"
+    | Serving_package.Stage.Compiled_graph, Some _ ->
+        Error "compiled-graph package unexpectedly loaded a tensor archive"
+    | _ ->
+        inputs
+          (Serving_package.schedule package |> Serving_schedule.tensor_inputs)
+  in
+  Result.bind result (fun () ->
+      Serving_package.schedule package |> Serving_memory_plan.create
+      |> Result.map ignore)

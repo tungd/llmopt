@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T22:43:43Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T22:57:37Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -237,6 +237,18 @@ partial sums with `simd_sum`, and stores float16. A 129-command fixed package
 started at 59% free system memory with no model process, dispatched 38 kernels
 on Apple M4 Pro, and matched all 39 outputs byte-for-byte. Its 6,861-byte package
 and 174,942-byte metallib total 181,803 bytes; this was not a model run.
+
+Native execution now derives a pure alias-aware liveness plan from the typed
+schedule before opening its workspace. Runtime and tensor-archive inputs remain
+external; metadata-only movement and identity casts share canonical ownership;
+materialized values receive deterministic 256-byte-aligned offsets; and named
+outputs remain live until execution completes. The runtime allocates one Metal
+workspace and binds retained views instead of retaining one independent buffer
+per intermediate. Offline package checks report 1,153,792 bytes for the
+872-command prefill high-water mark versus 9,855,488 aligned bytes without
+reuse, and 271,360 versus 2,151,680 bytes for decode. One 58%-free-memory fixed
+device run used a 9,728-byte workspace and preserved all 39 exact outputs. No
+complete model schedule ran in that probe.
 
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,

@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T22:43:43Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T22:57:37Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -42,8 +42,8 @@ The authoritative end state and requirement-level evidence are tracked in the
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
 | Versioned generated package ABI | partial; ABI-v6 prefill and decode packages validated | Package ABI v6 retains ABI-v2/v3/v4/v5 reads. Binary-input replanning writes 872-command/38-kernel prefill and 926-command/36-kernel decode packages with zero opaque operations and 241 validated bindings each, including the final float16 projection; complete native interpretation remains open |
 | OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
-| OCaml Metal serving loader and dispatch | partial; every captured kernel family has an exact fixture | The archive-backed Q8 schedule remains exact. The ABI-v6 fixture has 129 commands and 39 declarations; one 59%-free-memory Apple M4 Pro run dispatched 38 kernels and matched 39/39 outputs, including float16 vocabulary projection, sum, and functional slice update. Full-schedule execution and batched submission remain open |
-| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Binary-input ABI-v6 replans have 872 prefill and 926 decode commands, both zero opaque. Their serving packages validate one shared 241-tensor archive and compiled 38-kernel/36-kernel metallibs; every observed kernel family is declared, while full native interpretation remains open |
+| OCaml Metal serving loader and dispatch | partial; every captured kernel family has an exact fixture and workspace allocation is live | The archive-backed Q8 schedule remains exact. The ABI-v6 fixture has 129 commands and 39 declarations; one 58%-free-memory Apple M4 Pro run dispatched 38 kernels from a single 9,728-byte workspace and matched 39/39 outputs. Full-schedule execution and batched submission remain open |
+| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Binary-input ABI-v6 replans have 872 prefill and 926 decode commands, both zero opaque. Their 38-kernel/36-kernel packages validate one shared 241-tensor archive. Alias-aware liveness planning reduces prefill transient storage from 9,855,488 to 1,153,792 bytes and decode from 2,151,680 to 271,360 bytes; neither complete schedule has run |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule

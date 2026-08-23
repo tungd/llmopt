@@ -211,8 +211,13 @@ let () =
     fail
       (Printf.sprintf "native fixture dispatched %d kernels instead of 38"
          (List.length kernels));
+  let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
+  if workspace_bytes <> 9_728 then
+    fail
+      (Printf.sprintf "native fixture workspace is %d bytes instead of 9728"
+         workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 39 exact\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 39 exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
-    (List.length kernels)
+    (List.length kernels) workspace_bytes

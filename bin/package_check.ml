@@ -41,10 +41,20 @@ let () =
             |> Option.value ~default:"none"
           in
           let schedule = Serving_package.schedule package in
+          let memory_plan =
+            match Serving_memory_plan.create schedule with
+            | Ok plan -> plan
+            | Error message ->
+                prerr_endline message;
+                exit 6
+          in
           Printf.printf
-            "valid %s package: %d kernels, %d commands, %d opaque, tensor-store=%s\n"
+            "valid %s package: %d kernels, %d commands, %d opaque, tensor-store=%s, workspace=%d/%d bytes, allocations=%d\n"
             (Serving_package.Stage.to_string (Serving_package.stage package))
             (List.length (Serving_package.kernels package))
             (List.length (Serving_schedule.commands schedule))
             (Serving_schedule.opaque_count schedule)
-            tensor_count)
+            tensor_count
+            (Serving_memory_plan.workspace_bytes memory_plan)
+            (Serving_memory_plan.bytes_without_reuse memory_plan)
+            (Serving_memory_plan.allocation_count memory_plan))
