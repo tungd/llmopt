@@ -24,7 +24,7 @@ let () =
                   tensor_store |> Serving_package.Tensor_store.file
                   |> Serving_package.Artifact.path |> Filename.concat root
                 in
-                (match Safetensors.of_file path with
+                (match Weight_archive.of_file path with
                 | Ok archive -> Some archive
                 | Error message ->
                     prerr_endline message;
@@ -36,7 +36,7 @@ let () =
               exit 5
           | Ok () -> ());
           let tensor_count =
-            archive |> Option.map Safetensors.tensors
+            archive |> Option.map Weight_archive.tensors
             |> Option.map List.length |> Option.map string_of_int
             |> Option.value ~default:"none"
           in

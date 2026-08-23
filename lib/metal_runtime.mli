@@ -16,7 +16,7 @@ module Buffer : sig
 end
 
 val tensor :
-  t -> name:string -> (Buffer.t * Safetensors.Tensor.t, string) result
+  t -> name:string -> (Buffer.t * Weight_archive.Tensor.t, string) result
 
 val dispatch_q8_linear :
   t ->

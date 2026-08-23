@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import metal_runtime
-from .tensor_archive import ArchiveSummary, write_safetensors
+from .tensor_archive import ArchiveSummary, write_archive
 
 
 _compile_counter = itertools.count()
@@ -382,19 +382,15 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
         encoding="utf-8",
     )
     tensor_archive: ArchiveSummary | None = None
-    tensor_store = output_directory / "weights.safetensors"
+    tensor_store = output_directory / "weights.llmopt"
     if captured.tensors:
-        tensor_archive = write_safetensors(
-            captured.tensors,
-            tensor_store,
-            metadata={"producer": "llmopt-dynamo-fx"},
-        )
+        tensor_archive = write_archive(captured.tensors, tensor_store)
     quantization = os.environ.get("LLMOPT_QUANTIZATION", "q8")
     metal_library: Path | None = None
     try:
         compiler_command = [str(compiler)]
         if tensor_archive is not None:
-            compiler_command.extend(["--tensor-store", tensor_store.name])
+            compiler_command.extend(["--weights", tensor_store.name])
         compiler_command.extend([str(manifest), str(output_directory)])
         subprocess.run(
             compiler_command,
@@ -423,7 +419,9 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
                         else {
                             "file": tensor_store.name,
                             "tensors": tensor_archive.tensor_count,
+                            "index_bytes": tensor_archive.index_bytes,
                             "data_bytes": tensor_archive.data_bytes,
+                            "padding_bytes": tensor_archive.padding_bytes,
                             "file_bytes": tensor_archive.file_bytes,
                         }
                     ),

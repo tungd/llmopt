@@ -21,7 +21,7 @@ end
 module Tensor_store : sig
   type t
 
-  val safetensors : file:Artifact.t -> t
+  val weights : file:Artifact.t -> t
   val file : t -> Artifact.t
 end
 

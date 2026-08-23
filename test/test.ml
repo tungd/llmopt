@@ -640,6 +640,56 @@ let () =
   let q8_entries = Metal.Program.kernels q8_program in
   let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
   expect (List.length q8_entries = 4) "Q8 Metal kernel ABI entries";
+  let weight_archive_path = Filename.temp_file "llmopt-weights-" ".llmopt" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove weight_archive_path)
+    (fun () ->
+      let header = Binary.Writer.create () in
+      Binary.Writer.raw_string header "LLMOPTWT";
+      Binary.Writer.u16 header 1;
+      Binary.Writer.u16 header 0;
+      Binary.Writer.u32 header 1;
+      Binary.Writer.u64 header 256;
+      Binary.Writer.u32 header 1;
+      Binary.Writer.u8 header 0;
+      Binary.Writer.u8 header 1;
+      Binary.Writer.u16 header 0;
+      Binary.Writer.raw_string header "x";
+      Binary.Writer.u64 header 2;
+      Binary.Writer.u64 header 256;
+      Binary.Writer.u64 header 8;
+      let encoded_header = Binary.Writer.contents header in
+      let encoded_archive = Bytes.make 264 '\000' in
+      Bytes.blit encoded_header 0 encoded_archive 0
+        (Bytes.length encoded_header);
+      Bytes.set_int32_le encoded_archive 256 (Int32.bits_of_float 1.5);
+      Bytes.set_int32_le encoded_archive 260 (Int32.bits_of_float (-2.));
+      let channel = open_out_bin weight_archive_path in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr channel)
+        (fun () -> output_bytes channel encoded_archive);
+      let archive = expect_ok (Weight_archive.of_file weight_archive_path) in
+      expect (Weight_archive.index_bytes archive = 256)
+        "binary weight archive index size";
+      expect (Weight_archive.file_size archive = 264)
+        "binary weight archive file size";
+      let tensor = Weight_archive.find archive "x" |> Option.get in
+      expect (Weight_archive.Tensor.dtype tensor = Weight_archive.Dtype.F32)
+        "binary weight archive dtype";
+      expect (Weight_archive.Tensor.shape tensor = [ 2 ])
+        "binary weight archive shape";
+      expect (Weight_archive.Tensor.offset tensor = 256)
+        "binary weight archive aligned offset";
+      expect (Weight_archive.Tensor.byte_length tensor = 8)
+        "binary weight archive byte length";
+      Bytes.set encoded_archive 0 '{';
+      let channel = open_out_bin weight_archive_path in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr channel)
+        (fun () -> output_bytes channel encoded_archive);
+      match Weight_archive.of_file weight_archive_path with
+      | Error _ -> ()
+      | Ok _ -> fail "weight archive accepted a JSON-like prefix");
   let package_artifact path =
     expect_ok (Serving_package.Artifact.create path)
   in
@@ -691,8 +741,8 @@ let () =
   | Error _ -> ()
   | Ok _ -> fail "serving package accepted an invalid binary magic");
   let tensor_store =
-    Serving_package.Tensor_store.safetensors
-      ~file:(package_artifact "weights.safetensors")
+    Serving_package.Tensor_store.weights
+      ~file:(package_artifact "weights.llmopt")
   in
   let tensor_graph =
     match
@@ -724,13 +774,16 @@ let () =
     (Serving_package.tensor_store serving_round_trip
     |> Option.map Serving_package.Tensor_store.file
     |> Option.map Serving_package.Artifact.path
-    = Some "weights.safetensors")
-    "serving package keeps one safetensors archive";
+    = Some "weights.llmopt")
+    "serving package keeps one binary weight archive";
   let serving_bytes = Serving_package.to_bytes serving_package in
   let serving_binary = Bytes.to_string serving_bytes in
   expect
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
+  expect
+    (Bytes.get_uint16_le serving_bytes 8 = 2)
+    "serving package uses binary ABI version 2";
   expect
     (not (contains_substring serving_binary "fx.json"))
     "binary serving package excludes FX diagnostics";

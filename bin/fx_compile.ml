@@ -29,7 +29,7 @@ let package_files =
 
 let usage () =
   prerr_endline
-    "usage: llmopt-fx [--tensor-store <weights.safetensors>] \
+    "usage: llmopt-fx [--weights <weights.llmopt>] \
      <fx-manifest.json> <output-directory>";
   exit 64
 
@@ -37,9 +37,9 @@ let () =
   let tensor_store, manifest, output_directory =
     match Array.to_list Sys.argv with
     | [ _; manifest; output_directory ] -> None, manifest, output_directory
-    | [ _; "--tensor-store"; path; manifest; output_directory ] ->
+    | [ _; "--weights"; path; manifest; output_directory ] ->
         Some
-          (Serving_package.Tensor_store.safetensors ~file:(artifact path)),
+          (Serving_package.Tensor_store.weights ~file:(artifact path)),
         manifest,
         output_directory
     | _ -> usage ()

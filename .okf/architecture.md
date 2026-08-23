@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T18:53:41Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T19:39:42Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -33,9 +33,9 @@ sources:
   - id: local-ocaml-runtime
     resource: /lib/metal_runtime.ml
     title: Native OCaml package loader and typed Q8 dispatch
-  - id: local-safetensors
-    resource: /lib/safetensors.ml
-    title: Safetensors metadata parser and tensor index
+  - id: local-weight-archive
+    resource: /lib/weight_archive.ml
+    title: Versioned binary weight-archive parser and tensor index
   - id: local-ocaml-stubs
     resource: /native/ocaml_metal_stubs.m
     title: Metal device, library, shared-buffer, and command bindings
@@ -137,28 +137,33 @@ cache policy, metallib path, and optional tensor-store path. The copied
 `fx.json`, pretty-printed `plan.txt`, MSL, and LLVM IR are diagnostics and are
 not referenced by the serving runtime. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
-tensor store; `--tensor-store weights.safetensors` emits a serving package that
-references exactly one binary tensor archive. Tensor payload metadata remains
-authoritative in that archive rather than being split into per-tensor files.
+tensor store; `--weights weights.llmopt` emits a serving package that references
+exactly one binary tensor archive. Package ABI v2 names weight-archive ABI v1.
+Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
+archive rather than being split into per-tensor files.
 
 When a captured graph contains static tensors, the Python adapter streams them
-into `weights.safetensors` one at a time. This bounds CPU staging to the current
-tensor instead of retaining a second whole-model CPU copy. The real 350M Q8
-capture emitted 241 tensor keys totaling 422,104,704 payload bytes. The OCaml
+into `weights.llmopt` one at a time. The index uses fixed-width little-endian
+fields and each payload starts at a 256-byte boundary; neither the index nor the
+payload is JSON. This bounds CPU staging to the current tensor instead of
+retaining a second whole-model CPU copy. The preceding safetensors-based real
+350M Q8 capture emitted 241 tensor keys totaling 422,104,704 payload bytes; a
+new model capture under the binary archive ABI has not run yet. The OCaml
 package validator resolves every binary-schedule tensor binding against archive
 dtype and N-dimensional shape before runtime loading.
 
 The Ninja-built OCaml runtime consumes that binary package directly, validates
 the metallib, tensor archive, schedule bindings, and declared entry points,
-parses the safetensors index,
-maps the archive once, and creates retained Metal views at tensor byte offsets.
-A standalone 2x3x4 FP32/Q8 fixture bound its int8 weight, FP16 scale, and FP16
-bias from the mapped archive; `llmopt_q8_linear_f32` returned
+parses the binary weight index, maps the archive once, and creates retained
+Metal views at tensor byte offsets. A standalone 2x3x4 FP32/Q8 fixture
+previously bound its int8 weight, FP16 scale, and FP16 bias from the safetensors
+archive; `llmopt_q8_linear_f32` returned
 `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves the binary
-archive-to-command boundary, not complete model execution. A later minimal
-probe repeated the exact result from a directory containing only
-`package.llmopt`, `kernel.metallib`, and `weights.safetensors`, proving that
-neither FX JSON nor the textual plan is part of native startup.
+archive-to-command boundary for the superseded format, not complete model
+execution. The replacement `weights.llmopt` fixture passes cross-language
+writer/parser/package validation. Its one memory-checked native probe stopped
+before Metal dispatch on a now-fixed field-order mismatch and was not retried,
+so there is no device-dispatch result for the replacement archive yet.
 
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,

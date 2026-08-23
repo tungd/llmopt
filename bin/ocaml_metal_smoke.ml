@@ -46,13 +46,13 @@ let () =
   in
   let bias, bias_info = expect_ok (Metal_runtime.tensor runtime ~name:"bias") in
   if
-    Safetensors.Tensor.dtype weight_info <> Safetensors.Dtype.I8
-    || Safetensors.Tensor.shape weight_info <> [ n; k ]
-    || Safetensors.Tensor.dtype scale_info <> Safetensors.Dtype.F16
-    || Safetensors.Tensor.shape scale_info <> [ 1; n ]
-    || Safetensors.Tensor.dtype bias_info <> Safetensors.Dtype.F16
-    || Safetensors.Tensor.shape bias_info <> [ 1; n ]
-  then fail "safetensors Q8 fixture metadata mismatch";
+    Weight_archive.Tensor.dtype weight_info <> Weight_archive.Dtype.I8
+    || Weight_archive.Tensor.shape weight_info <> [ n; k ]
+    || Weight_archive.Tensor.dtype scale_info <> Weight_archive.Dtype.F16
+    || Weight_archive.Tensor.shape scale_info <> [ 1; n ]
+    || Weight_archive.Tensor.dtype bias_info <> Weight_archive.Dtype.F16
+    || Weight_archive.Tensor.shape bias_info <> [ 1; n ]
+  then fail "binary Q8 weight fixture metadata mismatch";
   let output =
     expect_ok (Metal_runtime.Buffer.create ~runtime ~bytes:(m * n * 4))
   in
@@ -82,6 +82,6 @@ let () =
         ("kernel", `String kernel);
         ("shape", `List [ `Int m; `Int n; `Int k ]);
         ("output", `List (Array.to_list (Array.map (fun value -> `Float value) actual)));
-        ("tensor_store", `String "weights.safetensors");
+        ("tensor_store", `String "weights.llmopt");
         ("dispatch", `String "ocaml-metal-direct") ]);
   output_char stdout '\n'

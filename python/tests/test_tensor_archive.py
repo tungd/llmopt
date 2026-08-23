@@ -2,31 +2,66 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import struct
 from pathlib import Path
 
 import torch
-from safetensors import safe_open
 
 from llmopt_backend import capture_from_fx
-from llmopt_backend.tensor_archive import write_safetensors
+from llmopt_backend.tensor_archive import ALIGNMENT, MAGIC, VERSION, write_archive
 
 
 class TensorArchiveTests(unittest.TestCase):
-    def test_streaming_archive_round_trips_with_official_reader(self) -> None:
+    def test_streaming_archive_has_binary_index_and_exact_payloads(self) -> None:
         tensors = {
             "weight_q8": torch.tensor([[1, -2], [3, 4]], dtype=torch.int8),
             "scale": torch.tensor([0.5, 1.0], dtype=torch.float16),
             "counter": torch.tensor([7], dtype=torch.int64),
         }
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "weights.safetensors"
-            summary = write_safetensors(tensors, path, metadata={"test": "streaming"})
-            with safe_open(path, framework="pt", device="cpu") as archive:
-                self.assertEqual(set(archive.keys()), set(tensors))
-                for name, expected in tensors.items():
-                    torch.testing.assert_close(archive.get_tensor(name), expected)
-                self.assertEqual(archive.metadata()["test"], "streaming")
+            path = Path(directory) / "weights.llmopt"
+            summary = write_archive(tensors, path)
+            contents = path.read_bytes()
+            magic, version, flags, count, data_start = struct.unpack_from(
+                "<8sHHIQ", contents, 0
+            )
+            self.assertEqual((magic, version, flags), (MAGIC, VERSION, 0))
+            self.assertEqual(count, 3)
+            self.assertEqual(data_start % ALIGNMENT, 0)
+            cursor = struct.calcsize("<8sHHIQ")
+            decoded: dict[str, torch.Tensor] = {}
+            dtype_by_tag = {
+                0: torch.float32,
+                1: torch.float16,
+                2: torch.bfloat16,
+                3: torch.int64,
+                4: torch.int32,
+                5: torch.int8,
+                6: torch.bool,
+            }
+            for _ in range(count):
+                name_length, dtype_tag, rank, reserved = struct.unpack_from(
+                    "<IBBH", contents, cursor
+                )
+                cursor += struct.calcsize("<IBBH")
+                self.assertEqual(reserved, 0)
+                name = contents[cursor : cursor + name_length].decode("utf-8")
+                cursor += name_length
+                shape = struct.unpack_from(f"<{rank}Q", contents, cursor)
+                cursor += 8 * rank
+                offset, byte_length = struct.unpack_from("<QQ", contents, cursor)
+                cursor += 16
+                self.assertEqual(offset % ALIGNMENT, 0)
+                decoded[name] = torch.frombuffer(
+                    bytearray(contents[offset : offset + byte_length]),
+                    dtype=dtype_by_tag[dtype_tag],
+                ).reshape(shape)
+            self.assertFalse(any(contents[cursor:data_start]))
+            self.assertEqual(set(decoded), set(tensors))
+            for name, expected in tensors.items():
+                torch.testing.assert_close(decoded[name], expected)
             self.assertEqual(summary.tensor_count, 3)
+            self.assertEqual(summary.index_bytes, data_start)
             self.assertEqual(summary.file_bytes, path.stat().st_size)
 
     def test_dynamo_lifted_state_is_bound_but_request_input_is_runtime(self) -> None:

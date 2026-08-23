@@ -48,7 +48,7 @@ type t = {
   context : context_handle;
   library : library_handle;
   package : Serving_package.t;
-  tensor_store : (Safetensors.t * buffer_handle) option;
+  tensor_store : (Weight_archive.t * buffer_handle) option;
 }
 
 type runtime = t
@@ -73,7 +73,7 @@ let load_package ~root package =
               tensor_store |> Serving_package.Tensor_store.file
               |> Serving_package.Artifact.path |> Filename.concat root
             in
-            Safetensors.of_file path |> Result.map Option.some
+            Weight_archive.of_file path |> Result.map Option.some
       in
       let* archive = archive in
       let* () = Serving_validation.validate ~package ~archive in
@@ -90,7 +90,7 @@ let load_package ~root package =
             let tensor_store =
               Option.map
                 (fun archive ->
-                  archive, map_file_stub context (Safetensors.path archive))
+                  archive, map_file_stub context (Weight_archive.path archive))
                 archive
             in
             context, library, tensor_store)
@@ -119,12 +119,12 @@ let tensor runtime ~name =
   match runtime.tensor_store with
   | None -> Error "serving package has no tensor store"
   | Some (archive, mapped) ->
-      (match Safetensors.find archive name with
+      (match Weight_archive.find archive name with
       | None -> Error ("tensor store does not contain tensor: " ^ name)
       | Some tensor ->
           protect (fun () ->
-              ( buffer_view_stub mapped (Safetensors.Tensor.offset tensor)
-                  (Safetensors.Tensor.byte_length tensor),
+              ( buffer_view_stub mapped (Weight_archive.Tensor.offset tensor)
+                  (Weight_archive.Tensor.byte_length tensor),
                 tensor )))
 
 let q8_kernel runtime dtype =

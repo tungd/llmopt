@@ -20,5 +20,6 @@ type t
 val of_file : string -> (t, string) result
 val path : t -> string
 val file_size : t -> int
+val index_bytes : t -> int
 val tensors : t -> Tensor.t list
 val find : t -> string -> Tensor.t option

@@ -1,23 +1,24 @@
 let dtype_matches fx_dtype archive_dtype =
   match fx_dtype, archive_dtype with
-  | Ir.Dtype.Float32, Safetensors.Dtype.F32
-  | Ir.Dtype.Float16, Safetensors.Dtype.F16
-  | Ir.Dtype.Bfloat16, Safetensors.Dtype.BF16
-  | Ir.Dtype.Int64, Safetensors.Dtype.I64
-  | Ir.Dtype.Int32, Safetensors.Dtype.I32
-  | Ir.Dtype.Int8, Safetensors.Dtype.I8
-  | Ir.Dtype.Bool, Safetensors.Dtype.Bool -> true
+  | Ir.Dtype.Float32, Weight_archive.Dtype.F32
+  | Ir.Dtype.Float16, Weight_archive.Dtype.F16
+  | Ir.Dtype.Bfloat16, Weight_archive.Dtype.BF16
+  | Ir.Dtype.Int64, Weight_archive.Dtype.I64
+  | Ir.Dtype.Int32, Weight_archive.Dtype.I32
+  | Ir.Dtype.Int8, Weight_archive.Dtype.I8
+  | Ir.Dtype.Bool, Weight_archive.Dtype.Bool -> true
   | _ -> false
 
 let validate_tensor archive input =
   let key = Serving_schedule.Tensor_input.key input in
   let value = Serving_schedule.Tensor_input.value input in
-  match Safetensors.find archive key with
+  match Weight_archive.find archive key with
   | None -> Error ("serving tensor store is missing schedule binding: " ^ key)
   | Some tensor ->
       if
         not
-          (dtype_matches (Ir.Value.dtype value) (Safetensors.Tensor.dtype tensor))
+          (dtype_matches (Ir.Value.dtype value)
+             (Weight_archive.Tensor.dtype tensor))
       then
         Error
           (Printf.sprintf
@@ -26,7 +27,7 @@ let validate_tensor archive input =
         let shape =
           Ir.Value.logical_shape value |> Tensor_shape.dimensions
         in
-        if shape <> Safetensors.Tensor.shape tensor then
+        if shape <> Weight_archive.Tensor.shape tensor then
           Error
             (Printf.sprintf
                "serving tensor %s shape does not match the binary schedule" key)

@@ -35,8 +35,8 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - A versioned OCaml serving-package ABI. The FX compiler emits a copied graph,
   optimized plan, MSL, metallib reference, LLVM IR, typed kernel entries, and
   mandatory radix/Q8-default cache policy. A serving package references one
-  `weights.safetensors` archive without duplicated per-tensor JSON records or
-  separate payload files.
+  `weights.llmopt` archive whose typed index and aligned tensor payloads are
+  both binary, without duplicated per-tensor records or separate payload files.
 - A standalone, Ninja-built OCaml Metal runtime that validates the package,
   loads every declared metallib function, maps the tensor archive into one
   no-copy Metal buffer, creates tensor views by archive offset, and directly
@@ -131,7 +131,7 @@ direct FX GraphModule executor, checks exact logits, and writes a JSON
 measurement. Pass `--quantization fp16` for the explicit fallback.
 
 `ocaml-metal-runtime` builds the standalone package consumer without Python or
-PyTorch. `q8-serving-smoke` generates and validates one binary safetensors
+PyTorch. `q8-serving-smoke` generates and validates one JSON-free binary weight
 archive. `ocaml-metal-runtime-smoke` maps that archive once, binds its Q8
 weight, FP16 scale, and FP16 bias views, dispatches
 `llmopt_q8_linear_f32`, and records the deterministic output in
@@ -204,7 +204,7 @@ typed graph + schedule timeline
 
 generated serving package (fixture boundary implemented)
         │ package.llmopt: binary schedule + kernel/cache/runtime metadata
-        │ weights.safetensors: one indexed binary tensor archive
+        │ weights.llmopt: binary tensor index + aligned binary payloads
         ▼
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
@@ -215,7 +215,9 @@ OCaml serving runtime
 
 `fx.json` and `plan.txt` are compiler diagnostics, not serving inputs. The
 native runtime consumes only `package.llmopt`, the declared `.metallib`, and
-`weights.safetensors`.
+`weights.llmopt`. Package ABI v2 references weight-archive ABI v1; neither file
+contains JSON. Earlier recorded 350M packages use the superseded safetensors
+boundary and have not yet been regenerated under the new ABI.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

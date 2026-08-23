@@ -37,10 +37,10 @@ module Files = struct
 end
 
 module Tensor_store = struct
-  type t = Safetensors of { file : Artifact.t }
+  type t = Weights of { file : Artifact.t }
 
-  let safetensors ~file = Safetensors { file }
-  let file (Safetensors { file }) = file
+  let weights ~file = Weights { file }
+  let file (Weights { file }) = file
 end
 
 module Cache = struct
@@ -236,7 +236,7 @@ let read_cache reader =
   let* supported_kv = formats [] count in
   Cache.create ~page_size ~default_kv ~supported_kv
 
-let write_tensor_store writer (Tensor_store.Safetensors { file }) =
+let write_tensor_store writer (Tensor_store.Weights { file }) =
   Binary.Writer.u8 writer 0;
   write_artifact writer file
 
@@ -245,14 +245,14 @@ let read_tensor_store reader =
   if tag <> 0 then Error (Printf.sprintf "unknown tensor-store tag: %d" tag)
   else
     let* file = read_artifact reader in
-    Ok (Tensor_store.safetensors ~file)
+    Ok (Tensor_store.weights ~file)
 
 let magic = "LLMOPTPK"
 
 let to_bytes package =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 1;
+  Binary.Writer.u16 writer 2;
   Binary.Writer.u8 writer
     (match package.stage with Stage.Compiled_graph -> 0 | Stage.Serving -> 1);
   Binary.Writer.u8 writer 0;
@@ -273,7 +273,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving-package magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 1 then
+    if version <> 2 then
       Error (Printf.sprintf "unsupported serving-package version: %d" version)
     else
       let* stage_tag = Binary.Reader.u8 reader in
