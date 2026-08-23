@@ -61,8 +61,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 The typed effect vocabulary now also covers N-dimensional pointwise,
 reduction, cast, normalized static indexing, concat, and movement primitives.
 The planner eliminates valid `chunk` tuple nodes by emitting slices directly
-at integer `getitem` consumers; its CPU reference and schedule-v3 codecs are
-tested. The current complete-model executable target is PyTorch MPS: the direct callable runs the
+at integer `getitem` consumers; its CPU reference and schedule-v4 codecs are
+tested. The exact LFM depthwise ShortConv form also lowers to a typed command
+with a CPU reference and compiled scalar MSL. The current complete-model
+executable target is PyTorch MPS: the direct callable runs the
 captured FX GraphModule and lets each operation dispatch to MPS. Q8 graphs can
 also activate the generated tiled Metal library through the bridge; unsupported
 operations and inputs use the PyTorch MPS fallback. The intended serving stack
@@ -70,7 +72,7 @@ moves generated-library loading, Metal dispatch, request scheduling, and cache
 ownership into OCaml. Its radix/KV ownership and archive-backed Metal loader
 are implemented; complete schedule execution and physical KV
 quantize/dequantize remain open. Replanning the current manifest-v2 no-cache
-capture produces 835 schedule commands, of which 28 remain opaque; its
+capture produces 835 schedule commands, of which 18 remain opaque; its
 direct-FX probe is bit-exact against eager MPS. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
@@ -89,6 +91,7 @@ ninja -f ninja.build metal
 ninja -f ninja.build fx-smoke
 ninja -f ninja.build q8-smoke
 ninja -f ninja.build rms-norm-smoke
+ninja -f ninja.build short-conv-smoke
 ninja -f ninja.build q8-serving-smoke
 ninja -f ninja.build ocaml-metal-runtime
 ninja -f ninja.build ocaml-metal-runtime-smoke
@@ -110,6 +113,8 @@ same validation for the Q8 fixture. `_build/bin/llmopt-package-check` validates
 the versioned command stream, kernel ABI, tensor bindings, and runtime files.
 `rms-norm-smoke` captures and fuses a model-shaped RMSNorm chain, then compiles
 the emitted float32-to-float16 and float16 kernels with Xcode Metal.
+`short-conv-smoke` captures the model-shaped depthwise prefill convolution and
+compiles its generated float16 Metal kernel.
 `bench-mps` loads LFM2.5-350M
 with Q8 weight-only quantization by default, runs eager MPS and the llmopt
 direct FX GraphModule executor, checks exact logits, and writes a JSON

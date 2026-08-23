@@ -52,6 +52,8 @@ type error =
     }
   | Concat_dimension_overflow of int
   | Invalid_chunk_count of int
+  | Invalid_depthwise_conv1d of string
+  | Convolution_dimension_overflow
   | Malformed_index of string
 
 val create : int list -> (t, error) result
@@ -69,6 +71,14 @@ val reshape : t -> t -> (t, error) result
 val transpose : t -> axis0:int -> axis1:int -> (t, error) result
 val unsqueeze : t -> axis:int -> (t, error) result
 val expand : t -> target:t -> (t, error) result
+val depthwise_conv1d :
+  t ->
+  t ->
+  stride:int ->
+  padding:int ->
+  dilation:int ->
+  groups:int ->
+  (t, error) result
 val reduce : t -> axes:int list -> keepdim:bool -> (t, error) result
 val index : t -> Index.Spec.t list -> (Index.t * t, error) result
 val apply_index : t -> Index.t -> (t, error) result

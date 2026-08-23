@@ -19,3 +19,4 @@
 * [Static indexing, chunk elimination, and typed concat](exp-0017-index-chunk-concat.md) - normalized tensor indexing, compile-time chunk/getitem fusion, and binary concat commands.
 * [LFM2.5-350M Q8 manifest-v2 recapture](exp-0018-lfm25-v2-recapture.md) - one memory-bounded real capture with 835 commands, 42 opaque commands, and exact direct-FX logits.
 * [Qualified FX target matching](exp-0019-qualified-fx-targets.md) - fixes the expand/logical-and suffix collision and lowers the saved manifest to 28 opaque commands.
+* [Typed LFM ShortConv lowering and Metal kernel](exp-0020-lfm-short-conv.md) - exact depthwise prefill convolution lowering, schedule-v4 encoding, CPU reference, and compiled MSL.

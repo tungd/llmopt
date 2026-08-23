@@ -93,6 +93,10 @@ rule rms_norm_metal_check
   command = xcrun metal -c _build/llmopt-demo/lfm25_rms_norm.metal -o _build/llmopt-demo/lfm25_rms_norm.air
   description = validate emitted fused RMSNorm Metal source
 
+rule short_conv_metal_check
+  command = xcrun metal -c _build/llmopt-demo/lfm25_short_conv.metal -o _build/llmopt-demo/lfm25_short_conv.air
+  description = validate emitted LFM ShortConv Metal source
+
 rule metal_lib
   command = xcrun metallib $in -o $out
   description = link Metal library $out
@@ -269,6 +273,7 @@ build q8-metal: q8_metal_check | demo
 build q8-llvm: q8_llvm_check | demo
 build q8-smoke: phony q8-metal q8-llvm
 build rms-norm-smoke: rms_norm_metal_check | demo
+build short-conv-smoke: short_conv_metal_check | demo
 build fx-smoke: phony _build/fx-example/kernel.ll.o _build/fx-example/kernel.air _build/fx-example/kernel.metallib _build/fx-example/package.ok
 build ocaml-metal-runtime: phony _build/bin/llmopt-ocaml-metal-smoke
 build ocaml-metal-runtime-smoke: phony _build/q8-serving-example/ocaml-metal-smoke.json

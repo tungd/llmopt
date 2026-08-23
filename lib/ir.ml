@@ -154,22 +154,49 @@ module Movement = struct
     | Concat { axis } -> Printf.sprintf "concat(axis=%d)" axis
 end
 
+module Short_conv = struct
+  type t = {
+    stride : int;
+    padding : int;
+    dilation : int;
+    groups : int;
+  }
+
+  let create ~stride ~padding ~dilation ~groups =
+    if stride <= 0 then Error "short-conv stride must be positive"
+    else if padding < 0 then Error "short-conv padding must be non-negative"
+    else if dilation <= 0 then Error "short-conv dilation must be positive"
+    else if groups <= 0 then Error "short-conv groups must be positive"
+    else Ok { stride; padding; dilation; groups }
+
+  let stride config = config.stride
+  let padding config = config.padding
+  let dilation config = config.dilation
+  let groups config = config.groups
+
+  let to_string config =
+    Printf.sprintf "short-conv(stride=%d,padding=%d,dilation=%d,groups=%d)"
+      config.stride config.padding config.dilation config.groups
+end
+
 module Primitive = struct
   type t =
     | Pointwise of Pointwise.t
     | Cast of Dtype.t
     | Reduce of Reduction.t
     | Movement of Movement.t
+    | Short_conv of Short_conv.t
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
-    | Cast _ | Reduce _ | Movement _ -> []
+    | Cast _ | Reduce _ | Movement _ | Short_conv _ -> []
 
   let to_string = function
     | Pointwise operation -> Pointwise.to_string operation
     | Cast dtype -> "cast(" ^ Dtype.to_string dtype ^ ")"
     | Reduce reduction -> Reduction.to_string reduction
     | Movement movement -> Movement.to_string movement
+    | Short_conv config -> Short_conv.to_string config
 end
 
 module Argument = struct

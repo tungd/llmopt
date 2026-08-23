@@ -145,6 +145,7 @@ let operation_tag = function
   | Kernel_abi.Operation.Q8_linear -> 3
   | Kernel_abi.Operation.Q8_dequantize -> 4
   | Kernel_abi.Operation.Rms_norm -> 5
+  | Kernel_abi.Operation.Short_conv -> 6
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -153,6 +154,7 @@ let operation_of_tag = function
   | 3 -> Ok Kernel_abi.Operation.Q8_linear
   | 4 -> Ok Kernel_abi.Operation.Q8_dequantize
   | 5 -> Ok Kernel_abi.Operation.Rms_norm
+  | 6 -> Ok Kernel_abi.Operation.Short_conv
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function

@@ -6,6 +6,7 @@ module Operation : sig
     | Q8_linear
     | Q8_dequantize
     | Rms_norm
+    | Short_conv
 
   val to_string : t -> string
   val of_string : string -> (t, string) result

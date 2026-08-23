@@ -109,6 +109,30 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d concat result metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Short_conv config),
+            [ input; weight ],
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.depthwise_conv1d
+                (Ir.Value.logical_shape input)
+                (Ir.Value.logical_shape weight)
+                ~stride:(Ir.Short_conv.stride config)
+                ~padding:(Ir.Short_conv.padding config)
+                ~dilation:(Ir.Short_conv.dilation config)
+                ~groups:(Ir.Short_conv.groups config)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && Ir.Value.dtype weight = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d short-conv metadata is inconsistent"
+                   command.Command.node_id)
         | _ -> Ok ()
 
 let create commands =
@@ -555,6 +579,12 @@ let write_primitive writer = function
       | Ir.Movement.Concat { axis } ->
           Binary.Writer.u8 writer 7;
           Binary.Writer.u16 writer axis)
+  | Ir.Primitive.Short_conv config ->
+      Binary.Writer.u8 writer 4;
+      Binary.Writer.u32 writer (Ir.Short_conv.stride config);
+      Binary.Writer.u32 writer (Ir.Short_conv.padding config);
+      Binary.Writer.u32 writer (Ir.Short_conv.dilation config);
+      Binary.Writer.u32 writer (Ir.Short_conv.groups config)
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -600,6 +630,13 @@ let read_primitive values reader =
         | _ -> Error (Printf.sprintf "unknown movement tag: %d" movement_tag)
       in
       Ok (Ir.Primitive.Movement movement)
+  | 4 ->
+      let* stride = Binary.Reader.u32 reader in
+      let* padding = Binary.Reader.u32 reader in
+      let* dilation = Binary.Reader.u32 reader in
+      let* groups = Binary.Reader.u32 reader in
+      Ir.Short_conv.create ~stride ~padding ~dilation ~groups
+      |> Result.map (fun config -> Ir.Primitive.Short_conv config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -741,7 +778,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 3;
+  Binary.Writer.u16 writer 4;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -761,7 +798,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 1 && version <> 2 && version <> 3 then
+    if version <> 1 && version <> 2 && version <> 3 && version <> 4 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else
       let* count = Binary.Reader.u32 reader in

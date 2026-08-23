@@ -171,10 +171,53 @@ let rms_norm_entries =
       ~operation:Kernel_abi.Operation.Rms_norm
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let short_conv_source =
+  "\nstruct ShortConvParams {\n"
+  ^ "  uint batches; uint channels; uint input_width; uint output_width;\n"
+  ^ "  uint kernel_width; uint stride; uint padding; uint dilation;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_short_conv_f16(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant ShortConvParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.batches * params.channels * params.output_width;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint position = gid % params.output_width;\n"
+  ^ "  const uint channel = (gid / params.output_width) % params.channels;\n"
+  ^ "  const uint batch = gid / (params.output_width * params.channels);\n"
+  ^ "  float accumulator = 0.0f;\n"
+  ^ "  for (uint tap = 0; tap < params.kernel_width; ++tap) {\n"
+  ^ "    const int source_position = int(position * params.stride)\n"
+  ^ "        - int(params.padding) + int(tap * params.dilation);\n"
+  ^ "    if (source_position >= 0 && source_position < int(params.input_width)) {\n"
+  ^ "      const uint input_index = ((batch * params.channels + channel)\n"
+  ^ "          * params.input_width) + uint(source_position);\n"
+  ^ "      const uint weight_index = channel * params.kernel_width + tap;\n"
+  ^ "      accumulator += float(input[input_index]) * float(weight[weight_index]);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  output[gid] = half(accumulator);\n"
+  ^ "}\n"
+
+let short_conv_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_f16"
+      ~operation:Kernel_abi.Operation.Short_conv
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
          match Ir.node_op node with Ir.Op.Rms_norm _ -> true | _ -> false)
+
+let has_short_conv graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive (Ir.Primitive.Short_conv _) -> true
+         | _ -> false)
 
 let lower_primary graph =
   let kernel =
@@ -396,19 +439,28 @@ let lower_primary graph =
                  ~output_dtype:Ir.Dtype.Float32 ])
 
 let lower graph =
-  let include_rms_norm = has_rms_norm graph in
+  let auxiliary_source, auxiliary_entries =
+    let source, entries =
+      if has_rms_norm graph then rms_norm_source, rms_norm_entries else "", []
+    in
+    if has_short_conv graph then
+      source ^ short_conv_source, entries @ short_conv_entries
+    else source, entries
+  in
   match lower_primary graph with
-  | Ok program when include_rms_norm ->
+  | Ok program when auxiliary_entries <> [] ->
       Ok
         (Program.make
-           ~source:(Program.source program ^ rms_norm_source)
-           ~kernels:(Program.kernels program @ rms_norm_entries))
+           ~source:(Program.source program ^ auxiliary_source)
+           ~kernels:(Program.kernels program @ auxiliary_entries))
   | Ok program -> Ok program
-  | Error _ when include_rms_norm ->
+  | Error _ when auxiliary_entries <> [] ->
       Ok
         (Program.make
-           ~source:("#include <metal_stdlib>\nusing namespace metal;\n" ^ rms_norm_source)
-           ~kernels:rms_norm_entries)
+           ~source:
+             ("#include <metal_stdlib>\nusing namespace metal;\n"
+             ^ auxiliary_source)
+           ~kernels:auxiliary_entries)
   | Error message -> Error message
 
 let emit graph = Result.map Program.source (lower graph)

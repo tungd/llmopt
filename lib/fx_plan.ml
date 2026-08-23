@@ -216,6 +216,13 @@ let axis_argument = function
   | Fx.Argument.Int axis -> Ok axis
   | _ -> Error "expected an integer axis"
 
+let singleton_int_argument = function
+  | Fx.Argument.Int value
+  | Fx.Argument.List [ Fx.Argument.Int value ]
+  | Fx.Argument.Tuple [ Fx.Argument.Int value ] ->
+      Ok value
+  | _ -> Error "expected an integer or singleton integer sequence"
+
 let axes_argument shape = function
   | Fx.Argument.Int axis ->
       Tensor_shape.normalize_axes shape [ axis ]
@@ -495,6 +502,37 @@ let plan fx_graph =
             lower_movement Ir.Movement.Expand inferred inputs
         | _ -> Error "expand requires one tensor input"
       in
+      let lower_short_conv inputs =
+        match inputs, Fx.Node.arguments node with
+        | ( [ input; weight ],
+            _input :: _weight :: Fx.Argument.Null :: stride :: padding
+            :: dilation :: groups :: _ ) ->
+            if Ir.Value.dtype input <> Ir.Dtype.Float16 then
+              Error "LFM short-conv input must be float16"
+            else if Ir.Value.dtype weight <> Ir.Dtype.Float16 then
+              Error "LFM short-conv weight must be float16"
+            else
+              let* stride = singleton_int_argument stride in
+              let* padding = singleton_int_argument padding in
+              let* dilation = singleton_int_argument dilation in
+              let* groups = axis_argument groups in
+              let* config =
+                Ir.Short_conv.create ~stride ~padding ~dilation ~groups
+              in
+              let* inferred =
+                Tensor_shape.depthwise_conv1d
+                  (Ir.Value.logical_shape input)
+                  (Ir.Value.logical_shape weight) ~stride ~padding ~dilation
+                  ~groups
+                |> Result.map_error Tensor_shape.error_to_string
+              in
+              let* logical_shape = declared_or_inferred node inferred in
+              emit_primitive node ~operation:(Ir.Primitive.Short_conv config)
+                ~inputs ~logical_shape
+        | _ ->
+            Error
+              "LFM short-conv requires input, weight, null bias, and static parameters"
+      in
       let lower_chunk () =
         match Fx.Node.inputs node with
         | [ input_name ] ->
@@ -741,6 +779,12 @@ let plan fx_graph =
                 lower_unsqueeze inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "expand"; "aten.expand.default" ] then
                 lower_expand inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "torch._variablefunctionsclass.conv1d";
+                       "aten.conv1d.default" ]
+              then lower_short_conv inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "contiguous"; "aten.contiguous.default" ] then
                 (match inputs with
                 | [ input ] ->

@@ -107,4 +107,12 @@ let () =
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_rms_norm"
     rms_norm_graph;
+  let short_conv_graph =
+    snd
+      (capture_or_fail (fun () ->
+           Lfm25.short_conv_kernel ~config:Lfm25.Config.default ~batch:1
+             ~tokens:6 ()))
+  in
+  emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_short_conv"
+    short_conv_graph;
   Printf.printf "generated sources in %s\n" !emit_directory

@@ -78,6 +78,8 @@ type error =
     }
   | Concat_dimension_overflow of int
   | Invalid_chunk_count of int
+  | Invalid_depthwise_conv1d of string
+  | Convolution_dimension_overflow
   | Malformed_index of string
 
 let to_string shape =
@@ -130,6 +132,9 @@ let error_to_string = function
       Printf.sprintf "tensor concat dimension overflows at axis %d" axis
   | Invalid_chunk_count chunks ->
       Printf.sprintf "tensor chunk count must be positive, got %d" chunks
+  | Invalid_depthwise_conv1d message -> "invalid depthwise conv1d: " ^ message
+  | Convolution_dimension_overflow ->
+      "depthwise conv1d output dimension overflows"
   | Malformed_index message -> "malformed normalized tensor index: " ^ message
 
 let create dimensions =
@@ -236,6 +241,42 @@ let expand source ~target =
   in
   if compatible source_dimensions target_dimensions then Ok target
   else Error (Invalid_expansion { source; target })
+
+let depthwise_conv1d source weight ~stride ~padding ~dilation ~groups =
+  let invalid message = Error (Invalid_depthwise_conv1d message) in
+  match dimensions source, dimensions weight with
+  | [ batch; channels; input_width ], [ output_channels; channels_per_group; kernel_width ] ->
+      if stride <= 0 then invalid "stride must be positive"
+      else if padding < 0 then invalid "padding must be non-negative"
+      else if dilation <= 0 then invalid "dilation must be positive"
+      else if groups <= 0 then invalid "groups must be positive"
+      else if channels = 0 then invalid "input channels must be positive"
+      else if groups <> channels then
+        invalid "groups must equal the input channel count"
+      else if output_channels <> channels then
+        invalid "weight output channels must equal the input channel count"
+      else if channels_per_group <> 1 then
+        invalid "weight must contain one input channel per group"
+      else if kernel_width <= 0 then invalid "kernel width must be positive"
+      else if kernel_width - 1 > (max_int - 1) / dilation then
+        Error Convolution_dimension_overflow
+      else
+        let effective_kernel = (dilation * (kernel_width - 1)) + 1 in
+        if padding > max_int / 2 then Error Convolution_dimension_overflow
+        else
+          let double_padding = 2 * padding in
+          if input_width > max_int - double_padding then
+            Error Convolution_dimension_overflow
+          else
+            let padded_width = input_width + double_padding in
+            if padded_width < effective_kernel then
+              invalid "effective kernel exceeds the padded input width"
+            else
+              let output_width =
+                ((padded_width - effective_kernel) / stride) + 1
+              in
+              create [ batch; channels; output_width ]
+  | _ -> invalid "input and weight must both have rank three"
 
 let reduce shape ~axes ~keepdim =
   match normalize_axes shape axes with

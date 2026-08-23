@@ -6,6 +6,7 @@ module Operation = struct
     | Q8_linear
     | Q8_dequantize
     | Rms_norm
+    | Short_conv
 
   let to_string = function
     | Matmul -> "matmul"
@@ -14,6 +15,7 @@ module Operation = struct
     | Q8_linear -> "q8-linear"
     | Q8_dequantize -> "q8-dequantize"
     | Rms_norm -> "rms-norm"
+    | Short_conv -> "short-conv"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -22,6 +24,7 @@ module Operation = struct
     | "q8-linear" -> Ok Q8_linear
     | "q8-dequantize" -> Ok Q8_dequantize
     | "rms-norm" -> Ok Rms_norm
+    | "short-conv" -> Ok Short_conv
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 

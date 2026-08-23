@@ -388,6 +388,50 @@ let apply_movement state movement input_value output_value output =
       apply_index state selection input_value output_value output
   | Ir.Movement.Concat _ -> failf "concat reached the unary movement handler"
 
+let short_conv state config input_value weight_value output_value output =
+  match
+    Tensor_shape.dimensions (Ir.Value.logical_shape input_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape weight_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape output_value)
+  with
+  | ( [ batches; channels; input_width ],
+      [ weight_channels; 1; kernel_width ],
+      [ output_batches; output_channels; output_width ] )
+    when batches = output_batches && channels = weight_channels
+         && channels = output_channels ->
+      let input = find state input_value in
+      let weight = find state weight_value in
+      let stride = Ir.Short_conv.stride config in
+      let padding = Ir.Short_conv.padding config in
+      let dilation = Ir.Short_conv.dilation config in
+      for batch = 0 to batches - 1 do
+        for channel = 0 to channels - 1 do
+          for position = 0 to output_width - 1 do
+            let accumulator = ref 0.0 in
+            for kernel = 0 to kernel_width - 1 do
+              let source_position =
+                (position * stride) - padding + (kernel * dilation)
+              in
+              if source_position >= 0 && source_position < input_width then
+                let input_index =
+                  (((batch * channels) + channel) * input_width)
+                  + source_position
+                in
+                let weight_index = (channel * kernel_width) + kernel in
+                accumulator :=
+                  !accumulator
+                  +. (Tensor.get_linear input input_index
+                     *. Tensor.get_linear weight weight_index)
+            done;
+            let output_index =
+              (((batch * channels) + channel) * output_width) + position
+            in
+            Tensor.set_linear output output_index !accumulator
+          done
+        done
+      done
+  | _ -> failf "invalid CPU short-conv tensor metadata"
+
 let primitive state operation inputs output_value output =
   match operation, inputs with
   | Ir.Primitive.Pointwise operation, _ ->
@@ -400,6 +444,8 @@ let primitive state operation inputs output_value output =
       concatenate state axis inputs output_value output
   | Ir.Primitive.Movement movement, [ input ] ->
       apply_movement state movement input output_value output
+  | Ir.Primitive.Short_conv config, [ input; weight ] ->
+      short_conv state config input weight output_value output
   | _ -> failf "invalid primitive input arity"
 
 let run ~inputs thunk =

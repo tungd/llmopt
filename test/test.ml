@@ -169,6 +169,73 @@ let () =
   in
   expect (Tensor_shape.dimensions concat_shape = [ 2; 5 ])
     "concat shape inference";
+  let short_conv_input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
+  let short_conv_weight_shape = Tensor_shape.of_ints_exn [ 2; 1; 3 ] in
+  let short_conv_shape =
+    expect_ok
+      (Tensor_shape.depthwise_conv1d short_conv_input_shape
+         short_conv_weight_shape ~stride:1 ~padding:2 ~dilation:1 ~groups:2
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions short_conv_shape = [ 1; 2; 6 ])
+    "LFM depthwise ShortConv shape inference";
+  let short_conv_config =
+    expect_ok
+      (Ir.Short_conv.create ~stride:1 ~padding:2 ~dilation:1 ~groups:2)
+  in
+  let short_conv_kernel () =
+    let input =
+      Tile_effect.tensor_input ~name:"short_conv_input"
+        ~source:Ir.Input_source.Runtime ~shape:short_conv_input_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    let weight =
+      Tile_effect.tensor_input ~name:"short_conv_weight"
+        ~source:Ir.Input_source.Runtime ~shape:short_conv_weight_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    let output =
+      primitive_value ~operation:(Ir.Primitive.Short_conv short_conv_config)
+        ~inputs:[ input; weight ] ~logical_shape:short_conv_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    Tile_effect.output ~name:"short_conv_output" ~value:output
+  in
+  (match
+     Cpu.run
+       ~inputs:
+         [ ( "short_conv_input",
+             Cpu.Tensor.of_rows
+               [| [| 1.; 2.; 3.; 4. |]; [| 5.; 6.; 7.; 8. |] |] );
+           ( "short_conv_weight",
+             Cpu.Tensor.of_rows [| [| 1.; 0.; -1. |]; [| 0.5; 1.; 0.5 |] |] ) ]
+       short_conv_kernel
+   with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      let output = Cpu.output execution "short_conv_output" |> Option.get in
+      expect
+        (Cpu.Tensor.to_rows output
+        = [| [| -1.; -2.; -2.; -2.; 3.; 4. |];
+             [| 2.5; 8.; 12.; 14.; 11.5; 4. |] |])
+        "CPU reference interprets LFM depthwise ShortConv");
+  let short_conv_graph =
+    match Capture.run short_conv_kernel with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  let short_conv_schedule =
+    short_conv_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count short_conv_schedule = 0)
+    "ShortConv survives the binary schedule as a typed command";
+  let short_conv_program = expect_ok (Metal.lower short_conv_graph) in
+  expect
+    (Metal.Program.kernels short_conv_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Short_conv))
+    "ShortConv graph declares its Metal kernel ABI";
   let primitive_kernel () =
     let input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
     let channel_shape = Tensor_shape.of_ints_exn [ 4 ] in
@@ -792,6 +859,36 @@ let () =
            | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Expand) -> true
            | _ -> false))
     "expand lowers to a typed movement command";
+  let short_conv_fx =
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2);
+             ( "nodes",
+               `List
+                 [ fx_node ~op:"placeholder" ~name:"conv_input"
+                     ~target:"conv_input" ~shape:[ 1; 2; 4 ] ();
+                   fx_node ~op:"placeholder" ~name:"conv_weight"
+                     ~target:"conv_weight" ~shape:[ 2; 1; 3 ] ();
+                   fx_node ~op:"call_function" ~name:"conv"
+                     ~target:"torch._VariableFunctionsClass.conv1d"
+                     ~inputs:[ "conv_input"; "conv_weight" ]
+                     ~arguments:
+                       [ fx_node_argument "conv_input";
+                         fx_node_argument "conv_weight"; fx_null_argument;
+                         fx_tuple_argument [ fx_int_argument 1 ];
+                         fx_tuple_argument [ fx_int_argument 2 ];
+                         fx_tuple_argument [ fx_int_argument 1 ];
+                         fx_int_argument 2 ]
+                     ~shape:[ 1; 2; 6 ] () ] );
+             ("outputs", `List [ `String "conv" ]) ]))
+  in
+  let short_conv_fx_schedule =
+    short_conv_fx |> Fx_plan.plan |> expect_ok |> Serving_schedule.of_graph
+    |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count short_conv_fx_schedule = 0)
+    "captured LFM conv1d lowers to typed ShortConv";
   let optimized_schedule =
     primitive_optimized |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok

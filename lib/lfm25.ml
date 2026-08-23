@@ -177,3 +177,45 @@ let rms_norm_kernel ~config ~rows ~epsilon () =
       ~dtype:config.Config.dtype
   in
   Tile_effect.output ~name:"rms_output" ~value:output
+
+let short_conv_kernel ~config ~batch ~tokens () =
+  if batch <= 0 then invalid_arg "short-conv batch must be positive";
+  if tokens <= 0 then invalid_arg "short-conv token count must be positive";
+  let input_shape =
+    Tensor_shape.of_ints_exn [ batch; config.Config.hidden_size; tokens ]
+  in
+  let weight_shape =
+    Tensor_shape.of_ints_exn
+      [ config.Config.hidden_size; 1; config.Config.conv_l_cache ]
+  in
+  let stride = 1 in
+  let padding = config.Config.conv_l_cache - 1 in
+  let dilation = 1 in
+  let groups = config.Config.hidden_size in
+  let output_shape =
+    match
+      Tensor_shape.depthwise_conv1d input_shape weight_shape ~stride ~padding
+        ~dilation ~groups
+    with
+    | Ok shape -> shape
+    | Error error -> invalid_arg (Tensor_shape.error_to_string error)
+  in
+  let operation =
+    match Ir.Short_conv.create ~stride ~padding ~dilation ~groups with
+    | Ok config -> Ir.Primitive.Short_conv config
+    | Error message -> invalid_arg message
+  in
+  let input =
+    Tile_effect.tensor_input ~name:"short_conv_input"
+      ~source:Ir.Input_source.Runtime ~shape:input_shape ~dtype:config.Config.dtype
+  in
+  let weight =
+    Tile_effect.tensor_input ~name:"short_conv_weight"
+      ~source:Ir.Input_source.Runtime ~shape:weight_shape
+      ~dtype:config.Config.dtype
+  in
+  let output =
+    primitive ~operation ~inputs:[ input; weight ] ~logical_shape:output_shape
+      ~dtype:config.Config.dtype
+  in
+  Tile_effect.output ~name:"short_conv_output" ~value:output

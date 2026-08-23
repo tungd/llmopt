@@ -28,7 +28,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Metal source emitter | implemented | Xcode `metal` accepts the linear smoke |
 | Fused LFM RMSNorm pass and Metal kernel | implemented; real-model count pending | synthetic LFM chain fuses from 10 commands to four; float32-to-float16 and float16 kernels pass `rms-norm-smoke` |
 | Direct FX GraphModule MPS callable returned to PyTorch | implemented | fixed direct-forward logits match eager MPS exactly; generation routing is now explicit |
-| LFM2.5 short-convolution lowering | open | executed as opaque FX nodes through PyTorch MPS |
+| LFM2.5 short-convolution lowering | typed and compiled; native dispatch open | all ten saved prefill `conv1d` nodes lower to validated ShortConv commands; CPU reference, schedule-v4 round trip, and Xcode Metal compilation pass |
 | LFM2.5 GQA/KV-cache lowering | open | executed as opaque FX nodes through PyTorch MPS |
 | model weight loading for the MPS probe | implemented | Transformers checkpoint loads on MPS |
 | end-to-end PyTorch MPS comparison | implemented | short smoke proves routed generation; semantic 5x3 result has exact fixed-forward digest and exact generated-token parity |
@@ -40,7 +40,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Versioned generated package ABI | partial; real graph serialized | `llmopt-fx` emits `package.llmopt` with commands, logical shapes, arguments, kernel ABI, cache policy, and tensor bindings. The saved 350M graph became a 116,861-byte package with 1,115 commands and 241 validated bindings; 736 commands remain opaque and native interpretation remains open |
 | OCaml tensor-store ownership | partial; full archive validated and fixture mapped | Dynamo streams static inputs one tensor at a time; the real 350M archive contains 241 tensors and 422,104,704 payload bytes. OCaml validates all binding dtypes/shapes, while the fixture proves no-copy Metal mapping; full-model dispatch is not implemented |
 | OCaml Metal serving loader and dispatch | partial; binary-only startup verified | With 56% memory free, a minimal three-file directory containing only the binary package, metallib, and safetensors archive returned `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro; the model schedule still runs through Python/PyTorch |
-| Complete 350M operation schedule | partial | Offline replan of the real manifest-v2 no-cache forward has 835 commands: 807 typed/lowered and 28 opaque. The captured serving package separately validates 241 archive tensors; remaining opaque families, decode/KV-state graphs, generated-kernel coverage, and native command interpretation remain open |
+| Complete 350M operation schedule | partial | Offline replan of the real manifest-v2 no-cache forward has 835 commands: 817 typed/lowered and 18 opaque. The serving package validates 241 archive tensors and four declared kernels; remaining opaque families, decode/KV-state graphs, generated-kernel coverage, and native command interpretation remain open |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule

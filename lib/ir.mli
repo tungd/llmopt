@@ -76,12 +76,30 @@ module Movement : sig
   val to_string : t -> string
 end
 
+module Short_conv : sig
+  type t
+
+  val create :
+    stride:int ->
+    padding:int ->
+    dilation:int ->
+    groups:int ->
+    (t, string) result
+
+  val stride : t -> int
+  val padding : t -> int
+  val dilation : t -> int
+  val groups : t -> int
+  val to_string : t -> string
+end
+
 module Primitive : sig
   type t =
     | Pointwise of Pointwise.t
     | Cast of Dtype.t
     | Reduce of Reduction.t
     | Movement of Movement.t
+    | Short_conv of Short_conv.t
 
   val values : t -> Value.t list
   val to_string : t -> string
