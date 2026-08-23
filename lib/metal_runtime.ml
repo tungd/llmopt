@@ -357,7 +357,7 @@ module Parameters = struct
     in
     movement ~input_dimensions:aligned_input ~output_dimensions ~axis0:0 ~axis1:0
 
-  let index ~input_shape ~output_shape index =
+  let index_parameters ~count ~input_shape ~output_shape index =
     let* input_dimensions = dimensions ~operation:"index" input_shape in
     let* output_dimensions = dimensions ~operation:"index" output_shape in
     let selectors = Tensor_shape.Index.selectors index in
@@ -384,7 +384,7 @@ module Parameters = struct
         values @ List.init (max_rank - List.length values) (Fun.const 0)
       in
       let bytes = Bytes.make 240 '\000' in
-      let* () = set_u32 bytes 0 (Tensor_shape.numel output_shape) in
+      let* () = set_u32 bytes 0 count in
       let* () = set_u32 bytes 4 (List.length input_dimensions) in
       let* () = set_u32 bytes 8 (List.length output_dimensions) in
       let* () = set_u32 bytes 12 (List.length selectors) in
@@ -394,6 +394,21 @@ module Parameters = struct
       write_i64s bytes 112 (pad starts);
       write_i64s bytes 176 (pad steps);
       Ok bytes
+
+  let index ~input_shape ~output_shape index =
+    index_parameters ~count:(Tensor_shape.numel output_shape) ~input_shape
+      ~output_shape index
+
+  let update_slice ~destination_shape ~source_shape index =
+    let* inferred =
+      Tensor_shape.apply_index destination_shape index
+      |> Result.map_error Tensor_shape.error_to_string
+    in
+    if not (Tensor_shape.equal inferred source_shape) then
+      Error "Metal slice-update source shape is inconsistent"
+    else
+      index_parameters ~count:(Tensor_shape.numel destination_shape)
+        ~input_shape:destination_shape ~output_shape:source_shape index
 
   let concat ~left_shape ~right_shape ~output_shape ~axis =
     let* left_dimensions = dimensions ~operation:"concat" left_shape in
@@ -681,6 +696,37 @@ let movement_kernel movement input output =
              (Ir.Movement.to_string movement)
              (Ir.Dtype.to_string input_dtype))
 
+let reduction_kernel reduction input output =
+  match
+    reduction.Ir.Reduction.operator,
+    reduction.axes,
+    Ir.Value.dtype input,
+    Ir.Value.dtype output
+  with
+  | Ir.Reduction.Sum, [ axis ], Ir.Dtype.Float16, Ir.Dtype.Float16 ->
+      Ok ("llmopt_sum_f16", axis)
+  | _ ->
+      Error
+        (Printf.sprintf "unsupported Metal reduction kernel: %s %s -> %s"
+           (Ir.Reduction.to_string reduction)
+           (Ir.Value.dtype input |> Ir.Dtype.to_string)
+           (Ir.Value.dtype output |> Ir.Dtype.to_string))
+
+let update_slice_kernel destination source output =
+  match
+    Ir.Value.dtype destination,
+    Ir.Value.dtype source,
+    Ir.Value.dtype output
+  with
+  | Ir.Dtype.Float16, Ir.Dtype.Float16, Ir.Dtype.Float16 ->
+      Ok "llmopt_update_slice_f16"
+  | destination_dtype, source_dtype, output_dtype ->
+      Error
+        (Printf.sprintf "unsupported Metal slice-update kernel: %s + %s -> %s"
+           (Ir.Dtype.to_string destination_dtype)
+           (Ir.Dtype.to_string source_dtype)
+           (Ir.Dtype.to_string output_dtype))
+
 let execute runtime ~inputs =
   let* runtime_inputs = runtime_input_map inputs in
   let schedule = Serving_package.schedule runtime.package in
@@ -817,6 +863,36 @@ let execute runtime ~inputs =
               (dispatch_output ~name runtime state output
                  ~operation:Kernel_abi.Operation.Movement ~input_dtype
                  ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
+        | Ir.Op.Primitive (Ir.Primitive.Reduce reduction), [ input ], Some output ->
+            let* name, axis = reduction_kernel reduction input output in
+            let* outer, width, inner =
+              split_axis (Ir.Value.logical_shape input) axis
+            in
+            let* input_buffer = find_value state input in
+            let* parameters = Parameters.u32s [ outer; width; inner ] in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Reduction
+                 ~input_dtype:(Ir.Value.dtype input) ~buffers:[ input_buffer ]
+                 ~parameters ~grid:(outer * inner, 1, 1))
+        | ( Ir.Op.Primitive (Ir.Primitive.Update_slice index),
+            [ destination; source ],
+            Some output ) ->
+            let* name = update_slice_kernel destination source output in
+            let* buffers = find_values state [ destination; source ] in
+            let* parameters =
+              Parameters.update_slice
+                ~destination_shape:(Ir.Value.logical_shape destination)
+                ~source_shape:(Ir.Value.logical_shape source) index
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Update_slice
+                 ~input_dtype:(Ir.Value.dtype destination) ~buffers ~parameters
+                 ~grid:
+                   ( Tensor_shape.numel (Ir.Value.logical_shape output),
+                     1,
+                     1 ))
         | Ir.Op.Primitive (Ir.Primitive.Cast dtype), [ input ], Some output
           when dtype = Ir.Value.dtype input ->
             let* buffer = find_value state input in

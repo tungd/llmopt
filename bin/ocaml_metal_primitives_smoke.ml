@@ -127,6 +127,14 @@ let () =
           input runtime "concat_f32_right" (bytes_of_f32 [ 2.; 3.; 5.; 6. ]);
           input runtime "roll_f16_input"
             (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400 ]);
+          input runtime "sum_f16_input"
+            (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4500; 0x4600 ]);
+          input runtime "update_destination"
+            (bytes_of_u16
+               [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4500; 0x4600; 0x4700;
+                 0x4800 ]);
+          input runtime "update_source"
+            (bytes_of_u16 [ 0x4900; 0x4980; 0x4a00; 0x4a80 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
     |> expect_ok
@@ -183,14 +191,18 @@ let () =
   expect_bytes execution "concat_f32" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
   expect_bytes execution "roll_f16"
     (bytes_of_u16 [ 0x4000; 0x4200; 0x4400; 0x3c00 ]);
+  expect_bytes execution "sum_f16" (bytes_of_u16 [ 0x4600; 0x4b80 ]);
+  expect_bytes execution "update_slice_f16"
+    (bytes_of_u16
+       [ 0x3c00; 0x4900; 0x4980; 0x4400; 0x4500; 0x4a00; 0x4a80; 0x4800 ]);
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 35 then
+  if List.length kernels <> 37 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 35"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 37"
          (List.length kernels));
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 36 exact\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\noutputs: 38 exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels)

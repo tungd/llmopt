@@ -274,6 +274,26 @@ let graph () =
     [ roll_f16_input ] [ 1; 1; 4 ] Ir.Dtype.Float16
   |> output graph "roll_f16";
 
+  let sum_f16_input = input graph "sum_f16_input" [ 2; 3 ] Ir.Dtype.Float16 in
+  primitive graph
+    (Ir.Primitive.Reduce
+       { Ir.Reduction.operator = Ir.Reduction.Sum; axes = [ 1 ]; keepdim = false })
+    [ sum_f16_input ] [ 2 ] Ir.Dtype.Float16
+  |> output graph "sum_f16";
+
+  let update_destination =
+    input graph "update_destination" [ 2; 4 ] Ir.Dtype.Float16
+  in
+  let update_source = input graph "update_source" [ 2; 2 ] Ir.Dtype.Float16 in
+  let update_index =
+    index
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 1; step = 1; length = 2 } ]
+  in
+  primitive graph (Ir.Primitive.Update_slice update_index)
+    [ update_destination; update_source ] [ 2; 4 ] Ir.Dtype.Float16
+  |> output graph "update_slice_f16";
+
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in
   command graph (Ir.Op.Matmul { m = 2; n = 2; k = 3 }) [ lhs; rhs ] [ 2; 2 ]

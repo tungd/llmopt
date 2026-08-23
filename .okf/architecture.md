@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T21:58:38Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T22:09:23Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -147,8 +147,8 @@ graph, pretty-printed `plan.txt`, MSL, and LLVM IR are compiler artifacts and
 are not referenced by the serving runtime; JSON diagnostics are opt-in. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v5 names weight-archive ABI v1
-and reads ABI-v2, ABI-v3, and ABI-v4 packages.
+exactly one binary tensor archive. Package ABI v6 names weight-archive ABI v1
+and reads ABI-v2, ABI-v3, ABI-v4, and ABI-v5 packages.
 Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
 archive rather than being split into per-tensor files.
 
@@ -219,6 +219,16 @@ with 7.67 GB (29.8%) reclaimable and no model process, dispatched 35 kernels on
 Apple M4 Pro, and matched all 36 outputs byte-for-byte. Its 6,223-byte package
 and 160,230-byte metallib totaled 166,453 bytes; this was not a model run.
 
+Package ABI v6 adds typed `Reduction` and `Update_slice` operations. The
+captured decode plan uses ten float16 sums over axis two and ten functional
+updates of the trailing recurrent-cache slot. The sum kernel accumulates in
+float32 before writing float16; the destination-driven update kernel preserves
+unselected elements and maps normalized `At`, `Slice`, and `New_axis`
+selectors back to the source. One 125-command package started with 7.54 GB
+(29.3%) reclaimable and no model process, dispatched 37 kernels on Apple M4
+Pro, and matched all 38 outputs byte-for-byte. Its 6,630-byte package and
+169,895-byte metallib totaled 176,525 bytes; this was not a model run.
+
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
 1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,
 compared with 379 typed and 736 opaque in the saved v1 package. A subsequent
@@ -256,11 +266,11 @@ evidence but no retained eager/compiled parity measurement.
 The same preserved manifests now round-trip exactly through binary FX
 transport ABI v1. Prefill occupies 253,354 bytes instead of 776,844 bytes of
 diagnostic JSON; decode occupies 259,928 instead of 796,970. Offline binary
-replanning now writes JSON-free ABI-v5 artifact directories with 872/926
-commands, 37/33 kernels, zero opaque operations, and all 241 archive bindings
-validated. The extra eleven declarations cover every movement form observed in
-the preserved prefill/decode plans. This conversion and replan loaded no model
-and launched no Metal device work.
+replanning now writes JSON-free ABI-v6 artifact directories with 872/926
+commands, 37/35 kernels, zero opaque operations, and all 241 archive bindings
+validated. Prefill needs no recurrent-compute entry; decode adds one sum and one
+slice-update entry shared across its ten recurrent blocks. This conversion and
+replan loaded no model and launched no Metal device work.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

@@ -44,11 +44,13 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   the binary command schedule through small Objective-C bindings. Native
   dispatch covers matmul, Q8 linear, RMSNorm, ShortConv, masked attention,
   embedding, range/fill, diff/cumsum, and two-index gather; compute pipelines
-  are cached per loaded library. Package ABI v5 also dispatches the model's
+  are cached per loaded library. Package ABI v6 also dispatches the model's
   float16/float32/int64 cast directions and its required broadcast/scalar
   pointwise add, multiply, comparison, activation, and rotary operations, then
   materializes transpose, index, expand, concat, and roll while treating dense
-  view, reshape, unsqueeze, and contiguous commands as metadata aliases.
+  view, reshape, unsqueeze, and contiguous commands as metadata aliases. The
+  decode-only recurrent path additionally executes float16 sum and functional
+  normalized-slice update.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -97,9 +99,9 @@ separate prefill and one-token decode graphs with one physical
 422,137,216-byte archive. Offline replanning produces 872 prefill commands and
 926 decode commands, both with zero opaque operations; both generated MSL
 programs compile and their serving packages validate all 241 static bindings.
-Native execution now covers every built-in, cast, pointwise, and movement
-kernel family required by those packages, but reduction, recurrent-state,
-final float16 linear, and complete command-buffer execution remain open. Exact parity was computed during the
+Native execution now covers every built-in, cast, pointwise, movement,
+reduction, and recurrent-update kernel family required by those packages, but
+final float16 linear and complete command-buffer execution remain open. Exact parity was computed during the
 capture process but its result file was not written after a post-capture
 package-check failure, so this capture adds no parity claim. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
@@ -165,12 +167,13 @@ archive. `ocaml-metal-runtime-smoke` maps that archive once, lets the OCaml
 executor bind runtime/static inputs and allocate outputs from the binary
 schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.json`.
-`native-schedule-smoke` generates a JSON-free, 118-command typed package and
-compiles its 36 emitted Metal entry points without launching a device.
+`native-schedule-smoke` generates a JSON-free, 125-command typed package and
+compiles its 38 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
-executes 35 kernels across matmul, normalization, convolution, attention,
+executes 37 kernels across matmul, normalization, convolution, attention,
 embedding, position/mask, fill, cast, pointwise, and movement forms and checks
-all 36 outputs byte for byte. It writes a plain-text report.
+all 38 outputs, including sum and slice update, byte for byte. It writes a
+plain-text report.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -252,16 +255,16 @@ OCaml serving runtime
 `graph.llmopt` is a compile-time transport and `plan.txt` is a compiler
 diagnostic; neither is a serving input. Set `LLMOPT_FX_DIAGNOSTICS=1` to emit
 optional `fx.json` and `runtime.json` files. The native runtime consumes only
-`package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI v5
+`package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI v6
 references weight-archive ABI v1 and retains read compatibility with ABI v2,
-v3, and v4; neither file contains JSON. The
+v3, v4, and v5; neither file contains JSON. The
 preserved 350M packages are ABI v2 and can be replanned without loading the
 model.
 
 The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
 776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
 bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
-binary-input replanning emits ABI-v5 packages with 872/926 commands, 37/33
+binary-input replanning emits ABI-v6 packages with 872/926 commands, 37/35
 kernels, zero opaque commands, and all 241 tensor bindings validated. No model
 load or device dispatch was used for that replan.
 

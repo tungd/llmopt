@@ -772,7 +772,7 @@ let movement_concat_kernel ~name ~value_type =
   ^ "  output[gid] = use_left ? left[offset] : right[offset];\n"
   ^ "}\n\n"
 
-let movement_source =
+let movement_parameters_source =
   "\nstruct MovementParams {\n"
   ^ "  uint count; uint rank; uint axis0; uint axis1;\n"
   ^ "  uint input_shape[8]; uint output_shape[8];\n"
@@ -789,7 +789,9 @@ let movement_source =
   ^ "struct RollParams {\n"
   ^ "  uint count; uint rank; uint axis; int shift; uint shape[8];\n"
   ^ "};\n\n"
-  ^ movement_transpose_kernel ~name:"llmopt_transpose_f16" ~value_type:"half"
+
+let movement_source =
+  movement_transpose_kernel ~name:"llmopt_transpose_f16" ~value_type:"half"
   ^ movement_transpose_kernel ~name:"llmopt_transpose_f32" ~value_type:"float"
   ^ movement_index_kernel ~name:"llmopt_index_f16" ~value_type:"half"
   ^ movement_index_kernel ~name:"llmopt_index_f32" ~value_type:"float"
@@ -818,6 +820,87 @@ let movement_entries =
     entry "llmopt_concat_f16" Ir.Dtype.Float16;
     entry "llmopt_concat_f32" Ir.Dtype.Float32;
     entry "llmopt_roll_f16" Ir.Dtype.Float16 ]
+
+let reduction_source =
+  "\nstruct ReductionParams { uint outer; uint width; uint inner; };\n\n"
+  ^ "kernel void llmopt_sum_f16(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device half* output [[buffer(1)]],\n"
+  ^ "    constant ReductionParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.outer * params.inner;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint outer_index = gid / params.inner;\n"
+  ^ "  const uint inner_index = gid % params.inner;\n"
+  ^ "  float accumulator = 0.0f;\n"
+  ^ "  for (uint axis = 0; axis < params.width; ++axis) {\n"
+  ^ "    const uint offset = ((outer_index * params.width + axis)\n"
+  ^ "        * params.inner) + inner_index;\n"
+  ^ "    accumulator += float(input[offset]);\n"
+  ^ "  }\n"
+  ^ "  output[gid] = half(accumulator);\n"
+  ^ "}\n\n"
+
+let reduction_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_sum_f16" ~operation:Kernel_abi.Operation.Reduction
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let update_slice_source =
+  "kernel void llmopt_update_slice_f16(\n"
+  ^ "    device const half* destination [[buffer(0)]],\n"
+  ^ "    device const half* source [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant IndexParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.count) return;\n"
+  ^ "  output[gid] = destination[gid];\n"
+  ^ "  uint destination_coordinates[8] = {};\n"
+  ^ "  uint remaining = gid;\n"
+  ^ "  for (int axis = int(params.input_rank) - 1; axis >= 0; --axis) {\n"
+  ^ "    destination_coordinates[axis] = remaining % params.input_shape[axis];\n"
+  ^ "    remaining /= params.input_shape[axis];\n"
+  ^ "  }\n"
+  ^ "  uint source_coordinates[8] = {};\n"
+  ^ "  uint destination_axis = 0; uint source_axis = 0;\n"
+  ^ "  bool selected = true;\n"
+  ^ "  for (uint selector = 0; selector < params.selector_count; ++selector) {\n"
+  ^ "    const uint kind = params.selector_kind[selector];\n"
+  ^ "    if (kind == 0) {\n"
+  ^ "      selected = selected\n"
+  ^ "          && long(destination_coordinates[destination_axis]) == params.starts[selector];\n"
+  ^ "      ++destination_axis;\n"
+  ^ "    } else if (kind == 1) {\n"
+  ^ "      const long delta = long(destination_coordinates[destination_axis])\n"
+  ^ "          - params.starts[selector];\n"
+  ^ "      const long step = params.steps[selector];\n"
+  ^ "      if (step == 0 || delta % step != 0) {\n"
+  ^ "        selected = false;\n"
+  ^ "      } else {\n"
+  ^ "        const long coordinate = delta / step;\n"
+  ^ "        selected = selected && coordinate >= 0\n"
+  ^ "            && coordinate < long(params.output_shape[source_axis]);\n"
+  ^ "        source_coordinates[source_axis] = coordinate < 0 ? 0 : uint(coordinate);\n"
+  ^ "      }\n"
+  ^ "      ++destination_axis; ++source_axis;\n"
+  ^ "    } else {\n"
+  ^ "      source_coordinates[source_axis++] = 0;\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  if (!selected) return;\n"
+  ^ "  uint source_offset = 0; uint stride = 1;\n"
+  ^ "  for (int axis = int(params.output_rank) - 1; axis >= 0; --axis) {\n"
+  ^ "    source_offset += source_coordinates[axis] * stride;\n"
+  ^ "    stride *= params.output_shape[axis];\n"
+  ^ "  }\n"
+  ^ "  output[gid] = source[source_offset];\n"
+  ^ "}\n\n"
+
+let update_slice_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_update_slice_f16"
+      ~operation:Kernel_abi.Operation.Update_slice
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
 let has_rms_norm graph =
   Ir.Graph.nodes graph
@@ -851,6 +934,16 @@ let has_primitive graph predicate =
          match Ir.node_op node with
          | Ir.Op.Primitive primitive -> predicate primitive
          | _ -> false)
+
+let has_materialized_movement graph =
+  has_primitive graph (function
+    | Ir.Primitive.Movement movement ->
+        (match movement with
+        | Ir.Movement.Transpose _ | Ir.Movement.Expand | Ir.Movement.Index _
+        | Ir.Movement.Concat _ | Ir.Movement.Roll _ -> true
+        | Ir.Movement.View | Ir.Movement.Reshape | Ir.Movement.Unsqueeze _
+        | Ir.Movement.Contiguous -> false)
+    | _ -> false)
 
 let has_q8 graph =
   Ir.Graph.nodes graph
@@ -1009,6 +1102,10 @@ let lower_primary graph =
                  ~output_dtype:Ir.Dtype.Float32 ])
 
 let lower graph =
+  let materialized_movement = has_materialized_movement graph in
+  let update_slice =
+    has_primitive graph (function Ir.Primitive.Update_slice _ -> true | _ -> false)
+  in
   let components =
     [ has_q8 graph, q8_source, q8_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
@@ -1036,17 +1133,15 @@ let lower graph =
       ( has_primitive graph (function Ir.Primitive.Pointwise _ -> true | _ -> false),
         pointwise_source,
         pointwise_entries );
+      (materialized_movement || update_slice, movement_parameters_source, []);
+      materialized_movement, movement_source, movement_entries;
       ( has_primitive graph (function
-          | Ir.Primitive.Movement movement ->
-              (match movement with
-              | Ir.Movement.Transpose _ | Ir.Movement.Expand
-              | Ir.Movement.Index _ | Ir.Movement.Concat _
-              | Ir.Movement.Roll _ -> true
-              | Ir.Movement.View | Ir.Movement.Reshape
-              | Ir.Movement.Unsqueeze _ | Ir.Movement.Contiguous -> false)
+          | Ir.Primitive.Reduce
+              { Ir.Reduction.operator = Ir.Reduction.Sum; _ } -> true
           | _ -> false),
-        movement_source,
-        movement_entries ) ]
+        reduction_source,
+        reduction_entries );
+      update_slice, update_slice_source, update_slice_entries ]
   in
   let auxiliary_source, auxiliary_entries =
     List.fold_left

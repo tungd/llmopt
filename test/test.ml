@@ -1096,8 +1096,11 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 5)
-    "serving package uses binary ABI version 5";
+    (Bytes.get_uint16_le serving_bytes 8 = 6)
+    "serving package uses binary ABI version 6";
+  let package_v5 = Bytes.copy serving_bytes in
+  Bytes.set_uint16_le package_v5 8 5;
+  ignore (Serving_package.of_bytes package_v5 |> expect_ok);
   let package_v4 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v4 8 4;
   ignore (Serving_package.of_bytes package_v4 |> expect_ok);

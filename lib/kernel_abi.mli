@@ -17,6 +17,8 @@ module Operation : sig
     | Cast
     | Pointwise
     | Movement
+    | Reduction
+    | Update_slice
 
   val to_string : t -> string
   val of_string : string -> (t, string) result

@@ -17,6 +17,8 @@ module Operation = struct
     | Cast
     | Pointwise
     | Movement
+    | Reduction
+    | Update_slice
 
   let to_string = function
     | Matmul -> "matmul"
@@ -36,6 +38,8 @@ module Operation = struct
     | Cast -> "cast"
     | Pointwise -> "pointwise"
     | Movement -> "movement"
+    | Reduction -> "reduction"
+    | Update_slice -> "update-slice"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -55,6 +59,8 @@ module Operation = struct
     | "cast" -> Ok Cast
     | "pointwise" -> Ok Pointwise
     | "movement" -> Ok Movement
+    | "reduction" -> Ok Reduction
+    | "update-slice" -> Ok Update_slice
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 
