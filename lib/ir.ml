@@ -201,10 +201,12 @@ module Primitive = struct
     | Movement of Movement.t
     | Short_conv of Short_conv.t
     | Attention of Attention.t
+    | Embedding
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
-    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _ -> []
+    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _ | Embedding ->
+        []
 
   let to_string = function
     | Pointwise operation -> Pointwise.to_string operation
@@ -213,6 +215,7 @@ module Primitive = struct
     | Movement movement -> Movement.to_string movement
     | Short_conv config -> Short_conv.to_string config
     | Attention config -> Attention.to_string config
+    | Embedding -> "embedding"
 end
 
 module Argument = struct

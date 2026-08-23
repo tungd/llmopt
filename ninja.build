@@ -101,6 +101,10 @@ rule attention_metal_check
   command = xcrun metal -c _build/llmopt-demo/lfm25_attention.metal -o _build/llmopt-demo/lfm25_attention.air
   description = validate emitted LFM attention Metal source
 
+rule embedding_metal_check
+  command = xcrun metal -c _build/llmopt-demo/lfm25_embedding.metal -o _build/llmopt-demo/lfm25_embedding.air
+  description = validate emitted LFM embedding Metal source
+
 rule metal_lib
   command = xcrun metallib $in -o $out
   description = link Metal library $out
@@ -279,6 +283,7 @@ build q8-smoke: phony q8-metal q8-llvm
 build rms-norm-smoke: rms_norm_metal_check | demo
 build short-conv-smoke: short_conv_metal_check | demo
 build attention-smoke: attention_metal_check | demo
+build embedding-smoke: embedding_metal_check | demo
 build fx-smoke: phony _build/fx-example/kernel.ll.o _build/fx-example/kernel.air _build/fx-example/kernel.metallib _build/fx-example/package.ok
 build ocaml-metal-runtime: phony _build/bin/llmopt-ocaml-metal-smoke
 build ocaml-metal-runtime-smoke: phony _build/q8-serving-example/ocaml-metal-smoke.json

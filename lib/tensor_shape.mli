@@ -55,6 +55,7 @@ type error =
   | Invalid_depthwise_conv1d of string
   | Convolution_dimension_overflow
   | Invalid_attention of string
+  | Invalid_embedding of string
   | Malformed_index of string
 
 val create : int list -> (t, error) result
@@ -81,6 +82,7 @@ val depthwise_conv1d :
   groups:int ->
   (t, error) result
 val scaled_dot_product_attention : t -> t -> t -> t -> (t, error) result
+val embedding : t -> t -> (t, error) result
 val reduce : t -> axes:int list -> keepdim:bool -> (t, error) result
 val index : t -> Index.Spec.t list -> (Index.t * t, error) result
 val apply_index : t -> Index.t -> (t, error) result

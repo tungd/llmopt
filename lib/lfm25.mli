@@ -23,3 +23,4 @@ val linear_kernel : config:Config.t -> rows:int -> unit -> unit
 val rms_norm_kernel : config:Config.t -> rows:int -> epsilon:float -> unit -> unit
 val short_conv_kernel : config:Config.t -> batch:int -> tokens:int -> unit -> unit
 val attention_kernel : config:Config.t -> batch:int -> tokens:int -> unit -> unit
+val embedding_kernel : config:Config.t -> batch:int -> tokens:int -> unit -> unit

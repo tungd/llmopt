@@ -293,6 +293,30 @@ let attention_entries =
       ~operation:Kernel_abi.Operation.Attention
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let embedding_source =
+  "\nstruct EmbeddingParams { uint tokens; uint vocabulary; uint width; };\n\n"
+  ^ "kernel void llmopt_embedding_f16(\n"
+  ^ "    device const long* indices [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant EmbeddingParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.tokens * params.width;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint token = gid / params.width;\n"
+  ^ "  const uint dimension = gid % params.width;\n"
+  ^ "  const long index = indices[token];\n"
+  ^ "  output[gid] = (index >= 0 && index < long(params.vocabulary))\n"
+  ^ "      ? weight[ulong(index) * params.width + dimension]\n"
+  ^ "      : half(0.0h);\n"
+  ^ "}\n"
+
+let embedding_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_embedding_f16"
+      ~operation:Kernel_abi.Operation.Embedding
+      ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float16 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -310,6 +334,13 @@ let has_attention graph =
   |> List.exists (fun node ->
          match Ir.node_op node with
          | Ir.Op.Primitive (Ir.Primitive.Attention _) -> true
+         | _ -> false)
+
+let has_embedding graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive Ir.Primitive.Embedding -> true
          | _ -> false)
 
 let lower_primary graph =
@@ -544,6 +575,12 @@ let lower graph =
     if has_attention graph then
       auxiliary_source ^ attention_source,
       auxiliary_entries @ attention_entries
+    else auxiliary_source, auxiliary_entries
+  in
+  let auxiliary_source, auxiliary_entries =
+    if has_embedding graph then
+      auxiliary_source ^ embedding_source,
+      auxiliary_entries @ embedding_entries
     else auxiliary_source, auxiliary_entries
   in
   match lower_primary graph with

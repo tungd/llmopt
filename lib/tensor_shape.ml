@@ -81,6 +81,7 @@ type error =
   | Invalid_depthwise_conv1d of string
   | Convolution_dimension_overflow
   | Invalid_attention of string
+  | Invalid_embedding of string
   | Malformed_index of string
 
 let to_string shape =
@@ -137,6 +138,7 @@ let error_to_string = function
   | Convolution_dimension_overflow ->
       "depthwise conv1d output dimension overflows"
   | Invalid_attention message -> "invalid scaled-dot-product attention: " ^ message
+  | Invalid_embedding message -> "invalid embedding: " ^ message
   | Malformed_index message -> "malformed normalized tensor index: " ^ message
 
 let create dimensions =
@@ -313,6 +315,14 @@ let scaled_dot_product_attention query key value mask =
         invalid "mask sequence dimensions disagree with query and key"
       else Ok query
   | _ -> invalid "query, key, value, and mask must have rank four"
+
+let embedding indices weight =
+  match dimensions weight with
+  | [ vocabulary; width ] when vocabulary > 0 && width > 0 ->
+      create (dimensions indices @ [ width ])
+  | [ _; _ ] ->
+      Error (Invalid_embedding "vocabulary and width must be positive")
+  | _ -> Error (Invalid_embedding "weight must have rank two")
 
 let reduce shape ~axes ~keepdim =
   match normalize_axes shape axes with

@@ -545,6 +545,30 @@ let attention state config query_value key_value value_value mask_value
       done
   | _ -> failf "invalid CPU attention tensor metadata"
 
+let embedding state indices_value weight_value output_value output =
+  match
+    Tensor_shape.dimensions (Ir.Value.logical_shape weight_value),
+    List.rev (Tensor_shape.dimensions (Ir.Value.logical_shape output_value))
+  with
+  | [ vocabulary; width ], output_width :: _ when output_width = width ->
+      let indices = find state indices_value in
+      let weight = find state weight_value in
+      let token_count = Tensor_shape.numel (Ir.Value.logical_shape indices_value) in
+      for token = 0 to token_count - 1 do
+        let raw_index = Tensor.get_linear indices token in
+        if
+          (not (Float.is_finite raw_index))
+          || raw_index <> Float.round raw_index || raw_index < 0.0
+          || raw_index >= Float.of_int vocabulary
+        then failf "CPU embedding index %.9g is out of range" raw_index;
+        let index = int_of_float raw_index in
+        for dimension = 0 to width - 1 do
+          Tensor.set_linear output ((token * width) + dimension)
+            (Tensor.get_linear weight ((index * width) + dimension))
+        done
+      done
+  | _ -> failf "invalid CPU embedding tensor metadata"
+
 let primitive state operation inputs output_value output =
   match operation, inputs with
   | Ir.Primitive.Pointwise operation, _ ->
@@ -561,6 +585,8 @@ let primitive state operation inputs output_value output =
       short_conv state config input weight output_value output
   | Ir.Primitive.Attention config, [ query; key; value; mask ] ->
       attention state config query key value mask output_value output
+  | Ir.Primitive.Embedding, [ indices; weight ] ->
+      embedding state indices weight output_value output
   | _ -> failf "invalid primitive input arity"
 
 let run ~inputs thunk =

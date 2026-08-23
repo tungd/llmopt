@@ -166,7 +166,8 @@ compared with 379 typed and 736 opaque in the saved v1 package. A subsequent
 offline replan corrected a target-suffix collision and moved all 14 expand
 commands into the typed set. Typed depthwise ShortConv lowering then moved the
 ten model `conv1d` commands, and masked-attention lowering moved all six SDPA
-commands, leaving 823 typed and 12 opaque. Direct-FX
+commands. Embedding lowering moves the token lookup as well, leaving 824 typed
+and 11 opaque. Direct-FX
 execution is bit exact against eager MPS for the six-token probe. This is
 capture and planning evidence; PyTorch MPS, not the OCaml package runtime,
 executed the parity check.
@@ -175,8 +176,8 @@ The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and
 emits normalized slices directly at integer getitem consumers, avoiding a
 tuple-valued runtime command. Static tensor indices and concat survive the
-schedule-v5 binary round trip and CPU interpretation. The latest offline
-package structurally validates with 241 tensors and declares five generated
+schedule-v6 binary round trip and CPU interpretation. The latest offline
+package structurally validates with 241 tensors and declares six generated
 kernels; native Metal emission and command dispatch for the complete schedule
 remain open.
 

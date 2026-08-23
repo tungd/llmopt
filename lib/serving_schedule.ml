@@ -157,6 +157,25 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d attention metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive Ir.Primitive.Embedding,
+            [ indices; weight ],
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.embedding (Ir.Value.logical_shape indices)
+                (Ir.Value.logical_shape weight)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype indices = Ir.Dtype.Int64
+              && Ir.Value.dtype weight = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d embedding metadata is inconsistent"
+                   command.Command.node_id)
         | _ -> Ok ()
 
 let create commands =
@@ -613,6 +632,7 @@ let write_primitive writer = function
       Binary.Writer.u8 writer 5;
       Binary.Writer.float64 writer (Ir.Attention.scale config);
       Binary.Writer.bool writer (Ir.Attention.causal config)
+  | Ir.Primitive.Embedding -> Binary.Writer.u8 writer 6
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -670,6 +690,7 @@ let read_primitive values reader =
       let* causal = Binary.Reader.bool reader in
       Ir.Attention.create ~scale ~causal
       |> Result.map (fun config -> Ir.Primitive.Attention config)
+  | 6 -> Ok Ir.Primitive.Embedding
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -811,7 +832,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 5;
+  Binary.Writer.u16 writer 6;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -833,7 +854,7 @@ let of_bytes bytes =
     let* version = Binary.Reader.u16 reader in
     if
       version <> 1 && version <> 2 && version <> 3 && version <> 4
-      && version <> 5
+      && version <> 5 && version <> 6
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else

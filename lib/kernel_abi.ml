@@ -8,6 +8,7 @@ module Operation = struct
     | Rms_norm
     | Short_conv
     | Attention
+    | Embedding
 
   let to_string = function
     | Matmul -> "matmul"
@@ -18,6 +19,7 @@ module Operation = struct
     | Rms_norm -> "rms-norm"
     | Short_conv -> "short-conv"
     | Attention -> "attention"
+    | Embedding -> "embedding"
 
   let of_string = function
     | "matmul" -> Ok Matmul
@@ -28,6 +30,7 @@ module Operation = struct
     | "rms-norm" -> Ok Rms_norm
     | "short-conv" -> Ok Short_conv
     | "attention" -> Ok Attention
+    | "embedding" -> Ok Embedding
     | value -> Error ("unsupported kernel operation: " ^ value)
 end
 

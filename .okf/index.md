@@ -41,3 +41,4 @@ okf_version: '0.2'
 * [Qualified FX target matching](experiments/exp-0019-qualified-fx-targets.md) - qualification-aware operator matching with a measured 14-command recovery.
 * [Typed LFM ShortConv lowering and Metal kernel](experiments/exp-0020-lfm-short-conv.md) - ten real conv1d nodes moved into a typed, compiled operation.
 * [Typed LFM masked attention and Metal kernel](experiments/exp-0021-lfm-attention.md) - captured prefill GQA boundary moved into typed IR and compiled fused MSL.
+* [Typed LFM token embedding and Metal gather](experiments/exp-0022-lfm-embedding.md) - int64 token lookup moved into typed IR and a compiled float16 gather kernel.

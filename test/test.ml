@@ -302,6 +302,64 @@ let () =
     |> List.exists (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Attention))
     "attention graph declares its Metal kernel ABI";
+  let embedding_index_shape = Tensor_shape.of_ints_exn [ 1; 2 ] in
+  let embedding_weight_shape = Tensor_shape.of_ints_exn [ 3; 2 ] in
+  let embedding_output_shape =
+    expect_ok
+      (Tensor_shape.embedding embedding_index_shape embedding_weight_shape
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions embedding_output_shape = [ 1; 2; 2 ])
+    "embedding appends the weight width to the index shape";
+  let embedding_kernel () =
+    let indices =
+      Tile_effect.tensor_input ~name:"embedding_indices"
+        ~source:Ir.Input_source.Runtime ~shape:embedding_index_shape
+        ~dtype:Ir.Dtype.Int64
+    in
+    let weight =
+      Tile_effect.tensor_input ~name:"embedding_weight"
+        ~source:Ir.Input_source.Runtime ~shape:embedding_weight_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    let output =
+      primitive_value ~operation:Ir.Primitive.Embedding
+        ~inputs:[ indices; weight ] ~logical_shape:embedding_output_shape
+        ~dtype:Ir.Dtype.Float16
+    in
+    Tile_effect.output ~name:"embedding_output" ~value:output
+  in
+  (match
+     Cpu.run
+       ~inputs:
+         [ ("embedding_indices", Cpu.Tensor.of_rows [| [| 2.; 0. |] |]);
+           ( "embedding_weight",
+             Cpu.Tensor.of_rows
+               [| [| 1.; 2. |]; [| 3.; 4. |]; [| 5.; 6. |] |] ) ]
+       embedding_kernel
+   with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      let output = Cpu.output execution "embedding_output" |> Option.get in
+      expect (Cpu.Tensor.to_rows output = [| [| 5.; 6. |]; [| 1.; 2. |] |])
+        "CPU reference gathers embedding rows");
+  let embedding_graph =
+    match Capture.run embedding_kernel with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  let embedding_schedule =
+    embedding_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count embedding_schedule = 0)
+    "embedding survives the binary schedule as a typed command";
+  let embedding_program = expect_ok (Metal.lower embedding_graph) in
+  expect
+    (Metal.Program.kernels embedding_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Embedding))
+    "embedding graph declares its Metal kernel ABI";
   let primitive_kernel () =
     let input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
     let channel_shape = Tensor_shape.of_ints_exn [ 4 ] in
@@ -993,6 +1051,35 @@ let () =
   in
   expect (Serving_schedule.opaque_count attention_fx_schedule = 0)
     "captured scaled-dot-product attention lowers to a typed command";
+  let embedding_fx =
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2);
+             ( "nodes",
+               `List
+                 [ fx_node ~op:"placeholder" ~dtype:"int64" ~name:"ids"
+                     ~target:"ids" ~shape:[ 1; 2 ] ();
+                   fx_node ~op:"placeholder" ~name:"embedding_weight"
+                     ~target:"embedding_weight" ~shape:[ 3; 2 ] ();
+                   fx_node ~op:"call_function" ~name:"embedding"
+                     ~target:"torch.nn.functional.embedding"
+                     ~inputs:[ "ids"; "embedding_weight" ]
+                     ~arguments:
+                       [ fx_node_argument "ids";
+                         fx_node_argument "embedding_weight";
+                         fx_int_argument 0; fx_null_argument;
+                         fx_float_argument 2.0; fx_bool_argument false;
+                         fx_bool_argument false ]
+                     ~shape:[ 1; 2; 2 ] () ] );
+             ("outputs", `List [ `String "embedding" ]) ]))
+  in
+  let embedding_fx_schedule =
+    embedding_fx |> Fx_plan.plan |> expect_ok |> Serving_schedule.of_graph
+    |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count embedding_fx_schedule = 0)
+    "captured embedding lowers to a typed gather command";
   let optimized_schedule =
     primitive_optimized |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok

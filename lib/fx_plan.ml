@@ -593,6 +593,47 @@ let plan fx_graph =
                   ~inputs ~logical_shape
         | _ -> Error "LFM attention requires query, key, value, and mask"
       in
+      let lower_embedding inputs =
+        match inputs, Fx.Node.arguments node with
+        | ( [ indices; weight ],
+            _indices :: _weight :: padding_index :: max_norm :: norm_type
+            :: scale_grad_by_frequency :: sparse :: _ ) ->
+            if Ir.Value.dtype indices <> Ir.Dtype.Int64 then
+              Error "LFM embedding indices must be int64"
+            else if Ir.Value.dtype weight <> Ir.Dtype.Float16 then
+              Error "LFM embedding weight must be float16"
+            else if max_norm <> Fx.Argument.Null then
+              Error "LFM inference embedding does not support max_norm"
+            else
+              let* padding_index = optional_int_argument padding_index in
+              let* _norm_type = finite_float_argument norm_type in
+              let* scale_grad_by_frequency =
+                bool_argument scale_grad_by_frequency
+              in
+              let* sparse = bool_argument sparse in
+              let vocabulary =
+                match Tensor_shape.dimensions (Ir.Value.logical_shape weight) with
+                | vocabulary :: _ -> vocabulary
+                | [] -> 0
+              in
+              if scale_grad_by_frequency || sparse then
+                Error "LFM inference embedding requires dense unscaled lookup"
+              else if
+                Option.exists
+                  (fun index -> index < -vocabulary || index >= vocabulary)
+                  padding_index
+              then Error "LFM embedding padding index is out of range"
+              else
+                let* inferred =
+                  Tensor_shape.embedding (Ir.Value.logical_shape indices)
+                    (Ir.Value.logical_shape weight)
+                  |> Result.map_error Tensor_shape.error_to_string
+                in
+                let* logical_shape = declared_or_inferred node inferred in
+                emit_primitive node ~operation:Ir.Primitive.Embedding ~inputs
+                  ~logical_shape
+        | _ -> Error "LFM embedding requires static inference options"
+      in
       let lower_chunk () =
         match Fx.Node.inputs node with
         | [ input_name ] ->
@@ -852,6 +893,12 @@ let plan fx_graph =
                        "torch.nn.functional.scaled_dot_product_attention";
                        "aten.scaled_dot_product_attention.default" ]
               then lower_attention inputs |> lower_or_opaque inputs
+              else if
+                typed_manifest
+                && target_is target
+                     [ "torch.nn.functional.embedding";
+                       "aten.embedding.default" ]
+              then lower_embedding inputs |> lower_or_opaque inputs
               else if typed_manifest && target_is target [ "contiguous"; "aten.contiguous.default" ] then
                 (match inputs with
                 | [ input ] ->

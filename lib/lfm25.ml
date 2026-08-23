@@ -260,3 +260,30 @@ let attention_kernel ~config ~batch ~tokens () =
       ~logical_shape:tensor_shape ~dtype:config.Config.dtype
   in
   Tile_effect.output ~name:"attention_output" ~value:output
+
+let embedding_kernel ~config ~batch ~tokens () =
+  if batch <= 0 then invalid_arg "embedding batch must be positive";
+  if tokens <= 0 then invalid_arg "embedding token count must be positive";
+  let index_shape = Tensor_shape.of_ints_exn [ batch; tokens ] in
+  let weight_shape =
+    Tensor_shape.of_ints_exn
+      [ config.Config.vocab_size; config.Config.hidden_size ]
+  in
+  let output_shape =
+    match Tensor_shape.embedding index_shape weight_shape with
+    | Ok shape -> shape
+    | Error error -> invalid_arg (Tensor_shape.error_to_string error)
+  in
+  let indices =
+    Tile_effect.tensor_input ~name:"embedding_indices"
+      ~source:Ir.Input_source.Runtime ~shape:index_shape ~dtype:Ir.Dtype.Int64
+  in
+  let weight =
+    Tile_effect.tensor_input ~name:"embedding_weight"
+      ~source:Ir.Input_source.Runtime ~shape:weight_shape ~dtype:config.Config.dtype
+  in
+  let output =
+    primitive ~operation:Ir.Primitive.Embedding ~inputs:[ indices; weight ]
+      ~logical_shape:output_shape ~dtype:config.Config.dtype
+  in
+  Tile_effect.output ~name:"embedding_output" ~value:output

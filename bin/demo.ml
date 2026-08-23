@@ -123,4 +123,12 @@ let () =
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_attention"
     attention_graph;
+  let embedding_graph =
+    snd
+      (capture_or_fail (fun () ->
+           Lfm25.embedding_kernel ~config:Lfm25.Config.default ~batch:1
+             ~tokens:6 ()))
+  in
+  emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_embedding"
+    embedding_graph;
   Printf.printf "generated sources in %s\n" !emit_directory

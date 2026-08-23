@@ -110,6 +110,7 @@ module Primitive : sig
     | Movement of Movement.t
     | Short_conv of Short_conv.t
     | Attention of Attention.t
+    | Embedding
 
   val values : t -> Value.t list
   val to_string : t -> string
