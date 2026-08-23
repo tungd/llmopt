@@ -59,8 +59,10 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   and model provenance.
 
 The typed effect vocabulary now also covers N-dimensional pointwise,
-reduction, cast, and movement primitives; its CPU reference and schedule-v2
-codecs are tested. The current complete-model executable target is PyTorch MPS: the direct callable runs the
+reduction, cast, normalized static indexing, concat, and movement primitives.
+The planner eliminates valid `chunk` tuple nodes by emitting slices directly
+at integer `getitem` consumers; its CPU reference and schedule-v3 codecs are
+tested. The current complete-model executable target is PyTorch MPS: the direct callable runs the
 captured FX GraphModule and lets each operation dispatch to MPS. Q8 graphs can
 also activate the generated tiled Metal library through the bridge; unsupported
 operations and inputs use the PyTorch MPS fallback. The intended serving stack
@@ -175,6 +177,7 @@ typed graph + schedule timeline
         ├── linear/bias fusion
         ├── RMSNorm fusion (implemented)
         ├── typed N-D movement/pointwise/reduction lowering (implemented)
+        ├── chunk/getitem elimination + typed concat (implemented)
         ├── layout materialization and staging passes (next)
         └── async schedule synthesis (next)
         │

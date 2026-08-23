@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T18:34:45Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:53:41Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -101,7 +101,8 @@ complete LFM2.5 Q8 archive and schedule have not moved into the OCaml process.
 The cross-language planner supports N-dimensional placeholders, `linear`,
 Q8 linear, `mm`/`matmul`, pointwise arithmetic/comparison and common unary
 operators, mean, casts, views, reshape, transpose, unsqueeze, expand,
-contiguous, `relu`, and `gelu`, and preserves other FX nodes as opaque plan
+contiguous, normalized static indexing, concat, `relu`, and `gelu`, and
+preserves other FX nodes as opaque plan
 nodes. A pure pass fuses the LFM RMSNorm chain into one typed command, and its
 float32-to-float16 and float16 Metal kernels compile with Xcode. The first
 runtime optimization pass returns the captured FX
@@ -163,6 +164,14 @@ The one bounded v2 model recapture stopped before package generation on a
 previously unrepresented Python ellipsis argument. Ellipsis is now an explicit
 typed argument covered by offline tests; the model was not retried, so the real
 operator counts remain those of the saved v1 capture.
+
+The saved capture measures 85 getitem, 10 chunk, and 13 concat nodes. For a v2
+graph, the planner now holds chunk partitions as compile-time descriptors and
+emits normalized slices directly at integer getitem consumers, avoiding a
+tuple-valued runtime command. Static tensor indices and concat survive the
+schedule-v3 binary round trip and CPU interpretation. This is synthetic
+compiler evidence; Metal emission and native dispatch for these commands, plus
+a real v2 operator count, remain open.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the

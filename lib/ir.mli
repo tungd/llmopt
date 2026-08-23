@@ -70,6 +70,8 @@ module Movement : sig
     | Unsqueeze of int
     | Expand
     | Contiguous
+    | Index of Tensor_shape.Index.t
+    | Concat of { axis : int }
 
   val to_string : t -> string
 end

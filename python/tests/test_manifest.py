@@ -124,6 +124,35 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(manifest["nodes"][1]["shape"], [1, 6, 1024])
         self.assertEqual(manifest["nodes"][1]["dtype"], "float16")
 
+    def test_chunk_tuple_metadata_preserves_first_partition_and_arguments(self):
+        x = FakeNode("x", "placeholder", "x")
+        chunks = FakeNode(
+            "chunks",
+            "call_method",
+            "chunk",
+            args=(x, 3, -1),
+            meta={
+                "example_value": (
+                    FakeTensor((2, 2), "torch.float16"),
+                    FakeTensor((2, 2), "torch.float16"),
+                    FakeTensor((2, 2), "torch.float16"),
+                )
+            },
+        )
+        output = FakeNode("output", "output", "output", args=((chunks,),))
+
+        manifest = manifest_from_fx(
+            FakeGraphModule([x, chunks, output]),
+            [FakeTensor((2, 6), "torch.float16")],
+        )
+
+        self.assertEqual(manifest["nodes"][1]["shape"], [2, 2])
+        self.assertEqual(manifest["nodes"][1]["dtype"], "float16")
+        self.assertEqual(
+            manifest["nodes"][1]["arguments"]["args"][1:],
+            [{"kind": "int", "value": 3}, {"kind": "int", "value": -1}],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

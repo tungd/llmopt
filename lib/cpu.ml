@@ -295,6 +295,65 @@ let reduce_mean state reduction input_value output_value output =
         (Tensor.get_linear output index /. Float.of_int count))
     counts
 
+let apply_index state selection input_value output_value output =
+  let output_shape = Ir.Value.logical_shape output_value in
+  let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
+  let input_dimensions =
+    Ir.Value.logical_shape input_value |> Tensor_shape.dimensions |> Array.of_list
+  in
+  let source = find state input_value in
+  for index = 0 to Tensor_shape.numel output_shape - 1 do
+    let output_coordinates = coordinates output_dimensions index in
+    let input_coordinates = Array.make (Array.length input_dimensions) 0 in
+    let source_axis = ref 0 in
+    let output_axis = ref 0 in
+    Tensor_shape.Index.selectors selection
+    |> List.iter (function
+         | Tensor_shape.Index.At selected ->
+             input_coordinates.(!source_axis) <- selected;
+             incr source_axis
+         | Tensor_shape.Index.Slice { start; step; length = _ } ->
+             input_coordinates.(!source_axis) <-
+               start + (output_coordinates.(!output_axis) * step);
+             incr source_axis;
+             incr output_axis
+         | Tensor_shape.Index.New_axis -> incr output_axis);
+    let input_index = linear_index input_dimensions input_coordinates in
+    Tensor.set_linear output index (Tensor.get_linear source input_index)
+  done
+
+let concatenate state axis input_values output_value output =
+  let inputs = Array.of_list input_values in
+  if Array.length inputs = 0 then failf "concat requires at least one input";
+  let output_shape = Ir.Value.logical_shape output_value in
+  let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
+  let input_dimensions =
+    Array.map
+      (fun value ->
+        Ir.Value.logical_shape value |> Tensor_shape.dimensions |> Array.of_list)
+      inputs
+  in
+  for index = 0 to Tensor_shape.numel output_shape - 1 do
+    let output_coordinates = coordinates output_dimensions index in
+    let selected_input = ref 0 in
+    let selected_axis = ref output_coordinates.(axis) in
+    while
+      !selected_input < Array.length inputs - 1
+      && !selected_axis >= input_dimensions.(!selected_input).(axis)
+    do
+      selected_axis :=
+        !selected_axis - input_dimensions.(!selected_input).(axis);
+      incr selected_input
+    done;
+    let input_coordinates = Array.copy output_coordinates in
+    input_coordinates.(axis) <- !selected_axis;
+    let input_index =
+      linear_index input_dimensions.(!selected_input) input_coordinates
+    in
+    Tensor.set_linear output index
+      (Tensor.get_linear (find state inputs.(!selected_input)) input_index)
+  done
+
 let apply_movement state movement input_value output_value output =
   let input_shape = Ir.Value.logical_shape input_value in
   let output_shape = Ir.Value.logical_shape output_value in
@@ -325,6 +384,9 @@ let apply_movement state movement input_value output_value output =
         let input_index = linear_index input_dimensions input_coordinates in
         Tensor.set_linear output index (Tensor.get_linear source input_index)
       done
+  | Ir.Movement.Index selection ->
+      apply_index state selection input_value output_value output
+  | Ir.Movement.Concat _ -> failf "concat reached the unary movement handler"
 
 let primitive state operation inputs output_value output =
   match operation, inputs with
@@ -334,6 +396,8 @@ let primitive state operation inputs output_value output =
   | Ir.Primitive.Reduce ({ operator = Ir.Reduction.Mean; _ } as reduction),
     [ input ] ->
       reduce_mean state reduction input output_value output
+  | Ir.Primitive.Movement (Ir.Movement.Concat { axis }), inputs ->
+      concatenate state axis inputs output_value output
   | Ir.Primitive.Movement movement, [ input ] ->
       apply_movement state movement input output_value output
   | _ -> failf "invalid primitive input arity"

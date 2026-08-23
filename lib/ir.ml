@@ -139,6 +139,8 @@ module Movement = struct
     | Unsqueeze of int
     | Expand
     | Contiguous
+    | Index of Tensor_shape.Index.t
+    | Concat of { axis : int }
 
   let to_string = function
     | View -> "view"
@@ -148,6 +150,8 @@ module Movement = struct
     | Unsqueeze axis -> Printf.sprintf "unsqueeze(%d)" axis
     | Expand -> "expand"
     | Contiguous -> "contiguous"
+    | Index index -> Tensor_shape.Index.to_string index
+    | Concat { axis } -> Printf.sprintf "concat(axis=%d)" axis
 end
 
 module Primitive = struct

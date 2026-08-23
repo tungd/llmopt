@@ -229,6 +229,70 @@ let bool_argument = function
   | Fx.Argument.Bool value -> Ok value
   | _ -> Error "expected a bool argument"
 
+let optional_int_argument = function
+  | Fx.Argument.Null -> Ok None
+  | Fx.Argument.Int value -> Ok (Some value)
+  | _ -> Error "expected an integer or null index bound"
+
+let rec index_specs = function
+  | Fx.Argument.Tuple items -> index_specs_for_items items
+  | argument ->
+      let* spec = index_spec argument in
+      Ok [ spec ]
+
+and index_specs_for_items items =
+  let rec loop acc = function
+    | [] -> Ok (List.rev acc)
+    | item :: rest ->
+        let* spec = index_spec item in
+        loop (spec :: acc) rest
+  in
+  loop [] items
+
+and index_spec argument : (Tensor_shape.Index.Spec.t, string) result =
+  match argument with
+  | Fx.Argument.Int index -> Ok (Tensor_shape.Index.Spec.At index)
+  | Fx.Argument.Null -> Ok Tensor_shape.Index.Spec.New_axis
+  | Fx.Argument.Ellipsis -> Ok Tensor_shape.Index.Spec.Ellipsis
+  | Fx.Argument.Slice { start; stop; step } ->
+      let* start = optional_int_argument start in
+      let* stop = optional_int_argument stop in
+      let* step = optional_int_argument step in
+      Ok (Tensor_shape.Index.Spec.Slice { start; stop; step })
+  | _ -> Error "expected a static integer, slice, newaxis, or ellipsis index"
+
+let tensor_sequence_for env = function
+  | Fx.Argument.List arguments | Fx.Argument.Tuple arguments ->
+      let rec loop acc = function
+        | [] -> Ok (List.rev acc)
+        | Fx.Argument.Node name :: rest ->
+            let* value = value_for env name in
+            loop (value :: acc) rest
+        | _ -> Error "concat tensor sequence contains a non-tensor argument"
+      in
+      loop [] arguments
+  | _ -> Error "concat requires a tensor list or tuple"
+
+module Deferred_chunk = struct
+  type t = {
+    input : Ir.Value.t;
+    partitions : (Tensor_shape.Index.t * Tensor_shape.t) array;
+  }
+
+  let create ~input partitions =
+    { input; partitions = Array.of_list partitions }
+
+  let input chunk = chunk.input
+
+  let select chunk raw_index =
+    let count = Array.length chunk.partitions in
+    let index = if raw_index < 0 then raw_index + count else raw_index in
+    if index < 0 || index >= count then
+      Error
+        (Printf.sprintf "chunk result index %d is outside [0,%d)" raw_index count)
+    else Ok chunk.partitions.(index)
+end
+
 let fail_unsupported node reason =
   Error
     (Printf.sprintf "unsupported FX node %s (%s): %s" (Fx.Node.name node)
@@ -236,6 +300,7 @@ let fail_unsupported node reason =
 
 let plan fx_graph =
   let env = Hashtbl.create (List.length (Fx.nodes fx_graph)) in
+  let deferred_chunks = Hashtbl.create 16 in
   let typed_manifest = Fx.version fx_graph >= 2 in
   let lower () =
     let lower_node node =
@@ -421,6 +486,117 @@ let plan fx_graph =
             lower_movement Ir.Movement.Expand inferred inputs
         | _ -> Error "expand requires one tensor input"
       in
+      let lower_chunk () =
+        match Fx.Node.inputs node with
+        | [ input_name ] ->
+            let* input = value_for env input_name in
+            let positional =
+              match Fx.Node.arguments node with
+              | _receiver :: rest -> rest
+              | [] -> []
+            in
+            let chunks =
+              match keyword "chunks" node, positional with
+              | Some argument, _ -> axis_argument argument
+              | None, argument :: _ -> axis_argument argument
+              | None, [] -> Error "chunk requires a chunk count"
+            in
+            let axis =
+              match keyword "dim" node, positional with
+              | Some argument, _ -> axis_argument argument
+              | None, _chunks :: argument :: _ -> axis_argument argument
+              | None, _ -> Ok 0
+            in
+            let* chunks = chunks in
+            let* axis = axis in
+            let* partitions =
+              Tensor_shape.chunk (Ir.Value.logical_shape input) ~chunks ~axis
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            Hashtbl.replace deferred_chunks name
+              (Deferred_chunk.create ~input partitions);
+            Ok ()
+        | _ -> Error "chunk requires one tensor input"
+      in
+      let lower_index input specs =
+        let* selection, inferred =
+          Tensor_shape.index (Ir.Value.logical_shape input) specs
+          |> Result.map_error Tensor_shape.error_to_string
+        in
+        let* logical_shape = declared_or_inferred node inferred in
+        emit_primitive node
+          ~operation:(Ir.Primitive.Movement (Ir.Movement.Index selection))
+          ~inputs:[ input ] ~logical_shape
+      in
+      let lower_getitem () =
+        let fallback () =
+          let* inputs = values_for env (Fx.Node.inputs node) in
+          lower_opaque inputs
+        in
+        match Fx.Node.arguments node with
+        | Fx.Argument.Node source_name :: raw_index :: _ ->
+            (match Hashtbl.find_opt deferred_chunks source_name with
+            | Some chunk ->
+                let* selected = axis_argument raw_index in
+                let* selection, inferred = Deferred_chunk.select chunk selected in
+                let* logical_shape = declared_or_inferred node inferred in
+                emit_primitive node
+                  ~operation:
+                    (Ir.Primitive.Movement (Ir.Movement.Index selection))
+                  ~inputs:[ Deferred_chunk.input chunk ] ~logical_shape
+                |> bind_primitive
+            | None ->
+                (match value_for env source_name with
+                | Error _ -> fallback ()
+                | Ok input ->
+                    let result =
+                      let* specs = index_specs raw_index in
+                      lower_index input specs
+                    in
+                    let* inputs = values_for env (Fx.Node.inputs node) in
+                    lower_or_opaque inputs result))
+        | _ -> fallback ()
+      in
+      let lower_concat () =
+        let* inputs, positional =
+          match Fx.Node.arguments node with
+          | tensor_list :: rest ->
+              let* inputs = tensor_sequence_for env tensor_list in
+              Ok (inputs, rest)
+          | [] -> Error "concat requires a tensor list or tuple"
+        in
+        match inputs with
+        | [] -> Error "concat requires at least one tensor input"
+        | first :: rest ->
+            if
+              not
+                (List.for_all
+                   (fun input -> Ir.Value.dtype input = Ir.Value.dtype first)
+                   rest)
+            then Error "concat input dtypes differ"
+            else
+              let axis =
+                match keyword "dim" node, positional with
+                | Some argument, _ -> axis_argument argument
+                | None, argument :: _ -> axis_argument argument
+                | None, [] -> Ok 0
+              in
+              let* axis = axis in
+              let* axis =
+                Tensor_shape.normalize_axis (Ir.Value.logical_shape first) axis
+                |> Result.map_error Tensor_shape.error_to_string
+              in
+              let* inferred =
+                Tensor_shape.concat
+                  (List.map Ir.Value.logical_shape inputs)
+                  ~axis
+                |> Result.map_error Tensor_shape.error_to_string
+              in
+              let* logical_shape = declared_or_inferred node inferred in
+              emit_primitive node
+                ~operation:(Ir.Primitive.Movement (Ir.Movement.Concat { axis }))
+                ~inputs ~logical_shape
+      in
       match Fx.Node.op node with
       | "placeholder" | "get_attr" ->
           (match node |> Fx.Node.binding |> Fx.Binding.input_source with
@@ -446,10 +622,20 @@ let plan fx_graph =
               Ok ())
       | "output" -> Ok ()
       | "call_function" | "call_method" ->
+          let target = String.lowercase_ascii (Fx.Node.target node) in
+          if
+            typed_manifest
+            && target_is target [ "chunk"; "torch.chunk"; "aten.chunk.default" ]
+          then lower_chunk ()
+          else if
+            typed_manifest
+            && target_is target
+                 [ "_operator.getitem"; "operator.getitem"; "getitem" ]
+          then lower_getitem ()
+          else
           (match values_for env (Fx.Node.inputs node) with
           | Error message -> Error message
           | Ok inputs ->
-              let target = String.lowercase_ascii (Fx.Node.target node) in
               if contains target "q8_linear" then
                 let lower_q8 input weight scale bias =
                   if Ir.Value.dtype weight <> Ir.Dtype.Int8 then
@@ -553,6 +739,12 @@ let plan fx_graph =
                       (Ir.Value.logical_shape input) inputs
                     |> lower_or_opaque inputs
                 | _ -> lower_opaque inputs)
+              else if
+                typed_manifest
+                && target_is target
+                     [ "torch._variablefunctionsclass.cat"; "torch.cat";
+                       "aten.cat.default"; "aten.cat" ]
+              then lower_concat () |> lower_or_opaque inputs
               else if
                 (not typed_manifest)
                 && target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]

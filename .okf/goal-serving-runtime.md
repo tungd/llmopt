@@ -4,7 +4,7 @@ title: 'Complete OCaml Metal serving stack for LFM2.5'
 description: 'The requirement-by-requirement completion map from torch.compile capture through OCaml cached serving and ERS measurement.'
 tags: [goal, compiler, ocaml, metal, serving, radix-cache, kv-cache, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T18:34:45Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T18:53:41Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -55,8 +55,8 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Requirement | Evidence that proves it | Current evidence | State |
 |---|---|---|---|
 | Dynamo/FX graph capture | PyTorch invokes `backend=llmopt` and the captured graph reaches OCaml | FX manifest v2 reads Dynamo `example_value`, preserves N-dimensional shapes and typed positional/keyword constants including ellipsis, and rejects missing v2 argument trees; the one real recapture stopped on ellipsis before this correction and was not retried | partial |
-| Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Typed N-D pointwise, reduction, cast, and movement commands plus RMSNorm fusion pass synthetic and Metal checks; the only real 350M package is still v1 with 736 opaque commands, and decode/KV-state graphs are not packaged | partial |
-| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Offline recompilation of the saved 350M capture emitted a 116,861-byte `package.llmopt` with 1,115 commands and 241 validated archive bindings; 736 commands remain opaque and the saved capture predates manifest v2 arguments | partial |
+| Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Typed N-D pointwise, reduction, cast, static indexing, concat, and movement commands plus chunk/getitem elimination and RMSNorm fusion pass synthetic checks; the only real 350M package is still v1 with 736 opaque commands, and decode/KV-state graphs are not packaged | partial |
+| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Schedule v3 compactly serializes and validates normalized index and concat commands while reading v1/v2; the saved real package remains the 116,861-byte v1-derived artifact with 1,115 commands, 241 validated archive bindings, and 736 opaque commands | partial |
 | Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 linear and fused RMSNorm kernels compile with Xcode Metal; pointwise, movement materialization, ShortConv, attention, embedding, and complete model lowering are absent | partial |
 | Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | With 56% memory free, the loader returned the exact Q8 fixture result from a directory containing only `package.llmopt`, `kernel.metallib`, and `weights.safetensors`; complete command-stream interpretation is not present | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | Dynamo exported all 241 captured 350M tensors into one archive and the OCaml checker validated every binding; native full-model execution and persistent activation ownership remain absent | partial |

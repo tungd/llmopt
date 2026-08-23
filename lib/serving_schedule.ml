@@ -71,6 +71,44 @@ let validate_command seen_values command =
         | _, _, Some output when Int_set.mem (value_id output) seen_values ->
             Error
               (Printf.sprintf "schedule redefines value %d" (value_id output))
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement (Ir.Movement.Index index)),
+            [ input ],
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.apply_index (Ir.Value.logical_shape input) index
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Value.dtype output
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d tensor-index result metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement (Ir.Movement.Concat { axis })),
+            inputs,
+            Some output ) ->
+            let* inferred =
+              Tensor_shape.concat
+                (List.map Ir.Value.logical_shape inputs)
+                ~axis
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              && List.for_all
+                   (fun input -> Ir.Value.dtype input = Ir.Value.dtype output)
+                   inputs
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d concat result metadata is inconsistent"
+                   command.Command.node_id)
         | _ -> Ok ()
 
 let create commands =
@@ -445,6 +483,46 @@ let read_pointwise values reader =
       Ok (Ir.Pointwise.Binary (operator, left, right))
   | _ -> Error (Printf.sprintf "unknown pointwise operation tag: %d" kind)
 
+let write_index writer index =
+  let selectors = Tensor_shape.Index.selectors index in
+  Binary.Writer.u16 writer (List.length selectors);
+  List.iter
+    (function
+      | Tensor_shape.Index.At index ->
+          Binary.Writer.u8 writer 0;
+          Binary.Writer.u64 writer index
+      | Tensor_shape.Index.Slice { start; step; length } ->
+          Binary.Writer.u8 writer 1;
+          Binary.Writer.i64 writer start;
+          Binary.Writer.i64 writer step;
+          Binary.Writer.u64 writer length
+      | Tensor_shape.Index.New_axis -> Binary.Writer.u8 writer 2)
+    selectors
+
+let read_index reader =
+  let* count = Binary.Reader.u16 reader in
+  let rec selectors acc remaining =
+    if remaining = 0 then
+      Tensor_shape.Index.of_selectors (List.rev acc)
+    else
+      let* tag = Binary.Reader.u8 reader in
+      let* selector =
+        match tag with
+        | 0 ->
+            Binary.Reader.u64 reader
+            |> Result.map (fun index -> Tensor_shape.Index.At index)
+        | 1 ->
+            let* start = Binary.Reader.i64 reader in
+            let* step = Binary.Reader.i64 reader in
+            let* length = Binary.Reader.u64 reader in
+            Ok (Tensor_shape.Index.Slice { start; step; length })
+        | 2 -> Ok Tensor_shape.Index.New_axis
+        | _ -> Error (Printf.sprintf "unknown tensor-index tag: %d" tag)
+      in
+      selectors (selector :: acc) (remaining - 1)
+  in
+  selectors [] count
+
 let write_primitive writer = function
   | Ir.Primitive.Pointwise operation ->
       Binary.Writer.u8 writer 0;
@@ -470,7 +548,13 @@ let write_primitive writer = function
           Binary.Writer.u8 writer 3;
           Binary.Writer.u16 writer axis
       | Ir.Movement.Expand -> Binary.Writer.u8 writer 4
-      | Ir.Movement.Contiguous -> Binary.Writer.u8 writer 5)
+      | Ir.Movement.Contiguous -> Binary.Writer.u8 writer 5
+      | Ir.Movement.Index index ->
+          Binary.Writer.u8 writer 6;
+          write_index writer index
+      | Ir.Movement.Concat { axis } ->
+          Binary.Writer.u8 writer 7;
+          Binary.Writer.u16 writer axis)
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -507,6 +591,12 @@ let read_primitive values reader =
             |> Result.map (fun axis -> Ir.Movement.Unsqueeze axis)
         | 4 -> Ok Ir.Movement.Expand
         | 5 -> Ok Ir.Movement.Contiguous
+        | 6 ->
+            read_index reader
+            |> Result.map (fun index -> Ir.Movement.Index index)
+        | 7 ->
+            Binary.Reader.u16 reader
+            |> Result.map (fun axis -> Ir.Movement.Concat { axis })
         | _ -> Error (Printf.sprintf "unknown movement tag: %d" movement_tag)
       in
       Ok (Ir.Primitive.Movement movement)
@@ -651,7 +741,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 2;
+  Binary.Writer.u16 writer 3;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -671,7 +761,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 1 && version <> 2 then
+    if version <> 1 && version <> 2 && version <> 3 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else
       let* count = Binary.Reader.u32 reader in

@@ -38,6 +38,14 @@ let fx_int_argument value = fx_argument "int" [ ("value", `Int value) ]
 let fx_float_argument value = fx_argument "float" [ ("value", `Float value) ]
 let fx_bool_argument value = fx_argument "bool" [ ("value", `Bool value) ]
 let fx_symbol_argument value = fx_argument "symbol" [ ("value", `String value) ]
+let fx_null_argument = fx_argument "null" []
+let fx_ellipsis_argument = fx_argument "ellipsis" []
+let fx_list_argument values = fx_argument "list" [ ("items", `List values) ]
+let fx_tuple_argument values = fx_argument "tuple" [ ("items", `List values) ]
+
+let fx_slice_argument ~start ~stop ~step =
+  fx_argument "slice"
+    [ ("start", start); ("stop", stop); ("step", step) ]
 
 let fx_node ?(op = "call_method") ?(inputs = []) ?(arguments = [])
     ?(keywords = []) ?(dtype = "float16") ~name ~target ~shape () =
@@ -102,6 +110,65 @@ let () =
   expect
     (Tensor_shape.dimensions reduced_shape = [ 1; 2; 1 ])
     "N-D keepdim reduction";
+  let indexed, indexed_shape =
+    expect_ok
+      (Tensor_shape.index rank_three
+         [ Tensor_shape.Index.Spec.Ellipsis;
+           Tensor_shape.Index.Spec.Slice
+             { start = Some 1; stop = None; step = Some 2 } ]
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect
+    (Tensor_shape.dimensions indexed_shape = [ 2; 3; 2 ])
+    "ellipsis slice shape";
+  expect
+    (Tensor_shape.Index.selectors indexed
+    = [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 3 };
+        Tensor_shape.Index.Slice { start = 1; step = 2; length = 2 } ])
+    "ellipsis expands to normalized source-axis selectors";
+  let chunked =
+    expect_ok
+      (Tensor_shape.chunk (Tensor_shape.of_ints_exn [ 2; 6 ]) ~chunks:3
+         ~axis:1
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect
+    (List.map (fun (_, shape) -> Tensor_shape.dimensions shape) chunked
+    = [ [ 2; 2 ]; [ 2; 2 ]; [ 2; 2 ] ])
+    "chunk shape partitions";
+  let uneven_chunks =
+    expect_ok
+      (Tensor_shape.chunk (Tensor_shape.of_ints_exn [ 4 ]) ~chunks:3 ~axis:0
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect
+    (List.map (fun (_, shape) -> Tensor_shape.dimensions shape) uneven_chunks
+    = [ [ 2 ]; [ 2 ] ])
+    "chunk may return fewer partitions than requested";
+  let reverse_index, reverse_shape =
+    expect_ok
+      (Tensor_shape.index (Tensor_shape.of_ints_exn [ 5 ])
+         [ Tensor_shape.Index.Spec.Slice
+             { start = None; stop = None; step = Some (-1) } ]
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions reverse_shape = [ 5 ])
+    "negative-step slice shape";
+  expect
+    (Tensor_shape.Index.selectors reverse_index
+    = [ Tensor_shape.Index.Slice { start = 4; step = -1; length = 5 } ])
+    "negative-step slice normalization";
+  let concat_shape =
+    expect_ok
+      (Tensor_shape.concat
+         [ Tensor_shape.of_ints_exn [ 2; 2 ];
+           Tensor_shape.of_ints_exn [ 2; 3 ] ]
+         ~axis:(-1)
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  expect (Tensor_shape.dimensions concat_shape = [ 2; 5 ])
+    "concat shape inference";
   let primitive_kernel () =
     let input_shape = Tensor_shape.of_ints_exn [ 1; 2; 4 ] in
     let channel_shape = Tensor_shape.of_ints_exn [ 4 ] in
@@ -186,6 +253,81 @@ let () =
       let rows = Cpu.Tensor.to_rows output in
       expect (rows = [| [| 1.; 2.; 3.; 4. |]; [| 1.; 2.; 3.; 4. |] |])
         "CPU reference interprets rank-aware RMSNorm primitives");
+  let chunk_partitions =
+    expect_ok
+      (Tensor_shape.chunk (Tensor_shape.of_ints_exn [ 2; 6 ]) ~chunks:3
+         ~axis:1
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  let part0, part2 =
+    match chunk_partitions with
+    | part0 :: _part1 :: part2 :: [] -> part0, part2
+    | _ -> fail "expected three chunk partitions"
+  in
+  let part0_index, part0_shape = part0 in
+  let part2_index, part2_shape = part2 in
+  let joined_shape =
+    expect_ok
+      (Tensor_shape.concat [ part2_shape; part0_shape ] ~axis:1
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  let tail_index, tail_shape =
+    expect_ok
+      (Tensor_shape.index joined_shape
+         [ Tensor_shape.Index.Spec.Ellipsis;
+           Tensor_shape.Index.Spec.Slice
+             { start = Some 1; stop = None; step = None } ]
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  let index_concat_kernel () =
+    let input_shape = Tensor_shape.of_ints_exn [ 2; 6 ] in
+    let input =
+      Tile_effect.tensor_input ~name:"index_input"
+        ~source:Ir.Input_source.Runtime ~shape:input_shape
+        ~dtype:Ir.Dtype.Float32
+    in
+    let part0 =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Movement (Ir.Movement.Index part0_index))
+        ~inputs:[ input ] ~logical_shape:part0_shape ~dtype:Ir.Dtype.Float32
+    in
+    let part2 =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Movement (Ir.Movement.Index part2_index))
+        ~inputs:[ input ] ~logical_shape:part2_shape ~dtype:Ir.Dtype.Float32
+    in
+    let joined =
+      primitive_value
+        ~operation:
+          (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 1 }))
+        ~inputs:[ part2; part0 ] ~logical_shape:joined_shape
+        ~dtype:Ir.Dtype.Float32
+    in
+    let tail =
+      primitive_value
+        ~operation:(Ir.Primitive.Movement (Ir.Movement.Index tail_index))
+        ~inputs:[ joined ] ~logical_shape:tail_shape ~dtype:Ir.Dtype.Float32
+    in
+    Tile_effect.output ~name:"index_output" ~value:tail
+  in
+  (match
+     Cpu.run
+       ~inputs:
+         [ ( "index_input",
+             Cpu.Tensor.of_rows
+               [| [| 0.; 1.; 2.; 3.; 4.; 5. |];
+                  [| 10.; 11.; 12.; 13.; 14.; 15. |] |] ) ]
+       index_concat_kernel
+   with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      let output = Cpu.output execution "index_output" |> Option.get in
+      expect
+        (Cpu.Tensor.to_rows output
+        = [| [| 5.; 0.; 1. |]; [| 15.; 10.; 11. |] |])
+        "CPU reference interprets chunk slices, concat, and indexing");
   let left = Shape.of_ints_exn ~rows:2 ~cols:4 in
   let right = Shape.of_ints_exn ~rows:4 ~cols:3 in
   let result =
@@ -642,6 +784,76 @@ let () =
     |> List.for_all (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm))
     "binary package preserves the RMSNorm kernel ABI";
+  let movement_fx =
+    let nodes =
+      [ fx_node ~op:"placeholder" ~dtype:"float32" ~name:"x" ~target:"x"
+          ~shape:[ 2; 6 ] ();
+        fx_node ~dtype:"float32" ~name:"chunks" ~target:"chunk"
+          ~inputs:[ "x" ]
+          ~arguments:
+            [ fx_node_argument "x"; fx_int_argument 3; fx_int_argument 1 ]
+          ~shape:[ 2; 2 ] ();
+        fx_node ~op:"call_function" ~dtype:"float32" ~name:"part2"
+          ~target:"_operator.getitem" ~inputs:[ "chunks" ]
+          ~arguments:[ fx_node_argument "chunks"; fx_int_argument 2 ]
+          ~shape:[ 2; 2 ] ();
+        fx_node ~op:"call_function" ~dtype:"float32" ~name:"part0"
+          ~target:"_operator.getitem" ~inputs:[ "chunks" ]
+          ~arguments:[ fx_node_argument "chunks"; fx_int_argument 0 ]
+          ~shape:[ 2; 2 ] ();
+        fx_node ~op:"call_function" ~dtype:"float32" ~name:"joined"
+          ~target:"torch._VariableFunctionsClass.cat"
+          ~inputs:[ "part2"; "part0" ]
+          ~arguments:
+            [ fx_list_argument
+                [ fx_node_argument "part2"; fx_node_argument "part2";
+                  fx_node_argument "part0" ];
+              fx_int_argument 1 ]
+          ~shape:[ 2; 6 ] ();
+        fx_node ~op:"call_function" ~dtype:"float32" ~name:"tail"
+          ~target:"_operator.getitem" ~inputs:[ "joined" ]
+          ~arguments:
+            [ fx_node_argument "joined";
+              fx_tuple_argument
+                [ fx_ellipsis_argument;
+                  fx_slice_argument ~start:(fx_int_argument 1)
+                    ~stop:fx_null_argument ~step:fx_null_argument ] ]
+          ~shape:[ 2; 5 ] () ]
+    in
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2); ("nodes", `List nodes);
+             ("outputs", `List [ `String "tail" ]) ]))
+  in
+  let movement_graph = expect_ok (Fx_plan.plan movement_fx) in
+  let movement_schedule =
+    movement_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count movement_schedule = 0)
+    "chunk/getitem fusion and concat avoid opaque commands";
+  let movement_commands = Serving_schedule.commands movement_schedule in
+  expect (List.length movement_commands = 6)
+    "deferred chunk emits slices rather than a tuple command";
+  expect
+    (movement_commands
+    |> List.filter (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive
+               (Ir.Primitive.Movement (Ir.Movement.Index _)) -> true
+           | _ -> false)
+    |> List.length = 3)
+    "binary schedule preserves three normalized index commands";
+  expect
+    (movement_commands
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive
+               (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 1 })) ->
+               List.length (Serving_schedule.Command.inputs command) = 3
+           | _ -> false))
+    "binary schedule preserves concat axis and duplicate operands";
   (match Llvm_ir.emit q8_graph with
   | Error message -> fail message
   | Ok source ->
