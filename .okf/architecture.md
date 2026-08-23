@@ -161,11 +161,13 @@ probe repeated the exact result from a directory containing only
 neither FX JSON nor the textual plan is part of native startup.
 
 The memory-bounded manifest-v2 recapture now reaches package generation. Its
-1,115 FX nodes become 835 schedule commands: 793 typed and 42 opaque, compared
-with 379 typed and 736 opaque in the saved v1 package. Direct-FX execution is
-bit exact against eager MPS for the six-token probe. This is capture and
-planning evidence; PyTorch MPS, not the OCaml package runtime, executed the
-parity check.
+1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,
+compared with 379 typed and 736 opaque in the saved v1 package. A subsequent
+offline replan corrected a target-suffix collision and moved all 14 expand
+commands into the typed set, leaving 807 typed and 28 opaque. Direct-FX
+execution is bit exact against eager MPS for the six-token probe. This is
+capture and planning evidence; PyTorch MPS, not the OCaml package runtime,
+executed the parity check.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

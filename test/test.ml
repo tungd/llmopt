@@ -761,6 +761,37 @@ let () =
                true
            | _ -> false))
     "binary schedule preserves rank-normalized reduction axes";
+  let expand_fx =
+    expect_ok
+      (Fx.of_json
+         (`Assoc
+           [ ("version", `Int 2);
+             ( "nodes",
+               `List
+                 [ fx_node ~op:"placeholder" ~name:"source" ~target:"source"
+                     ~shape:[ 1; 8; 1; 6; 64 ] ();
+                   fx_node ~name:"expanded" ~target:"expand"
+                     ~inputs:[ "source" ]
+                     ~arguments:
+                       [ fx_node_argument "source"; fx_int_argument 1;
+                         fx_int_argument 8; fx_int_argument 2;
+                         fx_int_argument 6; fx_int_argument 64 ]
+                     ~shape:[ 1; 8; 2; 6; 64 ] () ] );
+             ("outputs", `List [ `String "expanded" ]) ]))
+  in
+  let expand_schedule =
+    expand_fx |> Fx_plan.plan |> expect_ok |> Serving_schedule.of_graph
+    |> expect_ok
+  in
+  expect (Serving_schedule.opaque_count expand_schedule = 0)
+    "expand does not collide with the logical-and target suffix";
+  expect
+    (Serving_schedule.commands expand_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Expand) -> true
+           | _ -> false))
+    "expand lowers to a typed movement command";
   let optimized_schedule =
     primitive_optimized |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok

@@ -16,8 +16,17 @@ let contains haystack needle =
   in
   needle_length = 0 || search 0
 
-let target_is target needles =
-  List.exists (fun needle -> target = needle || String.ends_with ~suffix:needle target) needles
+let target_is target candidates =
+  let has_qualified_suffix candidate =
+    let target_length = String.length target in
+    let candidate_length = String.length candidate in
+    target_length > candidate_length
+    && String.ends_with ~suffix:candidate target
+    && target.[target_length - candidate_length - 1] = '.'
+  in
+  List.exists
+    (fun candidate -> target = candidate || has_qualified_suffix candidate)
+    candidates
 
 let logical_shape_for node =
   match Fx.Node.shape node with

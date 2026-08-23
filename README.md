@@ -69,9 +69,9 @@ operations and inputs use the PyTorch MPS fallback. The intended serving stack
 moves generated-library loading, Metal dispatch, request scheduling, and cache
 ownership into OCaml. Its radix/KV ownership and archive-backed Metal loader
 are implemented; complete schedule execution and physical KV
-quantize/dequantize remain open. The current manifest-v2 no-cache capture has
-835 schedule commands, of which 42 remain opaque; its direct-FX probe is
-bit-exact against eager MPS. The boundary is documented in
+quantize/dequantize remain open. Replanning the current manifest-v2 no-cache
+capture produces 835 schedule commands, of which 28 remain opaque; its
+direct-FX probe is bit-exact against eager MPS. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
 ## Build and run

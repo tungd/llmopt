@@ -38,3 +38,4 @@ okf_version: '0.2'
 * [Rank-aware primitives and fused RMSNorm](experiments/exp-0016-rank-primitives-rmsnorm.md) - typed N-D FX lowering and the first fused LFM normalization kernel.
 * [Static indexing, chunk elimination, and typed concat](experiments/exp-0017-index-chunk-concat.md) - compact typed movement commands for the next measured LFM operator family.
 * [LFM2.5-350M Q8 manifest-v2 recapture](experiments/exp-0018-lfm25-v2-recapture.md) - real-model operator inventory and exact direct-FX parity after the rank-aware lowering slices.
+* [Qualified FX target matching](experiments/exp-0019-qualified-fx-targets.md) - qualification-aware operator matching with a measured 14-command recovery.
