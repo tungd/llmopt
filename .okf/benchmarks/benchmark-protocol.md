@@ -79,7 +79,9 @@ The authoritative target completed with `ninja -f ninja.build bench-suite`
 and wrote `bench/results/lfm25-350m-q8-racebench-baseline.json`. The
 result has `engine_pass: true`, exit code `0`, 15/15 successful warmup and
 scored requests for eager and llmopt, exact generated token-ID parity, and
-exact fixed-forward tensor-digest parity. Needle retrieval was `0/6` for each
-candidate and is not part of the engine-pass status. Since each candidate ran
+exact fixed-forward tensor-digest parity. The historical whole-string field is
+`0/6`, but the saved outputs establish 6/6 control-code retrieval and 0/6
+exact-only formatting for each candidate; needle retrieval is not part of the
+engine-pass status. Since each candidate ran
 once in an isolated process, the result marks relative speed claims invalid
 and retains the eager ERS as the recorded baseline only.

@@ -78,7 +78,8 @@ implementation, so the generated Metal Q8 kernel was not yet the runtime
 execution path. CPU and FX boundary tests pass, and a correctly shaped MPS
 callable probe returned exact reference output. The bounded 350M Q8 run completed with `engine_pass: true`,
 15/15 successful warmup and scored requests per candidate, exact fixed-forward
-digest and token-ID parity, and `0/6` needle retrieval for each candidate. Its
+digest and token-ID parity. Its saved `RAVEN-4271Lottery` outputs establish 6/6
+control-code retrieval and 0/6 exact-only formatting for each candidate. Its
 single-run relative latency comparison remains invalid under the bench
 contract; the result is evidence for the Q8 execution boundary, not a claim
 that the current dequantizing callable is faster than FP16.

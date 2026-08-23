@@ -1,6 +1,9 @@
 # Update Log
 
 ## 2026-08-23
+* **Goal**: Added the [complete OCaml serving goal](goal-serving-runtime.md), which tracks compiler coverage, package ABI, native Metal ownership, model/tokenizer serving, physical KV storage, radix integration, and benchmark evidence separately.
+* **Benchmark correction**: The 350M saved needle outputs are `RAVEN-4271Lottery` in all positions. Corrected the grader and documentation to report 6/6 control-code retrieval and 0/6 exact-only response formatting instead of conflating both as 0/6 retrieval.
+* **Experiment**: Recorded the [pre-integration ERS observation](experiments/exp-0010-preintegration-ers.md): eager and llmopt ERS were both 0.0, exact tensor/token parity held, and cached prompt tokens remained zero because the OCaml cache is not connected yet.
 * **OCaml serving cache**: Added the mandatory compressed radix prefix cache, hybrid ShortConv-state checkpoints, protected-prefix leases, LRU leaf eviction, and the owned KV/checkpoint allocator. Serving KV layout is selectable as FP16 or grouped Q8, with Q8 as the default policy.
 * **Verification**: Focused tests cover LFM2.5 byte accounting, branching, exact prefix reuse, checkpoint-safe edge splitting, namespace isolation, page-sized keys, eviction protection, and allocator ownership. The OCaml Metal loader and physical Q8 KV-buffer path remain separate open slices.
 

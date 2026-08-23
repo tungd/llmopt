@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
+import re
 from typing import Any
 
 DEFAULT_LENGTHS = (7500, 9000, 16000, 30000)
@@ -33,6 +35,23 @@ INTRO = (
     "background information. Use the CONTROL RECORD when answering the final "
     "question.\n\n"
 )
+
+
+@dataclass(frozen=True)
+class ResponseEvaluation:
+    retrieved: bool
+    exact_response: bool
+
+
+def evaluate_response(text: str, *, expected: str = EXPECTED) -> ResponseEvaluation:
+    """Separate retrieval correctness from exact response-format compliance."""
+    normalized = text.strip().upper().replace("`", "")
+    normalized_expected = expected.strip().upper().replace("`", "")
+    pattern = rf"(?<![A-Z0-9]){re.escape(normalized_expected)}(?!\d)"
+    return ResponseEvaluation(
+        retrieved=re.search(pattern, normalized) is not None,
+        exact_response=normalized == normalized_expected,
+    )
 
 
 def chat_token_ids(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:

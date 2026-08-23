@@ -120,9 +120,10 @@ measured approximate matmul path with `max_abs=0.078125` and
 
 The bounded 350M Q8 run recorded `engine_pass: true`, exit code `0`, 15/15
 successful warmup and scored requests per candidate with exact fixed-forward
-digest and token-ID parity. Needle retrieval was `0/6` for both candidates and
-is tracked separately; because each candidate ran once, the record does not
-support a relative speed claim.
+digest and token-ID parity. The saved needle outputs retrieve the control code
+in 6/6 cases for both candidates but append extra text, so exact-only response
+formatting is 0/6 and is tracked separately. Because each candidate ran once,
+the record does not support a relative speed claim.
 
 ## Architecture
 

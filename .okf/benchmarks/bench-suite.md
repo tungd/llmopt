@@ -4,7 +4,7 @@ title: 'LFM2.5 MPS ERS benchsuite'
 description: 'Racebench-compatible local MPS runner with the reference HTTP contract, shape-matched warmup, full workload shape, and natural needle-in-a-haystack validation.'
 tags: [benchmark, ERS, trace, needle, lfm2.5, mps]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-20T12:20:00Z' }
+generated: { by: codex/gpt-5, at: '2026-08-23T16:28:23Z' }
 sources:
   - id: score
     resource: /bench/racebench/score.py
@@ -36,6 +36,9 @@ sources:
   - id: result-350m-fp16
     resource: /bench/results/lfm25-350m-racebench-baseline.json
     title: persisted 350M FP16 engine-pass and baseline result
+  - id: result-preintegration
+    resource: /_artifacts/lfm25-benchsuite-q8-radix-e3d0d15/result.json
+    title: post-cache-implementation pre-integration observation
 ---
 
 # Scope
@@ -72,8 +75,9 @@ is the arithmetic mean of request scores, including failed requests as zero.
 The suite runs a fixed-input exact-logit comparison and a natural
 needle-in-a-haystack matrix. The needle matrix constructs exact tokenizer-sized
 prompts with the control record at 10, 50, and 90 percent of the archive, then
-expects the exact `RAVEN-4271` response. Needle output is recorded separately
-from the engine exit status unless `--require-needle` is supplied.
+checks whether the response retrieves `RAVEN-4271` and separately records
+whether the response contains only that code. Needle retrieval is recorded
+separately from the engine exit status unless `--require-needle` is supplied.
 
 # Commands
 
@@ -91,9 +95,8 @@ short smoke keeps the old 2 x 2 trace and 128/256-token needle prompts.
 Per-candidate `warmup.json` and `report.json` files are written under
 `_artifacts/lfm25-benchsuite-q8-racebench-safe/`.
 
-The recorded 350M result has `engine_pass: true`, exit code `0`, 15/15
-successful warmup and scored requests per candidate, exact warmup/scored token
-parity, exact fixed-forward digests, and `0/6` needle retrieval for each
-candidate. Its one-run candidate comparison is retained as an observation;
-the result explicitly marks relative speed claims invalid without repeated or
-counterbalanced samples.
+The saved 350M outputs contain `RAVEN-4271Lottery` in all six positions for
+both candidates. The old whole-string grader recorded `0/6`; corrected
+semantics are 6/6 control-code retrieval and 0/6 exact-only formatting. The
+post-radix-implementation run retains exact token/digest parity but records
+zero cached prompt tokens because the OCaml serving cache is not yet connected.

@@ -95,7 +95,7 @@ PYTHONPATH=python:bench python3.13 -m racebench.cli validate-trace \
 
 The engine exit status covers successful warmup/scored requests, pinned output
 counts, and fixed-forward equality; needle retrieval is recorded separately.
-Pass `--require-needle` only when exact retrieval should be included in the
+Pass `--require-needle` only when control-code retrieval should be included in the
 process exit status.
 
 The first run exposed an important Transformers integration detail: calling
@@ -119,8 +119,9 @@ corpus, seed, and warm/cold state.
 
 The recorded 350M Q8 result has `engine_pass: true`, exit code `0`, 15/15
 successful warmup and scored requests per candidate, exact generated-token
-and fixed-forward digest parity. Needle retrieval was `0/6` for both
-candidates and is recorded separately; the one-run relative speed comparison
+and fixed-forward digest parity. The saved outputs retrieve `RAVEN-4271` in
+6/6 cases for both candidates and append `Lottery`, so exact-only formatting is
+0/6 and recorded separately; the one-run relative speed comparison
 is invalid without repeated or counterbalanced samples. The protocol records
 measurements and validation observations; it does not add an unstated
 performance threshold.

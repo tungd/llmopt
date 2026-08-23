@@ -40,6 +40,7 @@ from racebench.needle import (  # noqa: E402
     EXPECTED,
     archive_corpus,
     chat_token_ids,
+    evaluate_response,
     exact_natural_messages,
 )
 from racebench.score import request_score  # noqa: E402
@@ -398,14 +399,16 @@ def run_needle_probe(
                 expected_tokens=max_new_tokens,
                 device=device,
             )
-            normalized = text.strip().upper().replace("`", "")
+            evaluation = evaluate_response(text)
             rows.append(
                 {
                     "target_prompt_tokens": target_tokens,
                     "needle_percent": needle_percent,
                     "constructed_prompt_tokens": exact_tokens,
                     "success": result.succeeded,
-                    "correct": normalized == EXPECTED,
+                    "correct": evaluation.retrieved,
+                    "retrieved": evaluation.retrieved,
+                    "exact_response": evaluation.exact_response,
                     "elapsed_s": result.latency_ms / 1000.0,
                     "ttft_ms": result.ttft_ms,
                     "tpot_ms": result.tpot_ms,
@@ -426,6 +429,8 @@ def run_needle_probe(
         "expected": EXPECTED,
         "max_tokens": max_new_tokens,
         "correct": sum(row["correct"] for row in rows),
+        "retrieved": sum(row["retrieved"] for row in rows),
+        "exact_responses": sum(row["exact_response"] for row in rows),
         "total": len(rows),
         "results": rows,
     }
@@ -624,7 +629,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-needle",
         action="store_true",
-        help="make exact needle retrieval part of the process exit status",
+        help="make control-code retrieval part of the process exit status",
     )
     parser.add_argument("--require-shape-matched-warmup", action="store_true")
     parser.add_argument(

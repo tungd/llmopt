@@ -52,9 +52,9 @@ The single isolated run completed with Ninja exit code `0` at
 * llmopt ERS: `0.0` across 15 scored requests.
 * Warmup and scored generated token IDs matched exactly for all 15 compared
   requests; the fixed-forward tensor digests were also exact.
-* Needle retrieval was `0/6` for each candidate (`RAVEN-4271Lottery` was
-  generated instead of the exact expected response); needle validation was
-  recorded separately and was not required for the engine pass.
+* The raw whole-string grader recorded `0/6`, while every response generated
+  `RAVEN-4271Lottery`; control-code retrieval is 6/6 and exact-only response
+  formatting is 0/6 for each candidate.
 * The recorded MPS values were 708,969,984 allocated bytes and 1,091,010,560
   driver-allocated bytes, with watermark ratios `0.8` / `0.7`.
 

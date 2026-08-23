@@ -7,6 +7,7 @@ okf_version: '0.2'
 ## Orientation
 
 * [Architecture](architecture.md) - current Dynamo/FX to OCaml planning pipeline.
+* [Complete OCaml serving goal](goal-serving-runtime.md) - requirement-by-requirement end state and evidence map.
 * [Target model](target-lfm25.md) - LFM2.5-350M facts and target-specific constants.
 * [Research tracking](tracking.md) - open questions, slices, and evidence status.
 
@@ -28,3 +29,4 @@ okf_version: '0.2'
 * [Q8 weight-only linear pass](experiments/exp-0007-q8-linear-pass.md) - first quantized optimizer/codegen slice with Metal and LLVM smoke validation.
 * [Generated Q8 Metal runtime](experiments/exp-0008-metal-runtime-q8.md) - metallib loading, MPS dispatch bridge, tiled launch correction, and the captured non-model probe.
 * [OCaml radix and KV serving cache](experiments/exp-0009-ocaml-radix-kv-cache.md) - mandatory prefix caching, hybrid checkpoints, owned allocation, and selectable FP16/Q8 layout.
+* [Pre-integration ERS and needle correction](experiments/exp-0010-preintegration-ers.md) - zero-cache baseline and corrected retrieval evidence.

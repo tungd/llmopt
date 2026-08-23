@@ -72,8 +72,9 @@ scored requests for both eager and llmopt. Warmup and scored generated token IDs
 for all 15 requests, and the fixed-forward output digests are exact across
 the two isolated candidate processes.
 
-The needle matrix is recorded separately: both candidates retrieved `0/6`.
-The result therefore keeps needle retrieval independent from engine pass. It
+The raw whole-string grader recorded `0/6`, but every saved response contains
+`RAVEN-4271Lottery`: control-code retrieval is 6/6 and exact-only formatting is
+0/6 for both candidates. The result keeps needle retrieval independent from engine pass. It
 also marks the relative speed comparison invalid because this is one execution
 per candidate rather than repeated or counterbalanced sampling; the persisted
 baseline is an observation, not an optimization claim.

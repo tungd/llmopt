@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from racebench.needle import DEFAULT_LENGTHS, DEFAULT_POSITIONS, EXPECTED
+from racebench.needle import (
+    DEFAULT_LENGTHS,
+    DEFAULT_POSITIONS,
+    EXPECTED,
+    evaluate_response,
+)
 from racebench.benchmark import RequestResult, engine_pass
 from racebench.profiles import official_shape_70x6, semantic_5x3
 from racebench.score import (
@@ -58,6 +63,21 @@ class RacebenchContractTest(unittest.TestCase):
         self.assertEqual(DEFAULT_LENGTHS, (7500, 9000, 16000, 30000))
         self.assertEqual(DEFAULT_POSITIONS, (10, 50, 90))
         self.assertEqual(EXPECTED, "RAVEN-4271")
+
+    def test_needle_retrieval_is_separate_from_exact_response_format(self):
+        exact = evaluate_response("RAVEN-4271")
+        continued = evaluate_response("RAVEN-4271Lottery")
+        prose = evaluate_response("The code is `RAVEN-4271`.")
+        wrong = evaluate_response("RAVEN-42710")
+
+        self.assertTrue(exact.retrieved)
+        self.assertTrue(exact.exact_response)
+        self.assertTrue(continued.retrieved)
+        self.assertFalse(continued.exact_response)
+        self.assertTrue(prose.retrieved)
+        self.assertFalse(prose.exact_response)
+        self.assertFalse(wrong.retrieved)
+        self.assertFalse(wrong.exact_response)
 
     def test_engine_pass_separates_needle_validation(self):
         summary = {
