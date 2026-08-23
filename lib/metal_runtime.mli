@@ -15,6 +15,9 @@ module Buffer : sig
   val byte_length : t -> int
 end
 
+val tensor :
+  t -> name:string -> (Buffer.t * Safetensors.Tensor.t, string) result
+
 val dispatch_q8_linear :
   t ->
   dtype:Ir.Dtype.t ->

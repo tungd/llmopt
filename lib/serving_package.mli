@@ -29,32 +29,11 @@ module Files : sig
   val llvm_ir : t -> Artifact.t
 end
 
-module Weight : sig
-  module Encoding : sig
-    type t =
-      | Raw
-      | Q8_per_output_channel of {
-          scale : Artifact.t;
-          scale_dtype : Ir.Dtype.t;
-          axis : int;
-        }
-  end
-
+module Tensor_store : sig
   type t
 
-  val create :
-    name:string ->
-    data:Artifact.t ->
-    dtype:Ir.Dtype.t ->
-    shape:int list ->
-    encoding:Encoding.t ->
-    (t, string) result
-
-  val name : t -> string
-  val data : t -> Artifact.t
-  val dtype : t -> Ir.Dtype.t
-  val shape : t -> int list
-  val encoding : t -> Encoding.t
+  val safetensors : file:Artifact.t -> t
+  val file : t -> Artifact.t
 end
 
 module Cache : sig
@@ -86,7 +65,7 @@ val serving :
   ?model:string ->
   files:Files.t ->
   kernels:Kernel_abi.Entry.t list ->
-  weights:Weight.t list ->
+  tensor_store:Tensor_store.t ->
   cache:Cache.t ->
   unit ->
   (t, string) result
@@ -95,7 +74,7 @@ val stage : t -> Stage.t
 val model : t -> string option
 val files : t -> Files.t
 val kernels : t -> Kernel_abi.Entry.t list
-val weights : t -> Weight.t list
+val tensor_store : t -> Tensor_store.t option
 val cache : t -> Cache.t
 
 val to_yojson : t -> Yojson.Basic.t

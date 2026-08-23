@@ -32,11 +32,13 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   emitter for the executable backend boundary.
 - A versioned OCaml serving-package ABI. The FX compiler emits a copied graph,
   optimized plan, MSL, metallib reference, LLVM IR, typed kernel entries, and
-  mandatory radix/Q8-default cache policy; current output is explicitly the
-  weightless `compiled-graph` stage.
+  mandatory radix/Q8-default cache policy. A serving package references one
+  `weights.safetensors` archive without duplicated per-tensor JSON records or
+  separate payload files.
 - A standalone, Ninja-built OCaml Metal runtime that validates the package,
-  loads every declared metallib function, owns shared Metal buffers, and
-  directly dispatches typed Q8 kernels through small Objective-C bindings.
+  loads every declared metallib function, maps the tensor archive into one
+  no-copy Metal buffer, creates tensor views by archive offset, and directly
+  dispatches typed Q8 kernels through small Objective-C bindings.
 - A Ninja-built PyTorch MPS C++ bridge that loads generated Q8 `.metallib`
   files, binds MPS tensors, and dispatches either the Phase 2 tiled kernel or
   the exact generated dequantization path with PyTorch-MPS linear.
@@ -51,14 +53,14 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - An OKF bundle under `.okf/` for decisions, experiments, benchmark protocol,
   and model provenance.
 
-The current executable target is PyTorch MPS: the direct callable runs the
+The current complete-model executable target is PyTorch MPS: the direct callable runs the
 captured FX GraphModule and lets each operation dispatch to MPS. Q8 graphs can
 also activate the generated tiled Metal library through the bridge; unsupported
 operations and inputs use the PyTorch MPS fallback. The intended serving stack
 moves generated-library loading, Metal dispatch, request scheduling, and cache
-ownership into OCaml. Its radix/KV ownership layer is implemented; the OCaml
-Metal loader and physical KV-buffer quantize/dequantize path are the next
-runtime slice. The boundary is documented in
+ownership into OCaml. Its radix/KV ownership and archive-backed Metal loader
+are implemented; complete model export, schedule execution, and physical KV
+quantize/dequantize remain open. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
 ## Build and run
@@ -75,6 +77,7 @@ ninja -f ninja.build demo
 ninja -f ninja.build metal
 ninja -f ninja.build fx-smoke
 ninja -f ninja.build q8-smoke
+ninja -f ninja.build q8-serving-smoke
 ninja -f ninja.build ocaml-metal-runtime
 ninja -f ninja.build ocaml-metal-runtime-smoke
 ninja -f ninja.build metal-runtime
@@ -98,9 +101,11 @@ direct FX GraphModule executor, checks exact logits, and writes a JSON
 measurement. Pass `--quantization fp16` for the explicit fallback.
 
 `ocaml-metal-runtime` builds the standalone package consumer without Python or
-PyTorch. `ocaml-metal-runtime-smoke` directly loads the Q8 fixture package,
-allocates shared Metal buffers, dispatches `llmopt_q8_linear_f32`, and records
-the deterministic output in `_build/q8-fx-example/ocaml-metal-smoke.json`.
+PyTorch. `q8-serving-smoke` generates and validates one binary safetensors
+archive. `ocaml-metal-runtime-smoke` maps that archive once, binds its Q8
+weight, FP16 scale, and FP16 bias views, dispatches
+`llmopt_q8_linear_f32`, and records the deterministic output in
+`_build/q8-serving-example/ocaml-metal-smoke.json`.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -164,15 +169,15 @@ typed graph + schedule timeline
         ├── generated Q8 Metal library + MPS bridge (current execution probe)
         └── tiled Metal Shading Language (artifact)
 
-generated compiled-graph package (implemented boundary)
-        │ metallib + graph/kernel/cache metadata
-        │ weight export and serving stage (next)
+generated serving package (fixture boundary implemented)
+        │ package.json: metallib + graph/kernel/cache control metadata
+        │ weights.safetensors: one indexed binary tensor archive
         ▼
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout (implemented; Q8 default)
-        ├── Metal package loading/buffers/Q8 command dispatch (implemented)
-        └── full model schedule, weights, and request loop (next slices)
+        ├── Metal package loading/mapped weights/Q8 dispatch (implemented)
+        └── full model archive, schedule, and request loop (next slices)
 ```
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,

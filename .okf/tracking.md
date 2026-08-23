@@ -36,8 +36,9 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, and `ninja -f ninja.build q8-smoke` pass; the bounded Q8 result has exact digest/token parity, and its saved outputs prove 6/6 control-code retrieval with 0/6 exact-only formatting |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | OCaml serving radix/KV cache | implemented | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, FP16/Q8 layout accounting, and owned slot allocation pass `ninja -f ninja.build ocaml-test` |
-| Versioned generated package ABI | partial | `llmopt-fx` emits a validated version-1 `compiled-graph` package containing FX, plan, MSL, metallib, LLVM, typed kernel entries, and mandatory radix plus Q8-default/F16-optional KV policy; model weights and complete scheduled invocations are not exported yet |
-| OCaml Metal serving loader and dispatch | partial; standalone fixture verified | Ninja builds an OCaml executable plus Objective-C bindings that validate a package, load every declared metallib function, allocate shared buffers, and directly dispatch the Q8 FP32 kernel. The 2x3x4 fixture returned `[3, 7, 2, 1, 3, 3]` exactly on Apple M4 Pro; the model schedule still runs through Python/PyTorch |
+| Versioned generated package ABI | partial | `llmopt-fx` emits compiled-graph packages without storage or serving packages that reference one `weights.safetensors` archive. The manifest no longer duplicates per-tensor dtype/shape/encoding records or names separate payload files; complete model export and scheduled invocations remain open |
+| OCaml tensor-store ownership | partial; standalone fixture verified | OCaml validates the safetensors index, maps one archive into one no-copy `MTLBuffer`, and creates retained tensor views by archive offset; the complete LFM2.5-350M Q8 archive is not exported yet |
+| OCaml Metal serving loader and dispatch | partial; standalone fixture verified | Ninja builds an OCaml executable plus Objective-C bindings that load every declared function and dispatch mapped tensor views. With 57% memory free, the 2x3x4 serving fixture returned `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro; the model schedule still runs through Python/PyTorch |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule
@@ -64,7 +65,7 @@ measurement into a release gate.
   falling back to PyTorch dequantization?
 - Which reduction schedule or MPS-compatible matmul lowering can make the
   native Phase 2 float32 Q8 path match the exact generated dequantization path?
-- How should complete LFM2.5 scheduled invocations and serialized parameter
-  offsets extend the version-1 compiled-graph package into its serving stage?
+- How should FX placeholder names map deterministically to tensor keys while
+  exporting the complete LFM2.5 Q8 safetensors archive?
 - What grouped-Q8 scale layout and Metal quantize/dequantize kernels should
   back the cache's current Q8 ownership and byte-accounting policy?

@@ -14,7 +14,7 @@ rule ocaml_link
   description = link $out
 
 rule objective_c_stub
-  command = mkdir -p _build/native && ocaml_include=$$(ocamlc -where) && xcrun clang -O3 -fPIC -Wno-deprecated-declarations -I$$ocaml_include -c $in -o $out
+  command = mkdir -p _build/native && ocaml_include=$$(ocamlc -where) && xcrun clang -O3 -fPIC -fblocks -Wno-deprecated-declarations -I$$ocaml_include -c $in -o $out
   description = compile Objective-C stub $in
 
 rule ocaml_metal_link
@@ -49,6 +49,16 @@ rule fx_manifest
 rule q8_fx_manifest
   command = mkdir -p _build/q8-fx-example && _build/bin/llmopt-fx python/examples/q8_linear_fx.json _build/q8-fx-example
   description = plan the static Q8 FX fixture
+  pool = console
+
+rule q8_tensor_store
+  command = PYTHONPATH=python python3.13 python/examples/write_q8_safetensors_fixture.py --output $out
+  description = write one binary Q8 tensor archive
+  pool = console
+
+rule q8_serving_manifest
+  command = mkdir -p _build/q8-serving-example && _build/bin/llmopt-fx --tensor-store weights.safetensors python/examples/q8_linear_fx.json _build/q8-serving-example
+  description = plan the Q8 serving fixture
   pool = console
 
 rule package_check
@@ -169,9 +179,12 @@ build _build/ocaml/serving_cache.cmx: ocaml_module lib/serving_cache.ml | _build
 build _build/ocaml/serving_package.cmi: ocaml_interface lib/serving_package.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/kv_cache.cmi
 build _build/ocaml/serving_package.cmx: ocaml_module lib/serving_package.ml | _build/ocaml/serving_package.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx
 
+build _build/ocaml/safetensors.cmi: ocaml_interface lib/safetensors.mli
+build _build/ocaml/safetensors.cmx: ocaml_module lib/safetensors.ml | _build/ocaml/safetensors.cmi
+
 build _build/native/ocaml_metal_stubs.o: objective_c_stub native/ocaml_metal_stubs.m
-build _build/ocaml/metal_runtime.cmi: ocaml_interface lib/metal_runtime.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/serving_package.cmi
-build _build/ocaml/metal_runtime.cmx: ocaml_module lib/metal_runtime.ml | _build/ocaml/metal_runtime.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/serving_package.cmx
+build _build/ocaml/metal_runtime.cmi: ocaml_interface lib/metal_runtime.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/serving_package.cmi _build/ocaml/safetensors.cmi
+build _build/ocaml/metal_runtime.cmx: ocaml_module lib/metal_runtime.ml | _build/ocaml/metal_runtime.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx
 
 build _build/ocaml/fx.cmi: ocaml_interface lib/fx.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
 build _build/ocaml/fx.cmx: ocaml_module lib/fx.ml | _build/ocaml/fx.cmi _build/ocaml/shape.cmx _build/ocaml/ir.cmx
@@ -188,11 +201,11 @@ build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.
 build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/passes.cmx _build/ocaml/serving_package.cmx
 build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
 
-build _build/ocaml/package_check.cmx: ocaml_module bin/package_check.ml | _build/ocaml/serving_package.cmx
-build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/package_check.cmx
+build _build/ocaml/package_check.cmx: ocaml_module bin/package_check.ml | _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx
+build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/package_check.cmx
 
-build _build/ocaml/ocaml_metal_smoke.cmx: ocaml_module bin/ocaml_metal_smoke.ml | _build/ocaml/metal_runtime.cmx
-build _build/bin/llmopt-ocaml-metal-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_smoke.cmx _build/native/ocaml_metal_stubs.o
+build _build/ocaml/ocaml_metal_smoke.cmx: ocaml_module bin/ocaml_metal_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/safetensors.cmx
+build _build/bin/llmopt-ocaml-metal-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/serving_package.cmx _build/ocaml/safetensors.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_smoke.cmx _build/native/ocaml_metal_stubs.o
 
 build _build/fx-example/fx.json _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.json: fx_manifest python/examples/linear_fx.json | _build/bin/llmopt-fx
 build _build/fx-example/kernel.ll.o: llvm_check _build/fx-example/kernel.ll
@@ -209,11 +222,20 @@ build _build/q8-fx-example/kernel.metallib: metal_lib _build/q8-fx-example/kerne
 build _build/q8-fx-example/package.ok: package_check _build/q8-fx-example/package.json _build/q8-fx-example/fx.json _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.metallib _build/q8-fx-example/kernel.ll | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
   directory = _build/q8-fx-example
-build _build/q8-fx-example/ocaml-metal-smoke.json: run_ocaml_metal_smoke _build/q8-fx-example/package.ok | _build/bin/llmopt-ocaml-metal-smoke
+build _build/q8-serving-example/weights.safetensors: q8_tensor_store python/examples/write_q8_safetensors_fixture.py
+build _build/q8-serving-example/fx.json _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.ll _build/q8-serving-example/package.json: q8_serving_manifest python/examples/q8_linear_fx.json | _build/bin/llmopt-fx _build/q8-serving-example/weights.safetensors
+build _build/q8-serving-example/kernel.ll.o: llvm_check _build/q8-serving-example/kernel.ll
+build _build/q8-serving-example/kernel.air: metal_check _build/q8-serving-example/kernel.metal
+build _build/q8-serving-example/kernel.metallib: metal_lib _build/q8-serving-example/kernel.air
+build _build/q8-serving-example/package.ok: package_check _build/q8-serving-example/package.json _build/q8-serving-example/fx.json _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.metallib _build/q8-serving-example/kernel.ll _build/q8-serving-example/weights.safetensors | _build/bin/llmopt-package-check
+  checker = _build/bin/llmopt-package-check
+  directory = _build/q8-serving-example
+build _build/q8-serving-example/ocaml-metal-smoke.json: run_ocaml_metal_smoke _build/q8-serving-example/package.ok | _build/bin/llmopt-ocaml-metal-smoke
   runner = _build/bin/llmopt-ocaml-metal-smoke
-  directory = _build/q8-fx-example
+  directory = _build/q8-serving-example
 build _build/native/metal-runtime.stamp: native_runtime native/metal_runtime.cpp native/build_metal_runtime.py
 build q8-fx-smoke: phony _build/q8-fx-example/kernel.ll.o _build/q8-fx-example/kernel.air _build/q8-fx-example/kernel.metallib _build/q8-fx-example/package.ok
+build q8-serving-smoke: phony _build/q8-serving-example/kernel.ll.o _build/q8-serving-example/kernel.air _build/q8-serving-example/kernel.metallib _build/q8-serving-example/package.ok
 build metal-runtime: phony _build/native/metal-runtime.stamp
 build metal-runtime-smoke: metal_runtime_smoke _build/native/metal-runtime.stamp _build/q8-fx-example/kernel.metallib python/examples/metal_runtime_smoke.py python/llmopt_backend/metal_runtime.py
 build _artifacts/phase1-350m-mps/result.json: metal_runtime_model_smoke _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_mps.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
@@ -232,7 +254,7 @@ build q8-llvm: q8_llvm_check | demo
 build q8-smoke: phony q8-metal q8-llvm
 build fx-smoke: phony _build/fx-example/kernel.ll.o _build/fx-example/kernel.air _build/fx-example/kernel.metallib _build/fx-example/package.ok
 build ocaml-metal-runtime: phony _build/bin/llmopt-ocaml-metal-smoke
-build ocaml-metal-runtime-smoke: phony _build/q8-fx-example/ocaml-metal-smoke.json
+build ocaml-metal-runtime-smoke: phony _build/q8-serving-example/ocaml-metal-smoke.json
 build bench-mps: lfm25_mps_benchmark | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_mps.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
 build _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json: lfm25_benchsuite | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
 build bench-suite: phony _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json

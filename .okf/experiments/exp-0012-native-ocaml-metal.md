@@ -47,3 +47,6 @@ successfully. The probe allocated only fixture buffers and loaded no model.
 The generated package still has zero exported weights and no complete LFM2.5
 invocation schedule. Model execution therefore remains on the existing
 Python/PyTorch MPS path until those compiler artifacts are present.
+
+The successor archive-backed serving probe is recorded in
+[exp-0013](exp-0013-safetensors-metal-mapping.md).

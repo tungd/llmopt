@@ -30,6 +30,9 @@ sources:
   - id: local-ocaml-runtime
     resource: /lib/metal_runtime.ml
     title: Native OCaml package loader and typed Q8 dispatch
+  - id: local-safetensors
+    resource: /lib/safetensors.ml
+    title: Safetensors metadata parser and tensor index
   - id: local-ocaml-stubs
     resource: /native/ocaml_metal_stubs.m
     title: Metal device, library, shared-buffer, and command bindings
@@ -74,6 +77,7 @@ optional Metal source plus textual LLVM IR.[^local-python-backend]
 | graph transforms | Pure OCaml passes |
 | Metal/LLVM source generation | OCaml backends |
 | compiled graph package manifest and artifact validation | OCaml compiler and Ninja |
+| tensor archive indexing, mapping, and Metal buffer views | OCaml runtime plus Objective-C Metal bindings |
 | direct FX execution and device dispatch | Python FX GraphModule plus PyTorch MPS |
 | generated Q8 library loading and tensor binding | Python loader plus PyTorch MPS C++ bridge |
 | custom Metal buffers and command submission | PyTorch MPS stream through the bridge |
@@ -82,9 +86,8 @@ optional Metal source plus textual LLVM IR.[^local-python-backend]
 | serving KV format policy and slot allocation | OCaml serving runtime |
 
 The cache rows and standalone OCaml Metal primitives are implemented. The
-model-level execution path still uses the Python/PyTorch bridge because package
-weight export and complete LFM2.5 schedule execution have not moved into the
-OCaml process.
+model-level execution path still uses the Python/PyTorch bridge because the
+complete LFM2.5 Q8 archive and schedule have not moved into the OCaml process.
 
 # Current scope
 
@@ -116,24 +119,23 @@ configuration boundary. Current Q8 support defines typed policy, capacity, and
 byte accounting (int8 values plus FP16 group scales); physical Metal buffers
 and quantize/dequantize kernels are not connected to the cache in this slice.
 
-The FX compiler now emits a versioned `llmopt.serving-package` manifest beside
-the copied FX graph, optimized plan, MSL, and LLVM IR, with a declared metallib
-path that Ninja materializes. Kernel entry points carry an operation,
-input/output dtype, and threadgroup shape. Package construction rejects
-duplicate entry points, invalid relative artifact paths, unsupported cache
-policies, and a `serving` stage without weights. The current Ninja fixtures
-intentionally emit the `compiled-graph` stage with zero weights; model weight
-serialization and complete scheduled invocation metadata remain separate
-compiler work rather than being represented as finished serving data.
+The FX compiler emits a versioned `llmopt.serving-package` control manifest
+beside the copied FX graph, optimized plan, MSL, and LLVM IR, with a declared
+metallib path that Ninja materializes. Kernel entry points carry an operation,
+input/output dtype, and threadgroup shape. A compiled-graph package has no
+tensor store; `--tensor-store weights.safetensors` emits a serving package that
+references exactly one binary tensor archive. Tensor names, dtypes, shapes,
+and offsets are read from the archive header rather than duplicated in a
+second JSON file or split across per-tensor payloads. Complete model export and
+scheduled invocation metadata remain separate compiler work.
 
 The Ninja-built OCaml runtime consumes that manifest directly, validates every
-referenced artifact and declared entry point, selects the default Metal device,
-loads the metallib, owns shared `MTLBuffer` allocations, binds the Q8 ABI, and
-submits a command buffer while releasing the OCaml runtime lock during device
-completion. A standalone 2x3x4 FP32/Q8 fixture selected
-`llmopt_q8_linear_f32` and returned `[3, 7, 2, 1, 3, 3]` exactly on Apple M4
-Pro. This proves the native package-to-command boundary, not complete model
-execution.
+referenced artifact and declared entry point, parses the safetensors index,
+maps the archive once, and creates retained Metal views at tensor byte offsets.
+A standalone 2x3x4 FP32/Q8 fixture bound its int8 weight, FP16 scale, and FP16
+bias from the mapped archive; `llmopt_q8_linear_f32` returned
+`[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves the binary
+archive-to-command boundary, not complete model execution.
 
 The first non-tile-aligned device probe exposed a partial-threadgroup launch
 bug in the bridge: the 3x29 probe returned a numerical mismatch before the

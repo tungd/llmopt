@@ -18,18 +18,6 @@ let f32_values bytes =
   Array.init (Bytes.length bytes / 4) (fun index ->
       Bytes.get_int32_le bytes (4 * index) |> Int32.float_of_bits)
 
-let int8_bytes values =
-  let bytes = Bytes.create (Array.length values) in
-  Array.iteri (fun index value -> Bytes.set_int8 bytes index value) values;
-  bytes
-
-let half_bytes bits count =
-  let bytes = Bytes.create (2 * count) in
-  for index = 0 to count - 1 do
-    Bytes.set_uint16_le bytes (2 * index) bits
-  done;
-  bytes
-
 let usage () =
   prerr_endline "usage: llmopt-ocaml-metal-smoke <package-directory>";
   exit 64
@@ -50,31 +38,33 @@ let () =
     |> Metal_runtime.Buffer.of_bytes ~runtime
     |> expect_ok
   in
-  let weight =
-    [| 1; 0; 2; -1;
-       0; 1; -1; 2;
-       2; -2; 0; 1 |]
-    |> int8_bytes
-    |> Metal_runtime.Buffer.of_bytes ~runtime
-    |> expect_ok
+  let weight, weight_info =
+    expect_ok (Metal_runtime.tensor runtime ~name:"weight_q8")
   in
-  let scale =
-    half_bytes 0x3c00 n
-    |> Metal_runtime.Buffer.of_bytes ~runtime
-    |> expect_ok
+  let scale, scale_info =
+    expect_ok (Metal_runtime.tensor runtime ~name:"weight_scale")
   in
+  let bias, bias_info = expect_ok (Metal_runtime.tensor runtime ~name:"bias") in
+  if
+    Safetensors.Tensor.dtype weight_info <> Safetensors.Dtype.I8
+    || Safetensors.Tensor.shape weight_info <> [ n; k ]
+    || Safetensors.Tensor.dtype scale_info <> Safetensors.Dtype.F16
+    || Safetensors.Tensor.shape scale_info <> [ 1; n ]
+    || Safetensors.Tensor.dtype bias_info <> Safetensors.Dtype.F16
+    || Safetensors.Tensor.shape bias_info <> [ 1; n ]
+  then fail "safetensors Q8 fixture metadata mismatch";
   let output =
     expect_ok (Metal_runtime.Buffer.create ~runtime ~bytes:(m * n * 4))
   in
   let kernel =
     expect_ok
       (Metal_runtime.dispatch_q8_linear runtime ~dtype:Ir.Dtype.Float32
-         ~input ~weight ~scale ~bias:None ~output ~m ~n ~k)
+         ~input ~weight ~scale ~bias:(Some bias) ~output ~m ~n ~k)
   in
   let actual =
     expect_ok (Metal_runtime.Buffer.contents output) |> f32_values
   in
-  let expected = [| 3.; 7.; 2.; 1.; 3.; 3. |] in
+  let expected = [| 3.5; 8.; 1.; 1.5; 4.; 2. |] in
   if Array.length actual <> Array.length expected then
     fail "OCaml Metal output length mismatch";
   Array.iteri
@@ -92,5 +82,6 @@ let () =
         ("kernel", `String kernel);
         ("shape", `List [ `Int m; `Int n; `Int k ]);
         ("output", `List (Array.to_list (Array.map (fun value -> `Float value) actual)));
+        ("tensor_store", `String "weights.safetensors");
         ("dispatch", `String "ocaml-metal-direct") ]);
   output_char stdout '\n'

@@ -77,107 +77,26 @@ module Files = struct
     Ok (create ~fx ~plan ~metal_source ~metal_library ~llvm_ir)
 end
 
-let dtype_of_string = function
-  | "f32" -> Ok Ir.Dtype.Float32
-  | "f16" -> Ok Ir.Dtype.Float16
-  | "bf16" -> Ok Ir.Dtype.Bfloat16
-  | "i64" -> Ok Ir.Dtype.Int64
-  | "i32" -> Ok Ir.Dtype.Int32
-  | "i8" -> Ok Ir.Dtype.Int8
-  | "bool" -> Ok Ir.Dtype.Bool
-  | value -> Error ("unsupported serving-package dtype: " ^ value)
+module Tensor_store = struct
+  type t = Safetensors of { file : Artifact.t }
 
-module Weight = struct
-  module Encoding = struct
-    type t =
-      | Raw
-      | Q8_per_output_channel of {
-          scale : Artifact.t;
-          scale_dtype : Ir.Dtype.t;
-          axis : int;
-        }
-  end
+  let safetensors ~file = Safetensors { file }
+  let file (Safetensors { file }) = file
 
-  type t = {
-    name : string;
-    data : Artifact.t;
-    dtype : Ir.Dtype.t;
-    shape : int list;
-    encoding : Encoding.t;
-  }
-
-  let create ~name ~data ~dtype ~shape ~encoding =
-    let rank = List.length shape in
-    if String.trim name = "" then Error "serving-package weight name cannot be empty"
-    else if shape = [] || List.exists (fun dimension -> dimension <= 0) shape then
-      Error "serving-package weight shape must contain positive dimensions"
-    else
-      match encoding with
-      | Encoding.Raw -> Ok { name; data; dtype; shape; encoding }
-      | Encoding.Q8_per_output_channel _
-        when dtype <> Ir.Dtype.Int8 ->
-          Error "Q8 per-output-channel weight data must use i8 dtype"
-      | Encoding.Q8_per_output_channel { scale_dtype; _ }
-        when scale_dtype <> Ir.Dtype.Float16 && scale_dtype <> Ir.Dtype.Float32 ->
-          Error "Q8 per-output-channel scales must use f16 or f32 dtype"
-      | Encoding.Q8_per_output_channel { axis; _ }
-        when axis < 0 || axis >= rank ->
-          Error "Q8 per-output-channel axis is outside the weight rank"
-      | Encoding.Q8_per_output_channel _ ->
-          Ok { name; data; dtype; shape; encoding }
-
-  let name weight = weight.name
-  let data weight = weight.data
-  let dtype weight = weight.dtype
-  let shape weight = weight.shape
-  let encoding weight = weight.encoding
-
-  let encoding_to_yojson = function
-    | Encoding.Raw -> `Assoc [ ("kind", `String "raw") ]
-    | Encoding.Q8_per_output_channel { scale; scale_dtype; axis } ->
-        `Assoc
-          [ ("kind", `String "q8-per-output-channel");
-            ("scale", `String (Artifact.path scale));
-            ("scale_dtype", `String (Ir.Dtype.to_string scale_dtype));
-            ("axis", `Int axis) ]
-
-  let to_yojson weight =
+  let to_yojson (Safetensors { file }) =
     `Assoc
-      [ ("name", `String weight.name);
-        ("data", `String (Artifact.path weight.data));
-        ("dtype", `String (Ir.Dtype.to_string weight.dtype));
-        ("shape", `List (List.map (fun value -> `Int value) weight.shape));
-        ("encoding", encoding_to_yojson weight.encoding) ]
-
-  let encoding_of_yojson json =
-    try
-      match json |> member "kind" |> to_string with
-      | "raw" -> Ok Encoding.Raw
-      | "q8-per-output-channel" ->
-          let* scale = artifact_of_json (member "scale" json) in
-          let* scale_dtype =
-            json |> member "scale_dtype" |> to_string |> dtype_of_string
-          in
-          let axis = json |> member "axis" |> to_int in
-          Ok (Encoding.Q8_per_output_channel { scale; scale_dtype; axis })
-      | value -> Error ("unsupported weight encoding: " ^ value)
-    with Type_error (message, _) ->
-      Error ("invalid weight encoding: " ^ message)
+      [ ("format", `String "safetensors");
+        ("file", `String (Artifact.path file)) ]
 
   let of_yojson json =
     try
-      let name = json |> member "name" |> to_string in
-      let* data = artifact_of_json (member "data" json) in
-      let* dtype = json |> member "dtype" |> to_string |> dtype_of_string in
-      let shape = json |> member "shape" |> to_list |> List.map to_int in
-      let* encoding = encoding_of_yojson (member "encoding" json) in
-      create ~name ~data ~dtype ~shape ~encoding
-    with Type_error (message, _) -> Error ("invalid package weight: " ^ message)
-
-  let artifacts weight =
-    match weight.encoding with
-    | Encoding.Raw -> [ weight.data ]
-    | Encoding.Q8_per_output_channel { scale; _ } -> [ weight.data; scale ]
+      match json |> member "format" |> to_string with
+      | "safetensors" ->
+          let* file = artifact_of_json (member "file" json) in
+          Ok (safetensors ~file)
+      | value -> Error ("unsupported tensor-store format: " ^ value)
+    with Type_error (message, _) ->
+      Error ("invalid serving-package tensor store: " ^ message)
 end
 
 module Cache = struct
@@ -266,35 +185,36 @@ type t = {
   model : string option;
   files : Files.t;
   kernels : Kernel_abi.Entry.t list;
-  weights : Weight.t list;
+  tensor_store : Tensor_store.t option;
   cache : Cache.t;
 }
 
-let create ~stage ?model ~files ~kernels ~weights ~cache () =
+let create ~stage ?model ~files ~kernels ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
-  let weight_names = List.map Weight.name weights in
   if Option.exists (fun value -> String.trim value = "") model then
     Error "serving-package model identifier cannot be empty"
   else if kernels = [] then Error "serving-package must declare at least one kernel"
   else if List.length kernel_names <> List.length (List.sort_uniq String.compare kernel_names)
   then Error "serving-package kernel entry-point names must be unique"
-  else if List.length weight_names <> List.length (List.sort_uniq String.compare weight_names)
-  then Error "serving-package weight names must be unique"
-  else if stage = Stage.Serving && weights = [] then
-    Error "serving-stage package must contain model weights"
-  else Ok { stage; model; files; kernels; weights; cache }
+  else if stage = Stage.Compiled_graph && Option.is_some tensor_store then
+    Error "compiled-graph package cannot declare a tensor store"
+  else if stage = Stage.Serving && Option.is_none tensor_store then
+    Error "serving-stage package must declare a tensor store"
+  else Ok { stage; model; files; kernels; tensor_store; cache }
 
 let compiled_graph ?model ~files ~kernels ~cache () =
-  create ~stage:Stage.Compiled_graph ?model ~files ~kernels ~weights:[] ~cache ()
+  create ~stage:Stage.Compiled_graph ?model ~files ~kernels ~tensor_store:None
+    ~cache ()
 
-let serving ?model ~files ~kernels ~weights ~cache () =
-  create ~stage:Stage.Serving ?model ~files ~kernels ~weights ~cache ()
+let serving ?model ~files ~kernels ~tensor_store ~cache () =
+  create ~stage:Stage.Serving ?model ~files ~kernels
+    ~tensor_store:(Some tensor_store) ~cache ()
 
 let stage package = package.stage
 let model package = package.model
 let files package = package.files
 let kernels package = package.kernels
-let weights package = package.weights
+let tensor_store package = package.tensor_store
 let cache package = package.cache
 
 let to_yojson package =
@@ -306,7 +226,9 @@ let to_yojson package =
       ("model", Option.fold ~none:`Null ~some:(fun value -> `String value) package.model);
       ("files", Files.to_yojson package.files);
       ("kernels", `List (List.map Kernel_abi.Entry.to_yojson package.kernels));
-      ("weights", `List (List.map Weight.to_yojson package.weights));
+      ( "tensor_store",
+        Option.fold ~none:`Null ~some:Tensor_store.to_yojson
+          package.tensor_store );
       ("cache", Cache.to_yojson package.cache) ]
 
 let parse_list parse values =
@@ -337,11 +259,13 @@ let of_yojson json =
         json |> member "kernels" |> to_list
         |> parse_list Kernel_abi.Entry.of_yojson
       in
-      let* weights =
-        json |> member "weights" |> to_list |> parse_list Weight.of_yojson
+      let* tensor_store =
+        match member "tensor_store" json with
+        | `Null -> Ok None
+        | value -> Tensor_store.of_yojson value |> Result.map Option.some
       in
       let* cache = Cache.of_yojson (member "cache" json) in
-      create ~stage ?model ~files ~kernels ~weights ~cache ()
+      create ~stage ?model ~files ~kernels ~tensor_store ~cache ()
   with
   | Type_error (message, _) -> Error ("invalid serving package: " ^ message)
   | Yojson.Json_error message -> Error ("invalid serving package: " ^ message)
@@ -364,8 +288,12 @@ let of_file path =
   | Yojson.Json_error message -> Error ("invalid serving package: " ^ message)
 
 let validate_files ~root package =
-  let weight_artifacts = List.concat_map Weight.artifacts package.weights in
-  let artifacts = Files.all package.files @ weight_artifacts in
+  let tensor_store_artifacts =
+    Option.fold ~none:[]
+      ~some:(fun tensor_store -> [ Tensor_store.file tensor_store ])
+      package.tensor_store
+  in
+  let artifacts = Files.all package.files @ tensor_store_artifacts in
   let rec check = function
     | [] -> Ok ()
     | artifact :: rest ->

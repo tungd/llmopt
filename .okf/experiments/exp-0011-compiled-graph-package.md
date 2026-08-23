@@ -29,24 +29,25 @@ Schema `llmopt.serving-package`, version 1, records:
   metallib, and textual LLVM IR;
 * typed Metal entry points with operation, input/output dtype, and 3D
   threadgroup dimensions;
-* raw or per-output-channel Q8 weight descriptors; and
+* an optional reference to one safetensors tensor archive; and
 * mandatory radix policy with grouped-Q8 KV as the default and FP16 as a
   selectable format.
 
 Abstract types and smart constructors reject non-canonical artifact paths,
-invalid weight shapes or Q8 scale dtypes, duplicate kernel/weight names,
-invalid cache policy, and a `serving` package without weights. The compiler
-currently writes `compiled-graph`, because it does not yet serialize model
-weights or all LFM2.5 scheduled invocations.
+duplicate kernel names, invalid cache policy, a compiled-graph package with a
+tensor store, and a `serving` package without one. Tensor metadata is owned by
+the binary archive rather than duplicated in this control manifest. Complete
+model serialization and all LFM2.5 scheduled invocations remain open.
 
 # Evidence
 
 `ninja -f ninja.build ocaml-test` passed package JSON round-trip, path,
-duplicate-entry, lifecycle-stage, Q8-weight, and cache-policy tests.
+duplicate-entry, lifecycle-stage, tensor-store, and cache-policy tests.
 
 `ninja -f ninja.build all fx-smoke q8-fx-smoke` compiled both fixtures to
 LLVM objects, Metal AIR, and metallib files, then validated every path named by
-each package. The FP32 package declared one kernel and the Q8 package declared
-four kernels; both had zero weights and reported the `compiled-graph` stage.
+each package. The FP32 and Q8 compiler fixtures remain `compiled-graph`
+packages; the separate serving fixture and mapped execution evidence are in
+[exp-0013](exp-0013-safetensors-metal-mapping.md).
 
 No model process or benchmark was launched for this compiler-only slice.

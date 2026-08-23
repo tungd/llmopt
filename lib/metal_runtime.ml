@@ -20,6 +20,12 @@ external buffer_of_bytes_stub : context_handle -> bytes -> buffer_handle
 external create_buffer_stub : context_handle -> int -> buffer_handle
   = "caml_llmopt_metal_create_buffer"
 
+external map_file_stub : context_handle -> string -> buffer_handle
+  = "caml_llmopt_metal_map_file"
+
+external buffer_view_stub : buffer_handle -> int -> int -> buffer_handle
+  = "caml_llmopt_metal_buffer_view"
+
 external buffer_contents_stub : buffer_handle -> bytes
   = "caml_llmopt_metal_buffer_contents"
 
@@ -40,6 +46,7 @@ type t = {
   context : context_handle;
   library : library_handle;
   package : Serving_package.t;
+  tensor_store : (Safetensors.t * buffer_handle) option;
 }
 
 type runtime = t
@@ -56,21 +63,37 @@ let load_package ~root package =
   match Serving_package.validate_files ~root package with
   | Error _ as error -> error
   | Ok () ->
-      Result.bind
-        (protect (fun () ->
-             let context = create_context_stub () in
-             let library_path =
-               Serving_package.files package
-               |> Serving_package.Files.metal_library
-               |> Serving_package.Artifact.path
-               |> Filename.concat root
-             in
-             let library = load_library_stub context library_path in
-             context, library))
-        (fun (context, library) ->
+      let archive =
+        match Serving_package.tensor_store package with
+        | None -> Ok None
+        | Some tensor_store ->
+            let path =
+              tensor_store |> Serving_package.Tensor_store.file
+              |> Serving_package.Artifact.path |> Filename.concat root
+            in
+            Safetensors.of_file path |> Result.map Option.some
+      in
+      Result.bind archive (fun archive ->
+        Result.bind
+          (protect (fun () ->
+               let context = create_context_stub () in
+               let library_path =
+                 Serving_package.files package
+                 |> Serving_package.Files.metal_library
+                 |> Serving_package.Artifact.path
+                 |> Filename.concat root
+               in
+               let library = load_library_stub context library_path in
+               let tensor_store =
+                 Option.map
+                   (fun archive -> archive, map_file_stub context (Safetensors.path archive))
+                   archive
+               in
+               context, library, tensor_store))
+          (fun (context, library, tensor_store) ->
           validate_declared_functions library
             (Serving_package.kernels package)
-          |> Result.map (fun () -> { context; library; package }))
+          |> Result.map (fun () -> { context; library; package; tensor_store })))
 
 let device_name runtime = device_name_stub runtime.context
 
@@ -86,6 +109,18 @@ module Buffer = struct
   let contents buffer = protect (fun () -> buffer_contents_stub buffer)
   let byte_length = buffer_length_stub
 end
+
+let tensor runtime ~name =
+  match runtime.tensor_store with
+  | None -> Error "serving package has no tensor store"
+  | Some (archive, mapped) ->
+      (match Safetensors.find archive name with
+      | None -> Error ("tensor store does not contain tensor: " ^ name)
+      | Some tensor ->
+          protect (fun () ->
+              ( buffer_view_stub mapped (Safetensors.Tensor.offset tensor)
+                  (Safetensors.Tensor.byte_length tensor),
+                tensor )))
 
 let q8_kernel runtime dtype =
   let entries = Serving_package.kernels runtime.package in

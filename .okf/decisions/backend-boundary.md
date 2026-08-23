@@ -47,6 +47,7 @@ non-tile-aligned launch bug; the bridge now rounds its dispatch grid to full
 16x16 groups and bounds-checks output stores.
 
 The native OCaml path links Metal/Foundation through Ninja, validates package
-artifacts and entry points, owns shared Metal buffers, and submits commands
-without Python or PyTorch. It currently executes the Q8 fixture only because
-the package does not yet carry complete model weights and invocation order.
+artifacts and entry points, maps one safetensors archive into shared Metal
+storage, and submits commands without Python or PyTorch. It currently executes
+the archive-backed Q8 fixture only because complete model export and invocation
+order are not yet emitted.

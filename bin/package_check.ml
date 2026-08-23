@@ -16,7 +16,22 @@ let () =
           prerr_endline message;
           exit 3
       | Ok () ->
-          Printf.printf "valid %s package: %d kernels, %d weights\n"
+          let tensor_count =
+            match Serving_package.tensor_store package with
+            | None -> "none"
+            | Some tensor_store ->
+                let path =
+                  tensor_store |> Serving_package.Tensor_store.file
+                  |> Serving_package.Artifact.path |> Filename.concat root
+                in
+                (match Safetensors.of_file path with
+                | Ok archive ->
+                    string_of_int (List.length (Safetensors.tensors archive))
+                | Error message ->
+                    prerr_endline message;
+                    exit 4)
+          in
+          Printf.printf "valid %s package: %d kernels, tensor-store=%s\n"
             (Serving_package.Stage.to_string (Serving_package.stage package))
             (List.length (Serving_package.kernels package))
-            (List.length (Serving_package.weights package)))
+            tensor_count)

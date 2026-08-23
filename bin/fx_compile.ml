@@ -31,13 +31,22 @@ let package_files =
     ~llvm_ir:(artifact "kernel.ll")
 
 let usage () =
-  prerr_endline "usage: llmopt-fx <fx-manifest.json> <output-directory>";
+  prerr_endline
+    "usage: llmopt-fx [--tensor-store <weights.safetensors>] \
+     <fx-manifest.json> <output-directory>";
   exit 64
 
 let () =
-  if Array.length Sys.argv <> 3 then usage ();
-  let manifest = Sys.argv.(1) in
-  let output_directory = Sys.argv.(2) in
+  let tensor_store, manifest, output_directory =
+    match Array.to_list Sys.argv with
+    | [ _; manifest; output_directory ] -> None, manifest, output_directory
+    | [ _; "--tensor-store"; path; manifest; output_directory ] ->
+        Some
+          (Serving_package.Tensor_store.safetensors ~file:(artifact path)),
+        manifest,
+        output_directory
+    | _ -> usage ()
+  in
   let manifest_contents =
     try read_file manifest
     with Sys_error message ->
@@ -67,11 +76,19 @@ let () =
                   prerr_endline ("LLVM emission failed: " ^ message);
                   exit 5
               | Ok llvm_source ->
+                  let package_result =
+                    match tensor_store with
+                    | None ->
+                        Serving_package.compiled_graph ~files:package_files
+                          ~kernels:(Metal.Program.kernels metal_program)
+                          ~cache:Serving_package.Cache.default ()
+                    | Some tensor_store ->
+                        Serving_package.serving ~files:package_files
+                          ~kernels:(Metal.Program.kernels metal_program)
+                          ~tensor_store ~cache:Serving_package.Cache.default ()
+                  in
                   let package =
-                    match
-                      Serving_package.compiled_graph ~files:package_files
-                        ~kernels:(Metal.Program.kernels metal_program)
-                        ~cache:Serving_package.Cache.default ()
+                    match package_result
                     with
                     | Ok package -> package
                     | Error message ->

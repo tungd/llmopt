@@ -186,26 +186,37 @@ let () =
   | Error _ -> ()
   | Ok _ -> fail "serving package accepted duplicate kernel entries");
   (match
-     Serving_package.serving ~files:package_files ~kernels:q8_entries
-       ~weights:[] ~cache:Serving_package.Cache.default ()
+     Serving_package.of_yojson
+       (Serving_package.to_yojson compiled_package
+       |> function
+       | `Assoc fields ->
+           `Assoc
+             (("stage", `String "serving")
+             :: List.remove_assoc "stage" fields)
+       | json -> json)
    with
   | Error _ -> ()
-  | Ok _ -> fail "serving-stage package accepted missing weights");
-  let q8_weight =
-    expect_ok
-      (Serving_package.Weight.create ~name:"model.weight"
-         ~data:(package_artifact "weights/model.weight.q8")
-         ~dtype:Ir.Dtype.Int8 ~shape:[ 3; 4 ]
-         ~encoding:
-           (Serving_package.Weight.Encoding.Q8_per_output_channel
-              { scale = package_artifact "weights/model.weight.scale.f16";
-                scale_dtype = Ir.Dtype.Float16;
-                axis = 0 }))
+  | Ok _ -> fail "serving-stage package accepted a missing tensor store");
+  let tensor_store =
+    Serving_package.Tensor_store.safetensors
+      ~file:(package_artifact "weights.safetensors")
   in
-  ignore
-    (expect_ok
-       (Serving_package.serving ~files:package_files ~kernels:q8_entries
-          ~weights:[ q8_weight ] ~cache:Serving_package.Cache.default ()));
+  let serving_package =
+    expect_ok
+      (Serving_package.serving ~files:package_files ~kernels:q8_entries
+         ~tensor_store ~cache:Serving_package.Cache.default ())
+  in
+  let serving_round_trip =
+    expect_ok
+      (serving_package |> Serving_package.to_yojson
+      |> Serving_package.of_yojson)
+  in
+  expect
+    (Serving_package.tensor_store serving_round_trip
+    |> Option.map Serving_package.Tensor_store.file
+    |> Option.map Serving_package.Artifact.path
+    = Some "weights.safetensors")
+    "serving package keeps one safetensors archive";
   (match Llvm_ir.emit q8_graph with
   | Error message -> fail message
   | Ok source ->

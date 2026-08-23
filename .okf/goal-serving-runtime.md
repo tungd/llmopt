@@ -56,10 +56,10 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 |---|---|---|---|
 | Dynamo/FX graph capture | PyTorch invokes `backend=llmopt` and the captured graph reaches OCaml | FX manifest exporter and planner tests pass | implemented |
 | Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Current planner preserves unsupported FX nodes as opaque | partial |
-| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, tensor metadata, quantized weights, and cache layout; OCaml validates it | Ninja emits and validates a version-1 `compiled-graph` package with FX, plan, MSL, metallib, LLVM, typed kernel entries, and Q8-default cache policy; exported model weights and a complete operation schedule remain absent | partial |
+| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Version 1 has a small JSON control manifest and one optional `weights.safetensors` reference; the serving fixture validates three tensors from that archive, while complete model export and invocation scheduling remain absent | partial |
 | Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Q8 linear and small graph fixtures emit Metal; complete model lowering is absent | partial |
-| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, allocates/binds buffers, and submits commands without Python or PyTorch in the serving hot path | Standalone OCaml package loader and shared-buffer command path dispatched the generated Q8 FP32 fixture exactly on Apple M4 Pro; complete model schedule execution is not present | partial |
-| Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | Weight ownership remains in PyTorch modules | open |
+| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | Standalone OCaml loader mapped `weights.safetensors` once and dispatched its Q8 weight, FP16 scale, and FP16 bias views exactly on Apple M4 Pro; complete model schedule execution is not present | partial |
+| Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | A synthetic archive is parsed, mapped, and dispatched natively; complete LFM2.5-350M parameters still live in PyTorch modules | partial |
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | Current request loop and tokenizer are Python/Transformers | open |
 | Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Compressed radix structure and ownership tests pass, but no request reaches it | partial |
 | Configurable KV quantization | FP16 and Q8 runs bind physical Metal KV/checkpoint buffers and execute matching quantize/dequantize paths | Typed format and byte accounting exist; physical buffers and kernels do not | partial |
@@ -81,7 +81,8 @@ not a substitute completion gate.
    exact-response-format observations.
 2. Define and emit the serving-package ABI.
 3. Implement OCaml Metal device/library/buffer/command primitives under Ninja.
-4. Lower and package every LFM2.5 prefill/decode operation and weight.
+4. Export all LFM2.5 parameters into the single safetensors archive, then lower
+   and schedule every prefill/decode operation against its tensor keys.
 5. Implement OCaml tokenization, sampling, request handling, and persistent
    generation state.
 6. Bind physical FP16/Q8 KV buffers and recurrent checkpoints to mandatory

@@ -1,8 +1,13 @@
 # Update Log
 
+## 2026-08-24
+* **Single tensor archive**: Removed duplicated per-tensor descriptors and separate raw payload paths from `package.json`. A serving package now references one `weights.safetensors`; the archive owns tensor dtype, shape, and byte-offset metadata.
+* **Mapped OCaml Metal ownership**: Added an OCaml safetensors validator plus an Objective-C `mmap`/`MTLBuffer` path. With 57% system memory free, the only device probe bound Q8 weight, FP16 scale, and FP16 bias views directly from the 272-byte archive and returned `[3.5, 8, 1, 1.5, 4, 2]` exactly. No model was loaded.
+* **Boundary**: Complete LFM2.5-350M Q8 archive export, FX-value-to-tensor-key mapping, and full prefill/decode scheduling remain open.
+
 ## 2026-08-23
 * **Native OCaml Metal boundary**: Added Ninja-built Objective-C bindings and an abstract OCaml runtime for package validation, device/library selection, shared Metal buffer ownership, kernel lookup, Q8 argument binding, command submission, and completion. With 52% system-wide free memory before launch, the one standalone Apple M4 Pro probe loaded the generated Q8 package and returned the exact expected six FP32 values without Python, PyTorch, or model loading.
-* **Compiled-graph package ABI**: Added abstract OCaml smart-constructor modules for Metal kernel entries, package artifacts, quantized weights, and mandatory radix/Q8-default cache policy. `llmopt-fx` now emits `package.json` with copied FX, plan, MSL, metallib, and LLVM references; Ninja validates the complete artifact set for FP32 and Q8 fixtures. The emitted stage is explicitly `compiled-graph` with zero weights until model serialization and complete invocation scheduling are implemented.
+* **Compiled-graph package ABI**: Added abstract OCaml smart-constructor modules for Metal kernel entries, package artifacts, initial quantized-weight descriptors, and mandatory radix/Q8-default cache policy. `llmopt-fx` emits `package.json` with copied FX, plan, MSL, metallib, and LLVM references; Ninja validates the complete artifact set for FP32 and Q8 fixtures. The initial descriptors were superseded by the single-archive design recorded on 2026-08-24.
 * **Goal**: Added the [complete OCaml serving goal](goal-serving-runtime.md), which tracks compiler coverage, package ABI, native Metal ownership, model/tokenizer serving, physical KV storage, radix integration, and benchmark evidence separately.
 * **Benchmark correction**: The 350M saved needle outputs are `RAVEN-4271Lottery` in all positions. Corrected the grader and documentation to report 6/6 control-code retrieval and 0/6 exact-only response formatting instead of conflating both as 0/6 retrieval.
 * **Experiment**: Recorded the [pre-integration ERS observation](experiments/exp-0010-preintegration-ers.md): eager and llmopt ERS were both 0.0, exact tensor/token parity held, and cached prompt tokens remained zero because the OCaml cache is not connected yet.

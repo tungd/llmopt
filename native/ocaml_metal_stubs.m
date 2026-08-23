@@ -12,6 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 typedef struct {
   id<MTLDevice> device;
@@ -26,6 +31,8 @@ typedef struct {
 
 typedef struct {
   id<MTLBuffer> buffer;
+  NSUInteger offset;
+  NSUInteger length;
 } llmopt_metal_buffer;
 
 typedef struct {
@@ -244,6 +251,8 @@ CAMLprim value caml_llmopt_metal_buffer_of_bytes(value context_value,
       caml_raise_out_of_memory();
     }
     buffer->buffer = metal_buffer;
+    buffer->offset = 0;
+    buffer->length = length;
     result = alloc_buffer(buffer);
   }
   CAMLreturn(result);
@@ -275,6 +284,8 @@ CAMLprim value caml_llmopt_metal_create_buffer(value context_value,
       caml_raise_out_of_memory();
     }
     buffer->buffer = metal_buffer;
+    buffer->offset = 0;
+    buffer->length = (NSUInteger)requested;
     result = alloc_buffer(buffer);
   }
   CAMLreturn(result);
@@ -287,9 +298,10 @@ CAMLprim value caml_llmopt_metal_buffer_contents(value buffer_value) {
   if (buffer == NULL) {
     caml_failwith("Metal buffer has been finalized");
   }
-  NSUInteger length = buffer->buffer.length;
+  NSUInteger length = buffer->length;
   result = caml_alloc_string(length);
-  memcpy(Bytes_val(result), buffer->buffer.contents, length);
+  memcpy(Bytes_val(result),
+         (const uint8_t *)buffer->buffer.contents + buffer->offset, length);
   CAMLreturn(result);
 }
 
@@ -299,7 +311,116 @@ CAMLprim value caml_llmopt_metal_buffer_length(value buffer_value) {
   if (buffer == NULL) {
     caml_failwith("Metal buffer has been finalized");
   }
-  CAMLreturn(Val_long(buffer->buffer.length));
+  CAMLreturn(Val_long(buffer->length));
+}
+
+CAMLprim value caml_llmopt_metal_map_file(value context_value,
+                                          value path_value) {
+  CAMLparam2(context_value, path_value);
+  CAMLlocal1(result);
+  llmopt_metal_context *context = Context_val(context_value);
+  if (context == NULL) {
+    caml_failwith("Metal context has been finalized");
+  }
+  const char *path = String_val(path_value);
+  int descriptor = open(path, O_RDONLY);
+  if (descriptor < 0) {
+    char message[512];
+    snprintf(message, sizeof(message), "cannot open tensor store %s: %s", path,
+             strerror(errno));
+    caml_failwith(message);
+  }
+  struct stat stats;
+  if (fstat(descriptor, &stats) != 0) {
+    int saved_errno = errno;
+    close(descriptor);
+    char message[512];
+    snprintf(message, sizeof(message), "cannot stat tensor store %s: %s", path,
+             strerror(saved_errno));
+    caml_failwith(message);
+  }
+  if (stats.st_size <= 0) {
+    close(descriptor);
+    caml_failwith("tensor store is empty");
+  }
+  size_t file_length = (size_t)stats.st_size;
+  if ((off_t)file_length != stats.st_size) {
+    close(descriptor);
+    caml_failwith("tensor store is too large for this process");
+  }
+  long page_size_value = sysconf(_SC_PAGESIZE);
+  if (page_size_value <= 0) {
+    close(descriptor);
+    caml_failwith("cannot determine the host page size");
+  }
+  size_t page_size = (size_t)page_size_value;
+  if (file_length > SIZE_MAX - (page_size - 1)) {
+    close(descriptor);
+    caml_failwith("tensor store mapping length overflows");
+  }
+  size_t mapping_length =
+      ((file_length + page_size - 1) / page_size) * page_size;
+  void *mapping = mmap(NULL, mapping_length, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE, descriptor, 0);
+  int saved_errno = errno;
+  close(descriptor);
+  if (mapping == MAP_FAILED) {
+    char message[512];
+    snprintf(message, sizeof(message), "cannot map tensor store %s: %s", path,
+             strerror(saved_errno));
+    caml_failwith(message);
+  }
+  @autoreleasepool {
+    id<MTLBuffer> metal_buffer =
+        [context->device newBufferWithBytesNoCopy:mapping
+                                           length:mapping_length
+                                          options:MTLResourceStorageModeShared
+                                      deallocator:^(void *pointer,
+                                                    NSUInteger length) {
+                                        munmap(pointer, length);
+                                      }];
+    if (metal_buffer == nil) {
+      munmap(mapping, mapping_length);
+      caml_failwith("Metal could not wrap the mapped tensor store");
+    }
+    llmopt_metal_buffer *buffer = calloc(1, sizeof(*buffer));
+    if (buffer == NULL) {
+      [metal_buffer release];
+      caml_raise_out_of_memory();
+    }
+    buffer->buffer = metal_buffer;
+    buffer->offset = 0;
+    buffer->length = file_length;
+    result = alloc_buffer(buffer);
+  }
+  CAMLreturn(result);
+}
+
+CAMLprim value caml_llmopt_metal_buffer_view(value buffer_value,
+                                             value offset_value,
+                                             value length_value) {
+  CAMLparam3(buffer_value, offset_value, length_value);
+  CAMLlocal1(result);
+  llmopt_metal_buffer *parent = Buffer_val(buffer_value);
+  intnat requested_offset = Long_val(offset_value);
+  intnat requested_length = Long_val(length_value);
+  if (parent == NULL) {
+    caml_failwith("Metal buffer has been finalized");
+  }
+  if (requested_offset < 0 || requested_length <= 0 ||
+      (uintnat)requested_offset > parent->length ||
+      (uintnat)requested_length > parent->length - (uintnat)requested_offset) {
+    caml_invalid_argument("Metal buffer view is outside its parent buffer");
+  }
+  llmopt_metal_buffer *view = calloc(1, sizeof(*view));
+  if (view == NULL) {
+    caml_raise_out_of_memory();
+  }
+  view->buffer = [parent->buffer retain];
+  view->offset = parent->offset + (NSUInteger)requested_offset;
+  view->length = (NSUInteger)requested_length;
+  result = alloc_buffer(view);
+  CAMLreturn(result);
 }
 
 static void require_buffer_size(llmopt_metal_buffer *buffer, uint64_t required,
@@ -307,12 +428,12 @@ static void require_buffer_size(llmopt_metal_buffer *buffer, uint64_t required,
   if (buffer == NULL) {
     caml_failwith("Metal buffer has been finalized");
   }
-  if ((uint64_t)buffer->buffer.length < required) {
+  if ((uint64_t)buffer->length < required) {
     char message[192];
     snprintf(message, sizeof(message),
              "Metal %s buffer is too small: required=%llu actual=%llu", name,
              (unsigned long long)required,
-             (unsigned long long)buffer->buffer.length);
+             (unsigned long long)buffer->length);
     caml_invalid_argument(message);
   }
 }
@@ -373,11 +494,11 @@ CAMLprim value caml_llmopt_metal_dispatch_q8(value arguments) {
       caml_failwith("Metal could not create a command buffer or encoder");
     }
     [encoder setComputePipelineState:pipeline];
-    [encoder setBuffer:input->buffer offset:0 atIndex:0];
-    [encoder setBuffer:weight->buffer offset:0 atIndex:1];
-    [encoder setBuffer:scale->buffer offset:0 atIndex:2];
-    [encoder setBuffer:bias->buffer offset:0 atIndex:3];
-    [encoder setBuffer:output->buffer offset:0 atIndex:4];
+    [encoder setBuffer:input->buffer offset:input->offset atIndex:0];
+    [encoder setBuffer:weight->buffer offset:weight->offset atIndex:1];
+    [encoder setBuffer:scale->buffer offset:scale->offset atIndex:2];
+    [encoder setBuffer:bias->buffer offset:bias->offset atIndex:3];
+    [encoder setBuffer:output->buffer offset:output->offset atIndex:4];
     llmopt_q8_params params = {
         (uint32_t)m, (uint32_t)n, (uint32_t)k, has_bias ? 1u : 0u};
     [encoder setBytes:&params length:sizeof(params) atIndex:5];
