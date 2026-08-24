@@ -45,7 +45,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | OCaml Metal serving loader and dispatch | variable repeated Q8 decode executes; batching and exact logits open | one shared-context run maps the archive once by inode, dispatches 522 prefill and 1,632 decode kernels, matches eager tokens `19130,11040,11207,1414`, and leaves consistent radix/KV ownership |
 | Complete 350M operation schedule | captured templates specialize and repeated decode has token parity | ABI-v8 replans retain zero opaque commands and 241 bindings. Offline planning covers prefill 13/128/4,096 and decode-past 1/127/4,095; one native run executes three growing decode lengths with four-token eager parity |
 | native tokenization, LFM chat, generation, and HTTP/SSE | implemented for serial smoke requests | `LLMOPTTK` and typed chat feed one persistent `llmopt-serve` engine. Incremental UTF-8 events carry exact token IDs; 4/4 warmed scored requests have pinned outputs, exact eager-Q8 parity, ERS `0.06169548638841863`, and real cached-prefix accounting |
-| natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
+| natural needle-in-a-haystack validation | native retrieval implemented; fixed-output native parity open | eager/direct-FX 2,048/4,096-token contexts retrieve `RAVEN-4271` in 6/6 while fixed 12-token outputs append text. Native stop-on-EOS requests retrieve exact text in 6/6 and match the first seven eager IDs; the runner now pins 12 tokens by default but that corrected long matrix was not rerun |
 
 # Evidence rule
 

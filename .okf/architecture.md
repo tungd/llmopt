@@ -354,7 +354,9 @@ inside the native process. Incremental UTF-8 decoding emits every generated
 token ID, including empty-text special tokens, so the benchmark timestamps
 tokens rather than visible text fragments. One warmed four-request scored
 smoke reused 80/194 prompt tokens, matched all eager-Q8 token sequences, and
-measured native ERS `0.06169548638841863`; native needle requests remain open.
+measured native ERS `0.06169548638841863`. A stop-on-EOS native long-context
+matrix retrieves 6/6 at 2,048/4,096 tokens and matches the first seven eager
+IDs; the corrected fixed-12-token matrix remains open.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

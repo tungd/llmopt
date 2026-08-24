@@ -1,0 +1,56 @@
+LFM2.5-350M Q8 native long-context needle observation
+Date: 2026-08-24
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Preflight
+- memory_pressure: 59% free
+- resident Torch/model/native-server processes: none
+- known 4,096-token specialized workspace: 759,300,096 bytes
+- server token capacity: 32,768 Q8 KV slots
+- server checkpoint capacity: 512 Q8 recurrent checkpoints
+- supervisor: 900 seconds
+- per-request timeout: 240 seconds
+
+Matrix
+- prompt lengths: 2,048 and 4,096 exact tokenizer-derived tokens
+- needle positions: 10%, 50%, 90%
+- expected answer: RAVEN-4271
+- requested maximum output: 12 tokens
+- observed generation policy: stop on EOS
+
+Result
+- successful requests: 6/6
+- retrieval: 6/6
+- exact-only response formatting: 6/6
+- output text in every case: RAVEN-4271
+- output IDs in every case: 8832,563,2880,522,31429,526,7
+- output SHA-256 in every case: c0fd193cefff7178dd61b925b8e9dadfc67f5122a7e7664785e7639c516c15f6
+- eager-Q8 prefix parity: the same seven IDs begin every existing eager-Q8 needle output
+- final token 7: LFM message-end token; native generation stopped there
+
+2,048-token median measurements
+- latency: 39,362.277665990405 ms
+- TTFT: 15,768.788665998727 ms
+- TPOT: 3,932.2460278344806 ms
+
+4,096-token median measurements
+- latency: 100,204.18800000334 ms
+- TTFT: 52,162.02362498734 ms
+- TPOT: 8,007.023937505437 ms
+
+Per-request latency / TTFT / TPOT
+- 2,048 at 10%: 45,949.909 / 22,282.167 / 3,944.621 ms
+- 2,048 at 50%: 36,917.118 / 13,405.054 / 3,918.673 ms
+- 2,048 at 90%: 39,362.278 / 15,768.789 / 3,932.246 ms
+- 4,096 at 10%: 93,331.180 / 45,314.328 / 8,002.805 ms
+- 4,096 at 50%: 100,204.188 / 52,162.024 / 8,007.024 ms
+- 4,096 at 90%: 103,145.678 / 55,036.761 / 8,018.151 ms
+
+Raw generated report
+- _artifacts/native-http-needle-long-2026-08-24/report.json
+
+Contract boundary and correction
+- This observation proves natural long-context retrieval, exact response text under normal EOS stopping, and exact parity with the first seven eager-Q8 output IDs.
+- The existing in-process needle benchmark pins 12 tokens, disables EOS stopping, and therefore continues after token 7 to IDs 2,1,553,849,18149, decoding as `Lottery` after the answer.
+- The HTTP needle runner was corrected after this observation so its default sends min_tokens=max_tokens and ignore_eos=true. Per the one-attempt rule, the corrected 12-token long matrix was not launched in this slice.
+- Memory recovered to 56% with no resident model process after the server exited.

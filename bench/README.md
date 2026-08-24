@@ -164,3 +164,22 @@ native/eager median TTFT was `1812.1075005328748/62.557083496358246` ms and
 median TPOT was `177.81014566814218/44.406860998909295` ms. The tracked
 per-request record is
 [`results/lfm25-350m-q8-native-http-2026-08-24.txt`](results/lfm25-350m-q8-native-http-2026-08-24.txt).
+
+Run the natural needle matrix through the same endpoint with:
+
+```sh
+python3.13 bench/lfm25_http_needle.py \
+  --base-url http://127.0.0.1:8000 \
+  --lengths 2048,4096 --positions 10,50,90 \
+  --max-tokens 12 --output _artifacts/native-http-needle/report.json
+```
+
+By default this matches the existing fixed-output contract with
+`min_tokens=max_tokens` and `ignore_eos=true`; `--allow-eos` permits normal
+message-end termination. The first long native observation preceded that
+default correction and used normal EOS stopping: it retrieved `RAVEN-4271`
+exactly in 6/6 prompts and matched the first seven eager-Q8 IDs, then stopped at
+token `7`. Median latency was `39.362` seconds at 2,048 tokens and `100.204`
+seconds at 4,096 tokens. The corrected fixed-12-token matrix was not rerun; the
+boundary is recorded in
+[`results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).

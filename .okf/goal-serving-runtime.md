@@ -45,6 +45,9 @@ sources:
   - id: native-http-result
     resource: /bench/results/lfm25-350m-q8-native-http-2026-08-24.txt
     title: Native HTTP token parity and ERS observation
+  - id: native-needle-result
+    resource: /bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt
+    title: Native long-context retrieval observation
   - id: build
     resource: /ninja.build
     title: Ninja build graph
@@ -76,7 +79,7 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `llmopt-serve` accepts the OpenAI-compatible chat contract, incrementally decodes UTF-8, streams every generated token ID plus visible text, and reports usage. The warmed scored smoke completed 4/4 requests with pinned output counts | implemented for the HTTP smoke contract |
 | Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Scored second turns reused 42/61 and 38/59 prompt tokens; total reuse was 80/194 while all four output sequences matched eager Q8 exactly. The uncached suffix is still replayed one token at a time | implemented for serial multi-turn smoke requests |
 | Configurable KV quantization | FP16 and Q8 runs bind physical Metal KV/checkpoint buffers and execute matching quantize/dequantize paths | Small exact probes cover FP16 and Q8-group-64. The full fixed model run used Q8 by default; the ABI-v8 pair validates FP16 but has not executed it at model scale | partial |
-| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by one reproducible command | Token-instrumented HTTP reports record 4/4 exact eager-Q8 sequences, native ERS `0.06169548638841863`, eager ERS `0.36872784102635947`, native/eager median TTFT `1812.108/62.557` ms, native/eager median TPOT `177.810/44.407` ms, and 80/194 cached prompt tokens. Native exact logits and needle remain open | partial |
+| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by one reproducible command | Token-instrumented HTTP reports record 4/4 exact eager-Q8 smoke sequences, native/eager ERS `0.06169548638841863/0.36872784102635947`, and 80/194 cached prompt tokens. A stop-on-EOS long matrix retrieves 6/6 and matches the first seven eager IDs; the corrected fixed-12-token matrix and native exact logits remain open | partial |
 
 # Completion condition
 

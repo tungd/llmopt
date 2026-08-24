@@ -21,6 +21,9 @@ sources:
   - id: http
     resource: /bench/racebench/http.py
     title: adjacent-compatible streaming HTTP runner
+  - id: native-needle-runner
+    resource: /bench/lfm25_http_needle.py
+    title: native endpoint natural-needle runner
   - id: cli
     resource: /bench/racebench/cli.py
     title: reference-style trace and score CLI
@@ -39,6 +42,9 @@ sources:
   - id: result-native-http
     resource: /bench/results/lfm25-350m-q8-native-http-2026-08-24.txt
     title: native HTTP token parity and ERS observation
+  - id: result-native-needle
+    resource: /bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt
+    title: native long-context retrieval observation
   - id: result-preintegration
     resource: /_artifacts/lfm25-benchsuite-q8-radix-e3d0d15/result.json
     title: post-cache-implementation pre-integration observation
@@ -70,8 +76,10 @@ The same HTTP runner now drives the persistent native OCaml server. Native SSE
 events carry exact token IDs in addition to decoded text so special tokens and
 split UTF-8 scalars retain token-level timing. The first warmed serial smoke
 records 4/4 eager-Q8 token parity, 80/194 cached prompt tokens, native ERS
-`0.06169548638841863`, and eager ERS `0.36872784102635947`. The native needle
-matrix and semantic 5x3 profile remain separate open measurements.
+`0.06169548638841863`, and eager ERS `0.36872784102635947`. A native
+stop-on-EOS long matrix retrieves 6/6 and matches the first seven eager-Q8 IDs;
+the corrected fixed-12-token matrix and semantic 5x3 profile remain separate
+open measurements.
 
 # Scoring
 

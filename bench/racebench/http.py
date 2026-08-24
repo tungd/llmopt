@@ -201,6 +201,46 @@ def _skipped_result(
     )
 
 
+def run_chat_request(
+    *,
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    request_id: str,
+    api_key: str = "",
+    timeout_s: float = 120.0,
+    request: dict[str, Any] | None = None,
+) -> RequestResult:
+    """Run one streamed chat request through the same measured HTTP path."""
+    if max_tokens < 1:
+        raise ValueError("max_tokens must be positive")
+    connection, path = _open_connection(base_url, timeout_s)
+    started = time.perf_counter()
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": max_tokens,
+        **(request or {}),
+    }
+    try:
+        return _stream_request(
+            connection=connection,
+            path=path,
+            api_key=api_key,
+            body=body,
+            request_id=request_id,
+            conversation=0,
+            turn=0,
+            scheduled_at=started,
+            scheduled_offset_s=0.0,
+        )
+    finally:
+        connection.close()
+
+
 async def run_trace(
     trace: WorkloadTrace,
     *,

@@ -118,7 +118,8 @@ archive-backed Metal loader, and cache conversion kernels are implemented;
 complete schedule execution, request-length specialization, and repeated
 radix-backed decode are implemented. Native tokenizer/chat integration and the
 HTTP/SSE request owner are implemented; native long-context needle execution
-and the broader scored profile remain open. The bounded use-cache capture produced
+has a 6/6 stop-on-EOS retrieval observation, while the corrected pinned-output
+matrix and broader scored profile remain open. The bounded use-cache capture produced
 separate prefill and one-token decode graphs with one physical
 422,137,216-byte archive. Offline replanning produces 872 prefill commands and
 926 decode commands, both with zero opaque operations; both generated MSL
@@ -286,6 +287,15 @@ ERS `0.06169548638841863` versus eager ERS `0.36872784102635947`, median TTFT
 `177.81014566814218` versus `44.406860998909295` ms. The exact command shape,
 per-request token IDs, cache counts, and deltas are recorded in
 [`bench/results/lfm25-350m-q8-native-http-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-http-2026-08-24.txt).
+
+The native HTTP needle runner also completed all six 2,048/4,096-token prompts
+with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048
+tokens and `100.204` seconds at 4,096. That observation stopped normally on the
+message-end token after seven IDs, matching the first seven eager-Q8 IDs; the
+existing bench pins 12 outputs and continues through EOS. The runner now pins
+the same 12-token contract by default, but that corrected long matrix was not
+relaunched. See
+[`bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).
 
 ## Architecture
 

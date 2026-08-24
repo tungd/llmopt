@@ -101,3 +101,13 @@ events. JSON is used only for the external HTTP/SSE compatibility boundary and
 generated reports; native model data remains binary or typed. The exact
 per-request record is
 [`/bench/results/lfm25-350m-q8-native-http-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-http-2026-08-24.txt).
+
+# Native long-context retrieval
+
+The native endpoint completed the six 2,048/4,096-token natural prompts with
+6/6 retrieval and exact answer text under normal EOS stopping. Its seven IDs
+match the first seven eager-Q8 IDs in every case. The existing benchmark forces
+12 outputs through EOS; the native runner now does the same by default, but the
+long matrix was not rerun after that correction. The observation and timing
+are recorded in
+[`/bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).
