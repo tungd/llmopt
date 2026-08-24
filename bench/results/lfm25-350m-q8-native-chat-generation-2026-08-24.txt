@@ -1,0 +1,33 @@
+model: LiquidAI/LFM2.5-350M
+runtime: native OCaml generation plus generated Metal
+quantization: q8-weight-only-per-output-channel
+kv-format: q8-group-64
+messages: user=Say hi.
+prompt-token-count: 13
+prompt-tokens: 1,6,6423,708,560,892,15012,523,7,708,6,64015,708
+cached-prompt-tokens: 0
+completion-token-count: 4
+completion-tokens: 36309,510,2213,1011
+text: Hello! How can
+finish-reason: length
+parity: exact greedy token parity against eager Q8
+
+native-memory-free-before: 60%
+native-load-seconds: 0.026405
+native-ttft-seconds: 0.434065
+native-mean-tpot-seconds: 0.122412
+native-radix-cached-tokens: 16
+native-radix-hits: 3
+native-radix-misses: 1
+native-kv-used-tokens: 16
+native-kv-used-checkpoints: 4
+
+eager-memory-free-before: 58%
+eager-memory-free-after: 47%
+eager-load-seconds: 1.012462
+eager-run-seconds: 0.642545
+eager-prefill-sha256: abc8ebea988668cb97f052eef876f1b0c236f7c7773b850183d48326433da96e
+eager-decode-sha256: 651774659855e362257a077302192bb608e9e2e8684f8c305a832a476abd3d5b,3348f68c2400d078209c92912b96430d5c61813320e2caf7c5e42aeebd1c0ca1,26dc7ffc867da2f72f49c0898ca5acba86b16af4301e3d684281d55248d08188
+
+native-command: gtimeout --signal=TERM --kill-after=5s 180s _build/bin/llmopt-generate --max-new-tokens 4 --token-capacity 64 --checkpoint-capacity 16 tokenizer.llmopt prefill decode user 'Say hi.'
+eager-command: gtimeout --signal=TERM --kill-after=5s 180s env PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_reference_tokens.py --tokens 4 --input-ids 1,6,6423,708,560,892,15012,523,7,708,6,64015,708

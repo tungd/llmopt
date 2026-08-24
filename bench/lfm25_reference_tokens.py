@@ -39,11 +39,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
     parser.add_argument("--tokens", type=int, default=2)
+    parser.add_argument("--input-ids", default="1,2,3,4,5,6")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
     if args.tokens <= 0:
         parser.error("--tokens must be positive")
+    try:
+        input_values = [int(value.strip()) for value in args.input_ids.split(",")]
+    except ValueError as error:
+        parser.error(f"--input-ids contains a non-integer value: {error}")
+    if not input_values or any(value < 0 for value in input_values):
+        parser.error("--input-ids must contain non-negative token IDs")
 
     if not torch.backends.mps.is_available():
         raise RuntimeError("PyTorch MPS is not available on this host")
@@ -62,7 +69,7 @@ def main() -> None:
     load_seconds = time.perf_counter() - load_started
 
     input_ids = torch.tensor(
-        [[1, 2, 3, 4, 5, 6]], dtype=torch.int64, device="mps"
+        [input_values], dtype=torch.int64, device="mps"
     )
     run_started = time.perf_counter()
     with torch.no_grad():
@@ -89,7 +96,7 @@ def main() -> None:
         f"model: {args.model}",
         f"quantization: {quantization['scheme']}",
         f"converted-linear-modules: {quantization['converted_linear_modules']}",
-        "input: 1,2,3,4,5,6",
+        "input: " + ",".join(str(value) for value in input_values),
         "tokens: " + ",".join(str(token) for token in tokens),
         f"prefill-sha256: {digest(prefill.logits)}",
         "decode-sha256: " + ",".join(decode_digests),

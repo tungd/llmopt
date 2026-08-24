@@ -7,6 +7,13 @@ module Step : sig
   val kernels : t -> string list
 end
 
+module Prompt : sig
+  type t
+
+  val step : t -> Step.t
+  val cached_tokens : t -> int
+end
+
 type t
 
 val validate_packages :
@@ -23,6 +30,7 @@ val create :
 
 val prefill_tokens : t -> int
 val past_tokens : t -> int
+val prompt : t -> tokens:int array -> (Prompt.t, string) result
 val prefill : t -> tokens:int array -> (Step.t, string) result
 val decode : t -> prefix:int array -> token:int -> (Step.t, string) result
 val stats : t -> Serving_cache.Stats.t

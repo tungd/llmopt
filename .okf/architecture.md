@@ -328,6 +328,19 @@ greedy tokens `19130,11040,11207,1414` matched a separately run eager-Q8
 reference. Tokenizer/chat integration, an HTTP request owner, native needle
 requests, and ERS remain outside that observation.
 
+`Generation_core` now owns the device-independent autoregressive state machine
+behind a typed engine functor. The native adapter composes `LLMOPTTK`,
+`Lfm_chat`, radix-aware `Serving_engine.prompt`, greedy float16 sampling,
+repeated decode, stop/length outcomes, text decoding, and latency/cache
+observations. For a cached conversation, prompt preparation leases the deepest
+checkpoint before the final prompt token and replays only the uncached suffix;
+a cold prompt runs the specialized prefill schedule.
+
+The first real chat run encoded `user: Say hi.` into 13 IDs, generated
+`36309,510,2213,1011`, decoded `Hello! How can`, and matched a separate
+eager-Q8 reference exactly. This establishes the direct native generation
+path; HTTP/SSE ownership and multi-request evidence remain the next boundary.
+
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and
 emits normalized slices directly at integer getitem consumers, avoiding a

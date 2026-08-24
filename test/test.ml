@@ -77,6 +77,43 @@ let fx_node ?(op = "call_method") ?(inputs = []) ?(arguments = [])
                      `Assoc [ ("name", `String name); ("value", value) ])
                    keywords) ) ] ) ]
 
+module Generation_test_engine = struct
+  type t = {
+    mutable outputs : int list;
+    mutable prompt_calls : int array list;
+    mutable decode_calls : (int array * int) list;
+    cached_prompt_tokens : int;
+  }
+
+  type step = {
+    engine : t;
+    tokens : int array;
+  }
+
+  let create ~outputs ~cached_prompt_tokens =
+    { outputs; prompt_calls = []; decode_calls = []; cached_prompt_tokens }
+
+  let prompt engine ~tokens =
+    engine.prompt_calls <- Array.copy tokens :: engine.prompt_calls;
+    Ok ({ engine; tokens = Array.copy tokens }, engine.cached_prompt_tokens)
+
+  let decode engine ~prefix ~token =
+    engine.decode_calls <-
+      (Array.copy prefix, token) :: engine.decode_calls;
+    Ok { engine; tokens = Array.append prefix [| token |] }
+
+  let tokens step = Array.copy step.tokens
+
+  let next_token step =
+    match step.engine.outputs with
+    | [] -> Error "synthetic generation engine exhausted"
+    | token :: rest ->
+        step.engine.outputs <- rest;
+        Ok token
+end
+
+module Generation_test = Generation_core.Make (Generation_test_engine)
+
 let fx_binary_fixture () =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer Fx.binary_magic;
@@ -199,6 +236,60 @@ let primitive_value ~operation ~inputs ~logical_shape ~dtype =
     }
 
 let () =
+  (match Generation_core.Config.create ~max_new_tokens:0 with
+  | Error _ -> ()
+  | Ok _ -> fail "generation config accepted a zero token limit");
+  let generation_config =
+    expect_ok (Generation_core.Config.create ~max_new_tokens:5)
+  in
+  let generation_engine =
+    Generation_test_engine.create ~outputs:[ 11; 12 ]
+      ~cached_prompt_tokens:2
+  in
+  let emitted = ref [] in
+  let generated =
+    expect_ok
+      (Generation_test.run ~emit:(fun token -> emitted := token :: !emitted)
+         generation_engine ~config:generation_config
+         ~is_stop:(fun token -> token = 12) ~prompt:[| 1; 2; 3 |])
+  in
+  expect_int_array (Generation_core.Result.prompt_tokens generated)
+    [| 1; 2; 3 |] "generation preserves prompt tokens";
+  expect_int_array (Generation_core.Result.completion_tokens generated)
+    [| 11; 12 |] "generation emits through the stop token";
+  expect_int_array (Array.of_list (List.rev !emitted)) [| 11; 12 |]
+    "generation callback order";
+  expect (Generation_core.Result.cached_prompt_tokens generated = 2)
+    "generation reports cached prompt tokens";
+  expect
+    (Generation_core.Result.finish_reason generated
+    = Generation_core.Finish_reason.End_token)
+    "generation reports end-token completion";
+  expect
+    (Array.length (Generation_core.Result.inter_token_seconds generated) = 1
+    && Generation_core.Result.ttft_seconds generated >= 0.0)
+    "generation records TTFT and one inter-token interval";
+  (match List.rev generation_engine.decode_calls with
+  | [ prefix, 11 ] ->
+      expect_int_array prefix [| 1; 2; 3 |]
+        "generation decodes the first sampled token after the prompt"
+  | _ -> fail "generation issued an unexpected decode sequence");
+  let length_engine =
+    Generation_test_engine.create ~outputs:[ 21; 22; 23 ]
+      ~cached_prompt_tokens:0
+  in
+  let length_result =
+    expect_ok
+      (Generation_test.run length_engine
+         ~config:(expect_ok (Generation_core.Config.create ~max_new_tokens:2))
+         ~is_stop:(Fun.const false) ~prompt:[| 4; 5; 6 |])
+  in
+  expect_int_array (Generation_core.Result.completion_tokens length_result)
+    [| 21; 22 |] "generation enforces max_new_tokens";
+  expect
+    (Generation_core.Result.finish_reason length_result
+    = Generation_core.Finish_reason.Length)
+    "generation reports length completion";
   let tokenizer_bytes = tokenizer_fixture () in
   let tokenizer = expect_ok (Tokenizer.of_bytes tokenizer_bytes) in
   expect_int_array (expect_ok (Tokenizer.encode tokenizer "ab")) [| 0; 3 |]

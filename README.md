@@ -72,6 +72,11 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   pre-tokenizer, typed text-only chat messages, and LFM generation-prompt
   construction. Hugging Face `tokenizer.json` is an offline import only; the
   native path parses neither JSON nor Jinja.
+- A Ninja-built `llmopt-generate` executable and device-independent generation
+  core. Typed chat messages feed radix-aware prompt preparation, dynamic
+  prefill or cached-suffix replay, greedy float16 sampling, stop/length
+  outcomes, token emission, decoded text, and TTFT/TPOT/cache observations.
+  The first 13-token Q8 chat run exactly matches four eager-Q8 completion IDs.
 - A direct FX GraphModule MPS executor as the first runtime optimization pass.
 - A racebench-compatible ERS benchsuite with validated warmup/scored traces,
   the adjacent HTTP runner contract, a full 70x6 trace profile, and a natural
@@ -286,7 +291,8 @@ OCaml serving runtime
         ├── Metal package loading/mapped weights/per-family dispatch (implemented)
         ├── alias-aware liveness workspace allocation (implemented)
         ├── request-length specialization + repeated radix-backed decode (implemented)
-        └── tokenizer-driven generation and HTTP request loop (next)
+        ├── tokenizer-driven greedy chat generation (implemented)
+        └── HTTP/SSE request loop (next)
 ```
 
 `graph.llmopt` is a compile-time transport and `plan.txt` is a compiler

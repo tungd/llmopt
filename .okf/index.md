@@ -58,3 +58,4 @@ okf_version: '0.2'
 * [Native LFM serving engine](experiments/exp-0036-native-serving-engine.md) - complete fixed Q8 prefill/decode schedules coordinated with physical radix-owned state.
 * [Binary LFM tokenizer and typed chat encoding](experiments/exp-0037-native-tokenizer-chat.md) - versioned tokenizer archive, native byte-level BPE, and typed LFM chat parity.
 * [Variable-length LFM schedules and repeated native decode](experiments/exp-0038-variable-schedule-decode.md) - request-length specialization, growing radix/KV state, and four-token eager-Q8 parity.
+* [Native OCaml chat generation](experiments/exp-0039-native-chat-generation.md) - real chat text crosses native tokenization, dynamic Metal execution, and greedy decoding with eager-Q8 parity.
