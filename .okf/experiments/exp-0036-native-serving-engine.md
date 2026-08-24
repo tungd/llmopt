@@ -4,7 +4,7 @@ title: 'Native LFM prefill, decode, and radix coordination'
 description: 'Execute the complete fixed LFM2.5-350M Q8 schedules from OCaml while binding physical cache state to radix ownership.'
 tags: [experiment, ocaml, metal, serving, radix-cache, kv-cache, q8, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-24T00:03:24Z' }
+generated: { by: codex/gpt-5, at: '2026-08-24T00:07:09Z' }
 sources:
   - id: engine
     resource: /lib/serving_engine.ml
@@ -18,6 +18,12 @@ sources:
   - id: evidence
     resource: /_artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi8-engine-2026-08-24/native-q8-smoke.txt
     title: Native Q8 probe output
+  - id: reference-probe
+    resource: /bench/lfm25_reference_tokens.py
+    title: Eager Q8 token reference probe
+  - id: reference-evidence
+    resource: /_artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi8-engine-2026-08-24/eager-q8-reference.txt
+    title: Eager Q8 token and logits reference
   - id: prefill
     resource: /_artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi8-engine-2026-08-24/prefill/package.llmopt
     title: ABI-v8 prefill package
@@ -85,9 +91,16 @@ kv-used-tokens: 7
 kv-used-checkpoints: 2
 ```
 
-These are single observations, not an ERS result. The run proves that the
+One separately memory-checked eager PyTorch MPS run loaded the same local 350M
+checkpoint, applied the same 92-module Q8 rewrite, and produced tokens
+`19130,11040` for the same prefill/decode sequence. The native result therefore
+has exact two-token greedy parity. The eager reference also records full-logit
+SHA-256 values, but the native probe did not retain its logits, so exact logit
+parity is not established.
+
+These are single observations, not an ERS result. Together they prove that the
 complete fixed schedules, physical grouped-Q8 cache, recurrent checkpoints,
-and radix lease execute together in native OCaml plus Metal. It does not yet
-establish PyTorch token/logit parity, exercise FP16 physical storage at model
-scale, tokenize text, generate beyond the fixed one-token decode shape, accept
+and radix lease execute together in native OCaml plus Metal while preserving
+the sampled tokens. They do not exercise FP16 physical storage at model scale,
+tokenize text, generate beyond the fixed one-token decode shape, accept
 benchmark requests, run needle retrieval, or produce ERS.

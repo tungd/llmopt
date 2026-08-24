@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-24T00:03:24Z' }
+generated: { by: codex/gpt-5, at: '2026-08-24T00:07:09Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -42,8 +42,8 @@ The authoritative end state and requirement-level evidence are tracked in the
 | OCaml serving radix/KV cache | fixed model integration implemented; request integration open | the full Q8 run recorded one six-token radix hit, seven cached physical slots, and two recurrent checkpoints after prefill plus decode; ownership and reinsertion rollback tests pass |
 | Versioned generated package ABI | implemented for fixed ABI-v8 pair | Package ABI v8 retains ABI-v2 through ABI-v7 reads and adds sliced cache writes. Binary-input replanning writes 872-command/46-entry prefill and 926-command/44-entry decode packages with zero opaque operations and 241 validated bindings each |
 | OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
-| OCaml Metal serving loader and dispatch | complete fixed Q8 schedules execute; batching and parity open | one shared-context run maps the archive once by inode, dispatches 522 prefill and 544 decode commands, returns two sampled token IDs, and leaves consistent radix/KV ownership |
-| Complete 350M operation schedule | fixed prefill and one-token decode native-executed | ABI-v8 replans retain zero opaque commands and 241 bindings. One full run uses the 1,153,792/271,360-byte workspaces and completes in 0.432272/0.119545 seconds; exact PyTorch output comparison is not yet recorded |
+| OCaml Metal serving loader and dispatch | complete fixed Q8 schedules execute; batching and exact logits open | one shared-context run maps the archive once by inode, dispatches 522 prefill and 544 decode commands, matches eager tokens `19130,11040`, and leaves consistent radix/KV ownership |
+| Complete 350M operation schedule | fixed prefill and one-token decode native-executed with token parity | ABI-v8 replans retain zero opaque commands and 241 bindings. One full run uses the 1,153,792/271,360-byte workspaces and completes in 0.432272/0.119545 seconds; eager Q8 produces the same two greedy tokens, while exact logits remain unrecorded |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule

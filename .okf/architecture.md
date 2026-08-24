@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-24T00:03:24Z' }
+generated: { by: codex/gpt-5, at: '2026-08-24T00:07:09Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -190,8 +190,9 @@ prefill/decode paths therefore share the hard-linked 422,137,216-byte archive
 mapping. A full Q8 run dispatched 522 prefill and 544 decode commands, sampled
 tokens `19130,11040`, reused a six-token radix prefix, and retained seven token
 slots plus two recurrent checkpoints. The 0.432272/0.119545-second stage times
-are single observations; PyTorch parity, variable-length generation, request
-serving, needle retrieval, and ERS remain unmeasured.
+are single observations. A separate eager-Q8 probe returned the same two token
+IDs; exact logits, variable-length generation, request serving, needle
+retrieval, and ERS remain unmeasured.
 
 The runtime's generic native command path now selects declared kernels by
 typed operation and input/output dtype, packs fixed-width Metal parameters,
