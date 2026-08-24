@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T22:57:37Z' }
+generated: { by: codex/gpt-5, at: '2026-08-24T00:03:24Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -33,6 +33,9 @@ sources:
   - id: local-ocaml-runtime
     resource: /lib/metal_runtime.ml
     title: Native OCaml package loader and typed Q8 dispatch
+  - id: local-serving-engine
+    resource: /lib/serving_engine.ml
+    title: Native prefill, decode, and radix coordinator
   - id: local-weight-archive
     resource: /lib/weight_archive.ml
     title: Versioned binary weight-archive parser and tensor index
@@ -135,12 +138,13 @@ adapts the corresponding behavior from SGLang's radix and hybrid/Mamba cache
 implementations.[^sglang-radix-cache] [^sglang-mamba-radix-cache]
 
 The KV layout accepts FP16 or grouped Q8 and defaults to Q8 at the serving
-configuration boundary. Native OCaml now owns physical token and recurrent
-checkpoint `MTLBuffer` pools. Package ABI v7 declares eight cache entries that
-pack and unpack attention or checkpoint state as direct FP16 or signed int8
-values with FP16 group scales. One fixed Apple M4 Pro probe exactly
-round-tripped both formats. The physical owner and radix-prefix owner remain
-separate until the request engine coordinates their leases and model inputs.
+configuration boundary. Native OCaml owns physical token and recurrent
+checkpoint `MTLBuffer` pools. Package ABI v8 declares eight cache entries and
+adds source slicing for decode append, while retaining ABI-v2 through ABI-v7
+reads. `Serving_engine` now coordinates model execution, slot/checkpoint
+reservation, physical packing, radix insertion, leased prefix reuse, state
+unpacking, and rollback. One fixed model run reused all six prefill positions
+and appended a seventh Q8 slot; request-level ownership remains open.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed
@@ -150,8 +154,8 @@ graph, pretty-printed `plan.txt`, MSL, and LLVM IR are compiler artifacts and
 are not referenced by the serving runtime; JSON diagnostics are opt-in. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v7 names weight-archive ABI v1,
-adds typed cache operations, and reads ABI-v2 through ABI-v6 packages.
+exactly one binary tensor archive. Package ABI v8 names weight-archive ABI v1,
+adds sliced typed cache operations, and reads ABI-v2 through ABI-v7 packages.
 Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
 archive rather than being split into per-tensor files.
 
@@ -179,6 +183,15 @@ all schedule values, dispatched `llmopt_q8_linear`, and returned
 `[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves automatic
 execution of that schedule subset against the replacement archive; it does not
 prove complete model-schedule execution.
+
+The pair loader validates both packages before opening Metal, shares one device
+context, and keys mapped archives by filesystem device and inode. The fixed
+prefill/decode paths therefore share the hard-linked 422,137,216-byte archive
+mapping. A full Q8 run dispatched 522 prefill and 544 decode commands, sampled
+tokens `19130,11040`, reused a six-token radix prefix, and retained seven token
+slots plus two recurrent checkpoints. The 0.432272/0.119545-second stage times
+are single observations; PyTorch parity, variable-length generation, request
+serving, needle retrieval, and ERS remain unmeasured.
 
 The runtime's generic native command path now selects declared kernels by
 typed operation and input/output dtype, packs fixed-width Metal parameters,
@@ -290,7 +303,7 @@ evidence but no retained eager/compiled parity measurement.
 The same preserved manifests now round-trip exactly through binary FX
 transport ABI v1. Prefill occupies 253,354 bytes instead of 776,844 bytes of
 diagnostic JSON; decode occupies 259,928 instead of 796,970. Offline binary
-replanning now writes JSON-free ABI-v7 artifact directories with 872/926
+replanning now writes JSON-free ABI-v8 artifact directories with 872/926
 commands, 46/44 kernels, zero opaque operations, and all 241 archive bindings
 validated. Both packages add the shared float16-linear entry for their
 `6x65536x1024` and `1x65536x1024` projections; decode also adds one sum and one

@@ -1281,8 +1281,11 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 7)
-    "serving package uses binary ABI version 7";
+    (Bytes.get_uint16_le serving_bytes 8 = 8)
+    "serving package uses binary ABI version 8";
+  let package_v7 = Bytes.copy serving_bytes in
+  Bytes.set_uint16_le package_v7 8 7;
+  ignore (Serving_package.of_bytes package_v7 |> expect_ok);
   let package_v6 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v6 8 6;
   ignore (Serving_package.of_bytes package_v6 |> expect_ok);
@@ -2125,6 +2128,13 @@ let () =
     [| Kv_cache.Slot.to_int slots_123.(0); Kv_cache.Slot.to_int slots_123.(1);
        Kv_cache.Slot.to_int slots_1245.(2); Kv_cache.Slot.to_int slots_1245.(3) |]
     "radix branch keeps canonical KV slots";
+  expect
+    (expect_ok
+       (Serving_cache.insert serving ~tokens:[| 1; 2; 4; 5 |]
+          ~slots:(Serving_cache.Match.slots exact)
+          ~checkpoint:checkpoint_1245 ()) = 4)
+    "canonical radix reinsertion keeps the full prefix";
+  expect_ok (Serving_cache.validate serving);
   expect_ok (Serving_cache.release_match serving exact);
   let split_without_checkpoint =
     Serving_cache.match_prefix serving ~reserve_tail:0 [| 1; 2; 4; 9 |]
@@ -2153,6 +2163,13 @@ let () =
   in
   expect (Serving_cache.Match.tokens isolated = 0) "radix namespace isolation";
   expect_ok (Serving_cache.release_match serving isolated);
+  let rollback_slots = expect_kv_ok (Serving_cache.reserve_tokens serving 1) in
+  let rollback_checkpoint =
+    expect_kv_ok (Serving_cache.reserve_checkpoint serving)
+  in
+  expect_ok (Serving_cache.release_tokens serving rollback_slots);
+  expect_ok (Serving_cache.release_checkpoint serving rollback_checkpoint);
+  expect_ok (Serving_cache.validate serving);
   let protected =
     Serving_cache.match_prefix serving ~reserve_tail:0 [| 1; 2; 3; 9 |]
   in
@@ -2187,4 +2204,19 @@ let () =
     "page-sized child key preserves branches";
   expect_ok (Radix_cache.release page_cache page_match);
   expect_ok (Radix_cache.validate page_cache);
+  let logits = Bytes.make 16 '\000' in
+  List.iteri
+    (fun index bits -> Bytes.set_uint16_le logits (2 * index) bits)
+    [ 0x3c00; 0x4000; 0x4200; 0x4400; 0xbc00; 0x3c00; 0x4000; 0x4000 ];
+  expect
+    (expect_ok (Sampling.Greedy.f16_last_row ~vocabulary:4 logits) = 2)
+    "greedy sampling reads the final float16 logits row and keeps the first tie";
+  let nan_logits = Bytes.copy logits in
+  Bytes.set_uint16_le nan_logits 10 0x7e00;
+  (match Sampling.Greedy.f16_last_row ~vocabulary:4 nan_logits with
+  | Error _ -> ()
+  | Ok _ -> fail "greedy sampling accepted NaN logits");
+  (match Sampling.Greedy.f16_last_row ~vocabulary:3 logits with
+  | Error _ -> ()
+  | Ok _ -> fail "greedy sampling accepted partial float16 rows");
   print_endline "llmopt tests passed"

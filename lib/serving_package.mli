@@ -42,6 +42,8 @@ end
 
 type t
 
+val abi_version : t -> int
+
 val compiled_graph :
   ?model:string ->
   files:Files.t ->

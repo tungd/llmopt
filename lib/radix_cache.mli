@@ -26,6 +26,8 @@ type ('slot, 'checkpoint) insert_result = {
   prefix_tokens : int;
   redundant_values : 'slot array;
   redundant_checkpoint : 'checkpoint option;
+  canonical_values : 'slot array;
+  retained_checkpoint : 'checkpoint option;
 }
 
 type ('slot, 'checkpoint) eviction = {

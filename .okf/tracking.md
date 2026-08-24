@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T22:57:37Z' }
+generated: { by: codex/gpt-5, at: '2026-08-24T00:03:24Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -30,7 +30,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Fused LFM RMSNorm pass and Metal kernel | implemented; real-model count pending | synthetic LFM chain fuses from 10 commands to four; float32-to-float16 and float16 kernels pass `rms-norm-smoke` |
 | Direct FX GraphModule MPS callable returned to PyTorch | implemented | fixed direct-forward logits match eager MPS exactly; generation routing is now explicit |
 | LFM2.5 short-convolution lowering | typed, compiled, and native-dispatched | all ten saved prefill `conv1d` nodes lower to ShortConv commands; the shared native probe executes the same kernel ABI and matches the 12-element fixture output exactly |
-| LFM2.5 GQA/KV-cache lowering | prefill attention and physical cache conversion native-dispatched; decode integration open | all six saved SDPA nodes lower to masked-attention commands; exact fixtures cover masked attention plus Q8/FP16 key/value pack/unpack, while model decode does not yet bind the persistent pool |
+| LFM2.5 GQA/KV-cache lowering | fixed prefill/decode integrated | all six saved SDPA nodes lower to masked-attention commands; one full Q8 run packed six prefill positions, unpacked them for decode, and appended only position six into a new radix-owned slot |
 | LFM2.5 token embedding lowering | typed, compiled, and native-dispatched | the int64-to-float16 lookup lowers to a validated command and the shared native probe gathers four float16 elements exactly |
 | LFM2.5 position and mask lowering | typed, compiled, and native-dispatched | five aranges, prepended diff, bool-to-int64 cumsum, scalar bool fill, and two broadcast gathers lower through schedule v7; exact CPU references and the shared native probe pass, while the exact unused PyTorch telemetry call is elided |
 | model weight loading for the MPS probe | implemented | Transformers checkpoint loads on MPS |
@@ -39,11 +39,11 @@ The authoritative end state and requirement-level evidence are tracked in the
 | LFM2.5-350M memory-safe benchmark path | implemented; engine pass and baseline recorded | `bench-suite` completed 15/15 warmup and scored requests per candidate, exact token/digest parity, eager ERS `0.0003597708408867709` |
 | Q8 weight-only linear optimizer/codegen | implemented; 350M Q8 fallback run recorded | `Lfm25.Config.default` and model-level runners select Q8 weight-only linear lowering; CPU reference, Q8 IR, Python model rewrite, FX boundary, Metal `char` emitter, LLVM `i8` emitter, and `ninja -f ninja.build q8-smoke` pass; the bounded Q8 result has exact digest/token parity, and its saved outputs prove 6/6 control-code retrieval with 0/6 exact-only formatting |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
-| OCaml serving radix/KV cache | logical and physical layers implemented; serving-engine integration open | mandatory compressed radix cache, hybrid recurrent checkpoints, namespace isolation, protected leases, LRU leaf eviction, and owned slots pass OCaml tests; one native probe exactly round-trips physical attention and recurrent state in FP16 and Q8-group-64 |
-| Versioned generated package ABI | partial; ABI-v7 prefill and decode packages validated | Package ABI v7 retains ABI-v2 through ABI-v6 reads. Binary-input replanning writes 872-command/46-kernel prefill and 926-command/44-kernel decode packages with zero opaque operations and 241 validated bindings each, including eight cache conversion entries; complete native serving integration remains open |
+| OCaml serving radix/KV cache | fixed model integration implemented; request integration open | the full Q8 run recorded one six-token radix hit, seven cached physical slots, and two recurrent checkpoints after prefill plus decode; ownership and reinsertion rollback tests pass |
+| Versioned generated package ABI | implemented for fixed ABI-v8 pair | Package ABI v8 retains ABI-v2 through ABI-v7 reads and adds sliced cache writes. Binary-input replanning writes 872-command/46-entry prefill and 926-command/44-entry decode packages with zero opaque operations and 241 validated bindings each |
 | OCaml tensor-store ownership | partial; shared real JSON-free archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. A capture session now seals one 422,137,216-byte `weights.llmopt`, canonicalizes aliases by tensor storage identity, and hard-links that archive across prefill and decode graph directories; both packages validate every dtype/shape binding |
-| OCaml Metal serving loader and dispatch | partial; every captured family and physical cache conversion has exact fixture evidence | The archive-backed Q8 schedule remains exact. One 129-command fixture dispatches 38 model kernels from a 9,728-byte workspace and matches 39/39 outputs; a separate ABI-v7 run dispatches 12 Q8/FP16 cache conversions exactly. Full-schedule execution and batched submission remain open |
-| Complete 350M operation schedule | captured prefill and decode have zero opaque; native execution partial | Binary-input ABI-v7 replans have 872 prefill and 926 decode commands, both zero opaque. Their 46-kernel/44-kernel packages validate one shared 241-tensor archive and include physical cache conversion entries. Alias-aware liveness planning reduces prefill transient storage from 9,855,488 to 1,153,792 bytes and decode from 2,151,680 to 271,360 bytes; neither complete schedule has run |
+| OCaml Metal serving loader and dispatch | complete fixed Q8 schedules execute; batching and parity open | one shared-context run maps the archive once by inode, dispatches 522 prefill and 544 decode commands, returns two sampled token IDs, and leaves consistent radix/KV ownership |
+| Complete 350M operation schedule | fixed prefill and one-token decode native-executed | ABI-v8 replans retain zero opaque commands and 241 bindings. One full run uses the 1,153,792/271,360-byte workspaces and completes in 0.432272/0.119545 seconds; exact PyTorch output comparison is not yet recorded |
 | natural needle-in-a-haystack validation | implemented; grader corrected | 2,048/4,096-token contexts at 10/50/90 placement retrieve `RAVEN-4271` in 6/6 outputs for both candidates; exact only-the-code formatting is separately 0/6 |
 
 # Evidence rule
@@ -72,5 +72,5 @@ measurement into a release gate.
   native Phase 2 float32 Q8 path match the exact generated dequantization path?
 - Which vocabulary-projection tile and reduction order best balance prefill and
   one-token decode before batched command-buffer submission?
-- How should radix prefix leases, non-contiguous token slots, and recurrent
-  checkpoints be bound into one persistent prefill/decode serving engine?
+- How should fixed six-token prefill and one-token decode specializations become
+  variable-length, persistent generation without recapturing every sequence length?

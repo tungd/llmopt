@@ -55,3 +55,4 @@ okf_version: '0.2'
 * [Native float16 vocabulary projection](experiments/exp-0033-native-f16-linear.md) - both fixed model schedules now declare every observed kernel family.
 * [Liveness-planned Metal workspace](experiments/exp-0034-liveness-workspace.md) - one retained workspace replaces per-intermediate Metal buffers using typed schedule liveness.
 * [Physical Q8 and FP16 Metal KV cache](experiments/exp-0035-physical-kv-cache.md) - native Q8/FP16 token and checkpoint pools with exact Metal pack/unpack evidence.
+* [Native LFM serving engine](experiments/exp-0036-native-serving-engine.md) - complete fixed Q8 prefill/decode schedules coordinated with physical radix-owned state.

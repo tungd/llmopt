@@ -4,7 +4,11 @@ type runtime = t
 val load_package :
   root:string -> Serving_package.t -> (t, string) result
 
+val load_packages :
+  (string * Serving_package.t) list -> (t list, string) result
+
 val device_name : t -> string
+val package : t -> Serving_package.t
 
 module Buffer : sig
   type t
@@ -34,6 +38,16 @@ module Cache : sig
     layer:int ->
     kind:Attention.t ->
     slots:Kv_cache.Slot.t array ->
+    source:Buffer.t ->
+    (string, string) result
+
+  val pack_attention_slice :
+    t ->
+    layer:int ->
+    kind:Attention.t ->
+    slots:Kv_cache.Slot.t array ->
+    source_items:int ->
+    source_offset:int ->
     source:Buffer.t ->
     (string, string) result
 

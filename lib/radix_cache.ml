@@ -63,6 +63,8 @@ type ('slot, 'checkpoint) insert_result = {
   prefix_tokens : int;
   redundant_values : 'slot array;
   redundant_checkpoint : 'checkpoint option;
+  canonical_values : 'slot array;
+  retained_checkpoint : 'checkpoint option;
 }
 
 type ('slot, 'checkpoint) eviction = {
@@ -270,6 +272,9 @@ let insert cache ~key ~values ~checkpoint =
             else walk child (offset + prefix)
     in
     let outcome, prefix_tokens = walk cache.root 0 in
+    let retained_node =
+      match outcome with `Inserted node | `Existing node -> node
+    in
     let redundant_checkpoint =
       match outcome with
       | `Inserted _ -> None
@@ -280,11 +285,19 @@ let insert cache ~key ~values ~checkpoint =
               None
           | Some _ -> Some checkpoint)
     in
+    let canonical_values =
+      if prefix_tokens = 0 then [||]
+      else
+        path_values retained_node [] |> concatenate
+        |> fun values -> sub values 0 prefix_tokens
+    in
     Ok
       {
         prefix_tokens;
         redundant_values = sub values 0 prefix_tokens;
         redundant_checkpoint;
+        canonical_values;
+        retained_checkpoint = retained_node.checkpoint;
       }
 
 let rec collect_leaves root =

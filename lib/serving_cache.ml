@@ -1,5 +1,5 @@
 module Config = struct
-  type t = { kv : Kv_cache.Config.t; page_size : int }
+  type t = { model : Lfm25.Config.t; kv : Kv_cache.Config.t; page_size : int }
 
   let create ~model ?(kv_format = Kv_cache.Format.default) ~token_capacity
       ~checkpoint_capacity ~page_size () =
@@ -35,10 +35,11 @@ module Config = struct
                  ~checkpoint_capacity
              with
             | Error message -> Error message
-            | Ok kv -> Ok { kv; page_size })
+            | Ok kv -> Ok { model; kv; page_size })
 
   let kv config = config.kv
   let page_size config = config.page_size
+  let model config = config.model
 end
 
 module Match = struct
@@ -73,6 +74,13 @@ let create config =
 
 let reserve_tokens cache = Kv_cache.reserve_tokens cache.kv
 let reserve_checkpoint cache = Kv_cache.reserve_checkpoint cache.kv
+let release_tokens cache slots =
+  Kv_cache.release_tokens cache.kv slots
+  |> Result.map_error Kv_cache.error_to_string
+
+let release_checkpoint cache checkpoint =
+  Kv_cache.release_checkpoint cache.kv checkpoint
+  |> Result.map_error Kv_cache.error_to_string
 
 let match_prefix cache ?namespace ~reserve_tail tokens =
   let retained = max 0 (Array.length tokens - max 0 reserve_tail) in
@@ -81,15 +89,37 @@ let match_prefix cache ?namespace ~reserve_tail tokens =
 
 let release_match cache match_ = Radix_cache.release cache.radix match_.Match.lease
 
+let same_slot left right =
+  Kv_cache.Slot.to_int left = Kv_cache.Slot.to_int right
+
+let same_checkpoint left right =
+  Kv_cache.Checkpoint.to_int left = Kv_cache.Checkpoint.to_int right
+
 let release_redundant cache result =
-  match Kv_cache.release_tokens cache.kv result.Radix_cache.redundant_values with
+  let redundant_values = result.Radix_cache.redundant_values in
+  let canonical_values = result.Radix_cache.canonical_values in
+  if Array.length redundant_values <> Array.length canonical_values then
+    Error "radix insertion returned inconsistent canonical ownership"
+  else
+  let releasable =
+    Array.to_list
+      (Array.mapi
+         (fun index value ->
+           if same_slot value canonical_values.(index) then None else Some value)
+         redundant_values)
+    |> List.filter_map Fun.id |> Array.of_list
+  in
+  match Kv_cache.release_tokens cache.kv releasable with
   | Error error -> Error (Kv_cache.error_to_string error)
   | Ok () ->
       (match result.redundant_checkpoint with
       | None -> Ok ()
+      | Some checkpoint
+        when Option.exists (same_checkpoint checkpoint)
+               result.retained_checkpoint ->
+          Ok ()
       | Some checkpoint ->
-          Result.map_error Kv_cache.error_to_string
-            (Kv_cache.release_checkpoint cache.kv checkpoint))
+          release_checkpoint cache checkpoint)
 
 let insert cache ?namespace ~tokens ~slots ~checkpoint () =
   let key = Radix_cache.Key.create ?namespace tokens in

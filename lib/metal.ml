@@ -189,6 +189,8 @@ struct AttentionCacheParams {
   uint token_elements;
   uint token_groups;
   uint token_stride;
+  uint source_items;
+  uint source_offset;
 };
 
 struct CheckpointCacheParams {
@@ -214,7 +216,8 @@ kernel void llmopt_cache_pack_attention_f16(
   const uint head = local / params.head_dim;
   const uint within_head = local - head * params.head_dim;
   const uint source_index =
-      (head * params.items + item) * params.head_dim + within_head;
+      (head * params.source_items + params.source_offset + item)
+      * params.head_dim + within_head;
   device half* destination = reinterpret_cast<device half*>(
       pool + slots[item] * params.token_stride);
   destination[params.segment * segment_elements + local] = source[source_index];
@@ -254,7 +257,7 @@ kernel void llmopt_cache_pack_attention_q8(
   const uint head = local_group / groups_per_head;
   const uint group_in_head = local_group - head * groups_per_head;
   const uint source_base =
-      (head * params.items + item) * params.head_dim
+      (head * params.source_items + params.source_offset + item) * params.head_dim
       + group_in_head * params.group_size;
   float maximum = 0.0f;
   for (uint index = 0; index < params.group_size; ++index)

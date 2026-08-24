@@ -12,6 +12,7 @@ module Config : sig
 
   val kv : t -> Kv_cache.Config.t
   val page_size : t -> int
+  val model : t -> Lfm25.Config.t
 end
 
 module Match : sig
@@ -34,6 +35,8 @@ type t
 val create : Config.t -> t
 val reserve_tokens : t -> int -> (Kv_cache.Slot.t array, Kv_cache.error) result
 val reserve_checkpoint : t -> (Kv_cache.Checkpoint.t, Kv_cache.error) result
+val release_tokens : t -> Kv_cache.Slot.t array -> (unit, string) result
+val release_checkpoint : t -> Kv_cache.Checkpoint.t -> (unit, string) result
 
 val match_prefix :
   t -> ?namespace:string -> reserve_tail:int -> int array -> Match.t

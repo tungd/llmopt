@@ -61,6 +61,12 @@ type t = {
 
 type runtime = t
 
+type prepared_package = {
+  root : string;
+  manifest : Serving_package.t;
+  archive : Weight_archive.t option;
+}
+
 let rec validate_declared_functions library = function
   | [] -> Ok ()
   | entry :: rest ->
@@ -69,7 +75,7 @@ let rec validate_declared_functions library = function
         validate_declared_functions library rest
       else Error ("Metal library does not define declared kernel: " ^ name)
 
-let load_package ~root package =
+let prepare_package (root, package) =
   match Serving_package.validate_files ~root package with
   | Error _ as error -> error
   | Ok () ->
@@ -85,30 +91,70 @@ let load_package ~root package =
       in
       let* archive = archive in
       let* () = Serving_validation.validate ~package ~archive in
-      let* (context, library, tensor_store) =
-        protect (fun () ->
-            let context = create_context_stub () in
-            let library_path =
-              Serving_package.files package
-              |> Serving_package.Files.metal_library
-              |> Serving_package.Artifact.path
-              |> Filename.concat root
-            in
-            let library = load_library_stub context library_path in
-            let tensor_store =
-              Option.map
-                (fun archive ->
-                  archive, map_file_stub context (Weight_archive.path archive))
-                archive
-            in
-            context, library, tensor_store)
-      in
-      let* () =
-        validate_declared_functions library (Serving_package.kernels package)
-      in
-      Ok { context; library; package; tensor_store }
+      Ok { root; manifest = package; archive }
+
+let file_identity path =
+  try
+    let stats = Unix.stat path in
+    Ok (stats.st_dev, stats.st_ino)
+  with Unix.Unix_error (error, operation, target) ->
+    Error
+      (Printf.sprintf "%s %s: %s" operation target (Unix.error_message error))
+
+let load_packages sources =
+  let rec prepare acc = function
+    | [] -> Ok (List.rev acc)
+    | source :: rest ->
+        let* package = prepare_package source in
+        prepare (package :: acc) rest
+  in
+  let* prepared = prepare [] sources in
+  if prepared = [] then Error "cannot load an empty serving-package set"
+  else
+    let* context = protect (fun () -> create_context_stub ()) in
+    let rec load mappings runtimes = function
+      | [] -> Ok (List.rev runtimes)
+      | prepared :: rest ->
+          let library_path =
+            Serving_package.files prepared.manifest
+            |> Serving_package.Files.metal_library
+            |> Serving_package.Artifact.path
+            |> Filename.concat prepared.root
+          in
+          let* library = protect (fun () -> load_library_stub context library_path) in
+          let* tensor_store, mappings =
+            match prepared.archive with
+            | None -> Ok (None, mappings)
+            | Some archive ->
+                let path = Weight_archive.path archive in
+                let* identity = file_identity path in
+                (match List.assoc_opt identity mappings with
+                | Some mapped -> Ok (Some (archive, mapped), mappings)
+                | None ->
+                    let* mapped =
+                      protect (fun () -> map_file_stub context path)
+                    in
+                    Ok (Some (archive, mapped), (identity, mapped) :: mappings))
+          in
+          let* () =
+            validate_declared_functions library
+              (Serving_package.kernels prepared.manifest)
+          in
+          let runtime =
+            { context; library; package = prepared.manifest; tensor_store }
+          in
+          load mappings (runtime :: runtimes) rest
+    in
+    load [] [] prepared
+
+let load_package ~root package =
+  let* runtimes = load_packages [ root, package ] in
+  match runtimes with
+  | [ runtime ] -> Ok runtime
+  | _ -> Error "single serving-package load returned an invalid runtime count"
 
 let device_name runtime = device_name_stub runtime.context
+let package runtime = runtime.package
 
 module Buffer = struct
   type t = buffer_handle
@@ -659,7 +705,8 @@ module Cache = struct
       let* bytes = validate 0 [] in
       Buffer.of_bytes ~runtime:cache.runtime bytes
 
-  let attention_parameters cache ~layer ~kind ~items =
+  let attention_parameters cache ~layer ~kind ~items ~source_items
+      ~source_offset =
     let layout = cache.layout in
     let heads = Kv_cache.Layout.kv_heads layout in
     let head_dim = Kv_cache.Layout.head_dim layout in
@@ -676,8 +723,8 @@ module Cache = struct
       + match kind with Attention.Key -> 0 | Attention.Value -> 1
     in
     Parameters.u32s
-      [ items; segment; heads; head_dim; group_size; token_elements;
-        token_groups; Kv_cache.Layout.bytes_per_token layout ]
+      [ items; segment; heads; head_dim; group_size; token_elements; token_groups;
+        Kv_cache.Layout.bytes_per_token layout; source_items; source_offset ]
 
   let attention_counts cache items =
     let layout = cache.layout in
@@ -696,20 +743,42 @@ module Cache = struct
     in
     Ok (elements, groups)
 
-  let attention cache ~pack ~layer ~kind ~slots buffer =
+  let attention cache ~pack ~layer ~kind ~slots ~source_items ~source_offset
+      buffer =
     let* () =
       validate_layer layer (Kv_cache.Layout.attention_layers cache.layout)
         "attention"
     in
     let items = Array.length slots in
     let* elements, groups = attention_counts cache items in
-    let* expected_bytes = checked_product elements 2 "attention byte length" in
+    let* expected_elements =
+      if pack then
+        if source_items <= 0 then
+          Error "physical attention cache source_items must be positive"
+        else if source_offset < 0 || source_offset > source_items - items then
+          Error "physical attention cache source slice is out of range"
+        else
+          let* source_elements =
+            checked_product source_items
+              (Kv_cache.Layout.kv_heads cache.layout
+              * Kv_cache.Layout.head_dim cache.layout)
+              "attention source size"
+          in
+          Ok source_elements
+      else Ok elements
+    in
+    let* expected_bytes =
+      checked_product expected_elements 2 "attention byte length"
+    in
     let* () =
       exact_buffer_length buffer expected_bytes
         (if pack then "attention source" else "attention destination")
     in
     let* slots_buffer = slots_buffer cache slots in
-    let* parameters = attention_parameters cache ~layer ~kind ~items in
+    let* parameters =
+      attention_parameters cache ~layer ~kind ~items ~source_items
+        ~source_offset
+    in
     let entry =
       if pack then cache.kernels.pack_attention
       else cache.kernels.unpack_attention
@@ -725,10 +794,20 @@ module Cache = struct
     dispatch cache.runtime entry ~buffers ~parameters ~grid:(grid, 1, 1)
 
   let pack_attention cache ~layer ~kind ~slots ~source =
-    attention cache ~pack:true ~layer ~kind ~slots source
+    attention cache ~pack:true ~layer ~kind ~slots
+      ~source_items:(Array.length slots) ~source_offset:0 source
+
+  let pack_attention_slice cache ~layer ~kind ~slots ~source_items
+      ~source_offset ~source =
+    if Serving_package.abi_version cache.runtime.package < 8 then
+      Error "attention cache source slicing requires serving-package ABI v8"
+    else
+      attention cache ~pack:true ~layer ~kind ~slots ~source_items ~source_offset
+        source
 
   let unpack_attention cache ~layer ~kind ~slots ~destination =
-    attention cache ~pack:false ~layer ~kind ~slots destination
+    attention cache ~pack:false ~layer ~kind ~slots
+      ~source_items:(Array.length slots) ~source_offset:0 destination
 
   let checkpoint_parameters cache ~layer ~checkpoint =
     let layout = cache.layout in

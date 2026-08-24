@@ -75,6 +75,7 @@ module Cache = struct
 end
 
 type t = {
+  abi_version : int;
   stage : Stage.t;
   model : string option;
   files : Files.t;
@@ -83,6 +84,8 @@ type t = {
   tensor_store : Tensor_store.t option;
   cache : Cache.t;
 }
+
+let current_abi_version = 8
 
 let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
@@ -100,7 +103,18 @@ let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
     Error "serving-stage package must declare a tensor store"
   else if stage = Stage.Serving && tensor_inputs = [] then
     Error "serving-stage package schedule has no tensor-store inputs"
-  else Ok { stage; model; files; kernels; schedule; tensor_store; cache }
+  else
+    Ok
+      {
+        abi_version = current_abi_version;
+        stage;
+        model;
+        files;
+        kernels;
+        schedule;
+        tensor_store;
+        cache;
+      }
 
 let compiled_graph ?model ~files ~kernels ~schedule ~cache () =
   create ~stage:Stage.Compiled_graph ?model ~files ~kernels ~schedule
@@ -110,6 +124,7 @@ let serving ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   create ~stage:Stage.Serving ?model ~files ~kernels ~schedule
     ~tensor_store:(Some tensor_store) ~cache ()
 
+let abi_version package = package.abi_version
 let stage package = package.stage
 let model package = package.model
 let files package = package.files
@@ -274,7 +289,7 @@ let magic = "LLMOPTPK"
 let to_bytes package =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 7;
+  Binary.Writer.u16 writer package.abi_version;
   Binary.Writer.u8 writer
     (match package.stage with Stage.Compiled_graph -> 0 | Stage.Serving -> 1);
   Binary.Writer.u8 writer 0;
@@ -297,7 +312,7 @@ let of_bytes bytes =
     let* version = Binary.Reader.u16 reader in
     if
       version <> 2 && version <> 3 && version <> 4 && version <> 5
-      && version <> 6 && version <> 7
+      && version <> 6 && version <> 7 && version <> 8
     then
       Error (Printf.sprintf "unsupported serving-package version: %d" version)
     else
@@ -332,6 +347,7 @@ let of_bytes bytes =
         let* schedule = Serving_schedule.of_bytes schedule_bytes in
         let* () = Binary.Reader.finish reader in
         create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache ()
+        |> Result.map (fun package -> { package with abi_version = version })
 
 let write_file path package =
   try
