@@ -240,14 +240,29 @@ let tensor runtime ~name =
                   (Weight_archive.Tensor.byte_length tensor),
                 tensor )))
 
-let q8_kernel runtime dtype =
+let q8_kernel ?name runtime dtype =
   let entries = Serving_package.kernels runtime.package in
   List.find_opt
     (fun entry ->
       Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_linear
       && Kernel_abi.Entry.input_dtype entry = dtype
-      && Kernel_abi.Entry.output_dtype entry = dtype)
+      && Kernel_abi.Entry.output_dtype entry = dtype
+      &&
+      match name with
+      | None -> true
+      | Some expected -> Kernel_abi.Entry.name entry = expected)
     entries
+
+let q8_kernel_name dtype ~m =
+  match dtype, m with
+  | Ir.Dtype.Float16, 1 -> Ok "llmopt_q8_gemv"
+  | Ir.Dtype.Float32, 1 -> Ok "llmopt_q8_gemv_f32"
+  | Ir.Dtype.Float16, _ -> Ok "llmopt_q8_linear"
+  | Ir.Dtype.Float32, _ -> Ok "llmopt_q8_linear_f32"
+  | dtype, _ ->
+      Error
+        ("Q8 Metal dispatch requires f16 or f32 activations, got "
+        ^ Ir.Dtype.to_string dtype)
 
 let dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n
     ~k =
@@ -1048,8 +1063,9 @@ let validate_linear_shapes ~m ~n ~k input weight output =
 let dispatch_q8_linear_batched batch runtime ~dtype ~input_value ~weight_value
     ~input ~weight ~scale ~bias ~output_value ~output ~m ~n ~k =
   let* () = validate_linear_shapes ~m ~n ~k input_value weight_value output_value in
+  let* name = q8_kernel_name dtype ~m in
   let* entry =
-    match q8_kernel runtime dtype with
+    match q8_kernel ~name runtime dtype with
     | Some entry -> Ok entry
     | None ->
         Error
@@ -1060,8 +1076,8 @@ let dispatch_q8_linear_batched batch runtime ~dtype ~input_value ~weight_value
     match bias with Some buffer -> buffer, true | None -> scale, false
   in
   let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
-  let* grid_x = round_up n 16 in
-  let* grid_y = round_up m 16 in
+  let* grid_x = if m = 1 then round_up n 256 else round_up n 16 in
+  let* grid_y = if m = 1 then Ok 1 else round_up m 16 in
   dispatch ~batch runtime entry
     ~buffers:[ input; weight; scale; bias_buffer; output ] ~parameters
     ~grid:(grid_x, grid_y, 1)

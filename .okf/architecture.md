@@ -36,6 +36,9 @@ sources:
   - id: batched-command-result
     resource: /bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt
     title: Schedule-wide Metal command-buffer observation
+  - id: q8-gemv-result
+    resource: /bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt
+    title: Decode-specialized Q8 GEMV observation
   - id: local-serving-engine
     resource: /lib/serving_engine.ml
     title: Native prefill, decode, and radix coordinator
@@ -367,6 +370,13 @@ commits and waits once per schedule instead of once per generated kernel. The
 fixed 39-output device probe remains exact, and the matched warmed HTTP smoke
 raises native ERS from `0.06169548638841863` to `0.11058587181748172` while
 preserving all token IDs and cached-prefix counts.
+
+Decode schedules now select a vectorized one-row Q8 GEMV entry when `m = 1`;
+multi-row prefill retains the 16 by 16 tiled kernel. A 40-output device probe
+selects `llmopt_q8_gemv` and remains exact. On the one matched warmed HTTP
+trace, all four request TPOT values fall by 9.12 to 10.71 ms, median TTFT falls
+by 87.971 ms, and ERS changes from `0.11058587181748172` to
+`0.10860341576307225`; token IDs and 80/194 cache reuse remain unchanged.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

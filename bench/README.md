@@ -35,8 +35,10 @@ scales. The Python boundary rewrites eligible linear modules to
 `llmopt.q8_linear`. The model-level parity runner defaults to
 `LLMOPT_METAL_RUNTIME=exact`, which dispatches the generated dequantization
 kernel and then uses PyTorch MPS linear; `LLMOPT_METAL_RUNTIME=native` selects
-the Phase 2 tiled Q8 matmul for explicit performance experiments. `--quantization
-fp16` selects the explicit weight-format fallback.
+the generated Q8 path for explicit performance experiments. Native OCaml
+serving uses tiled Q8 GEMM for multi-row prefill and vectorized Q8 GEMV for
+one-row decode. `--quantization fp16` selects the explicit weight-format
+fallback.
 The compiler target is validated by `ninja -f ninja.build q8-smoke`.
 
 Run the model-level probe with:
@@ -171,6 +173,14 @@ from `0.06169548638841863` to `0.11058587181748172`, median TTFT decreases from
 `1812.1075005328748` to `1095.193854504032` ms, and median TPOT decreases from
 `177.81014566814218` to `106.2433541713593` ms. The matched record is
 [`results/lfm25-350m-q8-native-batched-command-2026-08-24.txt`](results/lfm25-350m-q8-native-batched-command-2026-08-24.txt).
+
+After one-row Q8 GEMV specialization, the same trace remains 4/4 exact with
+80/194 cache reuse. All four TPOT values decrease by 9.12 to 10.71 ms and
+median TTFT decreases by `87.97091699671 ms`; ERS changes from
+`0.11058587181748172` to `0.10860341576307225`. TPOT remains at or above the
+formula's 10 ms zero-score ceiling, so this observation's ERS change follows
+the two first-turn TTFT values. The record is
+[`results/lfm25-350m-q8-native-gemv-2026-08-24.txt`](results/lfm25-350m-q8-native-gemv-2026-08-24.txt).
 
 Run the natural needle matrix through the same endpoint with:
 

@@ -62,3 +62,4 @@ okf_version: '0.2'
 * [Native OCaml HTTP serving and token-level ERS](experiments/exp-0040-native-http-serving.md) - the persistent native endpoint records real cached-prefix usage, corrected token timings, ERS, and exact eager-Q8 output IDs.
 * [Native long-context needle retrieval with EOS boundary](experiments/exp-0041-native-long-needle.md) - six native 2,048/4,096-token prompts retrieve exactly, with normal-EOS versus pinned-output semantics recorded separately.
 * [Batched native Metal schedule submission](experiments/exp-0042-batched-metal-command.md) - schedule-wide compute/blit encoding preserves parity while reducing TTFT and TPOT.
+* [Q8 decode-specialized Metal GEMV](experiments/exp-0043-q8-decode-gemv.md) - one-row vectorized Q8 execution preserves parity and records its matched TTFT, TPOT, and ERS deltas.

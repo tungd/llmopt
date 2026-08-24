@@ -108,6 +108,47 @@ let q8_kernel ~name ~value_type ~vector_type ~alignment ~weight_value_type
   ^ "  }\n"
   ^ "}\n"
 
+let q8_gemv_kernel ~name ~value_type ~vector_type ~weight_cast ~scale_type
+    ~store_value =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const char* weight [[buffer(1)]],\n"
+  ^ "    device const half* scale [[buffer(2)]],\n"
+  ^ "    device const half* bias_or_scale [[buffer(3)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(4)]],\n"
+  ^ "    constant Q8Params& params [[buffer(5)]],\n"
+  ^ "    uint col [[thread_position_in_grid]]) {\n"
+  ^ "  if (params.m != 1 || col >= params.n) return;\n"
+  ^ "  const " ^ scale_type ^ " channel_scale = scale[col];\n"
+  ^ "  const uint weight_base = col * params.k;\n"
+  ^ "  float acc = 0.0f;\n"
+  ^ "  uint inner = 0;\n"
+  ^ "  if (weight_base % 4 == 0) {\n"
+  ^ "    for (; inner + 3 < params.k; inner += 4) {\n"
+  ^ "      device const " ^ vector_type ^ "* input_vector =\n"
+  ^ "          reinterpret_cast<device const " ^ vector_type ^ "*>(input + inner);\n"
+  ^ "      device const char4* weight_vector =\n"
+  ^ "          reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
+  ^ "      const " ^ vector_type ^ " input_values = *input_vector;\n"
+  ^ "      const char4 weight_values = *weight_vector;\n"
+  ^ "      acc += float(input_values[0]) * float("
+  ^ weight_cast ^ "(weight_values[0]) * channel_scale);\n"
+  ^ "      acc += float(input_values[1]) * float("
+  ^ weight_cast ^ "(weight_values[1]) * channel_scale);\n"
+  ^ "      acc += float(input_values[2]) * float("
+  ^ weight_cast ^ "(weight_values[2]) * channel_scale);\n"
+  ^ "      acc += float(input_values[3]) * float("
+  ^ weight_cast ^ "(weight_values[3]) * channel_scale);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  for (; inner < params.k; ++inner)\n"
+  ^ "    acc += float(input[inner]) *\n"
+  ^ "           float(" ^ weight_cast
+  ^ "(weight[weight_base + inner]) * channel_scale);\n"
+  ^ "  if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
+  ^ "  output[col] = " ^ store_value ^ ";\n"
+  ^ "}\n"
+
 let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const char* weight [[buffer(0)]],\n"
@@ -148,6 +189,20 @@ let q8_source =
       ~scale_zero:"0.0f"
       ~zero_value:"0.0f"
       ~store_value:"acc"
+  ^ q8_gemv_kernel
+      ~name:"llmopt_q8_gemv"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:"half(acc)"
+  ^ q8_gemv_kernel
+      ~name:"llmopt_q8_gemv_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc"
   ^ q8_dequant_kernel
       ~name:"llmopt_q8_dequantize"
       ~value_type:"half"
@@ -168,6 +223,12 @@ let q8_entries =
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float32
       ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv" ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv_f32" ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_dequantize"
       ~operation:Kernel_abi.Operation.Q8_dequantize
       ~input_dtype:Ir.Dtype.Int8

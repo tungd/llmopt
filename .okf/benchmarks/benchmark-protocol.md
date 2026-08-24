@@ -109,6 +109,14 @@ serial native trace changes ERS from `0.06169548638841863` to
 by `-71.56679149678288 ms`. The matched record is
 [`/bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt).
 
+Selecting the one-row Q8 GEMV entry preserves 4/4 exact token parity and
+80/194 cached prompt tokens. Relative to the batched tiled-Q8 trace, median
+TTFT changes by `-87.97091699671 ms`, median TPOT by
+`-9.915784670738503 ms`, and ERS by `-0.0019824560544094705`. The four TPOT
+values all improve but remain at or above the formula's 10 ms zero-score
+ceiling; the exact record is
+[`/bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt).
+
 # Native long-context retrieval
 
 The native endpoint completed the six 2,048/4,096-token natural prompts with

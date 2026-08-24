@@ -304,6 +304,23 @@ let graph () =
     [ linear_f16_input; linear_f16_weight ] [ 2; 3 ] Ir.Dtype.Float16
   |> output graph "linear_f16";
 
+  let q8_gemv_input =
+    input graph "q8_gemv_input" [ 1; 4 ] Ir.Dtype.Float16
+  in
+  let q8_gemv_weight =
+    input graph "q8_gemv_weight" [ 3; 4 ] Ir.Dtype.Int8
+  in
+  let q8_gemv_scale =
+    input graph "q8_gemv_scale" [ 1; 3 ] Ir.Dtype.Float16
+  in
+  let q8_gemv_bias =
+    input graph "q8_gemv_bias" [ 1; 3 ] Ir.Dtype.Float16
+  in
+  command graph (Ir.Op.Q8_linear { m = 1; n = 3; k = 4; bias = true })
+    [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias ] [ 1; 3 ]
+    Ir.Dtype.Float16
+  |> output graph "q8_gemv";
+
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in
   command graph (Ir.Op.Matmul { m = 2; n = 2; k = 3 }) [ lhs; rhs ] [ 2; 2 ]

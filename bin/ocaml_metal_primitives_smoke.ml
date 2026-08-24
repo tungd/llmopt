@@ -24,6 +24,11 @@ let bytes_of_i64 values =
     values;
   bytes
 
+let bytes_of_i8 values =
+  values
+  |> List.map (fun value -> Char.chr (value land 0xff))
+  |> List.to_seq |> Bytes.of_seq
+
 let bytes_of_bool values =
   values |> List.map (fun value -> if value then '\001' else '\000')
   |> List.to_seq |> Bytes.of_seq
@@ -143,6 +148,14 @@ let () =
             (bytes_of_u16
                [ 0x3c00; 0x0000; 0x4000; 0xbc00; 0x0000; 0x3c00; 0xbc00;
                  0x4000; 0x4000; 0xc000; 0x0000; 0x3c00 ]);
+          input runtime "q8_gemv_input"
+            (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400 ]);
+          input runtime "q8_gemv_weight"
+            (bytes_of_i8 [ 1; 0; 2; -1; 0; 1; -1; 2; 2; -2; 0; 1 ]);
+          input runtime "q8_gemv_scale"
+            (bytes_of_u16 [ 0x3800; 0x3c00; 0xb400 ]);
+          input runtime "q8_gemv_bias"
+            (bytes_of_u16 [ 0x3800; 0x3c00; 0xbc00 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
     |> expect_ok
@@ -205,19 +218,21 @@ let () =
        [ 0x3c00; 0x4900; 0x4980; 0x4400; 0x4500; 0x4a00; 0x4a80; 0x4800 ]);
   expect_bytes execution "linear_f16"
     (bytes_of_u16 [ 0x4200; 0x4700; 0x4000; 0x3c00; 0x4200; 0x4200 ]);
+  expect_bytes execution "q8_gemv"
+    (bytes_of_u16 [ 0x4000; 0x4800; 0xbe00 ]);
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 38 then
+  if List.length kernels <> 39 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 38"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 39"
          (List.length kernels));
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
-  if workspace_bytes <> 9_728 then
+  if workspace_bytes <> 9_984 then
     fail
-      (Printf.sprintf "native fixture workspace is %d bytes instead of 9728"
+      (Printf.sprintf "native fixture workspace is %d bytes instead of 9984"
          workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 39 exact\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 40 exact\nq8-decode-kernel: llmopt_q8_gemv\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

@@ -1,0 +1,83 @@
+LFM2.5-350M Q8 native decode-GEMV specialization
+Date: 2026-08-24
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Change
+- Prefill and every Q8 operation with m > 1 retain the 16x16 tiled kernel.
+- Q8 operations with m = 1 select llmopt_q8_gemv or llmopt_q8_gemv_f32.
+- One output thread performs aligned half4/float4 and char4 loads and preserves ascending-k float accumulation.
+- The generated package, FX graph, tokenizer, and tensor archive remain binary; JSON is confined to the external HTTP benchmark record.
+
+Offline package evidence
+- prefill: 872 commands, 48 kernels, 0 opaque, 241 tensor bindings
+- decode: 926 commands, 46 kernels, 0 opaque, 241 tensor bindings
+- shared binary tensor archive: 422,137,216 bytes, one inode
+- both generated MSL programs compiled and both packages validated
+
+Device regression probe
+- preflight memory: 58% free
+- resident Torch/model/native-server processes: none
+- supervisor: 30 seconds
+- device: Apple M4 Pro
+- fixture: 135 commands, 39 dispatched kernels, 9,984-byte workspace
+- outputs: 40/40 exact
+- selected Q8 decode kernel: llmopt_q8_gemv
+
+Matched HTTP protocol
+- model preflight memory: 59% free; no resident model/native-server process
+- supervisor: 240 seconds
+- request scheduling: serial
+- warmup trace: bench/traces/lfm25-mps-warmup.json, 4 requests
+- scored trace: bench/traces/lfm25-mps-smoke.json, 4 requests
+- weights and KV: Q8 / Q8-group-64
+- token/checkpoint capacities: 512 / 128
+- completion tokens: pinned to 4 per request
+
+Before decode GEMV: schedule-wide command batching
+- ERS: 0.11058587181748172
+- median TTFT: 1095.193854504032 ms
+- median TPOT: 106.2433541713593 ms
+- cached prompt tokens: 80/194
+
+After decode GEMV
+- successful scored requests: 4/4
+- output token mismatches: 0
+- exact eager-Q8 token sequences: 4/4
+- ERS: 0.10860341576307225
+- median TTFT: 1007.2229375073221 ms
+- median TPOT: 96.3275695006208 ms
+- cached prompt tokens: 80/194
+
+Measured after-minus-before deltas
+- ERS: -0.0019824560544094705
+- median TTFT: -87.97091699671 ms
+- median TPOT: -9.915784670738503 ms
+- per-request TPOT deltas: -9.1225693273979, -9.68534734177713, -10.59984733971457, -10.70900001407911 ms
+- first-turn TTFT deltas: +0.39008300518617, +4.10412502242252 ms
+- second-turn TTFT deltas: -176.3319169986062, -196.83966698357835 ms
+
+After-GEMV per-request evidence
+- c0000-t000: score 0.19738782840140853; TTFT 154.95841699885204 ms; TPOT 80.2390556782484 ms; cached 0/39; IDs 1098,5706,803,4481
+- c0000-t001: score 0.0; TTFT 1859.487458015792 ms; TPOT 115.60581933008507 ms; cached 42/61; IDs 41677,7,2,1
+- c0001-t000: score 0.23702583465088048; TTFT 131.479500036221 ms; TPOT 73.73358332552016 ms; cached 0/35; IDs 1098,5410,4100,856
+- c0001-t001: score 0.0; TTFT 1950.8533750195056 ms; TPOT 112.41608332299317 ms; cached 38/59; IDs 31466,7,2,1
+
+Scoring interpretation
+- The Racebench TPOT score is zero at TPOT >= 10 ms, so the measured 9.12-10.71 ms per-request TPOT reductions do not change ERS in this observation.
+- ERS therefore follows the two first-turn TTFT samples that remain below the 400 ms TTFT ceiling; both rose slightly in this one four-request trace.
+- This records the exact measured delta and does not substitute an additional threshold or rerun.
+
+Separate eager-Q8 scored reference
+- ERS: 0.36872784102635947
+- median TTFT: 62.557083496358246 ms
+- median TPOT: 44.406860998909295 ms
+
+Raw external-edge reports
+- before: _artifacts/native-http-batched-smoke-2026-08-24/scored.json
+- after: _artifacts/native-http-gemv-smoke-2026-08-24/scored.json
+- eager: _artifacts/eager-http-parity-2026-08-24/eager/report.json
+
+Evidence boundary
+- This is one matched warmed serial observation before and after the decode-kernel specialization.
+- Exact primitive outputs, model token IDs, prompt counts, and cached-token counts are unchanged.
+- Memory recovered to 58% with no resident model process after the server exited.

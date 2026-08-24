@@ -55,7 +55,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   retained Metal workspace and returns buffer views instead of allocating one
   buffer per intermediate. One schedule now encodes all generated kernels and
   typed copies into one ordered Metal command buffer instead of synchronously
-  waiting after every kernel. Serving packages additionally declare native FP16
+  waiting after every kernel. Q8 commands with one input row select a
+  vectorized GEMV entry while multi-row prefill retains the 16 by 16 tiled
+  kernel. Serving packages additionally declare native FP16
   and grouped-Q8 pack/unpack kernels for attention KV and recurrent
   checkpoints; the OCaml runtime owns their physical Metal pools.
 - Dynamo static-input capture that binds model parameters and buffers to stable
@@ -134,7 +136,8 @@ aligned bytes without reuse to a 1,153,792-byte high-water mark and decode from
 plans real prefill lengths 13/128/4,096 and decode-past lengths 1/127/4,095.
 One native Q8 run executed prefill plus three decode steps with radix hits at
 prefixes 6/7/8 and exactly matched eager tokens
-`19130,11040,11207,1414`. Batched command-buffer execution remains open. The boundary is documented in
+`19130,11040,11207,1414`. Batched command-buffer execution and one-row Q8 GEMV
+dispatch are implemented. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
 ## Build and run
@@ -297,6 +300,14 @@ trace, median TTFT falls by `716.9136460288428 ms` and median TPOT by
 `71.56679149678288 ms`. See
 [`bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt).
 
+The decode-specialized Q8 GEMV trace remains 4/4 exact with the same 80/194
+cache reuse. Relative to command batching alone, every request TPOT falls by
+9.12 to 10.71 ms and median TTFT falls by `87.97091699671 ms`; measured ERS
+changes from `0.11058587181748172` to `0.10860341576307225`. TPOT remains above
+the adopted formula's 10 ms zero-score ceiling, so the ERS delta follows the
+two first-turn TTFT samples. See
+[`bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt).
+
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048
 tokens and `100.204` seconds at 4,096. That observation stopped normally on the
@@ -322,6 +333,7 @@ typed graph + schedule timeline
         │ pure passes
         ├── linear/bias fusion
         ├── RMSNorm fusion (implemented)
+        ├── one-row Q8 decode specialization (implemented)
         ├── typed N-D movement/pointwise/reduction lowering (implemented)
         ├── chunk/getitem elimination + typed concat (implemented)
         ├── dense movement materialization (implemented)
@@ -357,9 +369,10 @@ retains read compatibility with ABI v2 through v7; neither file contains JSON.
 The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
 776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
 bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
-binary-input replanning emits ABI-v8 packages with 872/926 commands, 46/44
-kernels, zero opaque commands, and all 241 tensor bindings validated. The eight
-additional entries implement FP16/Q8 attention and recurrent-cache conversion.
+binary-input replanning emits ABI-v8 packages with 872/926 commands, 48/46
+kernels, zero opaque commands, and all 241 tensor bindings validated. The ten
+additional entries implement FP16/Q8 attention and recurrent-cache conversion
+plus float16/float32 one-row Q8 GEMV.
 No model load or device dispatch was used for that replan.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,

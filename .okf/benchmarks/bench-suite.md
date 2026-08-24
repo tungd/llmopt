@@ -48,6 +48,9 @@ sources:
   - id: result-native-batched
     resource: /bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt
     title: native command-buffer optimization result
+  - id: result-native-gemv
+    resource: /bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt
+    title: native decode-GEMV optimization result
   - id: result-preintegration
     resource: /_artifacts/lfm25-benchsuite-q8-radix-e3d0d15/result.json
     title: post-cache-implementation pre-integration observation
@@ -88,6 +91,13 @@ Schedule-wide command-buffer batching preserves those four eager-Q8 sequences
 and 80/194 cached tokens. On the identical warmed serial trace, native ERS
 increases to `0.11058587181748172`, median TTFT decreases by `716.914 ms`, and
 median TPOT decreases by `71.567 ms` relative to the initial native endpoint.
+
+The decode-specialized Q8 GEMV observation again preserves four exact token
+sequences and 80/194 cached tokens. Relative to command batching alone, all
+four TPOT values decrease by 9.12 to 10.71 ms, median TTFT decreases by 87.971
+ms, and ERS changes by `-0.0019824560544094705` to
+`0.10860341576307225`. TPOT remains above the formula's 10 ms zero-score
+ceiling, so ERS follows the two score-contributing first-turn TTFT samples.
 
 # Scoring
 

@@ -1190,11 +1190,21 @@ let () =
   | Error message -> fail message
   | Ok source ->
       expect (String.contains source 'q') "Q8 Metal source emitted";
-      expect (String.contains source 'c') "Q8 Metal char storage emitted");
+      expect (String.contains source 'c') "Q8 Metal char storage emitted";
+      expect
+        (contains_substring source "kernel void llmopt_q8_gemv")
+        "Q8 Metal decode-specialized GEMV emitted");
   let q8_program = expect_ok (Metal.lower q8_graph) in
   let q8_entries = Metal.Program.kernels q8_program in
   let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
-  expect (List.length q8_entries = 4) "Q8 Metal kernel ABI entries";
+  expect (List.length q8_entries = 6) "Q8 Metal kernel ABI entries";
+  expect
+    (List.exists
+       (fun entry ->
+         Kernel_abi.Entry.name entry = "llmopt_q8_gemv"
+         && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
+       q8_entries)
+    "Q8 Metal GEMV ABI entry";
   let mixed_matmul_q8_kernel () =
     let lhs = Tile.input ~name:"mixed_lhs" ~shape:left () in
     let rhs = Tile.input ~name:"mixed_rhs" ~shape:right () in
@@ -1685,7 +1695,8 @@ let () =
     = Serving_package.Stage.Compiled_graph)
     "compiled graph package stage";
   expect
-    (List.length (Serving_package.kernels package_round_trip) = 4)
+    (List.length (Serving_package.kernels package_round_trip)
+    = List.length q8_entries)
     "compiled graph package kernel round trip";
   expect
     (Serving_package.Cache.default_kv
