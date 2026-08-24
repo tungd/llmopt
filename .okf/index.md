@@ -56,3 +56,4 @@ okf_version: '0.2'
 * [Liveness-planned Metal workspace](experiments/exp-0034-liveness-workspace.md) - one retained workspace replaces per-intermediate Metal buffers using typed schedule liveness.
 * [Physical Q8 and FP16 Metal KV cache](experiments/exp-0035-physical-kv-cache.md) - native Q8/FP16 token and checkpoint pools with exact Metal pack/unpack evidence.
 * [Native LFM serving engine](experiments/exp-0036-native-serving-engine.md) - complete fixed Q8 prefill/decode schedules coordinated with physical radix-owned state.
+* [Binary LFM tokenizer and typed chat encoding](experiments/exp-0037-native-tokenizer-chat.md) - versioned tokenizer archive, native byte-level BPE, and typed LFM chat parity.

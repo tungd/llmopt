@@ -36,3 +36,4 @@
 * [Liveness-planned Metal workspace](exp-0034-liveness-workspace.md) - alias-aware interval allocation reduces the offline prefill/decode workspace while preserving one exact 39-output device probe.
 * [Physical Q8 and FP16 Metal KV cache](exp-0035-physical-kv-cache.md) - package-declared native pools and cache kernels round-trip attention and recurrent state exactly.
 * [Native LFM serving engine](exp-0036-native-serving-engine.md) - one complete fixed Q8 prefill/decode run binds physical state to radix ownership.
+* [Binary LFM tokenizer and typed chat encoding](exp-0037-native-tokenizer-chat.md) - native OCaml text-to-token parity without JSON, Jinja, Python, or model loading.

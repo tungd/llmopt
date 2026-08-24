@@ -67,6 +67,11 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   hybrid ShortConv-state checkpoints, protected-prefix leases, LRU leaf
   eviction, and an owned KV-slot allocator. The KV layout is selectable as
   FP16 or grouped Q8; Q8 is the default serving policy.
+- A versioned `LLMOPTTK` binary tokenizer archive and native OCaml byte-level
+  BPE implementation with added-token trie matching, the exact LFM Unicode
+  pre-tokenizer, typed text-only chat messages, and LFM generation-prompt
+  construction. Hugging Face `tokenizer.json` is an offline import only; the
+  native path parses neither JSON nor Jinja.
 - A direct FX GraphModule MPS executor as the first runtime optimization pass.
 - A racebench-compatible ERS benchsuite with validated warmup/scored traces,
   the adjacent HTTP runner contract, a full 70x6 trace profile, and a natural
@@ -118,9 +123,10 @@ package-check failure, so this capture adds no parity claim. The boundary is doc
 ## Build and run
 
 The repository intentionally uses Ninja as its only build orchestrator. The
-OCaml compiler is invoked directly by Ninja; the only OCaml package dependency
-is Yojson for backward-compatible diagnostic JSON imports, alongside Bigarray
-and Unix from the standard distribution.
+OCaml compiler is invoked directly by Ninja. Yojson is retained only for
+backward-compatible diagnostic JSON imports; Uutf and Uucp implement the native
+UTF-8 and Unicode-category tokenizer path, alongside Bigarray and Unix from the
+standard distribution.
 
 ```sh
 ninja -f ninja.build all
@@ -147,6 +153,21 @@ ninja -f ninja.build capture-lfm25-prefill-decode
 ninja -f ninja.build bench-mps
 ninja -f ninja.build bench-suite
 ```
+
+Compile the upstream tokenizer once into the binary serving format, then run
+the native parity corpus without loading the model or a Metal device:
+
+```sh
+PYTHONPATH=python python3.13 python/examples/export_tokenizer.py \
+  --input /path/to/LFM2.5-350M/tokenizer.json \
+  --output _artifacts/lfm25-350m/tokenizer.llmopt
+python3.13 bench/lfm25_tokenizer_parity.py \
+  --model /path/to/LFM2.5-350M \
+  --archive _artifacts/lfm25-350m/tokenizer.llmopt
+```
+
+`_build/bin/llmopt-tokenize` exposes plain-text `encode`, `decode`, and typed
+`chat` diagnostics. It does not use JSON as a compiler or serving transport.
 
 `test` runs the OCaml reference tests and the Python FX/bench-suite contract tests.
 The demo writes generated sources to `_build/llmopt-demo/` and prints the CPU

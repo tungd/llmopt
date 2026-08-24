@@ -27,10 +27,16 @@ let expect_kv_ok = function
   | Error error -> fail (Kv_cache.error_to_string error)
 
 let expect_int_array actual expected message =
-  expect
-    (Array.length actual = Array.length expected &&
-     Array.for_all2 ( = ) actual expected)
-    message
+  if
+    Array.length actual <> Array.length expected
+    || not (Array.for_all2 ( = ) actual expected)
+  then
+    let show values =
+      values |> Array.to_list |> List.map string_of_int |> String.concat ","
+    in
+    fail
+      (Printf.sprintf "%s: expected [%s], got [%s]" message (show expected)
+         (show actual))
 
 let fx_argument kind fields = `Assoc (("kind", `String kind) :: fields)
 let fx_node_argument name = fx_argument "node" [ ("name", `String name) ]
@@ -107,6 +113,81 @@ let fx_binary_fixture () =
   Binary.Writer.string writer "x";
   Binary.Writer.contents writer
 
+let tokenizer_fixture () =
+  let writer = Binary.Writer.create () in
+  let token id flags text =
+    Binary.Writer.u32 writer id;
+    Binary.Writer.u8 writer flags;
+    Binary.Writer.raw_bytes writer (Bytes.make 3 '\000');
+    Binary.Writer.u32 writer (String.length text);
+    Binary.Writer.raw_string writer text
+  in
+  let merge left right =
+    Binary.Writer.u32 writer (String.length left);
+    Binary.Writer.u32 writer (String.length right);
+    Binary.Writer.raw_string writer left;
+    Binary.Writer.raw_string writer right
+  in
+  let space = "\196\160" in
+  Binary.Writer.raw_string writer Tokenizer.binary_magic;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u32 writer 7;
+  Binary.Writer.u32 writer 2;
+  Binary.Writer.u32 writer 6;
+  token 0 3 "<|startoftext|>";
+  token 1 0 "a";
+  token 2 0 "b";
+  token 3 0 "ab";
+  token 4 0 space;
+  token 5 0 (space ^ "a");
+  token 6 1 "python";
+  merge "a" "b";
+  merge space "a";
+  Binary.Writer.contents writer
+
+let byte_level_symbol byte =
+  let direct byte =
+    (byte >= Char.code '!' && byte <= Char.code '~')
+    || (byte >= 0xa1 && byte <= 0xac)
+    || (byte >= 0xae && byte <= 0xff)
+  in
+  let scalar =
+    if direct byte then byte
+    else
+      let offset = ref 0 in
+      for candidate = 0 to byte - 1 do
+        if not (direct candidate) then incr offset
+      done;
+      256 + !offset
+  in
+  let buffer = Buffer.create 2 in
+  Uutf.Buffer.add_utf_8 buffer (Uchar.of_int scalar);
+  Buffer.contents buffer
+
+let chat_tokenizer_fixture () =
+  let writer = Binary.Writer.create () in
+  let token id flags text =
+    Binary.Writer.u32 writer id;
+    Binary.Writer.u8 writer flags;
+    Binary.Writer.raw_bytes writer (Bytes.make 3 '\000');
+    Binary.Writer.u32 writer (String.length text);
+    Binary.Writer.raw_string writer text
+  in
+  Binary.Writer.raw_string writer Tokenizer.binary_magic;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u32 writer 259;
+  Binary.Writer.u32 writer 0;
+  Binary.Writer.u32 writer 258;
+  for byte = 0 to 255 do
+    token byte 0 (byte_level_symbol byte)
+  done;
+  token 256 3 "<|startoftext|>";
+  token 257 3 "<|im_start|>";
+  token 258 3 "<|im_end|>";
+  Binary.Writer.contents writer
+
 let primitive_value ~operation ~inputs ~logical_shape ~dtype =
   Tile_effect.primitive
     {
@@ -118,6 +199,58 @@ let primitive_value ~operation ~inputs ~logical_shape ~dtype =
     }
 
 let () =
+  let tokenizer_bytes = tokenizer_fixture () in
+  let tokenizer = expect_ok (Tokenizer.of_bytes tokenizer_bytes) in
+  expect_int_array (expect_ok (Tokenizer.encode tokenizer "ab")) [| 0; 3 |]
+    "binary BPE merges bytes and prepends BOS";
+  expect_int_array
+    (expect_ok (Tokenizer.encode ~add_bos:false tokenizer " a"))
+    [| 5 |] "binary BPE keeps prefix-space merge";
+  expect_int_array
+    (expect_ok (Tokenizer.encode ~add_bos:false tokenizer "python ab"))
+    [| 6; 4; 3 |] "added token matching composes with ranked byte-level BPE";
+  expect
+    (expect_ok (Tokenizer.decode tokenizer [| 0; 5; 2 |]) = " ab")
+    "binary BPE decoder skips special tokens and restores bytes";
+  expect
+    (expect_ok
+       (Tokenizer.decode ~skip_special:false tokenizer [| 0; 5; 2 |])
+    = "<|startoftext|> ab")
+    "binary BPE decoder can retain special tokens";
+  (match
+     Tokenizer.of_bytes
+       (Bytes.sub tokenizer_bytes 0 (Bytes.length tokenizer_bytes - 1))
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "tokenizer archive accepted truncated input");
+  let chat_tokenizer =
+    expect_ok (Tokenizer.of_bytes (chat_tokenizer_fixture ()))
+  in
+  let chat = expect_ok (Lfm_chat.create chat_tokenizer) in
+  let message role content = Lfm_chat.Message.create ~role ~content in
+  let messages =
+    [
+      message Lfm_chat.Role.System "Rules";
+      message Lfm_chat.Role.User "Hello";
+      message Lfm_chat.Role.Assistant "<think>old</think> answer";
+      message Lfm_chat.Role.User "Again";
+      message Lfm_chat.Role.Assistant "<think>new</think> final";
+    ]
+  in
+  let chat_ids = expect_ok (Lfm_chat.encode chat messages) in
+  expect
+    (expect_ok
+       (Tokenizer.decode ~skip_special:false chat_tokenizer chat_ids)
+    = "<|startoftext|><|im_start|>system\nRules<|im_end|>\n\
+       <|im_start|>user\nHello<|im_end|>\n\
+       <|im_start|>assistant\nanswer<|im_end|>\n\
+       <|im_start|>user\nAgain<|im_end|>\n\
+       <|im_start|>assistant\n<think>new</think> final<|im_end|>\n\
+       <|im_start|>assistant\n")
+    "typed LFM chat encoding matches the text-only template";
+  expect
+    (Lfm_chat.is_end_token chat (Lfm_chat.end_token chat))
+    "LFM chat exposes the generation stop token";
   let rank_three = Tensor_shape.of_ints_exn [ 2; 3; 4 ] in
   expect (Tensor_shape.rank rank_three = 3) "rank-three tensor shape";
   expect (Tensor_shape.numel rank_three = 24) "rank-three tensor elements";

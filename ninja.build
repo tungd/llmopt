@@ -1,5 +1,5 @@
 ocaml_flags = -O3 -g -bin-annot -I _build/ocaml
-ocaml_packages = -package yojson,unix
+ocaml_packages = -package yojson,unix,uutf,uucp
 
 rule ocaml_interface
   command = mkdir -p _build/ocaml && ocamlfind ocamlopt $ocaml_packages $ocaml_flags -c $in -o $out
@@ -219,6 +219,15 @@ build _build/ocaml/radix_cache.cmx: ocaml_module lib/radix_cache.ml | _build/oca
 build _build/ocaml/serving_cache.cmi: ocaml_interface lib/serving_cache.mli | _build/ocaml/lfm25.cmi _build/ocaml/kv_cache.cmi _build/ocaml/radix_cache.cmi
 build _build/ocaml/serving_cache.cmx: ocaml_module lib/serving_cache.ml | _build/ocaml/serving_cache.cmi _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx
 
+build _build/ocaml/tokenizer.cmi: ocaml_interface lib/tokenizer.mli
+build _build/ocaml/tokenizer.cmx: ocaml_module lib/tokenizer.ml | _build/ocaml/tokenizer.cmi _build/ocaml/binary.cmx
+
+build _build/ocaml/lfm_chat.cmi: ocaml_interface lib/lfm_chat.mli | _build/ocaml/tokenizer.cmi
+build _build/ocaml/lfm_chat.cmx: ocaml_module lib/lfm_chat.ml | _build/ocaml/lfm_chat.cmi _build/ocaml/tokenizer.cmx
+
+build _build/ocaml/tokenize.cmx: ocaml_module bin/tokenize.ml | _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx
+build _build/bin/llmopt-tokenize: ocaml_link _build/ocaml/binary.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/tokenize.cmx
+
 build _build/ocaml/sampling.cmi: ocaml_interface lib/sampling.mli
 build _build/ocaml/sampling.cmx: ocaml_module lib/sampling.ml | _build/ocaml/sampling.cmi
 
@@ -262,8 +271,8 @@ build _build/ocaml/fx_plan.cmx: ocaml_module lib/fx_plan.ml | _build/ocaml/fx_pl
 build _build/ocaml/demo.cmx: ocaml_module bin/demo.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
 build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/demo.cmx
 
-build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/sampling.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx
-build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/sampling.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/test.cmx
+build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/sampling.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx
+build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/binary.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/sampling.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/test.cmx
 
 build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/passes.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
 build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/binary.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
@@ -331,7 +340,7 @@ build metal-runtime-differential: phony _artifacts/phase1-350m-differential/resu
 build _artifacts/lfm25-350m-q8-prefill-decode/result.json: lfm25_prefill_decode_capture _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/native/metal-runtime.stamp bench/lfm25_capture_decode.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py python/llmopt_backend/tensor_archive.py
 build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-q8-prefill-decode/result.json
 
-build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-lfm-serving-check _build/bin/llmopt-lfm-serving-smoke
+build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-lfm-serving-check _build/bin/llmopt-lfm-serving-smoke _build/bin/llmopt-tokenize
 build ocaml-test: run_test _build/bin/llmopt-test
 build python-test: python_test
 build test: phony ocaml-test python-test

@@ -30,6 +30,12 @@ sources:
   - id: serving-cache
     resource: /lib/serving_cache.ml
     title: OCaml radix and KV ownership layer
+  - id: tokenizer
+    resource: /lib/tokenizer.ml
+    title: Native binary LFM tokenizer
+  - id: chat
+    resource: /lib/lfm_chat.ml
+    title: Typed text-only LFM chat encoding
   - id: benchmark
     resource: /bench/lfm25_benchsuite.py
     title: LFM2.5 ERS and needle benchsuite
@@ -61,7 +67,7 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Binary-input ABI-v8 replanning compiles 46 prefill and 44 decode entries covering every observed model family plus eight FP16/Q8 cache conversions. The final `6x65536x1024` and `1x65536x1024` float16 projections share one SIMD-reduction entry | implemented for the fixed captured specializations |
 | Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | One context and inode-keyed archive mapping now serve both stages. A full fixed Q8 run dispatched 522 prefill and 544 decode commands in 0.432272/0.119545 seconds and matched eager Q8 tokens `19130,11040`; exact logits and batched command submission remain absent | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | The full fixed Q8 run mapped the shared 241-tensor archive, used 1,153,792/271,360-byte stage workspaces, packed seven attention slots, and retained two recurrent checkpoints. FP16 remains package-validated and small-fixture-executed rather than model-executed | implemented for fixed Q8 prefill plus one decode |
-| Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | Current request loop and tokenizer are Python/Transformers | open |
+| Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `LLMOPTTK` ABI-v1 plus native OCaml BPE match 10/10 text cases and 6/6 typed chat cases against Transformers. Greedy float16 sampling exists; variable-length generation and request serving remain open | partial |
 | Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Native decode matched and leased all six prefill tokens, reused their physical KV plus recurrent checkpoint, extended the radix to seven slots, and retained two-token greedy parity; request-level evidence remains absent | partial |
 | Configurable KV quantization | FP16 and Q8 runs bind physical Metal KV/checkpoint buffers and execute matching quantize/dequantize paths | Small exact probes cover FP16 and Q8-group-64. The full fixed model run used Q8 by default; the ABI-v8 pair validates FP16 but has not executed it at model scale | partial |
 | Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by one reproducible command | Existing suite covers parity and latency; needle grading is corrected in the current slice; cached tokens remain zero | partial |
