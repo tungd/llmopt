@@ -36,6 +36,9 @@ sources:
   - id: result-350m-fp16
     resource: /bench/results/lfm25-350m-racebench-baseline.json
     title: persisted 350M FP16 engine-pass and baseline result
+  - id: result-native-http
+    resource: /bench/results/lfm25-350m-q8-native-http-2026-08-24.txt
+    title: native HTTP token parity and ERS observation
   - id: result-preintegration
     resource: /_artifacts/lfm25-benchsuite-q8-radix-e3d0d15/result.json
     title: post-cache-implementation pre-integration observation
@@ -62,6 +65,13 @@ adjacent runner's concurrent-conversation/serial-turn behavior.
 The default `bench-suite` target runs the LFM2.5-350M comparison using the
 official instruction-tuned `LiquidAI/LFM2.5-350M` checkpoint and records
 its baseline under `bench/results/lfm25-350m-q8-racebench-baseline.json`.
+
+The same HTTP runner now drives the persistent native OCaml server. Native SSE
+events carry exact token IDs in addition to decoded text so special tokens and
+split UTF-8 scalars retain token-level timing. The first warmed serial smoke
+records 4/4 eager-Q8 token parity, 80/194 cached prompt tokens, native ERS
+`0.06169548638841863`, and eager ERS `0.36872784102635947`. The native needle
+matrix and semantic 5x3 profile remain separate open measurements.
 
 # Scoring
 

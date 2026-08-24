@@ -39,3 +39,4 @@
 * [Binary LFM tokenizer and typed chat encoding](exp-0037-native-tokenizer-chat.md) - native OCaml text-to-token parity without JSON, Jinja, Python, or model loading.
 * [Variable-length LFM schedules and repeated native decode](exp-0038-variable-schedule-decode.md) - captured templates specialize to request lengths and preserve four eager-Q8 greedy tokens across three native decode steps.
 * [Native OCaml chat generation](exp-0039-native-chat-generation.md) - binary tokenization, typed chat, dynamic prefill, greedy decode, and text output execute as one native flow.
+* [Native OCaml HTTP serving and token-level ERS](exp-0040-native-http-serving.md) - persistent HTTP/SSE serving proves request-level radix reuse, corrected token timing, and four exact eager-Q8 token sequences.

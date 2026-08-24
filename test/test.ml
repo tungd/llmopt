@@ -308,6 +308,15 @@ let () =
        (Tokenizer.decode ~skip_special:false tokenizer [| 0; 5; 2 |])
     = "<|startoftext|> ab")
     "binary BPE decoder can retain special tokens";
+  let incremental = Tokenizer.Decoder.create tokenizer in
+  expect (expect_ok (Tokenizer.Decoder.push incremental 5) = " a")
+    "incremental decoder emits a complete token";
+  expect (expect_ok (Tokenizer.Decoder.push incremental 2) = "b")
+    "incremental decoder preserves token order";
+  expect_ok (Tokenizer.Decoder.finish incremental);
+  (match Tokenizer.Decoder.push incremental 1 with
+  | Error _ -> ()
+  | Ok _ -> fail "incremental decoder accepted a token after finish");
   (match
      Tokenizer.of_bytes
        (Bytes.sub tokenizer_bytes 0 (Bytes.length tokenizer_bytes - 1))
@@ -317,6 +326,14 @@ let () =
   let chat_tokenizer =
     expect_ok (Tokenizer.of_bytes (chat_tokenizer_fixture ()))
   in
+  let utf8 = Tokenizer.Decoder.create chat_tokenizer in
+  expect (expect_ok (Tokenizer.Decoder.push utf8 0xe2) = "")
+    "incremental decoder buffers a partial UTF-8 scalar";
+  expect (expect_ok (Tokenizer.Decoder.push utf8 0x82) = "")
+    "incremental decoder keeps a partial UTF-8 scalar";
+  expect (expect_ok (Tokenizer.Decoder.push utf8 0xac) = "\226\130\172")
+    "incremental decoder emits one completed UTF-8 scalar";
+  expect_ok (Tokenizer.Decoder.finish utf8);
   let chat = expect_ok (Lfm_chat.create chat_tokenizer) in
   let message role content = Lfm_chat.Message.create ~role ~content in
   let messages =
@@ -342,6 +359,41 @@ let () =
   expect
     (Lfm_chat.is_end_token chat (Lfm_chat.end_token chat))
     "LFM chat exposes the generation stop token";
+  let protocol_request =
+    expect_ok
+      (Openai_protocol.Request.of_string
+         {|{"model":"LiquidAI/LFM2.5-350M","messages":[{"role":"system","content":"Rules"},{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":4,"min_tokens":4,"ignore_eos":true,"temperature":0.0,"seed":123}|})
+  in
+  expect
+    (Openai_protocol.Request.model protocol_request
+    = "LiquidAI/LFM2.5-350M")
+    "OpenAI edge preserves the requested model name";
+  expect (List.length (Openai_protocol.Request.messages protocol_request) = 2)
+    "OpenAI edge parses typed chat messages";
+  expect
+    (Openai_protocol.Request.max_tokens protocol_request = 4
+    && Openai_protocol.Request.ignore_eos protocol_request)
+    "OpenAI edge parses pinned generation controls";
+  (match
+     Openai_protocol.Request.of_string
+       {|{"model":"m","messages":[],"stream":true,"max_tokens":1}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "OpenAI edge accepted an empty message list");
+  let usage_event =
+    Openai_protocol.Sse.usage ~id:"request-1" ~model:"model" ~created:1
+      ~prompt_tokens:12 ~cached_prompt_tokens:7 ~completion_tokens:4
+  in
+  expect (contains_substring usage_event {|"cached_tokens":7|})
+    "OpenAI SSE usage reports radix prefix reuse";
+  let token_event =
+    Openai_protocol.Sse.content ~id:"request-1" ~model:"model" ~created:1
+      ~token_id:258 ""
+  in
+  expect (contains_substring token_event {|"x_llmopt_token_id":258|})
+    "OpenAI SSE preserves token identity when decoded text is empty";
+  expect (Openai_protocol.Sse.done_ = "data: [DONE]\n\n")
+    "OpenAI SSE terminator";
   let rank_three = Tensor_shape.of_ints_exn [ 2; 3; 4 ] in
   expect (Tensor_shape.rank rank_three = 3) "rank-three tensor shape";
   expect (Tensor_shape.numel rank_three = 24) "rank-three tensor elements";

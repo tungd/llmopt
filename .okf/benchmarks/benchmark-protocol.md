@@ -22,10 +22,10 @@ sources:
 
 # Scope
 
-Compare eager PyTorch MPS with the OCaml-planned llmopt FX GraphModule on the
-same LFM2.5-350M checkpoint and Apple Silicon host. Keep graph
-capture/planning, model loading, and tensor execution as separately reported
-measurements.
+Compare eager PyTorch MPS, the OCaml-planned llmopt FX GraphModule, and the
+native OCaml generated-Metal server on the same LFM2.5-350M checkpoint and
+Apple Silicon host. Keep graph capture/planning, model loading, HTTP edge, and
+tensor execution as separately reported measurements.
 
 # Run record
 
@@ -85,3 +85,19 @@ exact-only formatting for each candidate; needle retrieval is not part of the
 engine-pass status. Since each candidate ran
 once in an isolated process, the result marks relative speed claims invalid
 and retains the eager ERS as the recorded baseline only.
+
+# Native HTTP smoke result
+
+The first warmed serial native endpoint observation completed 4/4 scored
+requests, reported 80/194 cached prompt tokens, and matched every eager-Q8
+token sequence and digest. Native/eager ERS was
+`0.06169548638841863/0.36872784102635947`, median TTFT was
+`1812.1075005328748/62.557083496358246` ms, and median TPOT was
+`177.81014566814218/44.406860998909295` ms.
+
+The native SSE extension reports every generated token ID, including
+empty-text special tokens, so token timing does not collapse to visible text
+events. JSON is used only for the external HTTP/SSE compatibility boundary and
+generated reports; native model data remains binary or typed. The exact
+per-request record is
+[`/bench/results/lfm25-350m-q8-native-http-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-http-2026-08-24.txt).

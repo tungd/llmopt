@@ -59,3 +59,4 @@ okf_version: '0.2'
 * [Binary LFM tokenizer and typed chat encoding](experiments/exp-0037-native-tokenizer-chat.md) - versioned tokenizer archive, native byte-level BPE, and typed LFM chat parity.
 * [Variable-length LFM schedules and repeated native decode](experiments/exp-0038-variable-schedule-decode.md) - request-length specialization, growing radix/KV state, and four-token eager-Q8 parity.
 * [Native OCaml chat generation](experiments/exp-0039-native-chat-generation.md) - real chat text crosses native tokenization, dynamic Metal execution, and greedy decoding with eager-Q8 parity.
+* [Native OCaml HTTP serving and token-level ERS](experiments/exp-0040-native-http-serving.md) - the persistent native endpoint records real cached-prefix usage, corrected token timings, ERS, and exact eager-Q8 output IDs.

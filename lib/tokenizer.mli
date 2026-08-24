@@ -11,3 +11,12 @@ val encode :
 
 val decode :
   ?skip_special:bool -> t -> int array -> (string, string) result
+
+module Decoder : sig
+  type tokenizer = t
+  type t
+
+  val create : ?skip_special:bool -> tokenizer -> t
+  val push : t -> int -> (string, string) result
+  val finish : t -> (unit, string) result
+end

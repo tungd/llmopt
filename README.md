@@ -77,6 +77,12 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   prefill or cached-suffix replay, greedy float16 sampling, stop/length
   outcomes, token emission, decoded text, and TTFT/TPOT/cache observations.
   The first 13-token Q8 chat run exactly matches four eager-Q8 completion IDs.
+- A Ninja-built `llmopt-serve` process that loads the tokenizer, both generated
+  packages, the shared Q8 archive, and one persistent Metal/radix/KV runtime.
+  Its loopback OpenAI-compatible edge accepts typed chat requests and streams
+  SSE token events plus usage and real cached-prefix counts. JSON exists only
+  at this external compatibility edge and in generated benchmark reports; the
+  compiler and serving data plane remain binary and typed.
 - A direct FX GraphModule MPS executor as the first runtime optimization pass.
 - A racebench-compatible ERS benchsuite with validated warmup/scored traces,
   the adjacent HTTP runner contract, a full 70x6 trace profile, and a natural
@@ -111,7 +117,8 @@ ownership into OCaml. Its radix ownership, physical FP16/Q8 KV pools,
 archive-backed Metal loader, and cache conversion kernels are implemented;
 complete schedule execution, request-length specialization, and repeated
 radix-backed decode are implemented. Native tokenizer/chat integration and the
-request owner remain open. The bounded use-cache capture produced
+HTTP/SSE request owner are implemented; native long-context needle execution
+and the broader scored profile remain open. The bounded use-cache capture produced
 separate prefill and one-token decode graphs with one physical
 422,137,216-byte archive. Offline replanning produces 872 prefill commands and
 926 decode commands, both with zero opaque operations; both generated MSL
@@ -130,10 +137,11 @@ prefixes 6/7/8 and exactly matched eager tokens
 ## Build and run
 
 The repository intentionally uses Ninja as its only build orchestrator. The
-OCaml compiler is invoked directly by Ninja. Yojson is retained only for
-backward-compatible diagnostic JSON imports; Uutf and Uucp implement the native
-UTF-8 and Unicode-category tokenizer path, alongside Bigarray and Unix from the
-standard distribution.
+OCaml compiler is invoked directly by Ninja. Yojson is retained for
+backward-compatible diagnostic imports and the external OpenAI-compatible HTTP
+edge, not for graph, package, tensor, tokenizer, schedule, or cache transport.
+Uutf and Uucp implement the native UTF-8 and Unicode-category tokenizer path,
+alongside Bigarray and Unix from the standard distribution.
 
 ```sh
 ninja -f ninja.build all
@@ -174,7 +182,24 @@ python3.13 bench/lfm25_tokenizer_parity.py \
 ```
 
 `_build/bin/llmopt-tokenize` exposes plain-text `encode`, `decode`, and typed
-`chat` diagnostics. It does not use JSON as a compiler or serving transport.
+`chat` diagnostics. It does not use JSON as compiler transport or native model
+data transport.
+
+Start the native Q8 server from one compiled tokenizer and the generated
+prefill/decode package pair:
+
+```sh
+_build/bin/llmopt-serve \
+  /path/to/tokenizer.llmopt \
+  /path/to/prefill-package-directory \
+  /path/to/decode-package-directory
+```
+
+It binds `127.0.0.1:8000` by default and exposes `POST
+/v1/chat/completions`, `/health`, and `/healthz`. `--kv fp16` selects FP16 KV;
+Q8-group-64 remains the default. The external JSON/SSE shape matches
+`bench/racebench/http.py`, including token-level timing IDs and
+`prompt_tokens_details.cached_tokens`.
 
 `test` runs the OCaml reference tests and the Python FX/bench-suite contract tests.
 The demo writes generated sources to `_build/llmopt-demo/` and prints the CPU
@@ -254,6 +279,14 @@ in 6/6 cases for both candidates but append extra text, so exact-only response
 formatting is 0/6 and is tracked separately. Because each candidate ran once,
 the record does not support a relative speed claim.
 
+The first warmed, serial native HTTP smoke completed 4/4 scored requests with
+exact eager-Q8 token parity and reused 80/194 prompt tokens. It measured native
+ERS `0.06169548638841863` versus eager ERS `0.36872784102635947`, median TTFT
+`1812.1075005328748` versus `62.557083496358246` ms, and median TPOT
+`177.81014566814218` versus `44.406860998909295` ms. The exact command shape,
+per-request token IDs, cache counts, and deltas are recorded in
+[`bench/results/lfm25-350m-q8-native-http-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-http-2026-08-24.txt).
+
 ## Architecture
 
 ```text
@@ -292,7 +325,7 @@ OCaml serving runtime
         ├── alias-aware liveness workspace allocation (implemented)
         ├── request-length specialization + repeated radix-backed decode (implemented)
         ├── tokenizer-driven greedy chat generation (implemented)
-        └── HTTP/SSE request loop (next)
+        └── OpenAI-compatible HTTP/SSE request loop (implemented)
 ```
 
 `graph.llmopt` is a compile-time transport and `plan.txt` is a compiler

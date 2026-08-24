@@ -93,6 +93,37 @@ PYTHONPATH=python:bench python3.13 -m racebench.cli validate-trace \
   --require-shape-matched
 ```
 
+The native OCaml runtime implements that endpoint directly. Start it once so
+the generated Metal libraries, mapped binary tensor archive, physical KV pools,
+and radix tree remain resident across turns:
+
+```sh
+_build/bin/llmopt-serve --port 8000 \
+  /path/to/tokenizer.llmopt \
+  /path/to/prefill-package-directory \
+  /path/to/decode-package-directory
+```
+
+Then run distinct warmup and scored traces against the same process:
+
+```sh
+PYTHONPATH=bench python3.13 -m racebench.cli run \
+  --trace bench/traces/lfm25-mps-warmup.json \
+  --base-url http://127.0.0.1:8000 --max-workers 1 \
+  --output _artifacts/native-http/warmup.json
+PYTHONPATH=bench python3.13 -m racebench.cli run \
+  --trace bench/traces/lfm25-mps-smoke.json \
+  --base-url http://127.0.0.1:8000 --max-workers 1 \
+  --output _artifacts/native-http/scored.json
+```
+
+The protocol is JSON only at the OpenAI-compatible HTTP/SSE edge. FX graphs,
+compiled packages, weights, tokenizer state, schedules, KV state, and Metal
+dispatch do not use JSON. Each native SSE token event includes
+`x_llmopt_token_id`; the runner records those IDs and timestamps even when a
+special token has no visible text, preventing text-event collapse from
+producing a false zero TPOT.
+
 The engine exit status covers successful warmup/scored requests, pinned output
 counts, and fixed-forward equality; needle retrieval is recorded separately.
 Pass `--require-needle` only when control-code retrieval should be included in the
@@ -125,3 +156,11 @@ and fixed-forward digest parity. The saved outputs retrieve `RAVEN-4271` in
 is invalid without repeated or counterbalanced samples. The protocol records
 measurements and validation observations; it does not add an unstated
 performance threshold.
+
+The first warmed serial native HTTP observation completed 4/4 requests, reused
+80/194 prompt tokens, and matched all four eager-Q8 token sequences exactly.
+Native ERS was `0.06169548638841863` versus eager `0.36872784102635947`;
+native/eager median TTFT was `1812.1075005328748/62.557083496358246` ms and
+median TPOT was `177.81014566814218/44.406860998909295` ms. The tracked
+per-request record is
+[`results/lfm25-350m-q8-native-http-2026-08-24.txt`](results/lfm25-350m-q8-native-http-2026-08-24.txt).

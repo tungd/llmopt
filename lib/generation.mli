@@ -18,6 +18,7 @@ val create :
 
 val generate :
   ?emit:(int -> unit) ->
+  ?ignore_eos:bool ->
   t ->
   config:Generation_core.Config.t ->
   messages:Lfm_chat.Message.t list ->

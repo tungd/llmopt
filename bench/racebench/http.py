@@ -8,6 +8,7 @@ endpoint contract available for local server experiments and contract tests.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import http.client
 import json
 import ssl
@@ -73,7 +74,9 @@ def _stream_request(
     prompt_tokens = 0
     cached_prompt_tokens = 0
     content_events = 0
+    token_events = 0
     output_parts: list[str] = []
+    output_token_ids: list[int] = []
     error: str | None = None
     try:
         headers = {
@@ -111,12 +114,21 @@ def _stream_request(
             choices = event.get("choices") or []
             if not choices:
                 continue
-            content = (choices[0].get("delta") or {}).get("content")
+            delta = choices[0].get("delta") or {}
+            token_id = delta.get("x_llmopt_token_id")
+            content = delta.get("content")
+            if token_id is not None:
+                observed_at = time.perf_counter()
+                first_token_at = first_token_at or observed_at
+                last_token_at = observed_at
+                token_events += 1
+                output_token_ids.append(int(token_id))
             if not content:
                 continue
-            observed_at = time.perf_counter()
-            first_token_at = first_token_at or observed_at
-            last_token_at = observed_at
+            if token_id is None:
+                observed_at = time.perf_counter()
+                first_token_at = first_token_at or observed_at
+                last_token_at = observed_at
             content_events += 1
             output_parts.append(str(content))
     except Exception as exc:  # one failed request must not abort the trace
@@ -124,7 +136,7 @@ def _stream_request(
         connection.close()
     ended_at = time.perf_counter()
     if completion_tokens == 0:
-        completion_tokens = content_events
+        completion_tokens = token_events or content_events
     succeeded = error is None and first_token_at is not None and completion_tokens > 0
     ttft_ms = (first_token_at - started_at) * 1000.0 if first_token_at else None
     if succeeded and completion_tokens > 1 and last_token_at is not None:
@@ -156,6 +168,14 @@ def _stream_request(
         ),
         prompt_tokens=prompt_tokens,
         cached_prompt_tokens=cached_prompt_tokens,
+        output_token_ids=output_token_ids,
+        output_token_ids_sha256=(
+            hashlib.sha256(
+                json.dumps(output_token_ids, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if output_token_ids
+            else ""
+        ),
     )
 
 

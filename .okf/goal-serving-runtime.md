@@ -36,9 +36,15 @@ sources:
   - id: chat
     resource: /lib/lfm_chat.ml
     title: Typed text-only LFM chat encoding
+  - id: native-server
+    resource: /bin/lfm_serve.ml
+    title: Persistent native OCaml HTTP and SSE server
   - id: benchmark
     resource: /bench/lfm25_benchsuite.py
     title: LFM2.5 ERS and needle benchsuite
+  - id: native-http-result
+    resource: /bench/results/lfm25-350m-q8-native-http-2026-08-24.txt
+    title: Native HTTP token parity and ERS observation
   - id: build
     resource: /ninja.build
     title: Ninja build graph
@@ -65,12 +71,12 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Replanning produces 872 prefill and 926 decode commands with zero opaque operations. Typed specialization re-infers real schedules at prefill 13/128/4,096 and decode-past 1/127/4,095; every observed kernel family remains emitted | implemented for captured templates and observed LFM shapes |
 | Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v8 retains ABI-v2 through ABI-v7 reads and adds sliced cache appends. The pair checker validates Q8 and FP16 policies across 872-command/46-entry prefill and 926-command/44-entry decode templates against the shared 422,137,216-byte tensor archive | implemented for the captured template pair |
 | Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Binary-input ABI-v8 replanning compiles 46 prefill and 44 decode entries covering every observed model family plus eight FP16/Q8 cache conversions. Float32 matmul/linear dimensions are runtime parameters; regenerated MSL and the 39-output primitive device probe pass | implemented for captured templates |
-| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | One context and inode-keyed archive mapping serve both stages. One Q8 run executed prefill plus three decode steps, dispatched 522 + 1,632 kernels, and matched eager Q8 tokens `19130,11040,11207,1414`; exact logits and batched command submission remain absent | partial |
+| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | One persistent `llmopt-serve` process loaded both stages and the inode-keyed archive, completed warmup plus four scored requests, and retained one radix/KV owner. Exact logits and batched command submission remain absent | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | The repeated Q8 run mapped the shared 241-tensor archive, grew to nine attention slots and four recurrent checkpoints, and passed cache validation. FP16 remains package-validated and small-fixture-executed rather than model-executed | implemented for Q8 prefill plus repeated decode |
-| Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `llmopt-generate` now connects `LLMOPTTK`, typed chat, radix-aware prompt preparation, greedy stop/length generation, token callbacks, text decoding, and cache/latency observations. One real 13-token chat prompt preserves four eager-Q8 tokens; HTTP/SSE remains open | partial |
-| Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Three native decode steps matched prefixes 6/7/8, recorded three hits and zero misses, grew to nine physical slots/four checkpoints, and retained four-token eager-Q8 parity; request-level evidence remains absent | partial |
+| Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `llmopt-serve` accepts the OpenAI-compatible chat contract, incrementally decodes UTF-8, streams every generated token ID plus visible text, and reports usage. The warmed scored smoke completed 4/4 requests with pinned output counts | implemented for the HTTP smoke contract |
+| Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Scored second turns reused 42/61 and 38/59 prompt tokens; total reuse was 80/194 while all four output sequences matched eager Q8 exactly. The uncached suffix is still replayed one token at a time | implemented for serial multi-turn smoke requests |
 | Configurable KV quantization | FP16 and Q8 runs bind physical Metal KV/checkpoint buffers and execute matching quantize/dequantize paths | Small exact probes cover FP16 and Q8-group-64. The full fixed model run used Q8 by default; the ABI-v8 pair validates FP16 but has not executed it at model scale | partial |
-| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by one reproducible command | Native chat evidence records exact four-token parity, 434.065 ms TTFT, 122.412 ms mean TPOT, one miss, and three hits. The existing HTTP suite still runs the old candidate path, so native request counts, needle, and ERS remain open | partial |
+| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by one reproducible command | Token-instrumented HTTP reports record 4/4 exact eager-Q8 sequences, native ERS `0.06169548638841863`, eager ERS `0.36872784102635947`, native/eager median TTFT `1812.108/62.557` ms, native/eager median TPOT `177.810/44.407` ms, and 80/194 cached prompt tokens. Native exact logits and needle remain open | partial |
 
 # Completion condition
 

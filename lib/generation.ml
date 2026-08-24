@@ -56,11 +56,15 @@ let create ~tokenizer ~engine =
   let* chat = Lfm_chat.create tokenizer in
   Ok { tokenizer; chat; engine }
 
-let generate ?emit generation ~config ~messages =
+let generate ?emit ?(ignore_eos = false) generation ~config ~messages =
   let* prompt = Lfm_chat.encode generation.chat messages in
+  let is_stop =
+    if ignore_eos then Fun.const false
+    else Lfm_chat.is_end_token generation.chat
+  in
   let* result =
     Driver.run ?emit generation.engine ~config
-      ~is_stop:(Lfm_chat.is_end_token generation.chat) ~prompt
+      ~is_stop ~prompt
   in
   let completion = Generation_core.Result.completion_tokens result in
   let* text = Tokenizer.decode generation.tokenizer completion in

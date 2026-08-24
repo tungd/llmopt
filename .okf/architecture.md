@@ -36,6 +36,12 @@ sources:
   - id: local-serving-engine
     resource: /lib/serving_engine.ml
     title: Native prefill, decode, and radix coordinator
+  - id: local-serving-protocol
+    resource: /lib/openai_protocol.ml
+    title: Typed external OpenAI compatibility edge
+  - id: local-serving-server
+    resource: /bin/lfm_serve.ml
+    title: Persistent native OCaml HTTP server
   - id: local-weight-archive
     resource: /lib/weight_archive.ml
     title: Versioned binary weight-archive parser and tensor index
@@ -339,7 +345,16 @@ a cold prompt runs the specialized prefill schedule.
 The first real chat run encoded `user: Say hi.` into 13 IDs, generated
 `36309,510,2213,1011`, decoded `Hello! How can`, and matched a separate
 eager-Q8 reference exactly. This establishes the direct native generation
-path; HTTP/SSE ownership and multi-request evidence remain the next boundary.
+path.
+
+`llmopt-serve` now owns that generation value across serial HTTP requests. Its
+OpenAI-compatible JSON/SSE adapter is the only JSON serving boundary; binary
+tokenizer, package, tensor, schedule, radix/KV, and Metal representations stay
+inside the native process. Incremental UTF-8 decoding emits every generated
+token ID, including empty-text special tokens, so the benchmark timestamps
+tokens rather than visible text fragments. One warmed four-request scored
+smoke reused 80/194 prompt tokens, matched all eager-Q8 token sequences, and
+measured native ERS `0.06169548638841863`; native needle requests remain open.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

@@ -455,3 +455,108 @@ let decode ?(skip_special = true) tokenizer ids =
   let result = Buffer.contents buffer in
   let* _ = runes result in
   Ok result
+
+module Decoder = struct
+  type tokenizer = t
+
+  type t = {
+    tokenizer : tokenizer;
+    skip_special : bool;
+    mutable pending : string;
+    mutable finished : bool;
+  }
+
+  let create ?(skip_special = true) tokenizer =
+    { tokenizer; skip_special; pending = ""; finished = false }
+
+  let token_bytes decoder id =
+    match token decoder.tokenizer id with
+    | None -> Error (Printf.sprintf "unknown tokenizer id: %d" id)
+    | Some token when decoder.skip_special && token.special -> Ok ""
+    | Some token ->
+        let output = Buffer.create (String.length token.text) in
+        let source = Uutf.decoder ~encoding:`UTF_8 (`String token.text) in
+        let rec bytes () =
+          match Uutf.decode source with
+          | `Uchar value ->
+              (match Hashtbl.find_opt inverse_bytes (Uchar.to_int value) with
+              | None ->
+                  Error
+                    (Printf.sprintf
+                       "token %d contains a non-byte-level scalar U+%04X" id
+                       (Uchar.to_int value))
+              | Some byte ->
+                  Buffer.add_char output (Char.chr byte);
+                  bytes ())
+          | `End -> Ok (Buffer.contents output)
+          | `Malformed _ ->
+              Error (Printf.sprintf "token %d contains malformed UTF-8" id)
+          | `Await -> assert false
+        in
+        bytes ()
+
+  let continuation byte = byte land 0xc0 = 0x80
+
+  let complete_prefix text =
+    let length = String.length text in
+    let byte index = Char.code text.[index] in
+    let invalid index =
+      Error (Printf.sprintf "token stream contains malformed UTF-8 at byte %d" index)
+    in
+    let rec scan index =
+      if index = length then Ok length
+      else
+        let first = byte index in
+        if first <= 0x7f then scan (index + 1)
+        else if first >= 0xc2 && first <= 0xdf then
+          if index + 2 > length then Ok index
+          else if continuation (byte (index + 1)) then scan (index + 2)
+          else invalid index
+        else if first >= 0xe0 && first <= 0xef then
+          if index + 3 > length then Ok index
+          else
+            let second = byte (index + 1) in
+            let second_valid =
+              if first = 0xe0 then second >= 0xa0 && second <= 0xbf
+              else if first = 0xed then second >= 0x80 && second <= 0x9f
+              else continuation second
+            in
+            if second_valid && continuation (byte (index + 2)) then
+              scan (index + 3)
+            else invalid index
+        else if first >= 0xf0 && first <= 0xf4 then
+          if index + 4 > length then Ok index
+          else
+            let second = byte (index + 1) in
+            let second_valid =
+              if first = 0xf0 then second >= 0x90 && second <= 0xbf
+              else if first = 0xf4 then second >= 0x80 && second <= 0x8f
+              else continuation second
+            in
+            if
+              second_valid && continuation (byte (index + 2))
+              && continuation (byte (index + 3))
+            then scan (index + 4)
+            else invalid index
+        else invalid index
+    in
+    scan 0
+
+  let push decoder id =
+    if decoder.finished then Error "token decoder is already finished"
+    else
+      let* bytes = token_bytes decoder id in
+      let pending = decoder.pending ^ bytes in
+      let* complete = complete_prefix pending in
+      let output = String.sub pending 0 complete in
+      decoder.pending <-
+        String.sub pending complete (String.length pending - complete);
+      Ok output
+
+  let finish decoder =
+    if decoder.finished then Error "token decoder is already finished"
+    else (
+      decoder.finished <- true;
+      if decoder.pending = "" then Ok ()
+      else Error "token stream ends with incomplete UTF-8")
+end
