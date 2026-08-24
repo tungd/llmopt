@@ -1,6 +1,7 @@
 type context_handle
 type library_handle
 type buffer_handle
+type batch_handle
 
 let ( let* ) = Result.bind
 
@@ -47,6 +48,24 @@ external dispatch_stub :
   * int * int -> unit
   = "caml_llmopt_metal_dispatch"
 
+external begin_batch_stub : library_handle -> batch_handle
+  = "caml_llmopt_metal_begin_batch"
+
+external batch_dispatch_stub :
+  batch_handle * library_handle * string * buffer_handle list * bytes * int
+  * int * int * int * int * int -> unit
+  = "caml_llmopt_metal_batch_dispatch"
+
+external batch_copy_stub :
+  batch_handle -> buffer_handle -> buffer_handle -> unit
+  = "caml_llmopt_metal_batch_copy"
+
+external commit_batch_stub : batch_handle -> unit
+  = "caml_llmopt_metal_commit_batch"
+
+external abort_batch_stub : batch_handle -> unit
+  = "caml_llmopt_metal_abort_batch"
+
 let protect operation =
   try Ok (operation ()) with
   | Failure message -> Error message
@@ -60,6 +79,40 @@ type t = {
 }
 
 type runtime = t
+
+module Batch = struct
+  type t = {
+    handle : batch_handle;
+    library : library_handle;
+  }
+
+  let create (runtime : runtime) =
+    protect (fun () ->
+        { handle = begin_batch_stub runtime.library; library = runtime.library })
+
+  let dispatch batch ~name ~buffers ~parameters ~grid ~group =
+    let grid_x, grid_y, grid_z = grid in
+    let group_x, group_y, group_z = group in
+    protect (fun () ->
+        batch_dispatch_stub
+          ( batch.handle,
+            batch.library,
+            name,
+            buffers,
+            parameters,
+            grid_x,
+            grid_y,
+            grid_z,
+            group_x,
+            group_y,
+            group_z ))
+
+  let copy batch ~source ~destination =
+    protect (fun () -> batch_copy_stub batch.handle source destination)
+
+  let commit batch = protect (fun () -> commit_batch_stub batch.handle)
+  let abort batch = protect (fun () -> abort_batch_stub batch.handle)
+end
 
 type prepared_package = {
   root : string;
@@ -249,23 +302,30 @@ let kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype =
            (match name with None -> "" | Some value -> " " ^ value)
            (Ir.Dtype.to_string input_dtype) (Ir.Dtype.to_string output_dtype))
 
-let dispatch runtime entry ~buffers ~parameters ~grid =
+let dispatch ?batch runtime entry ~buffers ~parameters ~grid =
   let name = Kernel_abi.Entry.name entry in
   let group_x, group_y, group_z = Kernel_abi.Entry.threadgroup entry in
   let grid_x, grid_y, grid_z = grid in
-  protect (fun () ->
-      dispatch_stub
-        ( runtime.library,
-          name,
-          buffers,
-          parameters,
-          grid_x,
-          grid_y,
-          grid_z,
-          group_x,
-          group_y,
-          group_z );
-      name)
+  let* () =
+    match batch with
+    | None ->
+        protect (fun () ->
+            dispatch_stub
+              ( runtime.library,
+                name,
+                buffers,
+                parameters,
+                grid_x,
+                grid_y,
+                grid_z,
+                group_x,
+                group_y,
+                group_z ))
+    | Some batch ->
+        Batch.dispatch batch ~name ~buffers ~parameters
+          ~grid:(grid_x, grid_y, grid_z) ~group:(group_x, group_y, group_z)
+  in
+  Ok name
 
 module Parameters = struct
   let max_rank = 8
@@ -985,6 +1045,27 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
+let dispatch_q8_linear_batched batch runtime ~dtype ~input_value ~weight_value
+    ~input ~weight ~scale ~bias ~output_value ~output ~m ~n ~k =
+  let* () = validate_linear_shapes ~m ~n ~k input_value weight_value output_value in
+  let* entry =
+    match q8_kernel runtime dtype with
+    | Some entry -> Ok entry
+    | None ->
+        Error
+          ("serving package has no Q8 linear kernel for "
+          ^ Ir.Dtype.to_string dtype)
+  in
+  let bias_buffer, has_bias =
+    match bias with Some buffer -> buffer, true | None -> scale, false
+  in
+  let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
+  let* grid_x = round_up n 16 in
+  let* grid_y = round_up m 16 in
+  dispatch ~batch runtime entry
+    ~buffers:[ input; weight; scale; bias_buffer; output ] ~parameters
+    ~grid:(grid_x, grid_y, 1)
+
 let split_axis shape axis =
   let rec loop outer remaining = function
     | [] -> Error "Metal axis is outside the tensor rank"
@@ -994,14 +1075,14 @@ let split_axis shape axis =
   in
   loop [] axis (Tensor_shape.dimensions shape)
 
-let dispatch_output ?name runtime state output ~operation ~input_dtype ~buffers
-    ~parameters ~grid =
+let dispatch_output ?name ?batch runtime state output ~operation ~input_dtype
+    ~buffers ~parameters ~grid =
   let output_dtype = Ir.Value.dtype output in
   let* entry = kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype in
   let* output_buffer = workspace_buffer state output in
   let* kernel =
-    dispatch runtime entry ~buffers:(buffers @ [ output_buffer ]) ~parameters
-      ~grid
+    dispatch ?batch runtime entry ~buffers:(buffers @ [ output_buffer ])
+      ~parameters ~grid
   in
   Ok (bind_value state output output_buffer, kernel)
 
@@ -1132,8 +1213,11 @@ let execute_schedule runtime ~schedule ~inputs =
     if workspace_bytes = 0 then Ok None
     else Buffer.create ~runtime ~bytes:workspace_bytes |> Result.map Option.some
   in
+  let* batch = Batch.create runtime in
+  let dispatch_output ?name = dispatch_output ?name ~batch in
   let rec run state = function
     | [] ->
+        let* () = Batch.commit batch in
         Ok
           {
             Execution.outputs = List.rev state.outputs_rev;
@@ -1175,7 +1259,7 @@ let execute_schedule runtime ~schedule ~inputs =
         | Ir.Op.Copy _, [ source; destination ], None ->
             let* source = find_value state source in
             let* destination = find_value state destination in
-            let* () = Buffer.copy ~source ~destination in
+            let* () = Batch.copy batch ~source ~destination in
             continue state
         | ( Ir.Op.Primitive
               (Ir.Primitive.Movement
@@ -1588,25 +1672,39 @@ let execute_schedule runtime ~schedule ~inputs =
                  ~input_dtype:(Ir.Value.dtype source) ~buffers ~parameters
                  ~grid:(Tensor_shape.numel (Ir.Value.logical_shape output), 1, 1))
         | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, values, Some output ->
-            let* input, weight, scale, bias =
+            let* input_value, weight_value, input, weight, scale, bias =
               match values, has_bias with
-              | [ input; weight; scale ], false ->
-                  let* input = find_value state input in
-                  let* weight = find_value state weight in
-                  let* scale = find_value state scale in
-                  Ok (input, weight, scale, None)
-              | [ input; weight; scale; bias ], true ->
-                  let* input = find_value state input in
-                  let* weight = find_value state weight in
-                  let* scale = find_value state scale in
-                  let* bias = find_value state bias in
-                  Ok (input, weight, scale, Some bias)
+              | [ input_value; weight_value; scale_value ], false ->
+                  let* input = find_value state input_value in
+                  let* weight = find_value state weight_value in
+                  let* scale = find_value state scale_value in
+                  Ok
+                    ( input_value,
+                      weight_value,
+                      input,
+                      weight,
+                      scale,
+                      None )
+              | [ input_value; weight_value; scale_value; bias_value ], true ->
+                  let* input = find_value state input_value in
+                  let* weight = find_value state weight_value in
+                  let* scale = find_value state scale_value in
+                  let* bias = find_value state bias_value in
+                  Ok
+                    ( input_value,
+                      weight_value,
+                      input,
+                      weight,
+                      scale,
+                      Some bias )
               | _ -> Error "Q8 schedule command has inconsistent bias inputs"
             in
             let* output_buffer = workspace_buffer state output in
             let* kernel =
-              dispatch_q8_linear runtime ~dtype:(Ir.Value.dtype output) ~input
-                ~weight ~scale ~bias ~output:output_buffer ~m ~n ~k
+              dispatch_q8_linear_batched batch runtime
+                ~dtype:(Ir.Value.dtype output) ~input_value ~weight_value
+                ~input ~weight ~scale ~bias ~output_value:output
+                ~output:output_buffer ~m ~n ~k
             in
             let state = bind_value state output output_buffer in
             continue { state with kernels_rev = kernel :: state.kernels_rev }
@@ -1616,15 +1714,22 @@ let execute_schedule runtime ~schedule ~inputs =
               { state with outputs_rev = (name, buffer) :: state.outputs_rev }
         | _ -> unsupported ())
   in
-  run
-    {
-      values = Value_map.empty;
-      outputs_rev = [];
-      kernels_rev = [];
-      memory_plan;
-      workspace;
-    }
-    (Serving_schedule.commands schedule)
+  let result =
+    run
+      {
+        values = Value_map.empty;
+        outputs_rev = [];
+        kernels_rev = [];
+        memory_plan;
+        workspace;
+      }
+      (Serving_schedule.commands schedule)
+  in
+  match result with
+  | Ok _ -> result
+  | Error _ as error ->
+      ignore (Batch.abort batch);
+      error
 
 let execute runtime ~inputs =
   execute_schedule runtime

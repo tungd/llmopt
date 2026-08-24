@@ -33,6 +33,9 @@ sources:
   - id: local-ocaml-runtime
     resource: /lib/metal_runtime.ml
     title: Native OCaml package loader and typed Q8 dispatch
+  - id: batched-command-result
+    resource: /bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt
+    title: Schedule-wide Metal command-buffer observation
   - id: local-serving-engine
     resource: /lib/serving_engine.ml
     title: Native prefill, decode, and radix coordinator
@@ -357,6 +360,13 @@ smoke reused 80/194 prompt tokens, matched all eager-Q8 token sequences, and
 measured native ERS `0.06169548638841863`. A stop-on-EOS native long-context
 matrix retrieves 6/6 at 2,048/4,096 tokens and matches the first seven eager
 IDs; the corrected fixed-12-token matrix remains open.
+
+Schedule execution now accumulates its generic and Q8 compute dispatches into
+one compute encoder and inserts ordered blit encoders for typed copies. It
+commits and waits once per schedule instead of once per generated kernel. The
+fixed 39-output device probe remains exact, and the matched warmed HTTP smoke
+raises native ERS from `0.06169548638841863` to `0.11058587181748172` while
+preserving all token IDs and cached-prefix counts.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

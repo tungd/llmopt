@@ -53,7 +53,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   normalized-slice update. A pure alias-aware liveness pass assigns
   256-byte-aligned offsets to materialized values; the executor allocates one
   retained Metal workspace and returns buffer views instead of allocating one
-  buffer per intermediate. Serving packages additionally declare native FP16
+  buffer per intermediate. One schedule now encodes all generated kernels and
+  typed copies into one ordered Metal command buffer instead of synchronously
+  waiting after every kernel. Serving packages additionally declare native FP16
   and grouped-Q8 pack/unpack kernels for attention KV and recurrent
   checkpoints; the OCaml runtime owns their physical Metal pools.
 - Dynamo static-input capture that binds model parameters and buffers to stable
@@ -287,6 +289,13 @@ ERS `0.06169548638841863` versus eager ERS `0.36872784102635947`, median TTFT
 `177.81014566814218` versus `44.406860998909295` ms. The exact command shape,
 per-request token IDs, cache counts, and deltas are recorded in
 [`bench/results/lfm25-350m-q8-native-http-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-http-2026-08-24.txt).
+
+Batching one complete generated schedule into one Metal command buffer retains
+4/4 exact eager-Q8 sequences and 80/194 cached prompt tokens while raising
+native ERS to `0.11058587181748172`. Against the same pre-batching native
+trace, median TTFT falls by `716.9136460288428 ms` and median TPOT by
+`71.56679149678288 ms`. See
+[`bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt).
 
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048

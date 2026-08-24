@@ -1,0 +1,66 @@
+LFM2.5-350M Q8 native batched-command optimization
+Date: 2026-08-24
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Change
+- Before: each generated schedule kernel created, committed, and synchronously waited on its own Metal command buffer.
+- After: one OCaml execution schedule encodes its compute kernels and typed copies into one ordered Metal command buffer, then commits and waits once.
+- Typed copies use ordered blit encoders; exact aliases are no-ops and overlapping views are rejected.
+- Cache pack/unpack dispatch outside execute_schedule remains independently submitted.
+
+Preflight and regression
+- memory_pressure before primitive probe: 60% free
+- resident Torch/model/native-server processes: none
+- primitive device package: 129 commands, 38 kernels, 9,728-byte workspace
+- primitive outputs: 39/39 exact
+- model preflight: 60% free; no resident model/native-server process
+- supervisor: 240 seconds
+
+Matched HTTP protocol
+- request scheduling: serial
+- warmup trace: bench/traces/lfm25-mps-warmup.json, 4 requests
+- scored trace: bench/traces/lfm25-mps-smoke.json, 4 requests
+- weights and KV: Q8 / Q8-group-64
+- token/checkpoint capacities: 512 / 128
+- completion tokens: pinned to 4 per request
+
+Before batching
+- ERS: 0.06169548638841863
+- median TTFT: 1812.1075005328748 ms
+- median TPOT: 177.81014566814218 ms
+- cached prompt tokens: 80/194
+
+After batching
+- successful scored requests: 4/4
+- output token mismatches: 0
+- exact eager-Q8 token sequences: 4/4
+- ERS: 0.11058587181748172
+- median TTFT: 1095.193854504032 ms
+- median TPOT: 106.2433541713593 ms
+- cached prompt tokens: 80/194
+
+Measured after-minus-before deltas
+- ERS: +0.04889038542906309
+- median TTFT: -716.9136460288428 ms
+- median TPOT: -71.56679149678288 ms
+
+After-batching per-request evidence
+- c0000-t000: score 0.19801677409153431; TTFT 154.56833399366587 ms; TPOT 89.3616250056463 ms; cached 0/39; IDs 1098,5706,803,4481
+- c0000-t001: score 0.0; TTFT 2035.8193750143982 ms; TPOT 125.2911666718622 ms; cached 42/61; IDs 41677,7,2,1
+- c0001-t000: score 0.24432671317839255; TTFT 127.37537501379848 ms; TPOT 84.33343066523473 ms; cached 0/35; IDs 1098,5410,4100,856
+- c0001-t001: score 0.0; TTFT 2147.693042003084 ms; TPOT 123.12508333707228 ms; cached 38/59; IDs 31466,7,2,1
+
+Separate eager-Q8 scored reference
+- ERS: 0.36872784102635947
+- median TTFT: 62.557083496358246 ms
+- median TPOT: 44.406860998909295 ms
+
+Raw generated reports
+- before: _artifacts/native-http-aligned-smoke-2026-08-24/scored.json
+- after: _artifacts/native-http-batched-smoke-2026-08-24/scored.json
+- eager: _artifacts/eager-http-parity-2026-08-24/eager/report.json
+
+Evidence boundary
+- This is one matched warmed serial observation before and after the command-submission change.
+- Exact primitive outputs, request token IDs, prompt counts, and cached-token counts are unchanged.
+- Memory recovered to 61% with no resident model process after the server exited.

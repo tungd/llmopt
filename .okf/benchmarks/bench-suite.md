@@ -45,6 +45,9 @@ sources:
   - id: result-native-needle
     resource: /bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt
     title: native long-context retrieval observation
+  - id: result-native-batched
+    resource: /bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt
+    title: native command-buffer optimization result
   - id: result-preintegration
     resource: /_artifacts/lfm25-benchsuite-q8-radix-e3d0d15/result.json
     title: post-cache-implementation pre-integration observation
@@ -80,6 +83,11 @@ records 4/4 eager-Q8 token parity, 80/194 cached prompt tokens, native ERS
 stop-on-EOS long matrix retrieves 6/6 and matches the first seven eager-Q8 IDs;
 the corrected fixed-12-token matrix and semantic 5x3 profile remain separate
 open measurements.
+
+Schedule-wide command-buffer batching preserves those four eager-Q8 sequences
+and 80/194 cached tokens. On the identical warmed serial trace, native ERS
+increases to `0.11058587181748172`, median TTFT decreases by `716.914 ms`, and
+median TPOT decreases by `71.567 ms` relative to the initial native endpoint.
 
 # Scoring
 

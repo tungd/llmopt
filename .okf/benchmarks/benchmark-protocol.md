@@ -102,6 +102,13 @@ generated reports; native model data remains binary or typed. The exact
 per-request record is
 [`/bench/results/lfm25-350m-q8-native-http-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-http-2026-08-24.txt).
 
+Batching each generated schedule into one ordered Metal command buffer retains
+4/4 exact token parity and 80/194 cached prompt tokens. The identical warmed
+serial native trace changes ERS from `0.06169548638841863` to
+`0.11058587181748172`, median TTFT by `-716.9136460288428 ms`, and median TPOT
+by `-71.56679149678288 ms`. The matched record is
+[`/bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt).
+
 # Native long-context retrieval
 
 The native endpoint completed the six 2,048/4,096-token natural prompts with

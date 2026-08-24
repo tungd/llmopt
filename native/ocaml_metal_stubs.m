@@ -37,6 +37,12 @@ typedef struct {
 } llmopt_metal_buffer;
 
 typedef struct {
+  id<MTLCommandBuffer> command;
+  id<MTLComputeCommandEncoder> compute;
+  BOOL finished;
+} llmopt_metal_batch;
+
+typedef struct {
   uint32_t m;
   uint32_t n;
   uint32_t k;
@@ -53,6 +59,10 @@ static llmopt_metal_library *Library_val(value handle) {
 
 static llmopt_metal_buffer *Buffer_val(value handle) {
   return *((llmopt_metal_buffer **)Data_custom_val(handle));
+}
+
+static llmopt_metal_batch *Batch_val(value handle) {
+  return *((llmopt_metal_batch **)Data_custom_val(handle));
 }
 
 static void finalize_context(value handle) {
@@ -88,6 +98,25 @@ static void finalize_buffer(value handle) {
   }
 }
 
+static void end_batch_compute(llmopt_metal_batch *batch) {
+  if (batch->compute != nil) {
+    [batch->compute endEncoding];
+    [batch->compute release];
+    batch->compute = nil;
+  }
+}
+
+static void finalize_batch(value handle) {
+  llmopt_metal_batch **slot =
+      (llmopt_metal_batch **)Data_custom_val(handle);
+  if (*slot != NULL) {
+    end_batch_compute(*slot);
+    [(*slot)->command release];
+    free(*slot);
+    *slot = NULL;
+  }
+}
+
 static struct custom_operations context_operations = {
     "llmopt.metal.context",
     finalize_context,
@@ -118,6 +147,16 @@ static struct custom_operations buffer_operations = {
     custom_compare_ext_default,
     custom_fixed_length_default};
 
+static struct custom_operations batch_operations = {
+    "llmopt.metal.batch",
+    finalize_batch,
+    custom_compare_default,
+    custom_hash_default,
+    custom_serialize_default,
+    custom_deserialize_default,
+    custom_compare_ext_default,
+    custom_fixed_length_default};
+
 static value alloc_context(llmopt_metal_context *context) {
   value result =
       caml_alloc_custom(&context_operations, sizeof(context), 0, 1);
@@ -135,6 +174,13 @@ static value alloc_library(llmopt_metal_library *library) {
 static value alloc_buffer(llmopt_metal_buffer *buffer) {
   value result = caml_alloc_custom(&buffer_operations, sizeof(buffer), 0, 1);
   *((llmopt_metal_buffer **)Data_custom_val(result)) = buffer;
+  return result;
+}
+
+static value alloc_batch(llmopt_metal_batch *batch) {
+  value result =
+      caml_alloc_custom(&batch_operations, sizeof(batch), 0, 1);
+  *((llmopt_metal_batch **)Data_custom_val(result)) = batch;
   return result;
 }
 
@@ -497,6 +543,184 @@ static NSUInteger positive_size(value encoded, const char *name) {
     caml_invalid_argument(message);
   }
   return (NSUInteger)decoded;
+}
+
+static llmopt_metal_batch *require_active_batch(value handle) {
+  llmopt_metal_batch *batch = Batch_val(handle);
+  if (batch == NULL) {
+    caml_failwith("Metal batch has been finalized");
+  }
+  if (batch->finished || batch->command == nil) {
+    caml_invalid_argument("Metal batch is already finished");
+  }
+  return batch;
+}
+
+static id<MTLComputeCommandEncoder>
+batch_compute_encoder(llmopt_metal_batch *batch) {
+  if (batch->compute == nil) {
+    batch->compute = [[batch->command computeCommandEncoder] retain];
+    if (batch->compute == nil) {
+      caml_failwith("Metal could not create a batched compute encoder");
+    }
+  }
+  return batch->compute;
+}
+
+CAMLprim value caml_llmopt_metal_begin_batch(value library_value) {
+  CAMLparam1(library_value);
+  CAMLlocal1(result);
+  llmopt_metal_library *library = Library_val(library_value);
+  if (library == NULL) {
+    caml_failwith("Metal library has been finalized");
+  }
+  @autoreleasepool {
+    id<MTLCommandBuffer> command = [library->queue commandBuffer];
+    if (command == nil) {
+      caml_failwith("Metal could not create a batched command buffer");
+    }
+    llmopt_metal_batch *batch = calloc(1, sizeof(*batch));
+    if (batch == NULL) {
+      caml_raise_out_of_memory();
+    }
+    batch->command = [command retain];
+    batch->compute = nil;
+    batch->finished = NO;
+    result = alloc_batch(batch);
+  }
+  CAMLreturn(result);
+}
+
+CAMLprim value caml_llmopt_metal_batch_dispatch(value arguments) {
+  CAMLparam1(arguments);
+  llmopt_metal_batch *batch =
+      require_active_batch(Field(arguments, 0));
+  llmopt_metal_library *library = Library_val(Field(arguments, 1));
+  const char *kernel_name = String_val(Field(arguments, 2));
+  value buffers = Field(arguments, 3);
+  value parameters = Field(arguments, 4);
+  MTLSize grid = MTLSizeMake(
+      positive_size(Field(arguments, 5), "grid width"),
+      positive_size(Field(arguments, 6), "grid height"),
+      positive_size(Field(arguments, 7), "grid depth"));
+  MTLSize group = MTLSizeMake(
+      positive_size(Field(arguments, 8), "threadgroup width"),
+      positive_size(Field(arguments, 9), "threadgroup height"),
+      positive_size(Field(arguments, 10), "threadgroup depth"));
+  if (library == NULL) {
+    caml_failwith("Metal library has been finalized");
+  }
+
+  @autoreleasepool {
+    id<MTLComputePipelineState> pipeline =
+        pipeline_for_name(library, kernel_name);
+    if (group.width * group.height * group.depth >
+        pipeline.maxTotalThreadsPerThreadgroup) {
+      caml_invalid_argument("Metal threadgroup exceeds pipeline capacity");
+    }
+    id<MTLComputeCommandEncoder> encoder = batch_compute_encoder(batch);
+    [encoder setComputePipelineState:pipeline];
+
+    NSUInteger buffer_index = 0;
+    value remaining = buffers;
+    while (remaining != Val_emptylist) {
+      llmopt_metal_buffer *buffer = Buffer_val(Field(remaining, 0));
+      if (buffer == NULL) {
+        caml_failwith("Metal buffer has been finalized");
+      }
+      [encoder setBuffer:buffer->buffer
+                  offset:buffer->offset
+                 atIndex:buffer_index];
+      buffer_index += 1;
+      remaining = Field(remaining, 1);
+    }
+
+    mlsize_t parameter_length = caml_string_length(parameters);
+    if (parameter_length > 0) {
+      [encoder setBytes:Bytes_val(parameters)
+                 length:(NSUInteger)parameter_length
+                atIndex:buffer_index];
+    }
+    [encoder dispatchThreads:grid threadsPerThreadgroup:group];
+  }
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_llmopt_metal_batch_copy(value batch_value,
+                                             value source_value,
+                                             value destination_value) {
+  CAMLparam3(batch_value, source_value, destination_value);
+  llmopt_metal_batch *batch = require_active_batch(batch_value);
+  llmopt_metal_buffer *source = Buffer_val(source_value);
+  llmopt_metal_buffer *destination = Buffer_val(destination_value);
+  if (source == NULL || destination == NULL) {
+    caml_failwith("Metal buffer has been finalized");
+  }
+  if (source->length != destination->length) {
+    caml_invalid_argument("Metal copy requires equal buffer lengths");
+  }
+  if (source->buffer == destination->buffer) {
+    NSUInteger source_end = source->offset + source->length;
+    NSUInteger destination_end = destination->offset + destination->length;
+    if (source->offset == destination->offset) {
+      CAMLreturn(Val_unit);
+    }
+    if (source->offset < destination_end && destination->offset < source_end) {
+      caml_invalid_argument("batched Metal copy buffers overlap");
+    }
+  }
+  @autoreleasepool {
+    end_batch_compute(batch);
+    id<MTLBlitCommandEncoder> blit =
+        [[batch->command blitCommandEncoder] retain];
+    if (blit == nil) {
+      caml_failwith("Metal could not create a batched blit encoder");
+    }
+    [blit copyFromBuffer:source->buffer
+            sourceOffset:source->offset
+                toBuffer:destination->buffer
+       destinationOffset:destination->offset
+                    size:source->length];
+    [blit endEncoding];
+    [blit release];
+  }
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_llmopt_metal_commit_batch(value batch_value) {
+  CAMLparam1(batch_value);
+  llmopt_metal_batch *batch = require_active_batch(batch_value);
+  @autoreleasepool {
+    end_batch_compute(batch);
+    id<MTLCommandBuffer> command = [batch->command retain];
+    [batch->command commit];
+    batch->finished = YES;
+    [batch->command release];
+    batch->command = nil;
+    caml_enter_blocking_section();
+    [command waitUntilCompleted];
+    caml_leave_blocking_section();
+    MTLCommandBufferStatus status = command.status;
+    NSError *command_error = [command.error retain];
+    [command release];
+    if (status != MTLCommandBufferStatusCompleted) {
+      fail_with_error("Metal batch failed", command_error);
+    }
+    [command_error release];
+  }
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_llmopt_metal_abort_batch(value batch_value) {
+  CAMLparam1(batch_value);
+  llmopt_metal_batch *batch = Batch_val(batch_value);
+  if (batch != NULL && !batch->finished) {
+    end_batch_compute(batch);
+    [batch->command release];
+    batch->command = nil;
+    batch->finished = YES;
+  }
+  CAMLreturn(Val_unit);
 }
 
 CAMLprim value caml_llmopt_metal_dispatch(value arguments) {

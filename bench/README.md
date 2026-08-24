@@ -165,6 +165,13 @@ median TPOT was `177.81014566814218/44.406860998909295` ms. The tracked
 per-request record is
 [`results/lfm25-350m-q8-native-http-2026-08-24.txt`](results/lfm25-350m-q8-native-http-2026-08-24.txt).
 
+After schedule-wide Metal command-buffer batching, the identical warmed serial
+native trace remains 4/4 exact with the same 80/194 cache reuse. ERS increases
+from `0.06169548638841863` to `0.11058587181748172`, median TTFT decreases from
+`1812.1075005328748` to `1095.193854504032` ms, and median TPOT decreases from
+`177.81014566814218` to `106.2433541713593` ms. The matched record is
+[`results/lfm25-350m-q8-native-batched-command-2026-08-24.txt`](results/lfm25-350m-q8-native-batched-command-2026-08-24.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh
