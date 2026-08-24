@@ -44,7 +44,7 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   the binary command schedule through small Objective-C bindings. Native
   dispatch covers matmul, Q8 linear, RMSNorm, ShortConv, masked attention,
   embedding, range/fill, diff/cumsum, and two-index gather; compute pipelines
-  are cached per loaded library. Package ABI v7 also dispatches the model's
+  are cached per loaded library. Package ABI v8 also dispatches the model's
   float16/float32/int64 cast directions and its required broadcast/scalar
   pointwise add, multiply, comparison, activation, and rotary operations, then
   materializes transpose, index, expand, concat, and roll while treating dense
@@ -104,20 +104,22 @@ operations and inputs use the PyTorch MPS fallback. The intended serving stack
 moves generated-library loading, Metal dispatch, request scheduling, and cache
 ownership into OCaml. Its radix ownership, physical FP16/Q8 KV pools,
 archive-backed Metal loader, and cache conversion kernels are implemented;
-complete schedule execution and binding radix leases into generation remain
-open. The bounded use-cache capture produced
+complete schedule execution, request-length specialization, and repeated
+radix-backed decode are implemented. Native tokenizer/chat integration and the
+request owner remain open. The bounded use-cache capture produced
 separate prefill and one-token decode graphs with one physical
 422,137,216-byte archive. Offline replanning produces 872 prefill commands and
 926 decode commands, both with zero opaque operations; both generated MSL
 programs compile and their serving packages validate all 241 static bindings.
-Native execution now covers every built-in, cast, pointwise, movement,
+Native execution covers every built-in, cast, pointwise, movement,
 reduction, recurrent-update, and final float16-linear kernel family required by
 those packages. Offline planning reduces the prefill workspace from 9,855,488
 aligned bytes without reuse to a 1,153,792-byte high-water mark and decode from
-2,151,680 to 271,360 bytes. Full-model and batched command-buffer execution
-remain open. Exact parity was computed during the
-capture process but its result file was not written after a post-capture
-package-check failure, so this capture adds no parity claim. The boundary is documented in
+2,151,680 to 271,360 bytes for the captured shapes. Typed specialization also
+plans real prefill lengths 13/128/4,096 and decode-past lengths 1/127/4,095.
+One native Q8 run executed prefill plus three decode steps with radix hits at
+prefixes 6/7/8 and exactly matched eager tokens
+`19130,11040,11207,1414`. Batched command-buffer execution remains open. The boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
 ## Build and run
@@ -283,20 +285,21 @@ OCaml serving runtime
         ├── FP16 or Q8 KV ownership/layout and Metal pools (implemented; Q8 default)
         ├── Metal package loading/mapped weights/per-family dispatch (implemented)
         ├── alias-aware liveness workspace allocation (implemented)
-        └── full model execution, radix-to-pool binding, and request loop (next)
+        ├── request-length specialization + repeated radix-backed decode (implemented)
+        └── tokenizer-driven generation and HTTP request loop (next)
 ```
 
 `graph.llmopt` is a compile-time transport and `plan.txt` is a compiler
 diagnostic; neither is a serving input. Set `LLMOPT_FX_DIAGNOSTICS=1` to emit
 optional `fx.json` and `runtime.json` files. The native runtime consumes only
-`package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI v7
+`package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI v8
 references weight-archive ABI v1, declares cache conversion kernels, and
-retains read compatibility with ABI v2 through v6; neither file contains JSON.
+retains read compatibility with ABI v2 through v7; neither file contains JSON.
 
 The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
 776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
 bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
-binary-input replanning emits ABI-v7 packages with 872/926 commands, 46/44
+binary-input replanning emits ABI-v8 packages with 872/926 commands, 46/44
 kernels, zero opaque commands, and all 241 tensor bindings validated. The eight
 additional entries implement FP16/Q8 attention and recurrent-cache conversion.
 No model load or device dispatch was used for that replan.

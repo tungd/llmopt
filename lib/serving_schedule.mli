@@ -21,5 +21,18 @@ val commands : t -> Command.t list
 val tensor_inputs : t -> Tensor_input.t list
 val runtime_inputs : t -> (string * Ir.Value.t) list
 val opaque_count : t -> int
+
+module Lfm25 : sig
+  (** Rebuild a captured LFM prefill template for [tokens]. The request must
+      cover the model's three-token recurrent window. *)
+  val specialize_prefill :
+    captured_tokens:int -> tokens:int -> t -> (t, string) result
+
+  (** Rebuild a captured one-token decode template for a non-empty
+      [past_tokens] prefix. *)
+  val specialize_decode :
+    captured_past:int -> past_tokens:int -> t -> (t, string) result
+end
+
 val to_bytes : t -> bytes
 val of_bytes : bytes -> (t, string) result

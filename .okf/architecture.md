@@ -312,6 +312,22 @@ slice-update entry shared across its ten recurrent blocks, and each package
 declares eight FP16/Q8 cache conversion entries. This conversion and replan
 loaded no model and launched no Metal device work.
 
+The ABI-v8 schedules now serve as typed sequence templates rather than fixed
+six-token executables. `Serving_schedule.Lfm25` substitutes prefill, decode
+past, and decode total lengths, rewrites the dependent scalar/index parameters,
+and re-infers every SSA output shape from transformed inputs while retaining
+static archive tensors unchanged. The runtime creates a liveness workspace for
+the specialized schedule and passes dynamic `m/n/k` parameters to float32
+matmul and linear kernels. Offline real-package checks cover prefill lengths
+13/128/4,096 and decode-past lengths 1/127/4,095.
+
+One native Q8 execution ran the captured prefill template and three consecutive
+decode specializations. Radix matches grew through prefixes 6/7/8, physical
+state grew to nine token slots and four recurrent checkpoints, and the four
+greedy tokens `19130,11040,11207,1414` matched a separately run eager-Q8
+reference. Tokenizer/chat integration, an HTTP request owner, native needle
+requests, and ERS remain outside that observation.
+
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and
 emits normalized slices directly at integer getitem consumers, avoiding a

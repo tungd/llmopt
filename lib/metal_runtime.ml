@@ -1124,9 +1124,8 @@ let update_slice_kernel destination source output =
            (Ir.Dtype.to_string source_dtype)
            (Ir.Dtype.to_string output_dtype))
 
-let execute runtime ~inputs =
+let execute_schedule runtime ~schedule ~inputs =
   let* runtime_inputs = runtime_input_map inputs in
-  let schedule = Serving_package.schedule runtime.package in
   let* memory_plan = Serving_memory_plan.create schedule in
   let workspace_bytes = Serving_memory_plan.workspace_bytes memory_plan in
   let* workspace =
@@ -1349,24 +1348,26 @@ let execute runtime ~inputs =
                      ~operation:Kernel_abi.Operation.Pointwise ~input_dtype
                      ~buffers:[ left_buffer; right_buffer ] ~parameters
                      ~grid:(count, 1, 1)))
-        | Ir.Op.Matmul { m; n; k = _ }, [ lhs; rhs ], Some output ->
+        | Ir.Op.Matmul { m; n; k }, [ lhs; rhs ], Some output ->
             let* buffers = find_values state [ lhs; rhs ] in
+            let* parameters = Parameters.u32s [ m; n; k ] in
             let* grid_x = round_up n 16 in
             let* grid_y = round_up m 16 in
             dispatched
               (dispatch_output runtime state output
                  ~operation:Kernel_abi.Operation.Matmul
                  ~input_dtype:(Ir.Value.dtype lhs) ~buffers
-                 ~parameters:(Bytes.create 0) ~grid:(grid_x, grid_y, 1))
-        | Ir.Op.Fused_matmul_bias { m; n; k = _ }, [ lhs; rhs; bias ], Some output ->
+                 ~parameters ~grid:(grid_x, grid_y, 1))
+        | Ir.Op.Fused_matmul_bias { m; n; k }, [ lhs; rhs; bias ], Some output ->
             let* buffers = find_values state [ lhs; rhs; bias ] in
+            let* parameters = Parameters.u32s [ m; n; k ] in
             let* grid_x = round_up n 16 in
             let* grid_y = round_up m 16 in
             dispatched
               (dispatch_output runtime state output
                  ~operation:Kernel_abi.Operation.Fused_linear
                  ~input_dtype:(Ir.Value.dtype lhs) ~buffers
-                 ~parameters:(Bytes.create 0) ~grid:(grid_x, grid_y, 1))
+                 ~parameters ~grid:(grid_x, grid_y, 1))
         | Ir.Op.Linear { m; n; k; bias }, values, Some output ->
             let* values =
               match values, bias with
@@ -1398,13 +1399,14 @@ let execute runtime ~inputs =
                      ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
                      ~grid:(grid_x, 1, 1))
             | Ir.Dtype.Float32, Ir.Dtype.Float32, Ir.Dtype.Float32, _ ->
+                let* parameters = Parameters.u32s [ m; n; k ] in
                 let* grid_x = round_up n 16 in
                 let* grid_y = round_up m 16 in
                 dispatched
                   (dispatch_output runtime state output
                      ~operation:Kernel_abi.Operation.Linear
                      ~input_dtype:(Ir.Value.dtype input) ~buffers
-                     ~parameters:(Bytes.create 0) ~grid:(grid_x, grid_y, 1))
+                     ~parameters ~grid:(grid_x, grid_y, 1))
             | input_dtype, weight_dtype, output_dtype, _ ->
                 Error
                   (Printf.sprintf "unsupported Metal linear kernel: %s + %s -> %s"
@@ -1623,3 +1625,7 @@ let execute runtime ~inputs =
       workspace;
     }
     (Serving_schedule.commands schedule)
+
+let execute runtime ~inputs =
+  execute_schedule runtime
+    ~schedule:(Serving_package.schedule runtime.package) ~inputs

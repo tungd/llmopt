@@ -1139,6 +1139,204 @@ let () =
     && contains_substring (Metal.Program.source cache_program)
          "llmopt_cache_unpack_checkpoint_f16")
     "serving Metal program emits attention and recurrent cache source";
+  let prefill_template = Ir.Graph.create () in
+  let prefill_input =
+    Ir.Graph.tensor_input prefill_template ~name:"prefill_ids"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 6; 2 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let prefill_weight =
+    Ir.Graph.tensor_input prefill_template ~name:"prefill_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "prefill_weight" })
+      ~shape:(Tensor_shape.of_ints_exn [ 4; 2 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let prefill_scale =
+    Ir.Graph.tensor_input prefill_template ~name:"prefill_scale"
+      ~source:(Ir.Input_source.Tensor_store { key = "prefill_scale" })
+      ~shape:(Tensor_shape.of_ints_exn [ 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let _static_six =
+    Ir.Graph.tensor_input prefill_template ~name:"static_six"
+      ~source:(Ir.Input_source.Tensor_store { key = "static_six" })
+      ~shape:(Tensor_shape.of_ints_exn [ 6; 2 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let projected =
+    Ir.Graph.fresh_tensor_value prefill_template
+      ~shape:(Tensor_shape.of_ints_exn [ 6; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append prefill_template
+    ~op:(Ir.Op.Q8_linear { m = 6; n = 4; k = 2; bias = false })
+    ~inputs:[ prefill_input; prefill_weight; prefill_scale ]
+    ~output:(Some projected);
+  let prefill_range =
+    Ir.Graph.fresh_tensor_value prefill_template
+      ~shape:(Tensor_shape.of_ints_exn [ 6 ]) ~dtype:Ir.Dtype.Int64
+  in
+  Ir.Graph.append prefill_template
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Arange
+            (expect_ok (Ir.Arange.create ~start:0 ~stop:6 ~step:1))))
+    ~inputs:[] ~output:(Some prefill_range);
+  let shifted_range =
+    Ir.Graph.fresh_tensor_value prefill_template
+      ~shape:(Tensor_shape.of_ints_exn [ 6 ]) ~dtype:Ir.Dtype.Int64
+  in
+  Ir.Graph.append prefill_template
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor prefill_range,
+                 Ir.Pointwise.Scalar (Ir.Scalar.Int 6) ))))
+    ~inputs:[ prefill_range ] ~output:(Some shifted_range);
+  Ir.Graph.add_output prefill_template ~name:"projected" projected;
+  Ir.Graph.add_output prefill_template ~name:"positions" shifted_range;
+  let dynamic_prefill =
+    prefill_template |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.Lfm25.specialize_prefill ~captured_tokens:6 ~tokens:13
+    |> expect_ok
+  in
+  let dynamic_prefill_commands = Serving_schedule.commands dynamic_prefill in
+  let dynamic_prefill_input =
+    Serving_schedule.runtime_inputs dynamic_prefill |> List.assoc "prefill_ids"
+  in
+  let static_six =
+    Serving_schedule.tensor_inputs dynamic_prefill
+    |> List.find (fun input ->
+           Serving_schedule.Tensor_input.key input = "static_six")
+    |> Serving_schedule.Tensor_input.value
+  in
+  expect
+    (Tensor_shape.dimensions (Ir.Value.logical_shape dynamic_prefill_input)
+    = [ 13; 2 ]
+    && Tensor_shape.dimensions (Ir.Value.logical_shape static_six) = [ 6; 2 ])
+    "LFM prefill specialization changes sequence values but not static tensors";
+  expect
+    (List.exists
+       (fun command ->
+         match Serving_schedule.Command.op command with
+         | Ir.Op.Q8_linear { m = 13; n = 4; k = 2; _ } -> true
+         | _ -> false)
+       dynamic_prefill_commands
+    && List.exists
+         (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Arange config) ->
+               Ir.Arange.stop config = 13
+           | _ -> false)
+         dynamic_prefill_commands
+    && List.exists
+         (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive
+               (Ir.Primitive.Pointwise
+                 (Ir.Pointwise.Binary
+                   ( _, _, Ir.Pointwise.Scalar (Ir.Scalar.Int 13) ))) ->
+               true
+           | _ -> false)
+         dynamic_prefill_commands)
+    "LFM prefill specialization rewrites operation parameters";
+  let _ = expect_ok (Serving_memory_plan.create dynamic_prefill) in
+  (match
+     prefill_template |> Serving_schedule.of_graph |> expect_ok
+     |> Serving_schedule.Lfm25.specialize_prefill ~captured_tokens:6 ~tokens:2
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "LFM prefill specialization accepted less than one recurrent window");
+  let decode_template = Ir.Graph.create () in
+  let decode_cache =
+    Ir.Graph.tensor_input decode_template ~name:"decode_cache"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 8; 6; 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let _static_seven_six =
+    Ir.Graph.tensor_input decode_template ~name:"static_seven_six"
+      ~source:(Ir.Input_source.Tensor_store { key = "static_seven_six" })
+      ~shape:(Tensor_shape.of_ints_exn [ 7; 6 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let decode_range =
+    Ir.Graph.fresh_tensor_value decode_template
+      ~shape:(Tensor_shape.of_ints_exn [ 7 ]) ~dtype:Ir.Dtype.Int64
+  in
+  Ir.Graph.append decode_template
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Arange
+            (expect_ok (Ir.Arange.create ~start:0 ~stop:7 ~step:1))))
+    ~inputs:[] ~output:(Some decode_range);
+  let decode_positions =
+    Ir.Graph.fresh_tensor_value decode_template
+      ~shape:(Tensor_shape.of_ints_exn [ 7 ]) ~dtype:Ir.Dtype.Int64
+  in
+  Ir.Graph.append decode_template
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor decode_range,
+                 Ir.Pointwise.Scalar (Ir.Scalar.Int 6) ))))
+    ~inputs:[ decode_range ] ~output:(Some decode_positions);
+  let cache_view =
+    Ir.Graph.fresh_tensor_value decode_template
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 8; 6; 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append decode_template
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape))
+    ~inputs:[ decode_cache ] ~output:(Some cache_view);
+  Ir.Graph.add_output decode_template ~name:"positions" decode_positions;
+  Ir.Graph.add_output decode_template ~name:"cache" cache_view;
+  let dynamic_decode =
+    decode_template |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.Lfm25.specialize_decode ~captured_past:6
+         ~past_tokens:11
+    |> expect_ok
+  in
+  let dynamic_decode_cache =
+    Serving_schedule.runtime_inputs dynamic_decode |> List.assoc "decode_cache"
+  in
+  let static_seven_six =
+    Serving_schedule.tensor_inputs dynamic_decode
+    |> List.find (fun input ->
+           Serving_schedule.Tensor_input.key input = "static_seven_six")
+    |> Serving_schedule.Tensor_input.value
+  in
+  expect
+    (Tensor_shape.dimensions (Ir.Value.logical_shape dynamic_decode_cache)
+    = [ 1; 8; 11; 64 ]
+    && Tensor_shape.dimensions (Ir.Value.logical_shape static_seven_six)
+       = [ 7; 6 ])
+    "LFM decode specialization separates past and total length from static tensors";
+  expect
+    (List.exists
+       (fun command ->
+         match Serving_schedule.Command.op command with
+         | Ir.Op.Primitive (Ir.Primitive.Arange config) ->
+             Ir.Arange.stop config = 12
+         | _ -> false)
+       (Serving_schedule.commands dynamic_decode)
+    && List.exists
+         (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive
+               (Ir.Primitive.Pointwise
+                 (Ir.Pointwise.Binary
+                   ( _, _, Ir.Pointwise.Scalar (Ir.Scalar.Int 11) ))) ->
+               true
+           | _ -> false)
+         (Serving_schedule.commands dynamic_decode))
+    "LFM decode specialization rewrites past and total operation parameters";
+  let _ = expect_ok (Serving_memory_plan.create dynamic_decode) in
+  (match
+     decode_template |> Serving_schedule.of_graph |> expect_ok
+     |> Serving_schedule.Lfm25.specialize_decode ~captured_past:6 ~past_tokens:0
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "LFM decode specialization accepted an empty past");
   let workspace_graph = Ir.Graph.create () in
   let workspace_shape = Tensor_shape.of_ints_exn [ 128 ] in
   let workspace_input name =

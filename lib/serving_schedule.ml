@@ -400,6 +400,306 @@ let opaque_count schedule =
       match command.Command.op with Ir.Op.Opaque _ -> count + 1 | _ -> count)
     0 schedule.commands
 
+module Lfm25 = struct
+  module Value_map = Map.Make (struct
+    type t = Ir.Value_id.t
+
+    let compare = Ir.Value_id.compare
+  end)
+
+  type substitutions = (int * int) list
+
+  let recurrent_window = 3
+
+  let substitute substitutions value =
+    List.assoc_opt value substitutions |> Option.value ~default:value
+
+  let map_shape substitutions shape =
+    shape |> Tensor_shape.dimensions
+    |> List.map (substitute substitutions)
+    |> Tensor_shape.create |> Result.map_error Tensor_shape.error_to_string
+
+  let map_index substitutions index =
+    let tail_start start length =
+      List.find_map
+        (fun (captured, actual) ->
+          if start + length = captured && actual >= length then
+            Some (actual - length)
+          else None)
+        substitutions
+      |> Option.value ~default:start
+    in
+    index |> Tensor_shape.Index.selectors
+    |> List.map (function
+         | Tensor_shape.Index.At position ->
+             let position =
+               List.find_map
+                 (fun (captured, actual) ->
+                   if position + 1 = captured then Some (actual - 1) else None)
+                 substitutions
+               |> Option.value ~default:position
+             in
+             Tensor_shape.Index.At position
+         | Tensor_shape.Index.New_axis -> Tensor_shape.Index.New_axis
+         | Tensor_shape.Index.Slice { start; step; length } ->
+             let dynamic_length = substitute substitutions length in
+             let start =
+               if dynamic_length <> length then start
+               else tail_start start length
+             in
+             Tensor_shape.Index.Slice
+               { start; step; length = dynamic_length })
+    |> Tensor_shape.Index.of_selectors
+
+  let map_scalar substitutions = function
+    | Ir.Scalar.Int value -> Ir.Scalar.Int (substitute substitutions value)
+    | (Ir.Scalar.Bool _ | Ir.Scalar.Float _) as scalar -> scalar
+
+  let mapped values value =
+    match Value_map.find_opt (Ir.Value.id value) values with
+    | Some value -> Ok value
+    | None ->
+        Error
+          (Printf.sprintf "LFM specialization lost value %d"
+             (value_id value))
+
+  let map_operand substitutions values = function
+    | Ir.Pointwise.Tensor value ->
+        let* value = mapped values value in
+        Ok (Ir.Pointwise.Tensor value)
+    | Ir.Pointwise.Scalar scalar ->
+        Ok (Ir.Pointwise.Scalar (map_scalar substitutions scalar))
+
+  let map_pointwise substitutions values = function
+    | Ir.Pointwise.Unary (operator, value) ->
+        let* value = mapped values value in
+        Ok (Ir.Pointwise.Unary (operator, value))
+    | Ir.Pointwise.Binary (operator, left, right) ->
+        let* left = map_operand substitutions values left in
+        let* right = map_operand substitutions values right in
+        Ok (Ir.Pointwise.Binary (operator, left, right))
+
+  let map_primitive substitutions values = function
+    | Ir.Primitive.Pointwise operation ->
+        let* operation = map_pointwise substitutions values operation in
+        Ok (Ir.Primitive.Pointwise operation)
+    | Ir.Primitive.Movement (Ir.Movement.Index index) ->
+        let* index = map_index substitutions index in
+        Ok (Ir.Primitive.Movement (Ir.Movement.Index index))
+    | Ir.Primitive.Arange config ->
+        let* config =
+          Ir.Arange.create ~start:(Ir.Arange.start config)
+            ~stop:(substitute substitutions (Ir.Arange.stop config))
+            ~step:(Ir.Arange.step config)
+        in
+        Ok (Ir.Primitive.Arange config)
+    | Ir.Primitive.Update_slice index ->
+        let* index = map_index substitutions index in
+        Ok (Ir.Primitive.Update_slice index)
+    | primitive -> Ok primitive
+
+  let map_operation substitutions values = function
+    | Ir.Op.Matmul { m; n; k } ->
+        Ok
+          (Ir.Op.Matmul
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+             })
+    | Ir.Op.Linear { m; n; k; bias } ->
+        Ok
+          (Ir.Op.Linear
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               bias;
+             })
+    | Ir.Op.Fused_matmul_bias { m; n; k } ->
+        Ok
+          (Ir.Op.Fused_matmul_bias
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+             })
+    | Ir.Op.Q8_linear { m; n; k; bias } ->
+        Ok
+          (Ir.Op.Q8_linear
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               bias;
+             })
+    | Ir.Op.Primitive primitive ->
+        let* primitive = map_primitive substitutions values primitive in
+        Ok (Ir.Op.Primitive primitive)
+    | Ir.Op.Opaque _ ->
+        Error "cannot sequence-specialize a schedule with opaque operations"
+    | operation -> Ok operation
+
+  let shape_error result = Result.map_error Tensor_shape.error_to_string result
+
+  let pointwise_shape = function
+    | Ir.Pointwise.Unary (_, value) -> Ok (Ir.Value.logical_shape value)
+    | Ir.Pointwise.Binary (_, left, right) ->
+        let shape = function
+          | Ir.Pointwise.Tensor value -> Some (Ir.Value.logical_shape value)
+          | Ir.Pointwise.Scalar _ -> None
+        in
+        (match shape left, shape right with
+        | Some left, Some right -> Tensor_shape.broadcast left right |> shape_error
+        | Some shape, None | None, Some shape -> Ok shape
+        | None, None -> Error "pointwise operation has no tensor operand")
+
+  let primitive_shape substitutions original primitive inputs =
+    match primitive, inputs with
+    | Ir.Primitive.Pointwise operation, _ -> pointwise_shape operation
+    | Ir.Primitive.Cast _, [ input ] -> Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.Reduce reduction, [ input ] ->
+        Tensor_shape.reduce (Ir.Value.logical_shape input)
+          ~axes:reduction.Ir.Reduction.axes ~keepdim:reduction.keepdim
+        |> shape_error
+    | Ir.Primitive.Movement Ir.Movement.View, [ _ ]
+    | Ir.Primitive.Movement Ir.Movement.Reshape, [ _ ]
+    | Ir.Primitive.Movement Ir.Movement.Expand, [ _ ] ->
+        map_shape substitutions original
+    | Ir.Primitive.Movement (Ir.Movement.Transpose { axis0; axis1 }),
+      [ input ] ->
+        Tensor_shape.transpose (Ir.Value.logical_shape input) ~axis0 ~axis1
+        |> shape_error
+    | Ir.Primitive.Movement (Ir.Movement.Unsqueeze axis), [ input ] ->
+        Tensor_shape.unsqueeze (Ir.Value.logical_shape input) ~axis |> shape_error
+    | Ir.Primitive.Movement Ir.Movement.Contiguous, [ input ]
+    | Ir.Primitive.Movement (Ir.Movement.Roll _), [ input ] ->
+        Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.Movement (Ir.Movement.Index index), [ input ] ->
+        Tensor_shape.apply_index (Ir.Value.logical_shape input) index |> shape_error
+    | Ir.Primitive.Movement (Ir.Movement.Concat { axis }), inputs ->
+        Tensor_shape.concat (List.map Ir.Value.logical_shape inputs) ~axis
+        |> shape_error
+    | Ir.Primitive.Short_conv config, [ input; weight ] ->
+        Tensor_shape.depthwise_conv1d (Ir.Value.logical_shape input)
+          (Ir.Value.logical_shape weight)
+          ~stride:(Ir.Short_conv.stride config)
+          ~padding:(Ir.Short_conv.padding config)
+          ~dilation:(Ir.Short_conv.dilation config)
+          ~groups:(Ir.Short_conv.groups config)
+        |> shape_error
+    | Ir.Primitive.Attention _, [ query; key; value; mask ] ->
+        Tensor_shape.scaled_dot_product_attention
+          (Ir.Value.logical_shape query) (Ir.Value.logical_shape key)
+          (Ir.Value.logical_shape value) (Ir.Value.logical_shape mask)
+        |> shape_error
+    | Ir.Primitive.Embedding, [ indices; weight ] ->
+        Tensor_shape.embedding (Ir.Value.logical_shape indices)
+          (Ir.Value.logical_shape weight)
+        |> shape_error
+    | Ir.Primitive.Arange config, [] ->
+        Tensor_shape.arange ~start:(Ir.Arange.start config)
+          ~stop:(Ir.Arange.stop config) ~step:(Ir.Arange.step config)
+        |> shape_error
+    | Ir.Primitive.Diff config, [ source; prepend ] ->
+        Tensor_shape.diff (Ir.Value.logical_shape source)
+          (Ir.Value.logical_shape prepend) ~axis:(Ir.Diff.axis config)
+        |> shape_error
+    | Ir.Primitive.Cumsum _, [ input ] -> Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.Fill _, [] -> map_shape substitutions original
+    | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
+        Tensor_shape.gather2 (Ir.Value.logical_shape source)
+          (Ir.Value.logical_shape first_index)
+          (Ir.Value.logical_shape second_index)
+        |> shape_error
+    | Ir.Primitive.Update_slice _, destination :: _ ->
+        Ok (Ir.Value.logical_shape destination)
+    | _ -> Error "cannot infer specialized primitive result shape"
+
+  let output_shape substitutions operation inputs original =
+    match operation, inputs with
+    | Ir.Op.Input { source = Ir.Input_source.Tensor_store _; _ }, [] ->
+        Ok original
+    | Ir.Op.Input { source = Ir.Input_source.Runtime; _ }, []
+    | Ir.Op.Alloc _, [] -> map_shape substitutions original
+    | Ir.Op.Primitive primitive, inputs ->
+        primitive_shape substitutions original primitive inputs
+    | Ir.Op.Rms_norm _, [ input; _weight ] -> Ok (Ir.Value.logical_shape input)
+    | Ir.Op.Gelu, [ input ]
+    | Ir.Op.Relu, [ input ] -> Ok (Ir.Value.logical_shape input)
+    | Ir.Op.Add _, [ left; right ] ->
+        Tensor_shape.broadcast (Ir.Value.logical_shape left)
+          (Ir.Value.logical_shape right)
+        |> shape_error
+    | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
+      | Ir.Op.Q8_linear _ ),
+      _ ->
+        map_shape substitutions original
+    | _ -> map_shape substitutions original
+
+  let output_value substitutions operation inputs original =
+    let* shape =
+      output_shape substitutions operation inputs
+        (Ir.Value.logical_shape original)
+    in
+    try
+      Ok
+        (Ir.Value.make_tensor
+           ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
+           ~shape ~dtype:(Ir.Value.dtype original))
+    with Invalid_argument message -> Error message
+
+  let specialize substitutions schedule =
+    let commands = schedule.commands in
+    let rec map_commands values output = function
+      | [] -> create (List.rev output)
+      | command :: rest ->
+          let* inputs =
+            let rec map output = function
+              | [] -> Ok (List.rev output)
+              | value :: rest ->
+                  let* value = mapped values value in
+                  map (value :: output) rest
+            in
+            map [] command.Command.inputs
+          in
+          let* op = map_operation substitutions values command.Command.op in
+          let* result, values =
+            match command.Command.output with
+            | None -> Ok (None, values)
+            | Some original ->
+                let* value = output_value substitutions op inputs original in
+                Ok
+                  ( Some value,
+                    Value_map.add (Ir.Value.id original) value values )
+          in
+          map_commands
+            values
+            ({ command with Command.op = op; inputs; output = result } :: output)
+            rest
+    in
+    map_commands Value_map.empty [] commands
+
+  let specialize_prefill ~captured_tokens ~tokens schedule =
+    if captured_tokens <= 0 then Error "captured prefill length must be positive"
+    else if tokens < recurrent_window then
+      Error
+        (Printf.sprintf
+           "LFM prefill length must cover the %d-token recurrent window"
+           recurrent_window)
+    else specialize [ captured_tokens, tokens ] schedule
+
+  let specialize_decode ~captured_past ~past_tokens schedule =
+    if captured_past <= 0 then Error "captured decode past length must be positive"
+    else if past_tokens <= 0 then Error "decode past length must be positive"
+    else if captured_past = max_int || past_tokens = max_int then
+      Error "decode total length overflows"
+    else
+      specialize
+        [ captured_past, past_tokens; captured_past + 1, past_tokens + 1 ]
+        schedule
+end
+
 let dtype_tag = function
   | Ir.Dtype.Float32 -> 0
   | Ir.Dtype.Float16 -> 1

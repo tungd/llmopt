@@ -86,6 +86,12 @@ end
 val execute :
   t -> inputs:(string * Buffer.t) list -> (Execution.t, string) result
 
+val execute_schedule :
+  t ->
+  schedule:Serving_schedule.t ->
+  inputs:(string * Buffer.t) list ->
+  (Execution.t, string) result
+
 val tensor :
   t -> name:string -> (Buffer.t * Weight_archive.Tensor.t, string) result
 

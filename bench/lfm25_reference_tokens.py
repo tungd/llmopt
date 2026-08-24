@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit eager Q8 reference tokens for the fixed native serving probe."""
+"""Emit eager Q8 reference tokens for a bounded native serving probe."""
 
 from __future__ import annotations
 
@@ -38,8 +38,12 @@ def digest(tensor: Any) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
+    parser.add_argument("--tokens", type=int, default=2)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+
+    if args.tokens <= 0:
+        parser.error("--tokens must be positive")
 
     if not torch.backends.mps.is_available():
         raise RuntimeError("PyTorch MPS is not available on this host")
@@ -63,13 +67,20 @@ def main() -> None:
     run_started = time.perf_counter()
     with torch.no_grad():
         prefill = model(input_ids=input_ids, use_cache=True)
-        first = prefill.logits[:, -1:, :].argmax(dim=-1)
-        decode = model(
-            input_ids=first,
-            past_key_values=prefill.past_key_values,
-            use_cache=True,
-        )
-        second = decode.logits[:, -1:, :].argmax(dim=-1)
+        token = prefill.logits[:, -1:, :].argmax(dim=-1)
+        tokens = [int(token.item())]
+        past_key_values = prefill.past_key_values
+        decode_digests = []
+        for _ in range(args.tokens - 1):
+            decode = model(
+                input_ids=token,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+            decode_digests.append(digest(decode.logits))
+            token = decode.logits[:, -1:, :].argmax(dim=-1)
+            tokens.append(int(token.item()))
+            past_key_values = decode.past_key_values
     torch.mps.synchronize()
     run_seconds = time.perf_counter() - run_started
     after = memory_free_percent()
@@ -79,9 +90,9 @@ def main() -> None:
         f"quantization: {quantization['scheme']}",
         f"converted-linear-modules: {quantization['converted_linear_modules']}",
         "input: 1,2,3,4,5,6",
-        f"tokens: {int(first.item())},{int(second.item())}",
+        "tokens: " + ",".join(str(token) for token in tokens),
         f"prefill-sha256: {digest(prefill.logits)}",
-        f"decode-sha256: {digest(decode.logits)}",
+        "decode-sha256: " + ",".join(decode_digests),
         f"memory-free-before: {before if before is not None else 'unknown'}%",
         f"memory-free-after: {after if after is not None else 'unknown'}%",
         f"load-seconds: {load_seconds:.6f}",

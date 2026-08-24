@@ -1278,28 +1278,29 @@ let lower_primary graph =
         Printf.sprintf
           "#include <metal_stdlib>\nusing namespace metal;\n\n"
           ^ "constant uint TILE = 16;\n\n"
+          ^ "struct MatmulParams { uint m; uint n; uint k; };\n\n"
           ^ "kernel void llmopt_matmul(\n"
           ^ "    device const float* a [[buffer(0)]],\n"
           ^ "    device const float* b [[buffer(1)]],\n"
           ^ "    device float* c [[buffer(2)]],\n"
+          ^ "    constant MatmulParams& params [[buffer(3)]],\n"
           ^ "    uint2 gid [[thread_position_in_grid]],\n"
           ^ "    uint2 tid [[thread_position_in_threadgroup]]) {\n"
           ^ "  threadgroup float a_tile[16][16];\n"
           ^ "  threadgroup float b_tile[16][16];\n"
           ^ Printf.sprintf "  const uint row = gid.y; const uint col = gid.x;\n"
           ^ Printf.sprintf "  float acc = 0.0f;\n"
-          ^ Printf.sprintf "  for (uint base = 0; base < %d; base += TILE) {\n" k
-          ^ Printf.sprintf
-              "    a_tile[tid.y][tid.x] = (row < %d && base + tid.x < %d) ? a[row * %d + base + tid.x] : 0.0f;\n"
-              m k k
-          ^ Printf.sprintf
-              "    b_tile[tid.y][tid.x] = (col < %d && base + tid.y < %d) ? b[(base + tid.y) * %d + col] : 0.0f;\n"
-              n k n
+          ^ "  for (uint base = 0; base < params.k; base += TILE) {\n"
+          ^ "    a_tile[tid.y][tid.x] = (row < params.m && base + tid.x < params.k)\n"
+          ^ "        ? a[row * params.k + base + tid.x] : 0.0f;\n"
+          ^ "    b_tile[tid.y][tid.x] = (col < params.n && base + tid.y < params.k)\n"
+          ^ "        ? b[(base + tid.y) * params.n + col] : 0.0f;\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
           ^ "    for (uint inner = 0; inner < TILE; ++inner) acc += a_tile[tid.y][inner] * b_tile[inner][tid.x];\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
           ^ "  }\n"
-          ^ Printf.sprintf "  if (row < %d && col < %d) c[row * %d + col] = acc;\n" m n n
+          ^ "  if (row < params.m && col < params.n)\n"
+          ^ "    c[row * params.n + col] = acc;\n"
           ^ "}\n"
       in
       ignore (a_name, b_name, output_name);
@@ -1319,29 +1320,30 @@ let lower_primary graph =
         Printf.sprintf
           "#include <metal_stdlib>\nusing namespace metal;\n\n"
           ^ "constant uint TILE = 16;\n\n"
+          ^ "struct FusedLinearParams { uint m; uint n; uint k; };\n\n"
           ^ "kernel void llmopt_fused_linear(\n"
           ^ "    device const float* a [[buffer(0)]],\n"
           ^ "    device const float* b [[buffer(1)]],\n"
           ^ "    device const float* bias [[buffer(2)]],\n"
           ^ "    device float* c [[buffer(3)]],\n"
+          ^ "    constant FusedLinearParams& params [[buffer(4)]],\n"
           ^ "    uint2 gid [[thread_position_in_grid]],\n"
           ^ "    uint2 tid [[thread_position_in_threadgroup]]) {\n"
           ^ "  threadgroup float a_tile[16][16];\n"
           ^ "  threadgroup float b_tile[16][16];\n"
           ^ "  const uint row = gid.y; const uint col = gid.x;\n"
           ^ "  float acc = 0.0f;\n"
-          ^ Printf.sprintf "  for (uint base = 0; base < %d; base += TILE) {\n" k
-          ^ Printf.sprintf
-              "    a_tile[tid.y][tid.x] = (row < %d && base + tid.x < %d) ? a[row * %d + base + tid.x] : 0.0f;\n"
-              m k k
-          ^ Printf.sprintf
-              "    b_tile[tid.y][tid.x] = (col < %d && base + tid.y < %d) ? b[(base + tid.y) * %d + col] : 0.0f;\n"
-              n k n
+          ^ "  for (uint base = 0; base < params.k; base += TILE) {\n"
+          ^ "    a_tile[tid.y][tid.x] = (row < params.m && base + tid.x < params.k)\n"
+          ^ "        ? a[row * params.k + base + tid.x] : 0.0f;\n"
+          ^ "    b_tile[tid.y][tid.x] = (col < params.n && base + tid.y < params.k)\n"
+          ^ "        ? b[(base + tid.y) * params.n + col] : 0.0f;\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
           ^ "    for (uint inner = 0; inner < TILE; ++inner) acc += a_tile[tid.y][inner] * b_tile[inner][tid.x];\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
           ^ "  }\n"
-          ^ Printf.sprintf "  if (row < %d && col < %d) c[row * %d + col] = acc + bias[col];\n" m n n
+          ^ "  if (row < params.m && col < params.n)\n"
+          ^ "    c[row * params.n + col] = acc + bias[col];\n"
           ^ "}\n"
       in
       ignore (a_name, b_name, bias_name, output_name);
@@ -1373,29 +1375,32 @@ let lower_primary graph =
         Printf.sprintf
           "#include <metal_stdlib>\nusing namespace metal;\n\n"
           ^ "constant uint TILE = 16;\n\n"
+          ^ "struct LinearF32Params { uint m; uint n; uint k; };\n\n"
           ^ "kernel void llmopt_linear(\n"
           ^ "    device const float* input [[buffer(0)]],\n"
           ^ "    device const float* weight [[buffer(1)]],\n"
           ^ bias_argument
           ^ Printf.sprintf "    device float* output [[buffer(%d)]],\n" output_buffer
+          ^ Printf.sprintf "    constant LinearF32Params& params [[buffer(%d)]],\n"
+              (output_buffer + 1)
           ^ "    uint2 gid [[thread_position_in_grid]],\n"
           ^ "    uint2 tid [[thread_position_in_threadgroup]]) {\n"
           ^ "  threadgroup float input_tile[16][16];\n"
           ^ "  threadgroup float weight_tile[16][16];\n"
           ^ "  const uint row = gid.y; const uint col = gid.x;\n"
           ^ "  float acc = 0.0f;\n"
-          ^ Printf.sprintf "  for (uint base = 0; base < %d; base += TILE) {\n" k
-          ^ Printf.sprintf
-              "    input_tile[tid.y][tid.x] = (row < %d && base + tid.x < %d) ? input[row * %d + base + tid.x] : 0.0f;\n"
-              m k k
-          ^ Printf.sprintf
-              "    weight_tile[tid.y][tid.x] = (col < %d && base + tid.y < %d) ? weight[col * %d + base + tid.y] : 0.0f;\n"
-              n k k
+          ^ "  for (uint base = 0; base < params.k; base += TILE) {\n"
+          ^ "    input_tile[tid.y][tid.x] = (row < params.m && base + tid.x < params.k)\n"
+          ^ "        ? input[row * params.k + base + tid.x] : 0.0f;\n"
+          ^ "    weight_tile[tid.y][tid.x] = (col < params.n && base + tid.y < params.k)\n"
+          ^ "        ? weight[col * params.k + base + tid.y] : 0.0f;\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
           ^ "    for (uint inner = 0; inner < TILE; ++inner) acc += input_tile[tid.y][inner] * weight_tile[inner][tid.x];\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
           ^ "  }\n"
-          ^ Printf.sprintf "  if (row < %d && col < %d) output[row * %d + col] = acc%s;\n" m n n bias_value
+          ^ Printf.sprintf
+              "  if (row < params.m && col < params.n) output[row * params.n + col] = acc%s;\n"
+              bias_value
           ^ "}\n"
       in
       ignore (input_symbol, weight_symbol, bias_symbol, output_symbol);

@@ -340,6 +340,16 @@ let create ~config ~prefill ~decode =
 let prefill_tokens engine = engine.contract.prefill_tokens
 let past_tokens engine = engine.contract.past_tokens
 
+let prefill_schedule engine tokens =
+  Serving_schedule.Lfm25.specialize_prefill
+    ~captured_tokens:engine.contract.prefill_tokens ~tokens
+    (engine.prefill |> Metal_runtime.package |> Serving_package.schedule)
+
+let decode_schedule engine past_tokens =
+  Serving_schedule.Lfm25.specialize_decode
+    ~captured_past:engine.contract.past_tokens ~past_tokens
+    (engine.decode |> Metal_runtime.package |> Serving_package.schedule)
+
 let validate_tokens engine tokens =
   let vocabulary = (Serving_cache.Config.model engine.config).vocab_size in
   match Array.find_opt (fun token -> token < 0 || token >= vocabulary) tokens with
@@ -429,42 +439,39 @@ let rec pack_prefill_recurrent engine execution checkpoint
 
 let prefill engine ~tokens =
   let* () = validate_tokens engine tokens in
-  if Array.length tokens <> engine.contract.prefill_tokens then
-    Error
-      (Printf.sprintf "prefill specialization requires %d tokens; received %d"
-         engine.contract.prefill_tokens (Array.length tokens))
-  else
-    let* input = token_buffer engine.prefill tokens in
-    let* execution =
-      Metal_runtime.execute engine.prefill
-        ~inputs:[ engine.contract.input_ids, input ]
+  let token_count = Array.length tokens in
+  let* schedule = prefill_schedule engine token_count in
+  let* input = token_buffer engine.prefill tokens in
+  let* execution =
+    Metal_runtime.execute_schedule engine.prefill ~schedule
+      ~inputs:[ engine.contract.input_ids, input ]
+  in
+  let* reservation = reserve engine.logical_cache token_count in
+  let result =
+    let* () =
+      pack_prefill_attention engine execution reservation.slots
+        engine.contract.attentions
     in
-    let* reservation = reserve engine.logical_cache (Array.length tokens) in
-    let result =
-      let* () =
-        pack_prefill_attention engine execution reservation.slots
-          engine.contract.attentions
-      in
-      let* () =
-        pack_prefill_recurrent engine execution reservation.checkpoint
-          engine.contract.recurrents
-      in
-      let* logits = output execution engine.contract.logits in
-      let* cached_prefix =
-        Serving_cache.insert engine.logical_cache ~tokens
-          ~slots:reservation.slots ~checkpoint:reservation.checkpoint ()
-      in
-      Ok
-        {
-          Step.logits;
-          tokens = Array.copy tokens;
-          cached_prefix;
-          kernels = Metal_runtime.Execution.kernels execution;
-        }
+    let* () =
+      pack_prefill_recurrent engine execution reservation.checkpoint
+        engine.contract.recurrents
     in
-    (match result with
-    | Ok _ as result -> result
-    | Error message -> abort engine.logical_cache reservation message)
+    let* logits = output execution engine.contract.logits in
+    let* cached_prefix =
+      Serving_cache.insert engine.logical_cache ~tokens
+        ~slots:reservation.slots ~checkpoint:reservation.checkpoint ()
+    in
+    Ok
+      {
+        Step.logits;
+        tokens = Array.copy tokens;
+        cached_prefix;
+        kernels = Metal_runtime.Execution.kernels execution;
+      }
+  in
+  match result with
+  | Ok _ as result -> result
+  | Error message -> abort engine.logical_cache reservation message
 
 type decode_buffers = {
   inputs : (string * Metal_runtime.Buffer.t) list;
@@ -579,64 +586,61 @@ let with_match engine match_ operation =
 
 let decode engine ~prefix ~token =
   let* () = validate_tokens engine [| token |] in
-  if Array.length prefix <> engine.contract.past_tokens then
-    Error
-      (Printf.sprintf "decode specialization requires a %d-token prefix; received %d"
-         engine.contract.past_tokens (Array.length prefix))
-  else
-    let match_ =
-      Serving_cache.match_prefix engine.logical_cache ~reserve_tail:0 prefix
-    in
-    with_match engine match_ (fun () ->
-        let matched = Serving_cache.Match.tokens match_ in
-        if matched <> engine.contract.past_tokens then
-          Error
-            (Printf.sprintf
-               "decode cache miss: specialization requires %d cached tokens; matched %d"
-               engine.contract.past_tokens matched)
-        else
-          match Serving_cache.Match.checkpoint match_ with
-          | None -> Error "decode cache match has no recurrent checkpoint"
-          | Some source_checkpoint ->
-              let* reservation = reserve engine.logical_cache 1 in
-              let result =
-                let matched_slots = Serving_cache.Match.slots match_ in
-                let* buffers =
-                  prepare_decode_buffers engine matched_slots source_checkpoint
-                in
-                let* token_input = token_buffer engine.decode [| token |] in
-                let inputs =
-                  (engine.contract.input_ids, token_input) :: buffers.inputs
-                in
-                let* execution = Metal_runtime.execute engine.decode ~inputs in
-                let* () =
-                  pack_decode_attention engine execution reservation.slots
-                    ~source_items:(engine.contract.past_tokens + 1)
-                    ~source_offset:engine.contract.past_tokens
-                    engine.contract.attentions
-                in
-                let* () =
-                  pack_decode_recurrent engine reservation.checkpoint
-                    buffers.recurrent
-                in
-                let tokens = Array.append prefix [| token |] in
-                let slots = Array.append matched_slots reservation.slots in
-                let* logits = output execution engine.contract.logits in
-                let* cached_prefix =
-                  Serving_cache.insert engine.logical_cache ~tokens ~slots
-                    ~checkpoint:reservation.checkpoint ()
-                in
-                Ok
-                  {
-                    Step.logits;
-                    tokens;
-                    cached_prefix;
-                    kernels = Metal_runtime.Execution.kernels execution;
-                  }
+  let past_tokens = Array.length prefix in
+  let* schedule = decode_schedule engine past_tokens in
+  let match_ =
+    Serving_cache.match_prefix engine.logical_cache ~reserve_tail:0 prefix
+  in
+  with_match engine match_ (fun () ->
+      let matched = Serving_cache.Match.tokens match_ in
+      if matched <> past_tokens then
+        Error
+          (Printf.sprintf "decode cache miss: requested %d tokens; matched %d"
+             past_tokens matched)
+      else
+        match Serving_cache.Match.checkpoint match_ with
+        | None -> Error "decode cache match has no recurrent checkpoint"
+        | Some source_checkpoint ->
+            let* reservation = reserve engine.logical_cache 1 in
+            let result =
+              let matched_slots = Serving_cache.Match.slots match_ in
+              let* buffers =
+                prepare_decode_buffers engine matched_slots source_checkpoint
               in
-              (match result with
-              | Ok _ as result -> result
-              | Error message -> abort engine.logical_cache reservation message))
+              let* token_input = token_buffer engine.decode [| token |] in
+              let inputs =
+                (engine.contract.input_ids, token_input) :: buffers.inputs
+              in
+              let* execution =
+                Metal_runtime.execute_schedule engine.decode ~schedule ~inputs
+              in
+              let* () =
+                pack_decode_attention engine execution reservation.slots
+                  ~source_items:(past_tokens + 1) ~source_offset:past_tokens
+                  engine.contract.attentions
+              in
+              let* () =
+                pack_decode_recurrent engine reservation.checkpoint
+                  buffers.recurrent
+              in
+              let tokens = Array.append prefix [| token |] in
+              let slots = Array.append matched_slots reservation.slots in
+              let* logits = output execution engine.contract.logits in
+              let* cached_prefix =
+                Serving_cache.insert engine.logical_cache ~tokens ~slots
+                  ~checkpoint:reservation.checkpoint ()
+              in
+              Ok
+                {
+                  Step.logits;
+                  tokens;
+                  cached_prefix;
+                  kernels = Metal_runtime.Execution.kernels execution;
+                }
+            in
+            (match result with
+            | Ok _ as result -> result
+            | Error message -> abort engine.logical_cache reservation message))
 
 let stats engine = Serving_cache.stats engine.logical_cache
 let validate engine = Serving_cache.validate engine.logical_cache

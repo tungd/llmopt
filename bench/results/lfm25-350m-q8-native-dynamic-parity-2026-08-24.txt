@@ -1,0 +1,31 @@
+model: LiquidAI/LFM2.5-350M
+native-runtime: OCaml plus generated Metal
+quantization: q8-weight-only-per-output-channel
+kv-format: q8-group-64
+input: 1,2,3,4,5,6
+tokens: 19130,11040,11207,1414
+parity: exact greedy token parity against eager Q8
+
+native-memory-free-before: 61%
+native-load-seconds: 0.028177
+native-prefill-seconds: 0.395947
+native-decode-seconds: 0.344855
+native-decode-steps: 3
+native-prefill-kernels: 522
+native-decode-kernels: 1632
+native-decode-cached-prefixes: 6,7,8
+native-radix-cached-tokens: 9
+native-radix-hits: 3
+native-radix-misses: 0
+native-kv-used-tokens: 9
+native-kv-used-checkpoints: 4
+
+eager-memory-free-before: 61%
+eager-memory-free-after: 49%
+eager-load-seconds: 1.029736
+eager-run-seconds: 0.424539
+eager-prefill-sha256: 6c7083ead317dd83da30dffee9c2a30c19d09fdbff9e1a7396630c2f37682dcc
+eager-decode-sha256: 245ec7a6f1e273593a6dff6e5a684ad5570ef176a412f87057a696a549915504,77d25cc50e8e633431beb04dccc17d828ebee3cb3dba0ae9144f91ee2382f251,d001bf1827708746fb3191e9c45a167a6422727329dfca832ca7dff2ca68d70e
+
+native-command: gtimeout --signal=TERM --kill-after=5s 180s _build/bin/llmopt-lfm-serving-smoke --tokens 4 _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi8-dynamic-v1-2026-08-24/prefill _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi8-dynamic-v1-2026-08-24/decode
+eager-command: gtimeout --signal=TERM --kill-after=5s 180s env PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_reference_tokens.py --tokens 4

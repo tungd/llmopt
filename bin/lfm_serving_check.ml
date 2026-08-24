@@ -22,6 +22,85 @@ let arguments () =
       Ok (format, prefill, decode)
   | _ -> usage ()
 
+let dimensions value =
+  Ir.Value.logical_shape value |> Tensor_shape.dimensions
+
+let template_lengths prefill decode =
+  let prefill_inputs =
+    prefill |> Serving_package.schedule |> Serving_schedule.runtime_inputs
+  in
+  let decode_inputs =
+    decode |> Serving_package.schedule |> Serving_schedule.runtime_inputs
+  in
+  let* prefill_tokens =
+    match List.assoc_opt "l_kwargs_input_ids_" prefill_inputs with
+    | Some value ->
+        (match dimensions value with
+        | [ 1; tokens ] when tokens > 0 -> Ok tokens
+        | _ -> Error "prefill input_ids has an invalid template shape")
+    | None -> Error "prefill template has no input_ids"
+  in
+  let* past_tokens =
+    decode_inputs
+    |> List.find_map (fun (name, value) ->
+           if String.ends_with ~suffix:"_keys" name then Some value else None)
+    |> function
+    | Some value ->
+        (match dimensions value with
+        | [ 1; _heads; tokens; _width ] when tokens > 0 -> Ok tokens
+        | _ -> Error "decode key cache has an invalid template shape")
+    | None -> Error "decode template has no attention-key input"
+  in
+  Ok (prefill_tokens, past_tokens)
+
+let workspace schedule =
+  let* plan = Serving_memory_plan.create schedule in
+  Ok (Serving_memory_plan.workspace_bytes plan)
+
+let specialize prefill decode =
+  let prefill_schedule = Serving_package.schedule prefill in
+  let decode_schedule = Serving_package.schedule decode in
+  let* captured_prefill, captured_past = template_lengths prefill decode in
+  let* prefill_13 =
+    Serving_schedule.Lfm25.specialize_prefill
+      ~captured_tokens:captured_prefill ~tokens:13 prefill_schedule
+  in
+  let* prefill_128 =
+    Serving_schedule.Lfm25.specialize_prefill
+      ~captured_tokens:captured_prefill ~tokens:128 prefill_schedule
+  in
+  let* prefill_4096 =
+    Serving_schedule.Lfm25.specialize_prefill
+      ~captured_tokens:captured_prefill ~tokens:4096 prefill_schedule
+  in
+  let* decode_one =
+    Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens:1
+      decode_schedule
+  in
+  let* decode_127 =
+    Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens:127
+      decode_schedule
+  in
+  let* decode_4095 =
+    Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens:4095
+      decode_schedule
+  in
+  let* prefill_13 = workspace prefill_13 in
+  let* prefill_128 = workspace prefill_128 in
+  let* prefill_4096 = workspace prefill_4096 in
+  let* decode_one = workspace decode_one in
+  let* decode_127 = workspace decode_127 in
+  let* decode_4095 = workspace decode_4095 in
+  Ok
+    ( captured_prefill,
+      captured_past,
+      prefill_13,
+      prefill_128,
+      prefill_4096,
+      decode_one,
+      decode_127,
+      decode_4095 )
+
 let run () =
   let* kv_format, prefill_root, decode_root = arguments () in
   let* prefill = package prefill_root in
@@ -44,11 +123,19 @@ let run () =
         ~token_capacity:1 ~checkpoint_capacity:1 ~page_size:prefill_page ()
     in
     let* () = Serving_engine.validate_packages ~config ~prefill ~decode in
+    let* captured_prefill, captured_past, prefill_13, prefill_128, prefill_4096,
+         decode_one, decode_127, decode_4095 =
+      specialize prefill decode
+    in
     Printf.printf
       "valid LFM2.5 serving pair: prefill ABI=%d, decode ABI=%d, KV=%s, page=%d\n"
       (Serving_package.abi_version prefill)
       (Serving_package.abi_version decode)
       (Kv_cache.Format.to_string kv_format) prefill_page;
+    Printf.printf
+      "sequence templates: prefill=%d, decode-past=%d; workspaces: prefill-13=%d, prefill-128=%d, prefill-4096=%d, decode-1=%d, decode-127=%d, decode-4095=%d\n"
+      captured_prefill captured_past prefill_13 prefill_128 prefill_4096
+      decode_one decode_127 decode_4095;
     Ok ()
 
 let () =
