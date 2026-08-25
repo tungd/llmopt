@@ -34,5 +34,7 @@ respectively, because the macro variants add typed entry points.
 The captured residual output has an external downstream consumer, so
 `Q8_linear_add_norm` is not selected for that graph. The captured graph exposes
 `logits`, not the opt-in `token_id` output, so `Q8_lm_head_argmax` is not
-selected. This probe does not include a current-state model forward, token
-parity, or latency result.
+selected. The compiler/package probe itself does not include a model forward or
+latency comparison; separate current Q8 runtime evidence is recorded in
+`exp-0077-xgboost-cost-model-differential-2026-08-26.md` and does not execute
+the freshly audited macro packages as a counterbalanced comparison.

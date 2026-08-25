@@ -1,0 +1,30 @@
+LFM2.5-350M Q8 cost-model differential evidence
+Date: 2026-08-26
+Target: LiquidAI/LFM2.5-350M
+Host: arm64 Mac16,8, macOS 26.6.1
+Build: 7864ebb
+
+Probe inputs:
+- Prompt: `The capital of France is` (6 input tokens).
+- Quantization: Q8 weight-only per-output-channel; 93 linear modules converted.
+- Differential artifact: `_artifacts/phase1-350m-differential-2026-08-26/result.json`.
+- Model-level artifact: `_artifacts/lfm25-benchsuite-macro-2026-08-26/result.json`.
+- Tracked raw bench artifact: `bench/results/lfm25-350m-q8-macro-bench-2026-08-26.json`.
+
+Fresh differential result:
+- Direct non-square probe shape `[3, 29, 37]`: FP16 max_abs `0.0`, mean_abs `0.0`, exact `true`, argmax exact `true`; FP32 max_abs `1.9073486328125e-06`, mean_abs `1.9234487069752504e-07`, argmax exact `true`.
+- Eager versus fallback: exact logits and exact argmax.
+- Eager versus generated exact: exact logits and exact argmax.
+- Eager versus generated native: logits max_abs `0.056640625`, mean_abs `0.007299032062292099`, argmax exact `true`.
+- Compiled timings for this six-token prompt: fallback `2.191272250027396 s`, generated exact `2.881548708071932 s`, generated native `1.582101000007242 s`; generated exact and native each used 93 dispatches.
+
+Fresh four-request benchsuite result:
+- `engine_pass`: `true`; `measurement_status`: `isolated_observation`.
+- Cross-process FP16 logits digest is exact for shape `[1, 14, 65536]`.
+- Token output parity is exact for 4/4 scored requests and 4/4 warmup requests, with zero mismatches.
+- Scored median TPOT: eager `42.8826249941873 ms`, llmopt `23.47580531689649 ms`.
+- Scored median TTFT: eager `60.867374937515706 ms`, llmopt `58.967208431568` ms.
+- Raw scored deltas: TPOT `-19.406819677290812 ms`, TTFT `-1.900166505947709 ms`, ERS `+0.01567995644217829`.
+
+Evidence boundary:
+The benchsuite comparison is one execution per candidate in separate processes with no repeated or counterbalanced samples; its own result therefore sets `valid_for_relative_speed_claim` to `false`. These artifacts establish the stated parity pairs and raw timings, but they do not establish the checklist's `>= 15%` static-versus-dynamic Q8 linear speedup on non-square shapes; the native full-logit comparison also has the stated nonzero max_abs drift despite exact argmax parity.

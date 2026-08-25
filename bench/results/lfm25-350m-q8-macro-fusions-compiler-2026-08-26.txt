@@ -27,5 +27,9 @@ Validation:
 - ninja -f ninja.build all: passed.
 - ninja -f ninja.build q8-metal: passed.
 
+Related current Q8 runtime evidence:
+- A fresh full differential probe is recorded in `bench/results/lfm25-350m-q8-cost-model-differential-2026-08-26.txt` and `_artifacts/phase1-350m-differential-2026-08-26/result.json`.
+- A separate isolated four-request benchsuite is recorded in `bench/results/lfm25-350m-q8-macro-bench-2026-08-26.json`; it has exact 4/4 scored and 4/4 warmup token parity, while its runner marks relative timing claims invalid.
+
 Evidence boundary:
-This is a compiler/package and generated-Metal compilation probe only. No current-state metal-runtime-differential, model forward, token-id differential, or latency measurement was produced here.
+The compiler/package audit remains at a 30-command reduction against the prior validated package, not the checklist's additional 120-command condition. The runtime probes above do not execute the freshly audited macro packages as a counterbalanced latency comparison, and the captured residual-norm and LM-head-argmax patterns remain unselected; therefore they do not close the macro-fusion checklist items.
