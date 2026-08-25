@@ -454,6 +454,15 @@ matrix remains 6/6 for retrieval and 12-token parity, with median TTFT/TPOT
 `1160.473/33.729 ms` at 2,048 and `2701.152/62.192 ms` at 4,096 tokens. See
 [`bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt).
 
+The same paired weight package also executes with selectable FP16 KV and
+recurrent checkpoints while Q8-group-64 remains the default. One bounded FP16
+cache trace preserves all four eager/Q8-cache token sequences and 80/194 reuse,
+observing ERS `0.4297032150753201` and median TTFT/TPOT
+`69.16322899633087/6.698208337184042 ms`. Against the separate paired Q8-cache
+report, those values change by `+0.022687456709165554`,
+`-6.06170849641785 ms`, and `-0.23844450091322233 ms`. See
+[`bench/results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt).
+
 The preceding single-channel full-Q8 native HTTP needle runner also completed
 all six 2,048/4,096-token prompts with exact `RAVEN-4271` retrieval and all 12
 eager-Q8 token IDs. Exact-only text is 0/6 because the pinned continuation

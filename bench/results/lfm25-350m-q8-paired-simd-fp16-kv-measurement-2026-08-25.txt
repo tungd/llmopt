@@ -1,0 +1,67 @@
+LFM2.5-350M paired SIMD package with FP16 KV/recurrent cache
+Date: 2026-08-25
+Compiler commit: b88e385
+
+Configuration
+- model: LiquidAI/LFM2.5-350M
+- package: _artifacts/lfm25-350m-q8-paired-simd-replan-2026-08-25
+- weights: Q8, including lm_head
+- runtime KV/recurrent format: FP16, selected with --kv fp16
+- default runtime KV/recurrent format remains Q8-group-64
+- token/checkpoint capacities: 512 / 128
+
+Safety and supervision
+- preflight memory: 54% system-wide free
+- resident model/native processes: none
+- port 18093 and output path: unused before launch and released afterward
+- supervisor: one 240-second server-and-runner attempt
+- warmup/scored requests: 4/4 and 4/4 successful
+- memory after warmup/post-exit: 54% / 57% free
+- sampled server RSS: 119,168 KiB
+- runner exit: 0; intentionally terminated server exit: 143
+- no retry occurred
+
+Correctness and cache ownership
+- scored output mismatches: 0
+- exact token parity against paired Q8 cache: 4/4
+- exact token parity against established full-Q8 eager IDs: 4/4
+- scored cached prompt tokens: 80/194
+- second-turn reuse: 42/61 and 38/59
+- the run exercises FP16 attention KV and recurrent checkpoint pack/unpack through the native OCaml owner
+
+FP16-cache scored observation
+- ERS: 0.4297032150753201
+- median TTFT: 69.16322899633087 ms
+- median TPOT: 6.698208337184042 ms
+- mean TTFT: 69.21012524981052 ms
+- mean TPOT: 6.75012150410718 ms
+- TPOT range: 6.620444337992619 to 6.983625004068017 ms
+
+Paired Q8-cache observation
+- ERS: 0.40701575836615456
+- median TTFT: 75.22493749274872 ms
+- median TPOT: 6.936652838097264 ms
+- mean TTFT: 73.31890625937376 ms
+- mean TPOT: 7.178989583432364 ms
+
+FP16-minus-Q8 cache deltas
+- ERS: +0.022687456709165554
+- median TTFT: -6.06170849641785 ms
+- median TPOT: -0.23844450091322233 ms
+- mean TTFT: -4.108781009563245 ms
+- mean TPOT: -0.4288680793251842 ms
+
+Per-request FP16 evidence and Q8-cache deltas
+- c0000-t000: score 0.4888833959916706; TTFT 37.18691598623991 ms; TPOT 6.983625004068017 ms; cached 0/39; IDs 1098,5706,803,4481; delta score/TTFT/TPOT +0.014325844968877288/-4.933958989568055/-0.07165300970276167
+- c0000-t001: score 0.35885371403737454; TTFT 101.13954200642183 ms; TPOT 6.749041669536382 ms; cached 42/61; IDs 41677,7,2,1; delta +0.016696006902767402/-7.189458003267646/-0.06898599288736751
+- c0001-t000: score 0.5278245794800996; TTFT 26.559458987321705 ms; TPOT 6.6473750048317015 ms; cached 0/35; IDs 1098,5410,4100,856; delta +0.0030198471043569874/-0.24808204034343362/-0.05876399033392499
+- c0001-t001: score 0.34325117079213563; TTFT 111.95458401925862 ms; TPOT 6.620444337992619 ms; cached 38/59; IDs 31466,7,2,1; delta +0.056708127860660484/-4.063625005073845/-1.5160693243766827
+
+Raw artifacts
+- FP16 cache: _artifacts/native-http-paired-simd-fp16-kv-smoke-2026-08-25
+- Q8 cache comparison: _artifacts/native-http-paired-simd-smoke-2026-08-25/scored.json
+
+Evidence boundary
+- FP16 and Q8 reports are separate non-interleaved single observations.
+- This run proves model-scale selectable FP16 cache execution for the 4+4 serial trace; it does not change the Q8 default.
+- No FP16-cache long-context needle matrix or new eager process was run.

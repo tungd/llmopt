@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T09:57:58Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T10:03:08Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -81,6 +81,9 @@ sources:
   - id: paired-simd-measurement
     resource: /bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt
     title: Paired SIMD Q8 model measurement
+  - id: fp16-kv-measurement
+    resource: /bench/results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt
+    title: Selectable FP16 KV model execution
 ---
 
 # Overview
@@ -171,6 +174,12 @@ reservation, physical packing, radix insertion, leased prefix reuse, state
 unpacking, and rollback. The current serial HTTP trace completes 4/4 warmup
 and 4/4 scored requests, reuses 80/194 prompt tokens, and matches all full-Q8
 eager output sequences.
+
+The same paired full-Q8 package now has model-scale execution evidence for the
+selectable FP16 cache policy. A bounded `--kv fp16` trace completes 4/4 warmup
+and scored requests, retains all eager/Q8-cache IDs and 80/194 reuse, and
+observes median TTFT/TPOT `69.163/6.698 ms`. This verifies both physical
+formats through the native owner while retaining Q8-group-64 as the default.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed

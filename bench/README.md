@@ -298,6 +298,12 @@ those values change by `+0.016119526259391448`, `+3.7482914922293276 ms`, and
 long-context TPOT changes by `+0.722/+1.326 ms`. See
 [`results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt`](results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt).
 
+Selecting `--kv fp16` on the same paired package completes 4/4 scored requests
+with exact eager/Q8-cache IDs and the same 80/194 reuse. This separate
+observation records ERS `0.4297032150753201` and median TTFT/TPOT
+`69.16322899633087/6.698208337184042 ms`; Q8-group-64 remains the default. See
+[`results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt`](results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

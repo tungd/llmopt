@@ -65,3 +65,4 @@
 * [Full-Q8 LM-head capture and native measurement](exp-0063-q8-lm-head-measurement.md) - bounded 350M capture, exact short-trace parity, ERS 0.390896, and 6/6 long-context retrieval/token parity.
 * [Paired SIMD-group Q8 decode GEMV](exp-0064-paired-simd-q8-gemv.md) - two output channels share each activation vector load, halving one-token threadgroup scheduling with exact synthetic Metal outputs.
 * [Paired SIMD-group Q8 model measurement](exp-0065-paired-simd-measurement.md) - exact short and needle tokens with observed ERS 0.407016 and mixed latency deltas.
+* [Model-scale selectable FP16 KV execution](exp-0066-fp16-kv-model-execution.md) - the paired 350M package executes FP16 KV/recurrent storage with exact tokens and unchanged radix reuse while Q8 remains default.

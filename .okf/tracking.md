@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T09:57:58Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T10:03:08Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -52,6 +52,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Single-pass SIMD attention | implemented and model-executed in aggregate | one 32-lane SIMD group computes each width-64 query row, reducing each query-key score once and accumulating softmax-weighted values online. All six commands per stage select it; the combined optimized run retains exact scored tokens, and scalar fallback remains declared |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |
 | OCaml serving radix/KV cache | dependent cached-suffix batching implemented and measured | the corrected runtime reserves one checkpoint per suffix token and completes 4/4 scored requests with 42/61 and 38/59 second-turn reuse, 80/194 total cache reuse, and exact eager-Q8 output sequences |
+| Selectable FP16 KV/recurrent storage | implemented and model-executed; Q8 remains default | the paired full-Q8 package completes 4/4 warmup and scored requests with `--kv fp16`, exact eager and Q8-cache token IDs, and unchanged 80/194 radix reuse. The separate FP16 observation records ERS `0.4297032150753201` and median TTFT/TPOT `69.163/6.698 ms` |
 | Versioned generated package ABI | implemented for captured ABI-v11 full-Q8 templates | Package ABI v11 retains ABI-v2 through ABI-v10 reads and typed fused Q8 dispatch. The current replan writes 810-command/68-entry prefill and 864-command/66-entry decode templates with zero opaque operations and 243 validated bindings each; eight paired SIMD entries are added per stage |
 | OCaml tensor-store ownership | shared real JSON-free full-Q8 archive validated | Dynamo streams static inputs into a versioned binary index plus 256-byte-aligned payloads. The full-Q8 capture seals one 489,377,152-byte `weights.llmopt`, canonicalizes aliases, and hard-links it across prefill/decode; its 243 tensors include the FP16 embedding plus separate Q8 head weight/scale |
 | OCaml Metal serving loader and dispatch | paired full-Q8 final-row prefill plus packed fused/SIMD schedules and dependent suffix batches model-executed | ABI-v11 packages prefer vector-staged Q8 prefill, paired packed SIMD-group Q8 decode including the head, RMSNorm, and attention with single-channel/scalar fallback. One bounded run completes 4/4 warmup and scored requests, preserves exact full-Q8 eager tokens and 80/194 reuse, and measures native ERS `0.40701575836615456` |
