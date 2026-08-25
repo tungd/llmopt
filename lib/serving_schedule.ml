@@ -359,7 +359,7 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d RMSNorm-RoPE metadata is inconsistent"
                    command.Command.node_id)
-        | ( Ir.Op.Short_conv_step config,
+        | ( (Ir.Op.Short_conv_step config | Ir.Op.Short_conv_step_fused config),
             [ in_proj; conv_state; conv_weight ],
             Some output ) ->
             let channels = Ir.Short_conv_step.channels config in
@@ -919,7 +919,7 @@ module Lfm25 = struct
     | Ir.Op.Rms_rope _, input :: _ ->
         Tensor_shape.transpose (Ir.Value.logical_shape input) ~axis0:1 ~axis1:2
         |> shape_error
-    | Ir.Op.Short_conv_step config, _ ->
+    | (Ir.Op.Short_conv_step config | Ir.Op.Short_conv_step_fused config), _ ->
         Tensor_shape.create [ 1; 1; Ir.Short_conv_step.channels config ]
         |> shape_error
     | Ir.Op.Short_conv_prefill config, input :: _ ->
@@ -2008,6 +2008,10 @@ let write_op writer = function
       Binary.Writer.u8 writer 21;
       Binary.Writer.u64 writer (Ir.Short_conv_step.channels config);
       Binary.Writer.u64 writer (Ir.Short_conv_step.window config)
+  | Ir.Op.Short_conv_step_fused config ->
+      Binary.Writer.u8 writer 25;
+      Binary.Writer.u64 writer (Ir.Short_conv_step.channels config);
+      Binary.Writer.u64 writer (Ir.Short_conv_step.window config)
   | Ir.Op.Short_conv_prefill config ->
       Binary.Writer.u8 writer 22;
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.channels config);
@@ -2141,6 +2145,11 @@ let read_op values reader =
       let* k = Binary.Reader.u64 reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias })
+  | 25 ->
+      let* channels = Binary.Reader.u64 reader in
+      let* window = Binary.Reader.u64 reader in
+      Ir.Short_conv_step.create ~channels ~window
+      |> Result.map (fun config -> Ir.Op.Short_conv_step_fused config)
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

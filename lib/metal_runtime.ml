@@ -2196,7 +2196,7 @@ let encode_schedule execution_batch ~schedule ~inputs =
                   ~grid:(grid_x, 1, 1)
               in
               dispatched (Ok (bind_value state output output_buffer, kernel))
-        | ( Ir.Op.Short_conv_step config,
+        | ( (Ir.Op.Short_conv_step config | Ir.Op.Short_conv_step_fused config),
             [ in_proj; conv_state; conv_weight ],
             Some output ) ->
             let channels = Ir.Short_conv_step.channels config in
@@ -2205,8 +2205,15 @@ let encode_schedule execution_batch ~schedule ~inputs =
             let* weight_buf = find_value state conv_weight in
             let* output_buf = workspace_buffer state output in
             let* parameters = Parameters.u32s [ channels ] in
+            let kernel_name =
+              match op with
+              | Ir.Op.Short_conv_step _ -> "llmopt_short_conv_step_f16"
+              | Ir.Op.Short_conv_step_fused _ ->
+                  "llmopt_short_conv_step_fused_f16"
+              | _ -> assert false
+            in
             let* entry =
-              kernel_entry ~name:"llmopt_short_conv_step_f16" runtime
+              kernel_entry ~name:kernel_name runtime
                 ~operation:Kernel_abi.Operation.Short_conv_step
                 ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
             in

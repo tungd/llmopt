@@ -231,6 +231,7 @@ module Op : sig
     | Rms_norm of { epsilon : float }
     | Rms_rope of Rms_rope.t
     | Short_conv_step of Short_conv_step.t
+    | Short_conv_step_fused of Short_conv_step.t
     | Short_conv_prefill of Short_conv_prefill.t
     | Primitive of Primitive.t
     | Opaque of {

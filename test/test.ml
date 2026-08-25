@@ -3197,6 +3197,44 @@ let () =
        "kernel void llmopt_short_conv_step_f16")
     "Metal lowering emits fused ShortConv step";
 
+  let conv_dec_fused = Passes.fuse_short_conv_step conv_dec_graph in
+  expect
+    (Ir.Graph.nodes conv_dec_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Short_conv_step_fused config, [ in_proj; state; weight ] ->
+               Ir.Value.equal in_proj conv_dec_in_proj
+               && Ir.Value.equal state conv_dec_state
+               && Ir.Value.equal weight conv_dec_weight
+               && Ir.Short_conv_step.channels config = 2
+               && Ir.Short_conv_step.window config = 3
+           | _ -> false))
+    "ShortConv step pass records the typed fused recurrent operation";
+  let conv_dec_fused_schedule =
+    conv_dec_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands conv_dec_fused_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Short_conv_step_fused config ->
+               Ir.Short_conv_step.channels config = 2
+               && Ir.Short_conv_step.window config = 3
+           | _ -> false))
+    "binary schedule preserves fused ShortConv step opcode";
+  let conv_dec_fused_program = Metal.lower conv_dec_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source conv_dec_fused_program)
+       "kernel void llmopt_short_conv_step_fused_f16")
+    "Metal lowering emits the fused ShortConv step kernel";
+  expect
+    (Metal.Program.kernels conv_dec_fused_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_short_conv_step_fused_f16"
+           && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Short_conv_step))
+    "fused ShortConv step retains the runtime ABI operation";
+
   let conv_pref_graph = Ir.Graph.create () in
   let conv_pref_in_proj =
     Ir.Graph.tensor_input conv_pref_graph ~name:"conv_pref_in_proj"

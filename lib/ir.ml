@@ -407,6 +407,7 @@ module Op = struct
     | Rms_norm of { epsilon : float }
     | Rms_rope of Rms_rope.t
     | Short_conv_step of Short_conv_step.t
+    | Short_conv_step_fused of Short_conv_step.t
     | Short_conv_prefill of Short_conv_prefill.t
     | Primitive of Primitive.t
     | Opaque of {
@@ -457,6 +458,8 @@ module Op = struct
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
     | Rms_rope config -> Rms_rope.to_string config
     | Short_conv_step config -> Short_conv_step.to_string config
+    | Short_conv_step_fused config ->
+        "short-conv-step-fused(" ^ Short_conv_step.to_string config ^ ")"
     | Short_conv_prefill config -> Short_conv_prefill.to_string config
     | Primitive primitive -> Primitive.to_string primitive
     | Opaque { op; target; _ } -> Printf.sprintf "opaque(%s,%s)" op target

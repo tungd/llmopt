@@ -1888,6 +1888,30 @@ let short_conv_step_entries =
       ~operation:Kernel_abi.Operation.Short_conv_step
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let replace_first ~needle ~replacement source =
+  let needle_length = String.length needle in
+  let source_length = String.length source in
+  let rec find offset =
+    if offset + needle_length > source_length then None
+    else if String.sub source offset needle_length = needle then Some offset
+    else find (offset + 1)
+  in
+  match find 0 with
+  | None -> source
+  | Some offset ->
+      String.sub source 0 offset ^ replacement
+      ^ String.sub source (offset + needle_length) (source_length - offset - needle_length)
+
+let short_conv_step_fused_source =
+  replace_first ~needle:"llmopt_short_conv_step_f16"
+    ~replacement:"llmopt_short_conv_step_fused_f16" short_conv_step_source
+
+let short_conv_step_fused_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_step_fused_f16"
+      ~operation:Kernel_abi.Operation.Short_conv_step
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let short_conv_prefill_source =
   "\nstruct ShortConvPrefillParams {\n"
   ^ "  uint tokens;\n"
@@ -2664,6 +2688,13 @@ let has_short_conv_step graph =
          | Ir.Op.Short_conv_step _ -> true
          | _ -> false)
 
+let has_short_conv_step_fused graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Short_conv_step_fused _ -> true
+         | _ -> false)
+
 let has_short_conv_prefill graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -2960,6 +2991,9 @@ let lower graph =
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_short_conv graph, short_conv_source, short_conv_entries;
       has_short_conv_step graph, short_conv_step_source, short_conv_step_entries;
+      ( has_short_conv_step_fused graph,
+        short_conv_step_fused_source,
+        short_conv_step_fused_entries );
       has_short_conv_prefill graph, short_conv_prefill_source, short_conv_prefill_entries;
       has_attention graph, attention_source, attention_entries;
       has_embedding graph, embedding_source, embedding_entries;

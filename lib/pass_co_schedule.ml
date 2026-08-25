@@ -33,7 +33,8 @@ let run graph =
       List.fold_left
         (fun map node ->
           match Ir.node_op node, Ir.node_inputs node with
-          | Ir.Op.Short_conv_step _, [ _; state; _ ]
+          | ( Ir.Op.Short_conv_step _ | Ir.Op.Short_conv_step_fused _ ),
+            [ _; state; _ ]
           | Ir.Op.Short_conv_prefill _, [ _; _; state ]
           | Ir.Op.Copy _, [ _; state ] ->
               let existing =

@@ -61,7 +61,8 @@ module Resource_class = struct
         flops /. max 1.0 bytes
     | Ir.Op.Short_conv_prefill _ -> 4.0
     | Ir.Op.Rms_norm _ | Ir.Op.Rms_rope _ | Ir.Op.Primitive _ -> 0.5
-    | Ir.Op.Short_conv_step _ | Ir.Op.Add _ | Ir.Op.Gelu | Ir.Op.Relu -> 0.8
+    | Ir.Op.Short_conv_step _ | Ir.Op.Short_conv_step_fused _ | Ir.Op.Add _
+    | Ir.Op.Gelu | Ir.Op.Relu -> 0.8
     | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _ | Ir.Op.Barrier_create _ -> 0.0
     | _ -> 1.0
 
@@ -80,6 +81,7 @@ module Resource_class = struct
     | Ir.Op.Rms_norm _
     | Ir.Op.Rms_rope _
     | Ir.Op.Short_conv_step _
+    | Ir.Op.Short_conv_step_fused _
     | Ir.Op.Short_conv_prefill _
     | Ir.Op.Add _
     | Ir.Op.Gelu
@@ -165,7 +167,8 @@ let analyze graph =
       List.fold_left
         (fun map node ->
           match Ir.node_op node, Ir.node_inputs node with
-          | Ir.Op.Short_conv_step _, [ _; state; _ ]
+          | ( Ir.Op.Short_conv_step _ | Ir.Op.Short_conv_step_fused _ ),
+            [ _; state; _ ]
           | Ir.Op.Short_conv_prefill _, [ _; _; state ]
           | Ir.Op.Copy _, [ _; state ] ->
               let existing =
