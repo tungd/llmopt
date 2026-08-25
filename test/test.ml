@@ -4293,4 +4293,16 @@ let () =
     | Ir.Op.Q8_dual_linear { m = 1; n1 = 128; n2 = 128; k = 64; bias = false } -> true
     | _ -> false)
     "parallel FFN branches fuse into Q8_dual_linear";
+
+  (* Serving_memory_plan concurrent disjoint tests *)
+  let sched = expect_ok (Serving_schedule.of_graph diamond_g) in
+  let mem_plan = expect_ok (Serving_memory_plan.plan_concurrent sched) in
+  expect (Serving_memory_plan.check_disjoint mem_plan [ d_w1; d_w3 ])
+    "concurrent stage outputs d_w1 and d_w3 have disjoint memory allocations";
+  let a_w1 = Option.get (Serving_memory_plan.allocation mem_plan d_w1) in
+  let a_w3 = Option.get (Serving_memory_plan.allocation mem_plan d_w3) in
+  expect (Serving_memory_plan.Allocation.offset a_w1 mod 256 = 0)
+    "d_w1 allocation offset is 256-byte aligned";
+  expect (Serving_memory_plan.Allocation.offset a_w3 mod 256 = 0)
+    "d_w3 allocation offset is 256-byte aligned";
   print_endline "llmopt tests passed"

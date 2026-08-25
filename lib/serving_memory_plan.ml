@@ -304,8 +304,32 @@ let create schedule =
       bytes_without_reuse;
     }
 
+let plan_concurrent = create
+
 let allocation plan value =
   match Value_map.find_opt (Ir.Value.id value) plan.storage_by_value with
   | Some (Storage.Workspace owner) ->
       Value_map.find_opt owner plan.allocation_by_owner
   | Some Storage.External | None -> None
+
+let check_disjoint plan values =
+  let allocs =
+    List.filter_map (fun v -> allocation plan v) values
+  in
+  let arr = Array.of_list allocs in
+  let len = Array.length arr in
+  let rec check i j =
+    if i >= len then true
+    else if j >= len then check (i + 1) (i + 2)
+    else
+      let a = arr.(i) in
+      let b = arr.(j) in
+      let a_start = a.Allocation.offset in
+      let a_end = a_start + a.Allocation.bytes in
+      let b_start = b.Allocation.offset in
+      let b_end = b_start + b.Allocation.bytes in
+      if max a_start b_start < min a_end b_end then false
+      else check i (j + 1)
+  in
+  check 0 1
+
