@@ -249,6 +249,13 @@ module Op : sig
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
     | Q8_dual_linear of { m : int; n1 : int; n2 : int; k : int; bias : bool }
+    | Q8_qkv_linear of {
+        m : int;
+        n_q : int;
+        n_kv : int;
+        k : int;
+        bias : bool;
+      }
 
   val to_string : t -> string
 end

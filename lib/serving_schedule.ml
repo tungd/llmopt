@@ -812,6 +812,16 @@ module Lfm25 = struct
                k = substitute substitutions k;
                bias;
              })
+    | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias } ->
+        Ok
+          (Ir.Op.Q8_qkv_linear
+             {
+               m = substitute substitutions m;
+               n_q = substitute substitutions n_q;
+               n_kv = substitute substitutions n_kv;
+               k = substitute substitutions k;
+               bias;
+             })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
         Ok (Ir.Op.Primitive primitive)
@@ -926,7 +936,8 @@ module Lfm25 = struct
         |> shape_error
     | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
       | Ir.Op.Q8_linear _ | Ir.Op.Q8_linear_silu _ | Ir.Op.Q8_linear_add _
-      | Ir.Op.Q8_linear_mul_add _ ),
+      | Ir.Op.Q8_linear_mul_add _ | Ir.Op.Q8_dual_linear _
+      | Ir.Op.Q8_qkv_linear _ ),
       _ ->
         map_shape substitutions original
     | _ -> map_shape substitutions original
@@ -2008,6 +2019,13 @@ let write_op writer = function
       Binary.Writer.u64 writer n2;
       Binary.Writer.u64 writer k;
       Binary.Writer.bool writer bias
+  | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias } ->
+      Binary.Writer.u8 writer 24;
+      Binary.Writer.u64 writer m;
+      Binary.Writer.u64 writer n_q;
+      Binary.Writer.u64 writer n_kv;
+      Binary.Writer.u64 writer k;
+      Binary.Writer.bool writer bias
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -2116,6 +2134,13 @@ let read_op values reader =
       let* k = Binary.Reader.u64 reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Q8_dual_linear { m; n1; n2; k; bias })
+  | 24 ->
+      let* m = Binary.Reader.u64 reader in
+      let* n_q = Binary.Reader.u64 reader in
+      let* n_kv = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* bias = Binary.Reader.bool reader in
+      Ok (Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias })
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

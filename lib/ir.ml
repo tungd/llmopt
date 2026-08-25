@@ -425,6 +425,13 @@ module Op = struct
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
     | Q8_dual_linear of { m : int; n1 : int; n2 : int; k : int; bias : bool }
+    | Q8_qkv_linear of {
+        m : int;
+        n_q : int;
+        n_kv : int;
+        k : int;
+        bias : bool;
+      }
 
   let to_string = function
     | Input { name; source } ->
@@ -479,6 +486,11 @@ module Op = struct
         Printf.sprintf "q8-dual-linear[%dx(%d+%d)x%d]" m n1 n2 k
     | Q8_dual_linear { m; n1; n2; k; bias = true } ->
         Printf.sprintf "q8-dual-linear+bias[%dx(%d+%d)x%d]" m n1 n2 k
+    | Q8_qkv_linear { m; n_q; n_kv; k; bias = false } ->
+        Printf.sprintf "q8-qkv-linear[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv k
+    | Q8_qkv_linear { m; n_q; n_kv; k; bias = true } ->
+        Printf.sprintf "q8-qkv-linear+bias[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv
+          k
 end
 
 type node = {

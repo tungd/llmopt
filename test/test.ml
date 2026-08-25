@@ -4405,6 +4405,74 @@ let () =
            | _ -> false))
     "dual-linear IR survives the serving schedule round-trip";
 
+  (* fuse_qkv_linear test *)
+  let qkv_g = Ir.Graph.create () in
+  let qkv_in =
+    Ir.Graph.tensor_input qkv_g ~name:"qkv_in" ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let qkv_weight name width =
+    Ir.Graph.tensor_input qkv_g ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ width; 64 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let qkv_scale name width =
+    Ir.Graph.tensor_input qkv_g ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ width ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q_weight = qkv_weight "q_weight" 128 in
+  let q_scale = qkv_scale "q_scale" 128 in
+  let k_weight = qkv_weight "k_weight" 64 in
+  let k_scale = qkv_scale "k_scale" 64 in
+  let v_weight = qkv_weight "v_weight" 64 in
+  let v_scale = qkv_scale "v_scale" 64 in
+  let qkv_output width =
+    Ir.Graph.fresh_tensor_value qkv_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; width ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append qkv_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ qkv_in; q_weight; q_scale ]
+    ~output:(Some (qkv_output 128));
+  Ir.Graph.append qkv_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 64; k = 64; bias = false })
+    ~inputs:[ qkv_in; k_weight; k_scale ]
+    ~output:(Some (qkv_output 64));
+  Ir.Graph.append qkv_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 64; k = 64; bias = false })
+    ~inputs:[ qkv_in; v_weight; v_scale ]
+    ~output:(Some (qkv_output 64));
+  let fused_qkv_g = Passes.fuse_qkv_linear qkv_g in
+  expect
+    (List.exists
+       (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_qkv_linear { m = 1; n_q = 128; n_kv = 64; k = 64; bias = false } -> true
+         | _ -> false)
+       (Ir.Graph.nodes fused_qkv_g))
+    "three parallel projections fuse into Q8_qkv_linear";
+  let qkv_kernel_source =
+    Metal.q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f16"
+      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
+      ~has_bias:false
+  in
+  expect
+    (contains_substring qkv_kernel_source "weight_q"
+    && contains_substring qkv_kernel_source "weight_k"
+    && contains_substring qkv_kernel_source "weight_v")
+    "QKV Metal source carries query, key, and value weights";
+  let qkv_schedule = expect_ok (Serving_schedule.of_graph fused_qkv_g) in
+  let qkv_schedule =
+    qkv_schedule |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes
+    |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands qkv_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_qkv_linear _ -> true
+           | _ -> false))
+    "QKV IR survives the serving schedule round-trip";
+
   (* Serving_memory_plan concurrent disjoint tests *)
   let sched = expect_ok (Serving_schedule.of_graph diamond_g) in
   let mem_plan = expect_ok (Serving_memory_plan.plan_concurrent sched) in

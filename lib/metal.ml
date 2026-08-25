@@ -558,6 +558,73 @@ let q8_dual_linear_source =
       ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
       ~has_bias:true
 
+let q8_qkv_linear_kernel ~name ~value_type ~weight_cast ~store_value ~has_bias =
+  let weight_k_buffer, scale_k_buffer, bias_q, bias_k, weight_v_buffer,
+      scale_v_buffer, bias_v, output_buffer, parameter_buffer =
+    if has_bias then
+      4, 5, "    device const half* bias_q [[buffer(3)]],\n",
+      "    device const half* bias_k [[buffer(6)]],\n", 7, 8,
+      "    device const half* bias_v [[buffer(9)]],\n", 10, 11
+    else 3, 4, "", "", 5, 6, "", 7, 8
+  in
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const char* weight_q [[buffer(1)]],\n"
+  ^ "    device const half* scale_q [[buffer(2)]],\n"
+  ^ bias_q
+  ^ "    device const char* weight_k [[buffer(" ^ string_of_int weight_k_buffer
+  ^ ")]],\n"
+  ^ "    device const half* scale_k [[buffer(" ^ string_of_int scale_k_buffer
+  ^ ")]],\n"
+  ^ bias_k
+  ^ "    device const char* weight_v [[buffer(" ^ string_of_int weight_v_buffer
+  ^ ")]],\n"
+  ^ "    device const half* scale_v [[buffer(" ^ string_of_int scale_v_buffer
+  ^ ")]],\n"
+  ^ bias_v
+  ^ "    device " ^ value_type ^ "* output [[buffer("
+  ^ string_of_int output_buffer ^ ")]],\n"
+  ^ "    constant Q8QkvParams& params [[buffer("
+  ^ string_of_int parameter_buffer ^ ")]],\n"
+  ^ "    uint2 gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint row = gid.y;\n"
+  ^ "  const uint col = gid.x;\n"
+  ^ "  const uint kv_end = params.n_q + params.n_kv;\n"
+  ^ "  const uint width = params.n_q + 2 * params.n_kv;\n"
+  ^ "  if (row >= params.m || col >= width) return;\n"
+  ^ "  const uint group = col < params.n_q ? 0 : (col < kv_end ? 1 : 2);\n"
+  ^ "  const uint channel = group == 0 ? col\n"
+  ^ "      : (group == 1 ? col - params.n_q : col - kv_end);\n"
+  ^ "  device const char* weight = group == 0 ? weight_q\n"
+  ^ "      : (group == 1 ? weight_k : weight_v);\n"
+  ^ "  device const half* scale = group == 0 ? scale_q\n"
+  ^ "      : (group == 1 ? scale_k : scale_v);\n"
+  ^ "  float accumulator = 0.0f;\n"
+  ^ "  for (uint inner = 0; inner < params.k; ++inner)\n"
+  ^ "    accumulator += float(input[row * params.k + inner])\n"
+  ^ "        * float(" ^ weight_cast
+  ^ "(weight[channel * params.k + inner])) * float(scale[channel]);\n"
+  ^ (if has_bias then
+       "  if (group == 0) accumulator += float(bias_q[channel]);\n"
+     ^ "  else if (group == 1) accumulator += float(bias_k[channel]);\n"
+     ^ "  else accumulator += float(bias_v[channel]);\n"
+     else "")
+  ^ "  output[row * width + col] = " ^ store_value ^ ";\n"
+  ^ "}\n"
+
+let q8_qkv_linear_source =
+  "\nstruct Q8QkvParams { uint m; uint n_q; uint n_kv; uint k; };\n\n"
+  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f16" ~value_type:"half"
+      ~weight_cast:"half" ~store_value:"half(accumulator)" ~has_bias:false
+  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f16_bias"
+      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
+      ~has_bias:true
+  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f32" ~value_type:"float"
+      ~weight_cast:"float" ~store_value:"accumulator" ~has_bias:false
+  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f32_bias"
+      ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
+      ~has_bias:true
+
 let q8_source =
   "\nconstant uint Q8_TILE = 64;\n\n"
   ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
@@ -892,6 +959,7 @@ let q8_parameterized_source =
   |> String.concat "\n"
 
 let q8_source = q8_source ^ "\n" ^ q8_dual_linear_source ^ "\n"
+  ^ q8_qkv_linear_source ^ "\n"
   ^ q8_parameterized_source
 
 let q8_parameterized_entries =
@@ -1031,6 +1099,24 @@ let q8_dual_entries =
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_dual_linear_f32_bias"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
+let q8_qkv_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_qkv_linear_f16"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_qkv_linear_f16_bias"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_qkv_linear_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_qkv_linear_f32_bias"
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
@@ -2651,9 +2737,17 @@ let has_q8_dual_linear graph =
          | Ir.Op.Q8_dual_linear _ -> true
          | _ -> false)
 
+let has_q8_qkv_linear graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_qkv_linear _ -> true
+         | _ -> false)
+
 let has_q8 graph =
   has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
   || has_q8_linear_mul_add graph || has_q8_dual_linear graph
+  || has_q8_qkv_linear graph
 
 let q8_entries graph =
   q8_all_entries
@@ -2667,7 +2761,10 @@ let q8_entries graph =
          | Kernel_abi.Operation.Q8_dequantize -> has_q8 graph
          | _ -> false)
   |> fun entries ->
-  if has_q8_dual_linear graph then entries @ q8_dual_entries else entries
+  let entries =
+    if has_q8_dual_linear graph then entries @ q8_dual_entries else entries
+  in
+  if has_q8_qkv_linear graph then entries @ q8_qkv_entries else entries
 
 let has_f16_linear graph =
   Ir.Graph.nodes graph

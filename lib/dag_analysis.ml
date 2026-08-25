@@ -32,6 +32,24 @@ module Resource_class = struct
           +. (Float.of_int (m * n) *. 2.0)
         in
         flops /. max 1.0 bytes
+    | Ir.Op.Q8_dual_linear { m; n1; n2; k; _ } ->
+        let n = n1 + n2 in
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 2.0)
+          +. Float.of_int (n * k)
+          +. (Float.of_int (m * n) *. 2.0)
+        in
+        flops /. max 1.0 bytes
+    | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; _ } ->
+        let n = n_q + (2 * n_kv) in
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 2.0)
+          +. Float.of_int (n * k)
+          +. (Float.of_int (m * n) *. 2.0)
+        in
+        flops /. max 1.0 bytes
     | Ir.Op.Matmul { m; n; k; _ }
     | Ir.Op.Fused_matmul_bias { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
@@ -54,6 +72,7 @@ module Resource_class = struct
     | Ir.Op.Q8_linear_add _
     | Ir.Op.Q8_linear_mul_add _
     | Ir.Op.Q8_dual_linear _
+    | Ir.Op.Q8_qkv_linear _
     | Ir.Op.Matmul _
     | Ir.Op.Fused_matmul_bias _
     | Ir.Op.Linear _ ->
