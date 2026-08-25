@@ -6,6 +6,7 @@ module Operation = struct
     | Q8_linear
     | Q8_linear_silu
     | Q8_linear_add
+    | Q8_linear_mul_add
     | Q8_dequantize
     | Rms_norm
     | Short_conv
@@ -30,6 +31,7 @@ module Operation = struct
     | Q8_linear -> "q8-linear"
     | Q8_linear_silu -> "q8-linear-silu"
     | Q8_linear_add -> "q8-linear-add"
+    | Q8_linear_mul_add -> "q8-linear-mul-add"
     | Q8_dequantize -> "q8-dequantize"
     | Rms_norm -> "rms-norm"
     | Short_conv -> "short-conv"
@@ -54,6 +56,7 @@ module Operation = struct
     | "q8-linear" -> Ok Q8_linear
     | "q8-linear-silu" -> Ok Q8_linear_silu
     | "q8-linear-add" -> Ok Q8_linear_add
+    | "q8-linear-mul-add" -> Ok Q8_linear_mul_add
     | "q8-dequantize" -> Ok Q8_dequantize
     | "rms-norm" -> Ok Rms_norm
     | "short-conv" -> Ok Short_conv

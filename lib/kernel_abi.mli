@@ -6,6 +6,7 @@ module Operation : sig
     | Q8_linear
     | Q8_linear_silu
     | Q8_linear_add
+    | Q8_linear_mul_add
     | Q8_dequantize
     | Rms_norm
     | Short_conv

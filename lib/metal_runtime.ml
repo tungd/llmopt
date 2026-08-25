@@ -260,12 +260,13 @@ let q8_kernel ?name runtime ~operation dtype =
       | Some expected -> Kernel_abi.Entry.name entry = expected)
     entries
 
-type q8_epilogue = Identity | Silu | Add
+type q8_epilogue = Identity | Silu | Add | Mul_add
 
 let q8_operation = function
   | Identity -> Kernel_abi.Operation.Q8_linear
   | Silu -> Kernel_abi.Operation.Q8_linear_silu
   | Add -> Kernel_abi.Operation.Q8_linear_add
+  | Mul_add -> Kernel_abi.Operation.Q8_linear_mul_add
 
 let q8_kernel_name dtype ~m ~epilogue =
   match dtype, m, epilogue with
@@ -281,6 +282,10 @@ let q8_kernel_name dtype ~m ~epilogue =
   | Ir.Dtype.Float32, 1, Add -> Ok "llmopt_q8_gemv_add_f32"
   | Ir.Dtype.Float16, _, Add -> Ok "llmopt_q8_linear_add"
   | Ir.Dtype.Float32, _, Add -> Ok "llmopt_q8_linear_add_f32"
+  | Ir.Dtype.Float16, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add"
+  | Ir.Dtype.Float32, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add_f32"
+  | Ir.Dtype.Float16, _, Mul_add -> Ok "llmopt_q8_linear_mul_add"
+  | Ir.Dtype.Float32, _, Mul_add -> Ok "llmopt_q8_linear_mul_add_f32"
   | dtype, _, _ ->
       Error
         ("Q8 Metal dispatch requires f16 or f32 activations, got "
@@ -1220,10 +1225,22 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
+let same_value_metadata left right =
+  Ir.Value.dtype left = Ir.Value.dtype right
+  && Tensor_shape.equal
+       (Ir.Value.logical_shape left)
+       (Ir.Value.logical_shape right)
+
 let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
-    ~weight_value ~input ~weight ~scale ~bias ~residual ~output_value ~output ~m
-    ~n ~k =
+    ~input_right_value ~weight_value ~input ~input_right ~weight ~scale ~bias
+    ~residual ~output_value ~output ~m ~n ~k =
   let* () = validate_linear_shapes ~m ~n ~k input_value weight_value output_value in
+  let* () =
+    match input_right_value with
+    | None -> Ok ()
+    | Some right when same_value_metadata input_value right -> Ok ()
+    | Some _ -> Error "Q8 multiplied inputs have different metadata"
+  in
   let operation = q8_operation epilogue in
   let* name = q8_kernel_name dtype ~m ~epilogue in
   let* entry =
@@ -1240,40 +1257,98 @@ let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
   let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
   let* grid_x = if m = 1 then round_up n 256 else round_up n 16 in
   let* grid_y = if m = 1 then Ok 1 else round_up m 16 in
-  let* extra_buffers =
-    match epilogue, residual with
-    | (Identity | Silu), None -> Ok []
-    | Add, Some buffer -> Ok [ buffer ]
-    | Add, None -> Error "Q8 residual epilogue has no residual buffer"
-    | (Identity | Silu), Some _ ->
+  let* buffers =
+    match epilogue, input_right, residual with
+    | (Identity | Silu), None, None ->
+        Ok [ input; weight; scale; bias_buffer; output ]
+    | Add, None, Some residual ->
+        Ok [ input; weight; scale; bias_buffer; residual; output ]
+    | Mul_add, Some right, Some residual ->
+        Ok [ input; right; weight; scale; bias_buffer; residual; output ]
+    | (Add | Mul_add), _, None ->
+        Error "Q8 residual epilogue has no residual buffer"
+    | Mul_add, None, _ -> Error "Q8 multiplied epilogue has no right input"
+    | (Identity | Silu | Add), Some _, _ ->
+        Error "Q8 non-multiplied epilogue received a right input"
+    | (Identity | Silu), None, Some _ ->
         Error "Q8 non-residual epilogue received a residual buffer"
   in
-  dispatch ~batch runtime entry
-    ~buffers:([ input; weight; scale; bias_buffer ] @ extra_buffers @ [ output ])
-    ~parameters
+  dispatch ~batch runtime entry ~buffers ~parameters
     ~grid:(grid_x, grid_y, 1)
 
 let dispatch_q8_command batch runtime state ~epilogue ~m ~n ~k ~has_bias
     values output =
   let* values, residual_value =
     match epilogue, List.rev values with
-    | Add, residual :: reversed -> Ok (List.rev reversed, Some residual)
-    | Add, [] -> Error "Q8 residual schedule command has no residual input"
+    | (Add | Mul_add), residual :: reversed ->
+        Ok (List.rev reversed, Some residual)
+    | (Add | Mul_add), [] ->
+        Error "Q8 residual schedule command has no residual input"
     | (Identity | Silu), _ -> Ok (values, None)
   in
-  let* input_value, weight_value, input, weight, scale, bias =
-    match values, has_bias with
-    | [ input_value; weight_value; scale_value ], false ->
+  let* input_value, input_right_value, weight_value, input, input_right, weight,
+      scale, bias =
+    match epilogue, values, has_bias with
+    | (Identity | Silu | Add),
+      [ input_value; weight_value; scale_value ], false ->
         let* input = find_value state input_value in
         let* weight = find_value state weight_value in
         let* scale = find_value state scale_value in
-        Ok (input_value, weight_value, input, weight, scale, None)
-    | [ input_value; weight_value; scale_value; bias_value ], true ->
+        Ok
+          ( input_value,
+            None,
+            weight_value,
+            input,
+            None,
+            weight,
+            scale,
+            None )
+    | (Identity | Silu | Add),
+      [ input_value; weight_value; scale_value; bias_value ], true ->
         let* input = find_value state input_value in
         let* weight = find_value state weight_value in
         let* scale = find_value state scale_value in
         let* bias = find_value state bias_value in
-        Ok (input_value, weight_value, input, weight, scale, Some bias)
+        Ok
+          ( input_value,
+            None,
+            weight_value,
+            input,
+            None,
+            weight,
+            scale,
+            Some bias )
+    | Mul_add,
+      [ input_value; right_value; weight_value; scale_value ], false ->
+        let* input = find_value state input_value in
+        let* right = find_value state right_value in
+        let* weight = find_value state weight_value in
+        let* scale = find_value state scale_value in
+        Ok
+          ( input_value,
+            Some right_value,
+            weight_value,
+            input,
+            Some right,
+            weight,
+            scale,
+            None )
+    | Mul_add,
+      [ input_value; right_value; weight_value; scale_value; bias_value ], true ->
+        let* input = find_value state input_value in
+        let* right = find_value state right_value in
+        let* weight = find_value state weight_value in
+        let* scale = find_value state scale_value in
+        let* bias = find_value state bias_value in
+        Ok
+          ( input_value,
+            Some right_value,
+            weight_value,
+            input,
+            Some right,
+            weight,
+            scale,
+            Some bias )
     | _ -> Error "Q8 schedule command has inconsistent bias inputs"
   in
   let* residual =
@@ -1292,8 +1367,9 @@ let dispatch_q8_command batch runtime state ~epilogue ~m ~n ~k ~has_bias
   let* output_buffer = workspace_buffer state output in
   let* kernel =
     dispatch_q8_linear_batched batch runtime ~epilogue
-      ~dtype:(Ir.Value.dtype output) ~input_value ~weight_value ~input ~weight
-      ~scale ~bias ~residual ~output_value:output ~output:output_buffer ~m ~n ~k
+      ~dtype:(Ir.Value.dtype output) ~input_value ~input_right_value ~weight_value
+      ~input ~input_right ~weight ~scale ~bias ~residual ~output_value:output
+      ~output:output_buffer ~m ~n ~k
   in
   Ok (bind_value state output output_buffer, kernel)
 
@@ -1920,6 +1996,12 @@ let encode_schedule execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_q8_command batch runtime state ~epilogue:Add ~m ~n ~k
                  ~has_bias values output)
+        | ( Ir.Op.Q8_linear_mul_add { m; n; k; bias = has_bias },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_command batch runtime state ~epilogue:Mul_add ~m ~n
+                 ~k ~has_bias values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue

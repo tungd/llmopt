@@ -1,0 +1,53 @@
+LFM2.5-350M Q8 multiplied-input down-projection fusion
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Optimization
+- Detect a sole-consumer float16 multiply feeding Q8_linear_add.
+- Replace the multiply and down projection with typed Q8_linear_mul_add.
+- Preserve both upstream projection outputs; multiply them at Q8 reduction-tile load time.
+- Round the float16 product before accumulation and the Q8 result before residual addition.
+- Reject a multiplied input with another consumer.
+- Schedule ABI v11 and package ABI v11 retain schedule v1-v10 and package v2-v10 reads.
+
+Saved 350M binary-graph replan
+- input graphs: 1,155-node prefill and 1,195-node decode
+- prefill before/after commands: 824 / 808
+- decode before/after commands: 878 / 862
+- fused multiplied inputs: 16 prefill / 16 decode
+- standalone multiply operations before/after: 62/46 prefill, 72/56 decode
+- fused Q8-SiLU operations retained: 16 / 16
+- fused Q8-residual operations retained: 16 / 16
+- opaque operations: 0 / 0
+- tensor bindings: 241 / 241 against one 422,137,216-byte binary tensor archive
+- package ABI: 11
+- prefill package: 60 kernel entries, 94,968 bytes
+- decode package: 58 kernel entries, 98,451 bytes
+- prefill workspace high-water/unreused: 1,098,496 / 7,692,800 bytes
+- decode workspace high-water/unreused: 262,144 / 1,791,232 bytes
+- prefill materialized allocations before/after: 474 / 458
+- decode materialized allocations before/after: 496 / 480
+- prefill MSL/metallib: 74,668 / 289,072 bytes
+- decode MSL/metallib: 75,163 / 282,806 bytes
+- both generated MSL programs compiled and linked with Xcode Metal
+
+Persistent artifact pair
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-mul-add-v1-2026-08-25
+- Q8-group-64 and FP16-selectable pair validation: pass
+- source/prefill/decode binary tensor archive inode: 241927011 / 241927011 / 241927011
+- prefill-13/128/4096 workspace bytes: 2,380,800 / 22,302,720 / 721,551,360
+- decode-past-1/127/4095 workspace bytes: 189,440 / 2,260,736 / 71,371,520
+
+Static fixture
+- The 153-command fixture contains materialized and fused Q8 multiplied-input plus residual paths.
+- The device executable asserts both outputs equal [0x4486, 0x53df] byte for byte.
+- Xcode Metal compilation and package validation pass with 57 entries, 0 opaque commands, 11,520/12,032 workspace bytes, and 47 allocations.
+- The 46-output executable was not launched; no additional device attempt was made.
+
+Verification
+- ninja -f ninja.build ocaml-test q8-metal native-schedule-smoke: pass
+- OCaml tests cover fusion, binary round trip, Metal/LLVM lowering, Metal buffer order, and second-consumer rejection.
+
+Evidence boundary
+- No model request, token generation, cache replay, needle trace, latency comparison, or ERS scoring ran for this compiler pass.
+- Latest valid native ERS remains 0.11381808711306604 from cache-submission batching.

@@ -158,6 +158,11 @@ let () =
             (bytes_of_u16 [ 0x3800; 0x3c00; 0xbc00 ]);
           input runtime "q8_add_residual"
             (bytes_of_u16 [ 0x3c00; 0xbc00; 0x3800 ]);
+          input runtime "q8_mul_weight"
+            (bytes_of_i8 [ 1; 0; 0; 0; 1; 0 ]);
+          input runtime "q8_mul_scale" (bytes_of_u16 [ 0x3c00; 0x3c00 ]);
+          input runtime "q8_mul_residual"
+            (bytes_of_u16 [ 0x3c00; 0xbc00 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
     |> expect_ok
@@ -238,19 +243,28 @@ let () =
   let q8_add_reference = output execution "q8_gemv_add_reference" in
   if not (Bytes.equal q8_add_fused q8_add_reference) then
     fail "fused Q8 residual differs from materialized Q8 plus standalone add";
+  expect_bytes execution "q8_gemv_mul_add"
+    (bytes_of_u16 [ 0x4486; 0x53df ]);
+  expect_bytes execution "q8_gemv_mul_add_reference"
+    (bytes_of_u16 [ 0x4486; 0x53df ]);
+  let q8_mul_add_fused = output execution "q8_gemv_mul_add" in
+  let q8_mul_add_reference = output execution "q8_gemv_mul_add_reference" in
+  if not (Bytes.equal q8_mul_add_fused q8_mul_add_reference) then
+    fail
+      "fused Q8 multiplied input differs from materialized multiply and residual";
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 43 then
+  if List.length kernels <> 47 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 43"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 47"
          (List.length kernels));
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
-  if workspace_bytes <> 11_008 then
+  if workspace_bytes <> 11_520 then
     fail
-      (Printf.sprintf "native fixture workspace is %d bytes instead of 11008"
+      (Printf.sprintf "native fixture workspace is %d bytes instead of 11520"
          workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 44 exact\nq8-decode-kernel: llmopt_q8_gemv\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 46 exact\nq8-decode-kernel: llmopt_q8_gemv\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

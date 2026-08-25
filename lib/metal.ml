@@ -38,14 +38,59 @@ let input_name graph value =
   | None ->
       Printf.sprintf "value-%d" (Ir.Value_id.to_int (Ir.Value.id value))
 
-let q8_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name ~value_type
-    ~vector_type ~alignment ~weight_value_type ~weight_cast ~scale_type
-    ~scale_zero ~zero_value ~store_value =
+type q8_input_mode = Direct | Product
+
+let q8_input_signature ~value_type = function
+  | Direct ->
+      "    device const " ^ value_type ^ "* input [[buffer(0)]],\n", 0
+  | Product ->
+      ( "    device const " ^ value_type ^ "* input_left [[buffer(0)]],\n"
+        ^ "    device const " ^ value_type ^ "* input_right [[buffer(1)]],\n",
+        1 )
+
+let q8_input_vector_load ~value_type ~vector_type ~offset ~values_name = function
+  | Direct ->
+      "        device const " ^ vector_type ^ "* input_vector =\n"
+      ^ "            reinterpret_cast<device const " ^ vector_type
+      ^ "*>(input + " ^ offset ^ ");\n"
+      ^ "        " ^ vector_type ^ " " ^ values_name ^ " = *input_vector;\n"
+  | Product ->
+      "        device const " ^ vector_type ^ "* input_left_vector =\n"
+      ^ "            reinterpret_cast<device const " ^ vector_type
+      ^ "*>(input_left + " ^ offset ^ ");\n"
+      ^ "        device const " ^ vector_type ^ "* input_right_vector =\n"
+      ^ "            reinterpret_cast<device const " ^ vector_type
+      ^ "*>(input_right + " ^ offset ^ ");\n"
+      ^ "        const " ^ vector_type ^ " left_values = *input_left_vector;\n"
+      ^ "        const " ^ vector_type ^ " right_values = *input_right_vector;\n"
+      ^ "        " ^ vector_type ^ " " ^ values_name ^ " = " ^ vector_type
+      ^ "(left_values * right_values);\n"
+
+let q8_input_scalar ~value_type index = function
+  | Direct -> "input[" ^ index ^ "]"
+  | Product ->
+      value_type ^ "(input_left[" ^ index ^ "] * input_right[" ^ index ^ "])"
+
+let q8_kernel_with_input ~input_mode ~extra_argument ~output_buffer
+    ~parameter_buffer ~name ~value_type ~vector_type ~alignment
+    ~weight_value_type ~weight_cast ~scale_type ~scale_zero ~zero_value
+    ~store_value =
+  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
+  let input_vector_load =
+    q8_input_vector_load ~value_type ~vector_type ~offset:"input_offset"
+      ~values_name:"values" input_mode
+  in
+  let input_scalar =
+    q8_input_scalar ~value_type "input_offset + lane" input_mode
+  in
   "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const char* weight [[buffer(1)]],\n"
-  ^ "    device const half* scale [[buffer(2)]],\n"
-  ^ "    device const half* bias_or_scale [[buffer(3)]],\n"
+  ^ input_signature
+  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* bias_or_scale [[buffer("
+  ^ string_of_int (3 + input_shift) ^ ")]],\n"
   ^ extra_argument
   ^ "    device " ^ value_type ^ "* output [[buffer("
   ^ string_of_int output_buffer ^ ")]],\n"
@@ -65,9 +110,7 @@ let q8_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name ~value_type
   ^ "      const uint input_offset = row * params.k + base + tid.x * 4;\n"
   ^ "      if (row < params.m && base + tid.x * 4 + 3 < params.k &&\n"
   ^ "          input_offset % " ^ alignment ^ " == 0) {\n"
-  ^ "        device const " ^ vector_type ^ "* input_vector =\n"
-  ^ "            reinterpret_cast<device const " ^ vector_type ^ "*>(input + input_offset);\n"
-  ^ "        " ^ vector_type ^ " values = *input_vector;\n"
+  ^ input_vector_load
   ^ "        input_tile[tid.y][tid.x * 4 + 0] = values[0];\n"
   ^ "        input_tile[tid.y][tid.x * 4 + 1] = values[1];\n"
   ^ "        input_tile[tid.y][tid.x * 4 + 2] = values[2];\n"
@@ -76,7 +119,7 @@ let q8_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name ~value_type
   ^ "        for (uint lane = 0; lane < 4; ++lane)\n"
   ^ "          input_tile[tid.y][tid.x * 4 + lane] =\n"
   ^ "              (row < params.m && base + tid.x * 4 + lane < params.k)\n"
-  ^ "                  ? input[input_offset + lane]\n"
+  ^ "                  ? " ^ input_scalar ^ "\n"
   ^ "                  : " ^ zero_value ^ ";\n"
   ^ "      }\n"
   ^ "    }\n"
@@ -112,13 +155,25 @@ let q8_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name ~value_type
   ^ "  }\n"
   ^ "}\n"
 
-let q8_gemv_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name
-    ~value_type ~vector_type ~weight_cast ~scale_type ~store_value =
+let q8_kernel = q8_kernel_with_input ~input_mode:Direct
+
+let q8_gemv_kernel_with_input ~input_mode ~extra_argument ~output_buffer
+    ~parameter_buffer ~name ~value_type ~vector_type ~weight_cast ~scale_type
+    ~store_value =
+  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
+  let input_vector_load =
+    q8_input_vector_load ~value_type ~vector_type ~offset:"inner"
+      ~values_name:"input_values" input_mode
+  in
+  let input_scalar = q8_input_scalar ~value_type "inner" input_mode in
   "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const char* weight [[buffer(1)]],\n"
-  ^ "    device const half* scale [[buffer(2)]],\n"
-  ^ "    device const half* bias_or_scale [[buffer(3)]],\n"
+  ^ input_signature
+  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* bias_or_scale [[buffer("
+  ^ string_of_int (3 + input_shift) ^ ")]],\n"
   ^ extra_argument
   ^ "    device " ^ value_type ^ "* output [[buffer("
   ^ string_of_int output_buffer ^ ")]],\n"
@@ -132,11 +187,9 @@ let q8_gemv_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name
   ^ "  uint inner = 0;\n"
   ^ "  if (weight_base % 4 == 0) {\n"
   ^ "    for (; inner + 3 < params.k; inner += 4) {\n"
-  ^ "      device const " ^ vector_type ^ "* input_vector =\n"
-  ^ "          reinterpret_cast<device const " ^ vector_type ^ "*>(input + inner);\n"
+  ^ input_vector_load
   ^ "      device const char4* weight_vector =\n"
   ^ "          reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const " ^ vector_type ^ " input_values = *input_vector;\n"
   ^ "      const char4 weight_values = *weight_vector;\n"
   ^ "      acc += float(input_values[0]) * float("
   ^ weight_cast ^ "(weight_values[0]) * channel_scale);\n"
@@ -149,12 +202,14 @@ let q8_gemv_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name
   ^ "    }\n"
   ^ "  }\n"
   ^ "  for (; inner < params.k; ++inner)\n"
-  ^ "    acc += float(input[inner]) *\n"
+  ^ "    acc += float(" ^ input_scalar ^ ") *\n"
   ^ "           float(" ^ weight_cast
   ^ "(weight[weight_base + inner]) * channel_scale);\n"
   ^ "  if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
   ^ "  output[col] = " ^ store_value ^ ";\n"
   ^ "}\n"
+
+let q8_gemv_kernel = q8_gemv_kernel_with_input ~input_mode:Direct
 
 let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
   "kernel void " ^ name ^ "(\n"
@@ -300,6 +355,54 @@ let q8_source =
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc + residual[col]"
+  ^ q8_kernel_with_input
+      ~input_mode:Product
+      ~extra_argument:"    device const half* residual [[buffer(5)]],\n"
+      ~output_buffer:6 ~parameter_buffer:7
+      ~name:"llmopt_q8_linear_mul_add"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~alignment:"8"
+      ~weight_value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~scale_zero:"half(0.0h)"
+      ~zero_value:"half(0.0h)"
+      ~store_value:"half(half(acc) + residual[row * params.n + col])"
+  ^ q8_kernel_with_input
+      ~input_mode:Product
+      ~extra_argument:"    device const float* residual [[buffer(5)]],\n"
+      ~output_buffer:6 ~parameter_buffer:7
+      ~name:"llmopt_q8_linear_mul_add_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~alignment:"16"
+      ~weight_value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~scale_zero:"0.0f"
+      ~zero_value:"0.0f"
+      ~store_value:"acc + residual[row * params.n + col]"
+  ^ q8_gemv_kernel_with_input
+      ~input_mode:Product
+      ~extra_argument:"    device const half* residual [[buffer(5)]],\n"
+      ~output_buffer:6 ~parameter_buffer:7
+      ~name:"llmopt_q8_gemv_mul_add"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:"half(half(acc) + residual[col])"
+  ^ q8_gemv_kernel_with_input
+      ~input_mode:Product
+      ~extra_argument:"    device const float* residual [[buffer(5)]],\n"
+      ~output_buffer:6 ~parameter_buffer:7
+      ~name:"llmopt_q8_gemv_mul_add_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc + residual[col]"
   ^ q8_dequant_kernel
       ~name:"llmopt_q8_dequantize"
       ~value_type:"half"
@@ -357,6 +460,22 @@ let q8_all_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_gemv_add_f32"
       ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry ~name:"llmopt_q8_linear_mul_add"
+      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry ~name:"llmopt_q8_linear_mul_add_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
+      ~input_dtype:Ir.Dtype.Float32
+      ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv_mul_add"
+      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv_mul_add_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_dequantize"
       ~operation:Kernel_abi.Operation.Q8_dequantize
@@ -1435,8 +1554,16 @@ let has_q8_linear_add graph =
          | Ir.Op.Q8_linear_add _ -> true
          | _ -> false)
 
+let has_q8_linear_mul_add graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_linear_mul_add _ -> true
+         | _ -> false)
+
 let has_q8 graph =
   has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
+  || has_q8_linear_mul_add graph
 
 let q8_entries graph =
   q8_all_entries
@@ -1445,6 +1572,8 @@ let q8_entries graph =
          | Kernel_abi.Operation.Q8_linear -> has_q8_linear graph
          | Kernel_abi.Operation.Q8_linear_silu -> has_q8_linear_silu graph
          | Kernel_abi.Operation.Q8_linear_add -> has_q8_linear_add graph
+         | Kernel_abi.Operation.Q8_linear_mul_add ->
+             has_q8_linear_mul_add graph
          | Kernel_abi.Operation.Q8_dequantize -> has_q8 graph
          | _ -> false)
 

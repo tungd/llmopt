@@ -245,5 +245,48 @@ let fuse_q8_add graph =
   in
   Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph))
 
+let pointwise_mul_info node =
+  match pointwise_binary node, Ir.node_inputs node with
+  | Some (Ir.Pointwise.Mul, left, right, output), [ declared_left; declared_right ] ->
+      (match tensor_operand left, tensor_operand right with
+      | Some left, Some right
+        when (value_is left declared_left && value_is right declared_right)
+             || (value_is left declared_right && value_is right declared_left) ->
+          Some (left, right, output)
+      | _ -> None)
+  | _ -> None
+
+let q8_linear_add_info node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | Ir.Op.Q8_linear_add { m; n; k; bias = false },
+    [ input; weight; scale; residual ], Some output ->
+      Some (m, n, k, false, input, [ weight; scale; residual ], output)
+  | Ir.Op.Q8_linear_add { m; n; k; bias = true },
+    [ input; weight; scale; bias; residual ], Some output ->
+      Some (m, n, k, true, input, [ weight; scale; bias; residual ], output)
+  | _ -> None
+
+let fuse_q8_mul_add graph =
+  let rec rewrite prefix = function
+    | mul_node :: q8_node :: rest ->
+        (match pointwise_mul_info mul_node, q8_linear_add_info q8_node with
+        | Some (left, right, mul_output),
+          Some (m, n, k, bias, input, q8_inputs, _q8_output)
+          when value_is input mul_output
+               && same_value_metadata left right
+               && same_value_metadata left mul_output
+               && not (used_in rest mul_output) ->
+            let fused =
+              Ir.node_replace q8_node
+                ~op:(Ir.Op.Q8_linear_mul_add { m; n; k; bias })
+                ~inputs:(left :: right :: q8_inputs)
+            in
+            rewrite prefix (fused :: rest)
+        | _ -> rewrite (mul_node :: prefix) (q8_node :: rest))
+    | remaining -> List.rev_append prefix remaining
+  in
+  Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph))
+
 let optimize graph =
   graph |> fuse_linear_bias |> fuse_rms_norm |> fuse_q8_silu |> fuse_q8_add
+  |> fuse_q8_mul_add

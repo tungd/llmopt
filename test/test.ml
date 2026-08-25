@@ -1449,6 +1449,116 @@ let () =
     |> List.for_all (fun node ->
            match Ir.node_op node with Ir.Op.Q8_linear_add _ -> false | _ -> true))
     "Q8 residual fusion does not absorb a broadcast add";
+  let q8_mul_add_graph = Ir.Graph.create () in
+  let mul_left =
+    Ir.Graph.tensor_input q8_mul_add_graph ~name:"mul_left"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let mul_right =
+    Ir.Graph.tensor_input q8_mul_add_graph ~name:"mul_right"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let mul_weight =
+    Ir.Graph.tensor_input q8_mul_add_graph ~name:"mul_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let mul_scale =
+    Ir.Graph.tensor_input q8_mul_add_graph ~name:"mul_scale"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let mul_residual =
+    Ir.Graph.tensor_input q8_mul_add_graph ~name:"mul_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let multiplied =
+    Ir.Graph.fresh_tensor_value q8_mul_add_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_mul_add_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor mul_left,
+                 Ir.Pointwise.Tensor mul_right ))))
+    ~inputs:[ mul_left; mul_right ] ~output:(Some multiplied);
+  let mul_add_output =
+    Ir.Graph.fresh_tensor_value q8_mul_add_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_mul_add_graph
+    ~op:(Ir.Op.Q8_linear_add { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ multiplied; mul_weight; mul_scale; mul_residual ]
+    ~output:(Some mul_add_output);
+  Ir.Graph.add_output q8_mul_add_graph ~name:"mul_add" mul_add_output;
+  let q8_mul_add_optimized = Passes.fuse_q8_mul_add q8_mul_add_graph in
+  expect (List.length (Ir.Graph.nodes q8_mul_add_optimized) = 7)
+    "Q8 down projection absorbs its sole-consumer multiplied input";
+  expect
+    (Ir.Graph.nodes q8_mul_add_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Q8_linear_mul_add { m = 2; n = 3; k = 4; bias = false },
+             [ left; right; weight; scale; residual ] ->
+               Ir.Value.equal left mul_left && Ir.Value.equal right mul_right
+               && Ir.Value.equal weight mul_weight
+               && Ir.Value.equal scale mul_scale
+               && Ir.Value.equal residual mul_residual
+           | _ -> false))
+    "Q8 multiplied-input fusion preserves typed operand order";
+  let q8_mul_add_schedule =
+    q8_mul_add_optimized |> Serving_schedule.of_graph
+    |> expect_ok |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes
+    |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands q8_mul_add_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_linear_mul_add { m = 2; n = 3; k = 4; bias = false } ->
+               true
+           | _ -> false))
+    "binary schedule preserves fused Q8 multiplied input";
+  let q8_mul_add_program = expect_ok (Metal.lower q8_mul_add_optimized) in
+  let q8_mul_add_source = Metal.Program.source q8_mul_add_program in
+  List.iter
+    (fun fragment ->
+      expect (contains_substring q8_mul_add_source fragment)
+        ("Q8 multiplied-input Metal ABI contains " ^ fragment))
+    [ "kernel void llmopt_q8_linear_mul_add";
+      "input_right [[buffer(1)]]";
+      "weight [[buffer(2)]]";
+      "residual [[buffer(5)]]";
+      "output [[buffer(6)]]";
+      "params [[buffer(7)]]" ];
+  expect
+    (Metal.Program.kernels q8_mul_add_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry
+           = Kernel_abi.Operation.Q8_linear_mul_add))
+    "Metal lowering declares the Q8 multiplied-input ABI";
+  (match Llvm_ir.emit q8_mul_add_optimized with
+  | Error message -> fail message
+  | Ok source ->
+      expect
+        (contains_substring source "%right.value"
+        && contains_substring source "%residual.value")
+        "LLVM inspection IR preserves multiplied and residual inputs");
+  Ir.Graph.add_output q8_mul_add_graph ~name:"raw_mul" multiplied;
+  let q8_mul_shared = Passes.fuse_q8_mul_add q8_mul_add_graph in
+  expect
+    (Ir.Graph.nodes q8_mul_shared
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Q8_linear_mul_add _ -> false
+           | _ -> true))
+    "Q8 multiplied-input fusion preserves a multiply-consumed intermediate";
   (match Metal.emit q8_graph with
   | Error message -> fail message
   | Ok source ->
@@ -2029,8 +2139,8 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 10)
-    "serving package uses binary ABI version 10";
+    (Bytes.get_uint16_le serving_bytes 8 = 11)
+    "serving package uses binary ABI version 11";
   let package_v7 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v7 8 7;
   ignore (Serving_package.of_bytes package_v7 |> expect_ok);

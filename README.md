@@ -26,10 +26,11 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - Capture handler producing a deterministic SSA-like dataflow graph plus an
   explicit schedule timeline.
 - CPU Bigarray reference handler for correctness checks without Metal.
-- Pure linear-bias, LFM RMSNorm, Q8-linear/SiLU, and Q8-linear/residual fusion
-  passes. The Q8 epilogues remove sixteen activation and 32 same-shape residual
-  commands from each captured model stage when the projection result has no
-  second consumer; broadcast adds remain separate.
+- Pure linear-bias, LFM RMSNorm, Q8-linear/SiLU, Q8-linear/residual, and Q8
+  multiplied-input down-projection fusion passes. They remove sixteen
+  activation, 32 same-shape residual, and sixteen materialized SwiGLU-product
+  commands from each captured model stage when the intermediate has no second
+  consumer; broadcast adds remain separate.
 - A Q8 weight-only linear lowering pass, typed compiler fixture, and Python
   model-rewrite boundary: int8 weights, per-output-channel float16 scales, and
   FP16 activations by default; FP16 weights remain an explicit fallback.
@@ -44,10 +45,11 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   loads every declared metallib function, maps the tensor archive into one
   no-copy Metal buffer, creates tensor views by archive offset, and interprets
   the binary command schedule through small Objective-C bindings. Native
-  dispatch covers matmul, Q8 linear, fused Q8-linear/SiLU, and fused
-  Q8-linear/residual, plus RMSNorm, ShortConv, masked attention,
+  dispatch covers matmul, Q8 linear, fused Q8-linear/SiLU, fused
+  Q8-linear/residual, and fused multiplied-input Q8 down projections, plus
+  RMSNorm, ShortConv, masked attention,
   embedding, range/fill, diff/cumsum, and two-index gather; compute pipelines
-  are cached per loaded library. Package ABI v10 also dispatches the model's
+  are cached per loaded library. Package ABI v11 also dispatches the model's
   float16/float32/int64 cast directions and its required broadcast/scalar
   pointwise add, multiply, comparison, activation, and rotary operations, then
   materializes transpose, index, expand, concat, and roll while treating dense
@@ -250,17 +252,17 @@ schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.txt`. The same probe executes
 twelve physical-cache dispatches and exactly round-trips separate attention
 key/value slots plus a recurrent checkpoint in Q8-group-64 and FP16.
-`native-schedule-smoke` generates a JSON-free, 144-command typed package and
-compiles its 53 emitted Metal entry points without launching a device.
+`native-schedule-smoke` generates a JSON-free, 153-command typed package and
+compiles its 57 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
-executes 43 kernels across matmul, linear, normalization, convolution, attention,
+executes 47 kernels across matmul, linear, normalization, convolution, attention,
 embedding, position/mask, fill, cast, pointwise, and movement forms and checks
-all 44 outputs, including float16 linear, sum, slice update, and fused versus
-materialized Q8+SiLU and Q8+residual, byte for byte from one 11,008-byte
-workspace. The current 144-command target compiles statically; the latest
-device observation predates both explicit reference comparisons and covered
-137 commands with 41 exact outputs. The target writes a plain-text report when
-explicitly launched.
+all 46 outputs, including float16 linear, sum, slice update, and fused versus
+materialized Q8+SiLU, Q8+residual, and Q8 multiplied-input/residual paths, byte
+for byte from one 11,520-byte workspace. The current 153-command target
+compiles statically; the latest device observation predates all three explicit
+reference comparisons and covered 137 commands with 41 exact outputs. The
+target writes a plain-text report when explicitly launched.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
@@ -360,6 +362,7 @@ typed graph + schedule timeline
         ├── one-row Q8 decode specialization (implemented)
         ├── Q8 linear/SiLU epilogue fusion (implemented)
         ├── Q8 linear/residual epilogue fusion (implemented)
+        ├── Q8 multiplied-input down-projection fusion (implemented)
         ├── typed N-D movement/pointwise/reduction lowering (implemented)
         ├── chunk/getitem elimination + typed concat (implemented)
         ├── dense movement materialization (implemented)
@@ -391,19 +394,19 @@ OCaml serving runtime
 diagnostic; neither is a serving input. Set `LLMOPT_FX_DIAGNOSTICS=1` to emit
 optional `fx.json` and `runtime.json` files. The native runtime consumes only
 `package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI
-v10 references weight-archive ABI v1, declares fused Q8-SiLU, Q8-residual, and
-cache conversion kernels, and retains read compatibility with ABI v2 through
-v9; neither file contains JSON.
+v11 references weight-archive ABI v1, declares fused Q8-SiLU, Q8-residual,
+multiplied-input Q8 down-projection, and cache conversion kernels, and retains
+read compatibility with ABI v2 through v10; neither file contains JSON.
 
 The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
 776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
 bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
-binary-input replanning emits ABI-v10 packages with 824/878 commands, 56/54
+binary-input replanning emits ABI-v11 packages with 808/862 commands, 60/58
 kernels, zero opaque commands, and all 241 tensor bindings validated. Sixteen
-Q8-linear/SiLU and 32 Q8-linear/residual pairs per stage become tiled prefill
-or one-row decode epilogues; FP16/Q8 cache conversion and ordinary Q8 GEMM/GEMV
-remain separate families. No model load or device dispatch was used for that
-replan.
+Q8-linear/SiLU, 32 Q8-linear/residual, and sixteen multiplied-input down
+projection boundaries per stage become tiled prefill or one-row decode
+kernels; FP16/Q8 cache conversion and ordinary Q8 GEMM/GEMV remain separate
+families. No model load or device dispatch was used for that replan.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

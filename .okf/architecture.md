@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-24T00:07:09Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T06:57:09Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -169,9 +169,10 @@ graph, pretty-printed `plan.txt`, MSL, and LLVM IR are compiler artifacts and
 are not referenced by the serving runtime; JSON diagnostics are opt-in. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v10 names weight-archive ABI v1,
-adds typed Q8-linear/SiLU and Q8-linear/residual epilogues on top of sliced
-cache operations, and reads ABI-v2 through ABI-v9 packages.
+exactly one binary tensor archive. Package ABI v11 names weight-archive ABI v1,
+adds typed Q8-linear/SiLU, Q8-linear/residual, and multiplied-input Q8
+down-projection operations on top of sliced cache operations, and reads ABI-v2
+through ABI-v10 packages.
 Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
 archive rather than being split into per-tensor files.
 
@@ -407,6 +408,16 @@ pairs fuse in each stage, reducing prefill from 856 to 824 commands and decode
 from 910 to 878. The generated metallibs and Q8/FP16-selectable package pair
 validate against the same archive inode. The fused-versus-materialized fixture
 is static-only; the model has not executed this pass.
+
+The third Q8 pass recognizes a sole-consumer float16 multiply feeding an
+already-fused Q8 down projection plus residual. It preserves both upstream
+projection outputs and multiplies them while loading the down-projection
+reduction tile, reproducing the materialized float16 product before float32
+accumulation. All 16 expected boundaries fuse in each stage, reducing prefill
+from 824 to 808 commands and decode from 878 to 862. Captured-template
+workspace falls to 1,098,496/262,144 bytes. ABI-v11 packages and both
+metallibs validate against the shared archive; the strengthened device fixture
+was compiled but not launched.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

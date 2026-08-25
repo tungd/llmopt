@@ -47,3 +47,4 @@
 * [Cached-suffix command-buffer batching attempt](exp-0045-cached-suffix-batching-attempt.md) - dependent decode and per-token cache writes share one planned batch; the first model attempt failed before scoring and the correction has static evidence only.
 * [Q8 linear-SiLU epilogue fusion](exp-0046-q8-linear-silu-fusion.md) - sixteen feed-forward pairs per stage become typed GEMM/GEMV epilogues with alias-safe rewriting and preserved float16 rounding.
 * [Q8 linear-residual epilogue fusion](exp-0047-q8-linear-add-fusion.md) - all 32 same-shape residual boundaries per stage become typed GEMM/GEMV epilogues without absorbing broadcast adds.
+* [Q8 multiplied-input down-projection fusion](exp-0048-q8-multiplied-input-fusion.md) - sixteen materialized SwiGLU products per stage move into typed Q8 down-projection loads.

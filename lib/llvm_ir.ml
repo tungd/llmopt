@@ -1,4 +1,4 @@
-type q8_epilogue = Identity | Silu | Add
+type q8_epilogue = Identity | Silu | Add | Mul_add
 
 type kernel =
   | Matmul of int * int * int
@@ -18,6 +18,8 @@ let kernel_shape graph =
              Some (Q8 (m, n, k, bias, Silu))
          | Ir.Op.Q8_linear_add { m; n; k; bias } ->
              Some (Q8 (m, n, k, bias, Add))
+         | Ir.Op.Q8_linear_mul_add { m; n; k; bias } ->
+             Some (Q8 (m, n, k, bias, Mul_add))
          | Ir.Op.Linear { m; n; k; bias } -> Some (Linear (m, n, k, bias))
          | _ -> None)
 
@@ -28,15 +30,23 @@ let emit_q8 ~m ~n ~k ~has_bias ~epilogue =
       | Identity -> "llmopt_q8_linear"
       | Silu -> "llmopt_q8_linear_silu"
       | Add -> "llmopt_q8_linear_add"
+      | Mul_add -> "llmopt_q8_linear_mul_add"
     in
-    let residual = match epilogue with Add -> ", ptr %residual" | _ -> "" in
+    let inputs =
+      match epilogue with
+      | Mul_add -> "ptr %a, ptr %right"
+      | Identity | Silu | Add -> "ptr %a"
+    in
+    let residual =
+      match epilogue with Add | Mul_add -> ", ptr %residual" | _ -> ""
+    in
     if has_bias then
       Printf.sprintf
-        "define void @%s(ptr %%a, ptr %%b, ptr %%scale, ptr %%bias%s, ptr %%c) {"
-        name residual
+        "define void @%s(%s, ptr %%b, ptr %%scale, ptr %%bias%s, ptr %%c) {"
+        name inputs residual
     else
       Printf.sprintf
-        "define void @%s(ptr %%a, ptr %%b, ptr %%scale%s, ptr %%c) {" name
+        "define void @%s(%s, ptr %%b, ptr %%scale%s, ptr %%c) {" name inputs
         residual
   in
   let bias_lines =
@@ -55,7 +65,7 @@ let emit_q8 ~m ~n ~k ~has_bias ~epilogue =
       ; "  %denominator = fadd float %exp, 1.000000e+00"
       ; "  %stored = fdiv float %with.bias, %denominator"
       ]
-    | Add ->
+    | Add | Mul_add ->
         [ Printf.sprintf "  %%residual.row = mul i64 %%i, %d" n
         ; "  %residual.index = add i64 %residual.row, %j"
         ; "  %residual.ptr = getelementptr float, ptr %residual, i64 %residual.index"
@@ -63,6 +73,18 @@ let emit_q8 ~m ~n ~k ~has_bias ~epilogue =
         ; "  %stored = fadd float %with.bias, %residual.value"
         ]
     | Identity -> [ "  %stored = fadd float %with.bias, 0.000000e+00" ]
+  in
+  let input_lines =
+    match epilogue with
+    | Mul_add ->
+        [ Printf.sprintf "  %%right.row = mul i64 %%i, %d" k
+        ; "  %right.index = add i64 %right.row, %kk"
+        ; "  %right.ptr = getelementptr float, ptr %right, i64 %right.index"
+        ; "  %right.value = load float, ptr %right.ptr, align 4"
+        ; "  %input.value = fmul float %a.value, %right.value"
+        ]
+    | Identity | Silu | Add ->
+        [ "  %input.value = fadd float %a.value, 0.000000e+00" ]
   in
   let source_lines =
     [ "; ModuleID = 'llmopt-q8'"
@@ -85,7 +107,9 @@ let emit_q8 ~m ~n ~k ~has_bias ~epilogue =
     ; "  %a.index = add i64 %a.row, %kk"
     ; "  %a.ptr = getelementptr float, ptr %a, i64 %a.index"
     ; "  %a.value = load float, ptr %a.ptr, align 4"
-    ; Printf.sprintf "  %%b.row = mul i64 %%j, %d" k
+    ]
+    @ input_lines
+    @ [ Printf.sprintf "  %%b.row = mul i64 %%j, %d" k
     ; "  %b.index = add i64 %b.row, %kk"
     ; "  %b.ptr = getelementptr i8, ptr %b, i64 %b.index"
     ; "  %b.value = load i8, ptr %b.ptr, align 1"
@@ -93,7 +117,7 @@ let emit_q8 ~m ~n ~k ~has_bias ~epilogue =
     ; "  %scale.ptr = getelementptr float, ptr %scale, i64 %j"
     ; "  %scale.value = load float, ptr %scale.ptr, align 4"
     ; "  %scaled = fmul float %b.float, %scale.value"
-    ; "  %product = fmul float %a.value, %scaled"
+    ; "  %product = fmul float %input.value, %scaled"
     ; "  %acc.next = fadd float %acc, %product"
     ; "  %kk.next = add i64 %kk, 1"
     ; Printf.sprintf "  %%inner.done = icmp eq i64 %%kk.next, %d" k
@@ -123,7 +147,7 @@ let emit_q8 ~m ~n ~k ~has_bias ~epilogue =
     @
     match epilogue with
     | Silu -> [ ""; "declare float @llvm.exp.f32(float)" ]
-    | Identity | Add -> []
+    | Identity | Add | Mul_add -> []
   in
   Ok (String.concat "\n" source_lines ^ "\n")
 
@@ -138,6 +162,8 @@ let emit graph =
                Some (m, n, k, bias, Silu)
            | Ir.Op.Q8_linear_add { m; n; k; bias } ->
                Some (m, n, k, bias, Add)
+           | Ir.Op.Q8_linear_mul_add { m; n; k; bias } ->
+               Some (m, n, k, bias, Mul_add)
            | _ -> None)
   in
   match q8_kernel with
