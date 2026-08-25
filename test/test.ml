@@ -4382,6 +4382,28 @@ let () =
     | Ir.Op.Q8_dual_linear { m = 1; n1 = 128; n2 = 128; k = 64; bias = false } -> true
     | _ -> false)
     "parallel FFN branches fuse into Q8_dual_linear";
+  let dual_kernel_source =
+    Metal.q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16"
+      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
+      ~has_bias:false
+  in
+  expect
+    (contains_substring dual_kernel_source "weight1"
+    && contains_substring dual_kernel_source "weight2"
+    && contains_substring dual_kernel_source "params.n1 + params.n2")
+    "dual-linear Metal source loads both projections into one output";
+  let dual_schedule = expect_ok (Serving_schedule.of_graph fused_ffn_g) in
+  let dual_schedule =
+    dual_schedule |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes
+    |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands dual_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_dual_linear _ -> true
+           | _ -> false))
+    "dual-linear IR survives the serving schedule round-trip";
 
   (* Serving_memory_plan concurrent disjoint tests *)
   let sched = expect_ok (Serving_schedule.of_graph diamond_g) in
