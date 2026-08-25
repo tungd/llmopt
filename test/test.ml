@@ -1499,13 +1499,21 @@ let () =
                  Ir.Pointwise.Tensor q8_add_norm_residual ))))
     ~inputs:[ q8_add_norm_linear_output; q8_add_norm_residual ]
     ~output:(Some q8_add_norm_add_output);
+  let q8_add_norm_cast_output =
+    Ir.Graph.fresh_tensor_value q8_add_norm_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float32
+  in
+  Ir.Graph.append q8_add_norm_graph
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+    ~inputs:[ q8_add_norm_add_output ]
+    ~output:(Some q8_add_norm_cast_output);
   let q8_add_norm_output =
     Ir.Graph.fresh_tensor_value q8_add_norm_graph
       ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
   in
   Ir.Graph.append q8_add_norm_graph
     ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
-    ~inputs:[ q8_add_norm_add_output; q8_add_norm_rms_weight ]
+    ~inputs:[ q8_add_norm_cast_output; q8_add_norm_rms_weight ]
     ~output:(Some q8_add_norm_output);
   Ir.Graph.add_output q8_add_norm_graph ~name:"q8_add_norm_output"
     q8_add_norm_output;
@@ -4564,7 +4572,7 @@ let () =
   let dual_kernel_source =
     Metal.q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16"
       ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
-      ~has_bias:false
+      ~has_bias:false ~silu_first:false
   in
   expect
     (contains_substring dual_kernel_source "weight1"
@@ -4583,6 +4591,31 @@ let () =
            | Ir.Op.Q8_dual_linear _ -> true
            | _ -> false))
     "dual-linear IR survives the serving schedule round-trip";
+
+  let swiglu_gate_output =
+    Ir.Graph.fresh_tensor_value ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let swiglu_up_output =
+    Ir.Graph.fresh_tensor_value ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append ffn_g
+    ~op:(Ir.Op.Q8_linear_silu { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ ffn_in; ffn_w1; ffn_scale1 ]
+    ~output:(Some swiglu_gate_output);
+  Ir.Graph.append ffn_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ ffn_in; ffn_w3; ffn_scale3 ]
+    ~output:(Some swiglu_up_output);
+  let swiglu_fused = Passes.fuse_dual_linear_swiglu ffn_g in
+  expect
+    (Ir.Graph.nodes swiglu_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Q8_dual_linear { silu_first = true; _ } -> true
+           | _ -> false))
+    "SwiGLU gate activation is retained by the dual-linear fusion";
 
   (* fuse_qkv_linear test *)
   let qkv_g = Ir.Graph.create () in
@@ -4672,6 +4705,103 @@ let () =
                | _ -> false)
            | _ -> false))
     "QKV secondary outputs survive LFM schedule specialization";
+
+  let qkv_interleaved = Ir.Graph.create () in
+  let interleaved_input =
+    Ir.Graph.tensor_input qkv_interleaved ~name:"interleaved_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let interleaved_weight name width =
+    Ir.Graph.tensor_input qkv_interleaved ~name
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ width; 64 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let interleaved_scale name width =
+    Ir.Graph.tensor_input qkv_interleaved ~name
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ width ]) ~dtype:Ir.Dtype.Float16
+  in
+  let interleaved_output shape =
+    Ir.Graph.fresh_tensor_value qkv_interleaved ~shape
+      ~dtype:Ir.Dtype.Float16
+  in
+  let interleaved_view input shape =
+    let output = interleaved_output shape in
+    Ir.Graph.append qkv_interleaved
+      ~op:(Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.View))
+      ~inputs:[ input ] ~output:(Some output);
+    output
+  in
+  let interleaved_q_weight = interleaved_weight "interleaved_q_weight" 128 in
+  let interleaved_q_scale = interleaved_scale "interleaved_q_scale" 128 in
+  let interleaved_k_weight = interleaved_weight "interleaved_k_weight" 64 in
+  let interleaved_k_scale = interleaved_scale "interleaved_k_scale" 64 in
+  let interleaved_v_weight = interleaved_weight "interleaved_v_weight" 64 in
+  let interleaved_v_scale = interleaved_scale "interleaved_v_scale" 64 in
+  let interleaved_q =
+    interleaved_output (Tensor_shape.of_ints_exn [ 1; 4; 128 ])
+  in
+  Ir.Graph.append qkv_interleaved
+    ~op:(Ir.Op.Q8_linear { m = 4; n = 128; k = 64; bias = false })
+    ~inputs:[ interleaved_input; interleaved_q_weight; interleaved_q_scale ]
+    ~output:(Some interleaved_q);
+  let _interleaved_q_view =
+    interleaved_view interleaved_q
+      (Tensor_shape.of_ints_exn [ 1; 4; 2; 64 ])
+  in
+  let interleaved_k =
+    interleaved_output (Tensor_shape.of_ints_exn [ 1; 4; 64 ])
+  in
+  Ir.Graph.append qkv_interleaved
+    ~op:(Ir.Op.Q8_linear { m = 4; n = 64; k = 64; bias = false })
+    ~inputs:[ interleaved_input; interleaved_k_weight; interleaved_k_scale ]
+    ~output:(Some interleaved_k);
+  let _interleaved_k_view =
+    interleaved_view interleaved_k
+      (Tensor_shape.of_ints_exn [ 1; 4; 1; 64 ])
+  in
+  let interleaved_v =
+    interleaved_output (Tensor_shape.of_ints_exn [ 1; 4; 64 ])
+  in
+  Ir.Graph.append qkv_interleaved
+    ~op:(Ir.Op.Q8_linear { m = 4; n = 64; k = 64; bias = false })
+    ~inputs:[ interleaved_input; interleaved_v_weight; interleaved_v_scale ]
+    ~output:(Some interleaved_v);
+  let _interleaved_v_view =
+    interleaved_view interleaved_v
+      (Tensor_shape.of_ints_exn [ 1; 4; 1; 64 ])
+  in
+  let interleaved_fused = Passes.fuse_qkv_linear qkv_interleaved in
+  expect
+    (Ir.Graph.nodes interleaved_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.Op.additional_outputs (Ir.node_op node) with
+           | Ir.Op.Q8_qkv_linear { n_q = 128; n_kv = 64; _ },
+             [ key; value ] ->
+               Ir.Value.equal key interleaved_k
+               && Ir.Value.equal value interleaved_v
+           | _ -> false))
+    "QKV fusion preserves K/V producers across view nodes";
+  expect
+    (Ir.Graph.nodes interleaved_fused
+    |> List.filter (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.View) -> true
+           | _ -> false)
+    |> List.length = 3)
+    "QKV fusion retains the three downstream view nodes";
+  let interleaved_scheduled = Passes.co_schedule interleaved_fused in
+  let interleaved_schedule =
+    Serving_schedule.of_graph interleaved_scheduled |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands interleaved_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_qkv_linear _ -> true
+           | _ -> false))
+    "co-scheduling preserves QKV secondary-output dependencies";
 
   (* Opt-in greedy LM-head argmax fusion test *)
   let lm_graph = Ir.Graph.create () in

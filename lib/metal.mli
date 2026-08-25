@@ -14,6 +14,7 @@ val q8_dual_linear_kernel :
   weight_cast:string ->
   store_value:string ->
   has_bias:bool ->
+  silu_first:bool ->
   string
 
 val q8_qkv_linear_kernel :

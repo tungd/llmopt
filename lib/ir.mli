@@ -257,6 +257,7 @@ module Op : sig
         n2 : int;
         k : int;
         bias : bool;
+        silu_first : bool;
         extra_outputs : Value.t list;
       }
     | Q8_qkv_linear of {

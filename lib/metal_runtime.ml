@@ -1705,7 +1705,7 @@ let q8_macro_kernel_name dtype ~base ~has_bias =
         (Printf.sprintf "Q8 macro dispatch requires f16 or f32 activations, got %s"
            (Ir.Dtype.to_string dtype))
 
-let dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias
+let dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias ~silu_first
     ~extra_outputs values output =
   let* output2 =
     match extra_outputs with
@@ -1740,7 +1740,9 @@ let dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias
   let* () = validate_linear_shapes ~m ~n:n2 ~k input_value weight2_value output2 in
   let* kernel_name =
     q8_macro_kernel_name (Ir.Value.dtype input_value)
-      ~base:"llmopt_q8_dual_linear" ~has_bias:bias
+      ~base:(if silu_first then "llmopt_q8_dual_linear_silu"
+             else "llmopt_q8_dual_linear")
+      ~has_bias:bias
   in
   let* entry =
     kernel_entry ~name:kernel_name runtime
@@ -2777,12 +2779,12 @@ let encode_schedule execution_batch ~schedule ~inputs =
               (dispatch_q8_command batch runtime state ~selection
                  ~epilogue:Mul_add ~m ~n ~k ~has_bias values output)
         | ( Ir.Op.Q8_dual_linear
-              { m; n1; n2; k; bias; extra_outputs },
+              { m; n1; n2; k; bias; silu_first; extra_outputs },
             values,
             Some output ) ->
             dispatched
               (dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias
-                 ~extra_outputs values output)
+                 ~silu_first ~extra_outputs values output)
         | ( Ir.Op.Q8_qkv_linear
               { m; n_q; n_kv; k; bias; extra_outputs },
             values,

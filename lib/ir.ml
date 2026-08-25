@@ -433,6 +433,7 @@ module Op = struct
         n2 : int;
         k : int;
         bias : bool;
+        silu_first : bool;
         extra_outputs : Value.t list;
       }
     | Q8_qkv_linear of {
@@ -505,10 +506,12 @@ module Op = struct
           epsilon
     | Q8_lm_head_argmax { m; n; k; epsilon } ->
         Printf.sprintf "q8-lm-head-argmax[%dx%dx%d,eps=%.9g]" m n k epsilon
-    | Q8_dual_linear { m; n1; n2; k; bias = false; _ } ->
-        Printf.sprintf "q8-dual-linear[%dx(%d+%d)x%d]" m n1 n2 k
-    | Q8_dual_linear { m; n1; n2; k; bias = true; _ } ->
-        Printf.sprintf "q8-dual-linear+bias[%dx(%d+%d)x%d]" m n1 n2 k
+    | Q8_dual_linear { m; n1; n2; k; bias = false; silu_first; _ } ->
+        Printf.sprintf "q8-dual-linear%s[%dx(%d+%d)x%d]"
+          (if silu_first then "+silu" else "") m n1 n2 k
+    | Q8_dual_linear { m; n1; n2; k; bias = true; silu_first; _ } ->
+        Printf.sprintf "q8-dual-linear+bias%s[%dx(%d+%d)x%d]"
+          (if silu_first then "+silu" else "") m n1 n2 k
     | Q8_qkv_linear { m; n_q; n_kv; k; bias = false; _ } ->
         Printf.sprintf "q8-qkv-linear[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv k
     | Q8_qkv_linear { m; n_q; n_kv; k; bias = true; _ } ->

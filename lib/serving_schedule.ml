@@ -92,6 +92,14 @@ let q8_vector_matches ~length ~dtype value =
   Tensor_shape.dimensions (Ir.Value.logical_shape value) = [ length ]
   && Ir.Value.dtype value = dtype
 
+let q8_output_matches ~rows ~columns ~dtype value =
+  match List.rev (Tensor_shape.dimensions (Ir.Value.logical_shape value)) with
+  | last_dimension :: _ ->
+      last_dimension = columns
+      && Tensor_shape.numel (Ir.Value.logical_shape value) = rows * columns
+      && Ir.Value.dtype value = dtype
+  | [] -> false
+
 let q8_activation_dtype = function
   | Ir.Dtype.Float16 | Ir.Dtype.Float32 -> true
   | _ -> false
@@ -147,7 +155,8 @@ let validate_command seen_values command =
             else Error "schedule copy tensor metadata is inconsistent"
         | Ir.Op.Copy _, _, _ ->
             Error "schedule copy must have source/destination dependencies and no result"
-        | ( Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; extra_outputs },
+        | ( Ir.Op.Q8_dual_linear
+              { m; n1; n2; k; bias; silu_first = _; extra_outputs },
             inputs,
             Some output ) ->
             let metadata_matches =
@@ -161,7 +170,7 @@ let validate_command seen_values command =
                        weight2
                   && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 scale2
                   && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_matrix_matches ~rows:m ~columns:n1
+                  && q8_output_matches ~rows:m ~columns:n1
                        ~dtype:(Ir.Value.dtype input) output
               | [ input; weight1; scale1; bias1; weight2; scale2; bias2 ], true ->
                   q8_activation_dtype (Ir.Value.dtype input)
@@ -174,14 +183,14 @@ let validate_command seen_values command =
                   && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 scale2
                   && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 bias2
                   && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_matrix_matches ~rows:m ~columns:n1
+                  && q8_output_matches ~rows:m ~columns:n1
                        ~dtype:(Ir.Value.dtype input) output
               | _ -> false
             in
             let secondary_matches =
               match extra_outputs with
               | [ output2 ] ->
-                  q8_matrix_matches ~rows:m ~columns:n2
+                  q8_output_matches ~rows:m ~columns:n2
                     ~dtype:(Ir.Value.dtype output) output2
               | _ -> false
             in
@@ -212,7 +221,7 @@ let validate_command seen_values command =
                        weight_v
                   && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
                   && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_matrix_matches ~rows:m ~columns:n_q
+                  && q8_output_matches ~rows:m ~columns:n_q
                        ~dtype:(Ir.Value.dtype input) output
               | ( [ input; weight_q; scale_q; bias_q; weight_k; scale_k; bias_k;
                     weight_v; scale_v; bias_v ],
@@ -231,16 +240,16 @@ let validate_command seen_values command =
                   && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
                   && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 bias_v
                   && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_matrix_matches ~rows:m ~columns:n_q
+                  && q8_output_matches ~rows:m ~columns:n_q
                        ~dtype:(Ir.Value.dtype input) output
               | _ -> false
             in
             let secondary_matches =
               match extra_outputs with
               | [ key_output; value_output ] ->
-                  q8_matrix_matches ~rows:m ~columns:n_kv
+                  q8_output_matches ~rows:m ~columns:n_kv
                     ~dtype:(Ir.Value.dtype output) key_output
-                  && q8_matrix_matches ~rows:m ~columns:n_kv
+                  && q8_output_matches ~rows:m ~columns:n_kv
                        ~dtype:(Ir.Value.dtype output) value_output
               | _ -> false
             in
@@ -1004,7 +1013,7 @@ module Lfm25 = struct
                k = substitute substitutions k;
                epsilon;
              })
-    | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; extra_outputs } ->
+    | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; silu_first; extra_outputs } ->
         Ok
           (Ir.Op.Q8_dual_linear
              {
@@ -1013,6 +1022,7 @@ module Lfm25 = struct
                n2 = substitute substitutions n2;
                k = substitute substitutions k;
                bias;
+               silu_first;
                extra_outputs;
              })
     | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias; extra_outputs } ->
@@ -2291,13 +2301,16 @@ let write_op writer = function
       Binary.Writer.u8 writer 22;
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.channels config);
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.window config)
-  | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; extra_outputs } ->
-      Binary.Writer.u8 writer (if extra_outputs = [] then 23 else 27);
+  | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; silu_first; extra_outputs } ->
+      Binary.Writer.u8 writer
+        (if extra_outputs = [] then if silu_first then 30 else 23
+         else if silu_first then 31 else 27);
       Binary.Writer.u64 writer m;
       Binary.Writer.u64 writer n1;
       Binary.Writer.u64 writer n2;
       Binary.Writer.u64 writer k;
       Binary.Writer.bool writer bias;
+      if silu_first then Binary.Writer.bool writer true;
       if extra_outputs <> [] then begin
         Binary.Writer.u8 writer (List.length extra_outputs);
         List.iter (write_value writer) extra_outputs
@@ -2434,7 +2447,7 @@ let read_op values reader =
       let* bias = Binary.Reader.bool reader in
       Ok
         (Ir.Op.Q8_dual_linear
-           { m; n1; n2; k; bias; extra_outputs = [] })
+           { m; n1; n2; k; bias; silu_first = false; extra_outputs = [] })
   | 24 ->
       let* m = Binary.Reader.u64 reader in
       let* n_q = Binary.Reader.u64 reader in
@@ -2465,7 +2478,39 @@ let read_op values reader =
       let* extra_outputs = outputs [] count in
       Ok
         (Ir.Op.Q8_dual_linear
-           { m; n1; n2; k; bias; extra_outputs })
+           { m; n1; n2; k; bias; silu_first = false; extra_outputs })
+  | 30 ->
+      let* m = Binary.Reader.u64 reader in
+      let* n1 = Binary.Reader.u64 reader in
+      let* n2 = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* bias = Binary.Reader.bool reader in
+      let* silu_first = Binary.Reader.bool reader in
+      if not silu_first then Error "silu dual-linear opcode has no activation"
+      else
+        Ok
+          (Ir.Op.Q8_dual_linear
+             { m; n1; n2; k; bias; silu_first; extra_outputs = [] })
+  | 31 ->
+      let* m = Binary.Reader.u64 reader in
+      let* n1 = Binary.Reader.u64 reader in
+      let* n2 = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* bias = Binary.Reader.bool reader in
+      let* silu_first = Binary.Reader.bool reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      if not silu_first then Error "silu dual-linear opcode has no activation"
+      else
+        Ok
+          (Ir.Op.Q8_dual_linear
+             { m; n1; n2; k; bias; silu_first; extra_outputs })
   | 28 ->
       let* m = Binary.Reader.u64 reader in
       let* n_q = Binary.Reader.u64 reader in

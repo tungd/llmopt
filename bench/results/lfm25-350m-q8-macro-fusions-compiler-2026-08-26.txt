@@ -1,0 +1,31 @@
+LFM2.5-350M macro-operator fusion compiler boundary
+Date: 2026-08-26
+Target: LiquidAI/LFM2.5-350M (full Q8 weights)
+
+Probe inputs:
+- Prefill: _artifacts/lfm25-350m-q8-prefill-decode-replan-v8-2026-08-24/prefill/graph.llmopt
+- Decode: _artifacts/lfm25-350m-q8-prefill-decode-replan-v8-2026-08-24/decode/graph.llmopt
+- The generated packages were checked after compiling each generated kernel.metal with xcrun metal and xcrun metallib.
+
+Compiler and package results:
+- Prefill: 1155 FX nodes -> 765 IR commands; 95 kernels; 0 opaque commands; 260 allocations; workspace 1101568/5421568 bytes; tensor-store inputs 241.
+- Decode: 1195 FX nodes -> 785 IR commands; 92 kernels; 0 opaque commands; 262 allocations; workspace 273152/1204480 bytes; tensor-store inputs 241.
+- Both fresh packages passed llmopt-package-check.
+
+Macro matches in the fresh plans:
+- Prefill: 16 q8-dual-linear+silu and 6 q8-qkv-linear operations.
+- Decode: 16 q8-dual-linear+silu, 6 q8-qkv-linear, and 10 short-conv-step-fused operations.
+- q8-linear+add+rms-norm count: 0. The captured residual output has an additional downstream consumer, so the pass preserves the residual instead of removing it.
+- q8-lm-head-argmax count: 0. The captured graph exposes the external logits output rather than the opt-in token_id graph output.
+
+Command delta against the prior validated package in _artifacts/lfm25-350m-q8-prefill-decode/result.json:
+- Prefill: 795 -> 765 (-30 commands).
+- Decode: 815 -> 785 (-30 commands).
+
+Validation:
+- ninja -f ninja.build test: passed (42 Python tests and OCaml tests).
+- ninja -f ninja.build all: passed.
+- ninja -f ninja.build q8-metal: passed.
+
+Evidence boundary:
+This is a compiler/package and generated-Metal compilation probe only. No current-state metal-runtime-differential, model forward, token-id differential, or latency measurement was produced here.

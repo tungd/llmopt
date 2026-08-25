@@ -504,7 +504,7 @@ let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
   ^ "}\n"
 
 let q8_dual_linear_kernel ~name ~value_type ~weight_cast ~store_value
-    ~has_bias =
+    ~has_bias ~silu_first =
   let weight2_buffer, scale2_buffer, bias1, bias2, output1_buffer,
       output2_buffer, parameter_buffer =
     if has_bias then 4, 5, "    device const half* bias1 [[buffer(3)]],\n",
@@ -545,6 +545,9 @@ let q8_dual_linear_kernel ~name ~value_type ~weight_cast ~store_value
        "  if (second) accumulator += float(bias2[channel]);\n"
      ^ "  else accumulator += float(bias1[channel]);\n"
      else "")
+  ^ (if silu_first then
+       "  if (!second) accumulator = accumulator / (1.0f + exp(-accumulator));\n"
+     else "")
   ^ "  if (second) output2[row * params.n2 + channel] = " ^ store_value ^ ";\n"
   ^ "  else output1[row * params.n1 + channel] = " ^ store_value ^ ";\n"
   ^ "}\n"
@@ -553,14 +556,28 @@ let q8_dual_linear_source =
   "\nstruct Q8DualParams { uint m; uint n1; uint n2; uint k; };\n\n"
   ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16" ~value_type:"half"
       ~weight_cast:"half" ~store_value:"half(accumulator)" ~has_bias:false
+      ~silu_first:false
   ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16_bias"
       ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
-      ~has_bias:true
+      ~has_bias:true ~silu_first:false
   ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f32" ~value_type:"float"
       ~weight_cast:"float" ~store_value:"accumulator" ~has_bias:false
+      ~silu_first:false
   ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f32_bias"
       ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
-      ~has_bias:true
+      ~has_bias:true ~silu_first:false
+  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f16"
+      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
+      ~has_bias:false ~silu_first:true
+  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f16_bias"
+      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
+      ~has_bias:true ~silu_first:true
+  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f32"
+      ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
+      ~has_bias:false ~silu_first:true
+  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f32_bias"
+      ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
+      ~has_bias:true ~silu_first:true
 
 let q8_qkv_linear_kernel ~name ~value_type ~weight_cast ~store_value ~has_bias =
   let weight_k_buffer, scale_k_buffer, bias_q, bias_k, weight_v_buffer,
@@ -1248,6 +1265,22 @@ let q8_dual_entries =
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_dual_linear_f32_bias"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_dual_linear_silu_f16"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_dual_linear_silu_f16_bias"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_dual_linear_silu_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_dual_linear_silu_f32_bias"
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 

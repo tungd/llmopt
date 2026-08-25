@@ -163,10 +163,14 @@ let analyze graph =
     let producers =
       List.fold_left
         (fun map node ->
-          match Ir.node_output node with
-          | Some output ->
-              Value_id_map.add (Ir.Value.id output) (Ir.node_id node) map
-          | None -> map)
+          let outputs =
+            Option.to_list (Ir.node_output node)
+            @ Ir.Op.additional_outputs (Ir.node_op node)
+          in
+          List.fold_left
+            (fun map output ->
+              Value_id_map.add (Ir.Value.id output) (Ir.node_id node) map)
+            map outputs)
         Value_id_map.empty original_nodes
     in
     let node_map =
