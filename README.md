@@ -75,9 +75,8 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   recurrent bindings in one typed state, reserves one radix checkpoint per
   suffix token, and can interleave generated schedules with physical cache
   writes in one command buffer. Its first model attempt failed on an omitted
-  recurrent binding before scoring; the corrected path passes static tests but
-  has not been rerun on device, so the latest measured runtime remains the
-  three-submission serial decode.
+  recurrent binding before scoring; the corrected path now completes all four
+  warmup and scored requests with exact eager-Q8 tokens and 80/194 reuse.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -359,6 +358,16 @@ changes by `+7.4727915052790195 ms`, and ERS changes to
 `0.11381808711306604`. See
 [`bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt`](bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt).
 
+The current fused/SIMD package plus corrected dependent-suffix batch completes
+4/4 warmup and 4/4 scored requests with exact eager-Q8 token IDs and unchanged
+80/194 radix reuse. Native ERS is `0.23655514122115978`, median TTFT is
+`136.7437920125667 ms`, and median TPOT is `14.803701342316344 ms`. Relative
+to the prior native observation, the aggregate deltas are
+`+0.12273705410809374` ERS, `-877.9519370000344 ms` median TTFT, and
+`-76.34263198512295 ms` median TPOT; this run does not isolate individual
+passes. See
+[`bench/results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt`](bench/results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt).
+
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048
 tokens and `100.204` seconds at 4,096. That observation stopped normally on the
@@ -407,7 +416,7 @@ OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout and Metal pools (implemented; Q8 default)
         ├── ordered cache unpack/pack submission batches (implemented)
-        ├── dependent cached-suffix command batch (static-only after failed probe)
+        ├── dependent cached-suffix command batch (measured, exact-token)
         ├── Metal package loading/mapped weights/per-family dispatch (implemented)
         ├── alias-aware liveness workspace allocation (implemented)
         ├── request-length specialization + repeated radix-backed decode (implemented)

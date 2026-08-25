@@ -1,0 +1,79 @@
+LFM2.5-350M Q8 optimized native stack validation
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Validated stack
+- ABI-v11 prefill/decode packages: 808 / 862 commands, 61 / 59 kernel entries
+- graph passes: Q8-SiLU, Q8-residual, and multiplied-input down-projection fusion
+- Metal passes: SIMD-group Q8 decode GEMV, SIMD-group RMSNorm, and single-pass online-softmax attention
+- runtime pass: dependent cached-suffix schedules and per-token cache writes in one command buffer
+- weights / KV: Q8 / Q8-group-64
+- compiler/package/tokenizer/tensor/cache internals: binary LLMOPTFX, LLMOPTPK, LLMOPTTK, and LLMOPTWT plus typed in-memory state
+- JSON: external HTTP/SSE and benchmark records only
+
+Safety and supervision
+- preflight memory: 52% free
+- resident Torch/LFM/native-server processes: none
+- port: 18084, unused before launch and released afterward
+- supervisor: one 240-second attempt with TERM and five-second KILL escalation
+- token/checkpoint capacities: 512 / 128
+- completion tokens: pinned to 4 per request
+- post-run memory: 50% free
+- resident Torch/LFM/native-server processes after exit: none
+
+Workload
+- warmup trace: bench/traces/lfm25-mps-warmup.json, 4 serial requests
+- scored trace: bench/traces/lfm25-mps-smoke.json, 4 serial requests
+- warmup: 4/4 successful, 0 token mismatches, ERS 0.1786976969562242
+- scored: 4/4 successful, 0 token mismatches
+- exact scored token parity against eager Q8: 4/4
+- exact warmup token parity against eager Q8: 4/4
+- scored cached prompt tokens: 80/194
+
+Scored optimized native observation
+- ERS: 0.23655514122115978
+- median TTFT: 136.7437920125667 ms
+- median TPOT: 14.803701342316344 ms
+- mean TTFT: 137.62624000082724 ms
+- mean TPOT: 17.924583255080506 ms
+
+Previous native cache-batched observation
+- ERS: 0.11381808711306604
+- median TTFT: 1014.6957290126011 ms
+- median TPOT: 91.1463333274393 ms
+- cached prompt tokens: 80/194
+
+Aggregate after-minus-before deltas
+- ERS: +0.12273705410809374
+- median TTFT: -877.9519370000344 ms
+- median TPOT: -76.34263198512295 ms
+- c0000-t000 TTFT / TPOT: -54.82841603225097 / -59.55155564394469 ms
+- c0000-t001 TTFT / TPOT: -1726.111541967839 / -99.13126398654033 ms
+- c0001-t000 TTFT / TPOT: -54.376666084863245 / -54.15077798534184 ms
+- c0001-t001 TTFT / TPOT: -1683.3034579758532 / -79.066152664988 ms
+
+Separate eager-Q8 observation
+- ERS: 0.36872784102635947
+- median TTFT: 62.557083496358246 ms
+- median TPOT: 44.406860998909295 ms
+- native-minus-eager ERS: -0.1321726998051997
+- the current native trace observes lower median TPOT and higher median TTFT than that separately recorded eager trace
+
+Per-request scored evidence
+- c0000-t000: score 0.31698550837181233; TTFT 89.47304199682549 ms; TPOT 15.239139009887973 ms; cached 0/39; IDs 1098,5706,803,4481
+- c0000-t001: score 0.153352130359111; TTFT 184.01454202830791 ms; TPOT 13.655110999631384 ms; cached 42/61; IDs 41677,7,2,1
+- c0001-t000: score 0.3467291624315553; TTFT 75.23083395790309 ms; TPOT 14.368263674744716 ms; cached 0/35; IDs 1098,5410,4100,856
+- c0001-t001: score 0.12915376372216045; TTFT 201.78654202027246 ms; TPOT 28.43581933605795 ms; cached 38/59; IDs 31466,7,2,1
+
+Raw external-edge reports
+- current warmup: _artifacts/native-http-simd-attention-smoke-2026-08-25/warmup.json
+- current scored: _artifacts/native-http-simd-attention-smoke-2026-08-25/scored.json
+- current server log: _artifacts/native-http-simd-attention-smoke-2026-08-25/server.log
+- previous native: _artifacts/native-http-cache-batched-smoke-2026-08-25/scored.json
+- eager: _artifacts/eager-http-parity-2026-08-24/eager/report.json
+
+Evidence boundary
+- This is one aggregate observation of all listed compiler and runtime changes; it does not isolate any individual pass.
+- The eager and previous-native reports are separate earlier observations, not interleaved repetitions.
+- This attempt did not run the long-context needle matrix or exact-logit comparison.
+- The latest native needle evidence remains the earlier 6/6 stop-on-EOS retrieval; fixed-12-token optimized-stack needle evidence remains open.

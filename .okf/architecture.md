@@ -388,16 +388,18 @@ family. One 32-lane group owns an output channel, lanes traverse the reduction
 dimension at stride 32, and `simd_sum` combines their partial accumulators.
 Eight groups share each 256-thread threadgroup. The runtime prefers the new
 name and falls back to the scalar name and grid when loading an older package.
-All four Q8 operation families compile in float16 and float32. This changed
-reduction order has no device, token, latency, or ERS observation yet.
+All four Q8 operation families compile in float16 and float32. The combined
+optimized model run exercises them with exact token parity, without isolating
+their individual latency contribution.
 
 RMSNorm uses the same launch geometry at the row level. One SIMD group owns a
 row, lanes traverse its final dimension at stride 32, `simd_sum` combines the
 squared-value partials, and the lanes cooperatively write normalized values.
 Eight rows share a 256-thread group. Both input-dtype variants compile, while
 the runtime retains scalar-name and scalar-grid fallback for older packages.
-The 350M prefill and decode templates each contain 45 such commands; this
-changed reduction order remains static-only.
+The 350M prefill and decode templates each contain 45 such commands. The
+combined optimized model run exercises them with exact token parity, without
+isolating their individual latency contribution.
 
 The width-64 attention specialization also owns one query row per SIMD group.
 It computes each query-key dot product once, updates the softmax maximum and
@@ -405,7 +407,7 @@ denominator online, and rescales two output accumulators per lane. The prior
 scalar form recomputed a full score for the maximum, denominator, and every
 output dimension: 66 times per key at width 64. The scalar entry remains
 declared for wider heads and old packages. All six attention commands per 350M
-stage select the new entry statically; the kernel has not run on device.
+stage select and execute the new entry in the exact-token aggregate run.
 
 Physical KV and recurrent cache conversion now batches each unpack or pack
 phase into one ordered command buffer. For the six-attention, ten-recurrent
@@ -414,6 +416,15 @@ the generated schedule. The exact Q8/FP16 cache probe retains all bytes. The
 matched HTTP trace retains token parity and 80/194 reuse, lowers all four TPOT
 values by 2.82 to 5.45 ms, and measures ERS `0.11381808711306604`.
 
+Dependent cached-suffix replay now goes further: it unpacks the matched prefix
+once, then encodes each dependent decode schedule and its per-token cache
+writes into one ordered batch while retaining a radix checkpoint at every
+suffix position. The corrected path completes 4/4 scored requests with exact
+eager-Q8 tokens and unchanged 80/194 reuse. Together with the current fusion
+and SIMD kernels, one aggregate run measures ERS `0.23655514122115978`, median
+TTFT `136.7437920125667 ms`, and median TPOT `14.803701342316344 ms`; this
+observation cannot attribute the delta to one component.
+
 The first epilogue optimizer replaces a Q8 projection and its sole SiLU
 consumer with `Q8_linear_silu`; any second consumer prevents the rewrite.
 Package and schedule ABI v9 carry distinct fused GEMM and GEMV kernel families.
@@ -421,8 +432,8 @@ The float16 Metal epilogue explicitly reproduces the intermediate half
 rounding before activation. Offline replanning finds 16 pairs in both stages,
 reducing prefill from 872 to 856 commands and decode from 926 to 910 while
 retaining zero opaque operations and all 241 tensor bindings. Both metallibs
-compile. One small device fixture executed the fused GEMV exactly; no fused
-model latency, token, cache, needle, or ERS observation exists yet.
+compile. The combined optimized run executes this pass with exact model tokens,
+but does not isolate its latency contribution.
 
 The second epilogue optimizer recognizes same-shape residual addition after a
 sole-consumer Q8 projection. It rejects broadcast residuals and preserves the
@@ -430,8 +441,8 @@ materialized half-rounding point before addition. Schedule/package ABI v10 and
 the runtime bind the residual as one extra typed Metal buffer. All 32 expected
 pairs fuse in each stage, reducing prefill from 856 to 824 commands and decode
 from 910 to 878. The generated metallibs and Q8/FP16-selectable package pair
-validate against the same archive inode. The fused-versus-materialized fixture
-is static-only; the model has not executed this pass.
+validate against the same archive inode. The combined optimized run executes
+this pass with exact model tokens; its contribution is not isolated.
 
 The third Q8 pass recognizes a sole-consumer float16 multiply feeding an
 already-fused Q8 down projection plus residual. It preserves both upstream
@@ -440,8 +451,8 @@ reduction tile, reproducing the materialized float16 product before float32
 accumulation. All 16 expected boundaries fuse in each stage, reducing prefill
 from 824 to 808 commands and decode from 878 to 862. Captured-template
 workspace falls to 1,098,496/262,144 bytes. ABI-v11 packages and both
-metallibs validate against the shared archive; the strengthened device fixture
-was compiled but not launched.
+metallibs validate against the shared archive. The combined optimized run
+executes this pass with exact model tokens; its contribution is not isolated.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

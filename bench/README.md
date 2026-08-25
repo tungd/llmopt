@@ -197,6 +197,13 @@ has no ERS result. The typed-state correction and static Ninja gate pass, but
 the fixed model path was not rerun; the exact boundary is recorded in
 [`results/lfm25-350m-q8-native-suffix-batching-attempt-2026-08-25.txt`](results/lfm25-350m-q8-native-suffix-batching-attempt-2026-08-25.txt).
 
+The corrected path now completes 4/4 warmup and 4/4 scored requests with exact
+eager-Q8 token IDs and 80/194 scored cache reuse. The combined fused/SIMD stack
+measures ERS `0.23655514122115978`, median TTFT `136.7437920125667 ms`, and
+median TPOT `14.803701342316344 ms`; this is one aggregate observation rather
+than an isolated per-pass comparison. See
+[`results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt`](results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh
