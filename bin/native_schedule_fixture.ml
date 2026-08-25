@@ -181,6 +181,41 @@ let graph () =
     [ short_input; short_weight ] [ 1; 2; 6 ] Ir.Dtype.Float16
   |> output graph "short_conv";
 
+  let short_step_in_proj =
+    input graph "short_step_in_proj" [ 1; 1; 6 ] Ir.Dtype.Float16
+  in
+  let short_step_state =
+    input graph "short_step_state" [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  let short_step_weight =
+    input graph "short_step_weight" [ 2; 1; 3 ] Ir.Dtype.Float16
+  in
+  let short_conv_step =
+    expect_ok (Ir.Short_conv_step.create ~channels:2 ~window:3)
+  in
+  command graph (Ir.Op.Short_conv_step short_conv_step)
+    [ short_step_in_proj; short_step_state; short_step_weight ] [ 1; 1; 2 ]
+    Ir.Dtype.Float16
+  |> output graph "short_conv_step";
+
+  let short_pref_in_proj =
+    input graph "short_pref_in_proj" [ 1; 4; 6 ] Ir.Dtype.Float16
+  in
+  let short_pref_weight =
+    input graph "short_pref_weight" [ 2; 1; 3 ] Ir.Dtype.Float16
+  in
+  let short_pref_state_out =
+    input graph "short_pref_state_out" [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  let short_conv_pref =
+    expect_ok (Ir.Short_conv_prefill.create ~channels:2 ~window:3)
+  in
+  command graph (Ir.Op.Short_conv_prefill short_conv_pref)
+    [ short_pref_in_proj; short_pref_weight; short_pref_state_out ]
+    [ 1; 4; 2 ] Ir.Dtype.Float16
+  |> output graph "short_conv_prefill";
+  output graph "short_conv_prefill_state" short_pref_state_out;
+
   let attention_input name dtype = input graph name [ 1; 1; 2; 2 ] dtype in
   let query = attention_input "attention_query" Ir.Dtype.Float16 in
   let key = attention_input "attention_key" Ir.Dtype.Float16 in
@@ -500,7 +535,7 @@ let () =
   if Array.length Sys.argv <> 2 then usage ();
   let root = Sys.argv.(1) in
   ensure_directory root;
-  let graph = graph () in
+  let graph = Passes.co_schedule (graph ()) in
   let schedule = Serving_schedule.of_graph graph |> expect_ok in
   let program =
     Metal.lower graph |> expect_ok

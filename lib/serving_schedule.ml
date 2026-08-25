@@ -315,6 +315,88 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d RMSNorm-RoPE metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Short_conv_step config,
+            [ in_proj; conv_state; conv_weight ],
+            Some output ) ->
+            let channels = Ir.Short_conv_step.channels config in
+            let window = Ir.Short_conv_step.window config in
+            let metadata_matches =
+              match
+                Tensor_shape.dimensions (Ir.Value.logical_shape in_proj),
+                Tensor_shape.dimensions (Ir.Value.logical_shape conv_state),
+                Tensor_shape.dimensions (Ir.Value.logical_shape conv_weight),
+                Tensor_shape.dimensions (Ir.Value.logical_shape output)
+              with
+              | ( [ 1; 1; in_channels ],
+                  [ 1; state_channels; state_window ],
+                  [ weight_channels; 1; weight_window ],
+                  [ 1; 1; out_channels ] )
+              | ( [ 1; 1; in_channels ],
+                  [ 1; state_channels; state_window ],
+                  [ weight_channels; weight_window ],
+                  [ 1; 1; out_channels ] ) ->
+                  in_channels = 3 * channels
+                  && state_channels = channels
+                  && state_window = window
+                  && weight_channels = channels
+                  && weight_window = window
+                  && out_channels = channels
+              | _ -> false
+            in
+            if
+              metadata_matches
+              && Ir.Value.dtype in_proj = Ir.Dtype.Float16
+              && Ir.Value.dtype conv_state = Ir.Dtype.Float16
+              && Ir.Value.dtype conv_weight = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d ShortConv-step metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Short_conv_prefill config,
+            [ in_proj; conv_weight; conv_state_out ],
+            Some output ) ->
+            let channels = Ir.Short_conv_prefill.channels config in
+            let window = Ir.Short_conv_prefill.window config in
+            let metadata_matches =
+              match
+                Tensor_shape.dimensions (Ir.Value.logical_shape in_proj),
+                Tensor_shape.dimensions (Ir.Value.logical_shape conv_weight),
+                Tensor_shape.dimensions (Ir.Value.logical_shape conv_state_out),
+                Tensor_shape.dimensions (Ir.Value.logical_shape output)
+              with
+              | ( [ 1; tokens; in_channels ],
+                  [ weight_channels; 1; weight_window ],
+                  [ 1; state_channels; state_window ],
+                  [ 1; out_tokens; out_channels ] )
+              | ( [ 1; tokens; in_channels ],
+                  [ weight_channels; weight_window ],
+                  [ 1; state_channels; state_window ],
+                  [ 1; out_tokens; out_channels ] ) ->
+                  tokens > 0
+                  && in_channels = 3 * channels
+                  && weight_channels = channels
+                  && weight_window = window
+                  && state_channels = channels
+                  && state_window = window
+                  && out_tokens = tokens
+                  && out_channels = channels
+              | _ -> false
+            in
+            if
+              metadata_matches
+              && Ir.Value.dtype in_proj = Ir.Dtype.Float16
+              && Ir.Value.dtype conv_weight = Ir.Dtype.Float16
+              && Ir.Value.dtype conv_state_out = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d ShortConv-prefill metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive Ir.Primitive.Embedding,
             [ indices; weight ],
             Some output ) ->
@@ -763,6 +845,15 @@ module Lfm25 = struct
     | Ir.Op.Rms_rope _, input :: _ ->
         Tensor_shape.transpose (Ir.Value.logical_shape input) ~axis0:1 ~axis1:2
         |> shape_error
+    | Ir.Op.Short_conv_step config, _ ->
+        Tensor_shape.create [ 1; 1; Ir.Short_conv_step.channels config ]
+        |> shape_error
+    | Ir.Op.Short_conv_prefill config, input :: _ ->
+        (match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
+        | [ batches; tokens; _in_channels ] ->
+            Tensor_shape.create [ batches; tokens; Ir.Short_conv_prefill.channels config ]
+            |> shape_error
+        | _ -> map_shape substitutions original)
     | Ir.Op.Gelu, [ input ]
     | Ir.Op.Relu, [ input ] -> Ok (Ir.Value.logical_shape input)
     | Ir.Op.Add _, [ left; right ] ->
@@ -1838,6 +1929,14 @@ let write_op writer = function
       Binary.Writer.u8 writer 20;
       Binary.Writer.float64 writer (Ir.Rms_rope.epsilon config);
       Binary.Writer.u64 writer (Ir.Rms_rope.half_dimension config)
+  | Ir.Op.Short_conv_step config ->
+      Binary.Writer.u8 writer 21;
+      Binary.Writer.u64 writer (Ir.Short_conv_step.channels config);
+      Binary.Writer.u64 writer (Ir.Short_conv_step.window config)
+  | Ir.Op.Short_conv_prefill config ->
+      Binary.Writer.u8 writer 22;
+      Binary.Writer.u64 writer (Ir.Short_conv_prefill.channels config);
+      Binary.Writer.u64 writer (Ir.Short_conv_prefill.window config)
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -1926,6 +2025,16 @@ let read_op values reader =
       let* half_dimension = Binary.Reader.u64 reader in
       Ir.Rms_rope.create ~epsilon ~half_dimension
       |> Result.map (fun config -> Ir.Op.Rms_rope config)
+  | 21 ->
+      let* channels = Binary.Reader.u64 reader in
+      let* window = Binary.Reader.u64 reader in
+      Ir.Short_conv_step.create ~channels ~window
+      |> Result.map (fun config -> Ir.Op.Short_conv_step config)
+  | 22 ->
+      let* channels = Binary.Reader.u64 reader in
+      let* window = Binary.Reader.u64 reader in
+      Ir.Short_conv_prefill.create ~channels ~window
+      |> Result.map (fun config -> Ir.Op.Short_conv_prefill config)
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"
@@ -1933,7 +2042,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 12;
+  Binary.Writer.u16 writer 13;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -1957,6 +2066,7 @@ let of_bytes bytes =
       version <> 1 && version <> 2 && version <> 3 && version <> 4
       && version <> 5 && version <> 6 && version <> 7 && version <> 8
       && version <> 9 && version <> 10 && version <> 11 && version <> 12
+      && version <> 13
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else

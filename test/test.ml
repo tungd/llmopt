@@ -2479,8 +2479,11 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 12)
-    "serving package uses binary ABI version 12";
+    (Bytes.get_uint16_le serving_bytes 8 = 13)
+    "serving package uses binary ABI version 13";
+  let package_v12 = Bytes.copy serving_bytes in
+  Bytes.set_uint16_le package_v12 8 12;
+  ignore (Serving_package.of_bytes package_v12 |> expect_ok);
   let package_v7 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v7 8 7;
   ignore (Serving_package.of_bytes package_v7 |> expect_ok);
@@ -2881,6 +2884,358 @@ let () =
     |> List.exists (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_rope))
     "Metal lowering declares the fused RMSNorm-RoPE ABI";
+
+  let conv_dec_graph = Ir.Graph.create () in
+  let conv_dec_in_proj =
+    Ir.Graph.tensor_input conv_dec_graph ~name:"conv_dec_in_proj"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 6 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let conv_dec_state =
+    Ir.Graph.tensor_input conv_dec_graph ~name:"conv_dec_state"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 2; 3 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let conv_dec_weight =
+    Ir.Graph.tensor_input conv_dec_graph ~name:"conv_dec_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 1; 3 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let dec_append op inputs shape dtype =
+    let output =
+      Ir.Graph.fresh_tensor_value conv_dec_graph
+        ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+    in
+    Ir.Graph.append conv_dec_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let dec_transpose_in =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 2; axis1 = 1 })))
+      [ conv_dec_in_proj ] [ 1; 6; 1 ] Ir.Dtype.Float16
+  in
+  let dec_slice start =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 } ]
+    |> expect_ok
+  in
+  let dec_c0 =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (dec_slice 0))))
+      [ dec_transpose_in ] [ 1; 2; 1 ] Ir.Dtype.Float16
+  in
+  let dec_c1 =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (dec_slice 2))))
+      [ dec_transpose_in ] [ 1; 2; 1 ] Ir.Dtype.Float16
+  in
+  let dec_c2 =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (dec_slice 4))))
+      [ dec_transpose_in ] [ 1; 2; 1 ] Ir.Dtype.Float16
+  in
+  let dec_gate =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor dec_c0,
+                 Ir.Pointwise.Tensor dec_c2 ))))
+      [ dec_c0; dec_c2 ] [ 1; 2; 1 ] Ir.Dtype.Float16
+  in
+  let dec_rolled =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Roll { axis = 2; shift = -1 })))
+      [ conv_dec_state ] [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  let dec_update_idx =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 2; step = 1; length = 1 } ]
+    |> expect_ok
+  in
+  let dec_updated =
+    dec_append
+      (Ir.Op.Primitive (Ir.Primitive.Update_slice dec_update_idx))
+      [ dec_rolled; dec_gate ] [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append conv_dec_graph
+    ~op:(Ir.Op.Copy { asynchronous = false; barrier = None })
+    ~inputs:[ dec_updated; conv_dec_state ] ~output:None;
+  let dec_cast =
+    dec_append
+      (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float16))
+      [ conv_dec_state ] [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  let dec_weight_idx =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.At 0;
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 3 } ]
+    |> expect_ok
+  in
+  let dec_weight_slice =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index dec_weight_idx)))
+      [ conv_dec_weight ] [ 2; 3 ] Ir.Dtype.Float16
+  in
+  let dec_mul_conv =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor dec_cast,
+                 Ir.Pointwise.Tensor dec_weight_slice ))))
+      [ dec_cast; dec_weight_slice ] [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  let dec_sum =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Reduce
+            { Ir.Reduction.operator = Ir.Reduction.Sum; axes = [ 2 ]; keepdim = false }))
+      [ dec_mul_conv ] [ 1; 2 ] Ir.Dtype.Float16
+  in
+  let dec_unsqueeze =
+    dec_append
+      (Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.Unsqueeze 2)))
+      [ dec_sum ] [ 1; 2; 1 ] Ir.Dtype.Float16
+  in
+  let dec_mul_out =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor dec_c1,
+                 Ir.Pointwise.Tensor dec_unsqueeze ))))
+      [ dec_c1; dec_unsqueeze ] [ 1; 2; 1 ] Ir.Dtype.Float16
+  in
+  let dec_transpose_out =
+    dec_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 2; axis1 = 1 })))
+      [ dec_mul_out ] [ 1; 1; 2 ] Ir.Dtype.Float16
+  in
+  let dec_contiguous =
+    dec_append
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous))
+      [ dec_transpose_out ] [ 1; 1; 2 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.add_output conv_dec_graph ~name:"conv_dec_out" dec_contiguous;
+  let conv_dec_optimized = Passes.fuse_short_conv conv_dec_graph in
+  expect (List.length (Ir.Graph.nodes conv_dec_optimized) = 5)
+    "ShortConv decode fusion replaces sixteen commands with one";
+  expect
+    (Ir.Graph.nodes conv_dec_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Short_conv_step config, [ in_proj; state; weight ] ->
+               Ir.Value.equal in_proj conv_dec_in_proj
+               && Ir.Value.equal state conv_dec_state
+               && Ir.Value.equal weight conv_dec_weight
+               && Ir.Short_conv_step.channels config = 2
+               && Ir.Short_conv_step.window config = 3
+           | _ -> false))
+    "ShortConv decode fusion records typed inputs, channels, and window";
+  let conv_dec_schedule =
+    conv_dec_optimized |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands conv_dec_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Short_conv_step config ->
+               Ir.Short_conv_step.channels config = 2
+               && Ir.Short_conv_step.window config = 3
+           | _ -> false))
+    "binary schedule preserves fused ShortConv decode";
+  let conv_dec_program = Metal.lower conv_dec_optimized |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source conv_dec_program)
+       "kernel void llmopt_short_conv_step_f16")
+    "Metal lowering emits fused ShortConv step";
+
+  let conv_pref_graph = Ir.Graph.create () in
+  let conv_pref_in_proj =
+    Ir.Graph.tensor_input conv_pref_graph ~name:"conv_pref_in_proj"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4; 6 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let conv_pref_weight =
+    Ir.Graph.tensor_input conv_pref_graph ~name:"conv_pref_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 1; 3 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let pref_append op inputs shape dtype =
+    let output =
+      Ir.Graph.fresh_tensor_value conv_pref_graph
+        ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+    in
+    Ir.Graph.append conv_pref_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let pref_transpose_in =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 2; axis1 = 1 })))
+      [ conv_pref_in_proj ] [ 1; 6; 4 ] Ir.Dtype.Float16
+  in
+  let pref_slice start =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 4 } ]
+    |> expect_ok
+  in
+  let pref_c0 =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (pref_slice 0))))
+      [ pref_transpose_in ] [ 1; 2; 4 ] Ir.Dtype.Float16
+  in
+  let pref_c1 =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (pref_slice 2))))
+      [ pref_transpose_in ] [ 1; 2; 4 ] Ir.Dtype.Float16
+  in
+  let pref_c2 =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (pref_slice 4))))
+      [ pref_transpose_in ] [ 1; 2; 4 ] Ir.Dtype.Float16
+  in
+  let pref_gate =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor pref_c0,
+                 Ir.Pointwise.Tensor pref_c2 ))))
+      [ pref_c0; pref_c2 ] [ 1; 2; 4 ] Ir.Dtype.Float16
+  in
+  let pref_state_idx =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 1; step = 1; length = 3 } ]
+    |> expect_ok
+  in
+  let pref_state_slice =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index pref_state_idx)))
+      [ pref_gate ] [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  let pref_fill =
+    pref_append
+      (Ir.Op.Primitive (Ir.Primitive.Fill (Ir.Scalar.Float 0.0)))
+      [] [ 1; 2; 3 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append conv_pref_graph
+    ~op:(Ir.Op.Copy { asynchronous = false; barrier = None })
+    ~inputs:[ pref_state_slice; pref_fill ] ~output:None;
+  let short_conv_cfg =
+    expect_ok
+      (Ir.Short_conv.create ~stride:1 ~padding:2 ~dilation:1 ~groups:2)
+  in
+  let pref_conv =
+    pref_append
+      (Ir.Op.Primitive (Ir.Primitive.Short_conv short_conv_cfg))
+      [ pref_gate; conv_pref_weight ] [ 1; 2; 6 ] Ir.Dtype.Float16
+  in
+  let pref_conv_idx =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 4 } ]
+    |> expect_ok
+  in
+  let pref_conv_slice =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index pref_conv_idx)))
+      [ pref_conv ] [ 1; 2; 4 ] Ir.Dtype.Float16
+  in
+  let pref_mul_out =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor pref_c1,
+                 Ir.Pointwise.Tensor pref_conv_slice ))))
+      [ pref_c1; pref_conv_slice ] [ 1; 2; 4 ] Ir.Dtype.Float16
+  in
+  let pref_transpose_out =
+    pref_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 2; axis1 = 1 })))
+      [ pref_mul_out ] [ 1; 4; 2 ] Ir.Dtype.Float16
+  in
+  let pref_contiguous =
+    pref_append
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous))
+      [ pref_transpose_out ] [ 1; 4; 2 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.add_output conv_pref_graph ~name:"conv_states" pref_fill;
+  Ir.Graph.add_output conv_pref_graph ~name:"conv_pref_out" pref_contiguous;
+  let conv_pref_optimized = Passes.fuse_short_conv conv_pref_graph in
+  expect (List.length (Ir.Graph.nodes conv_pref_optimized) = 6)
+    "ShortConv prefill fusion replaces thirteen commands with one";
+  expect
+    (Ir.Graph.nodes conv_pref_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Short_conv_prefill config, [ in_proj; weight; state_out ] ->
+               Ir.Value.equal in_proj conv_pref_in_proj
+               && Ir.Value.equal weight conv_pref_weight
+               && Ir.Value.equal state_out pref_fill
+               && Ir.Short_conv_prefill.channels config = 2
+               && Ir.Short_conv_prefill.window config = 3
+           | _ -> false))
+    "ShortConv prefill fusion records typed inputs, channels, and window";
+  let conv_pref_schedule =
+    conv_pref_optimized |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands conv_pref_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Short_conv_prefill config ->
+               Ir.Short_conv_prefill.channels config = 2
+               && Ir.Short_conv_prefill.window config = 3
+           | _ -> false))
+    "binary schedule preserves fused ShortConv prefill";
+  let conv_pref_program = Metal.lower conv_pref_optimized |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source conv_pref_program)
+       "kernel void llmopt_short_conv_prefill_f16")
+    "Metal lowering emits fused ShortConv prefill";
   let primitive_schedule =
     primitive_graph |> Serving_schedule.of_graph |> expect_ok
   in
@@ -3587,4 +3942,47 @@ let () =
   (match Sampling.Greedy.f16_last_row ~vocabulary:3 logits with
   | Error _ -> ()
   | Ok _ -> fail "greedy sampling accepted partial float16 rows");
+  let test_dag = Ir.Graph.create () in
+  let in_val =
+    Ir.Graph.input test_dag ~name:"in" ~source:Ir.Input_source.Runtime
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:64) ~dtype:Ir.Dtype.Float16
+  in
+  let norm_val =
+    Ir.Graph.fresh_value test_dag
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:64) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append test_dag ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
+    ~inputs:[ in_val ] ~output:(Some norm_val);
+  let w1_val =
+    Ir.Graph.fresh_value test_dag
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append test_dag
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ norm_val ] ~output:(Some w1_val);
+  let w3_val =
+    Ir.Graph.fresh_value test_dag
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append test_dag
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ norm_val ] ~output:(Some w3_val);
+  let merged_val =
+    Ir.Graph.fresh_value test_dag
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append test_dag ~op:(Ir.Op.Add { broadcast = Shape.Same }) ~inputs:[ w1_val; w3_val ] ~output:(Some merged_val);
+  Ir.Graph.add_output test_dag ~name:"out" merged_val;
+  let scheduled = Passes.co_schedule test_dag in
+  let sched_nodes = Ir.Graph.nodes scheduled in
+  expect (List.length sched_nodes = 8) "co_schedule inserted stage barrier";
+  let barrier_count =
+    List.fold_left
+      (fun count node ->
+        match Ir.node_op node with Ir.Op.Barrier_wait _ -> count + 1 | _ -> count)
+      0 sched_nodes
+  in
+  expect (barrier_count = 2) "co_schedule inserted 2 stage barriers";
+  let schedule_res = Serving_schedule.of_graph scheduled in
+  expect (Result.is_ok schedule_res) "co-scheduled graph validates into Serving_schedule";
   print_endline "llmopt tests passed"

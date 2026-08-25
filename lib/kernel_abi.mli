@@ -11,6 +11,8 @@ module Operation : sig
     | Rms_norm
     | Rms_rope
     | Short_conv
+    | Short_conv_step
+    | Short_conv_prefill
     | Attention
     | Embedding
     | Arange

@@ -119,6 +119,31 @@ let record_inputs storage_by_value (intervals : interval Value_map.t) index inpu
 let collect_intervals schedule =
   let commands = Serving_schedule.commands schedule in
   let terminal = List.length commands in
+  let has_barriers =
+    List.exists
+      (fun c ->
+        match Serving_schedule.Command.op c with
+        | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _ -> true
+        | _ -> false)
+      commands
+  in
+  let stage_ends =
+    if not has_barriers then Array.init terminal (fun i -> i)
+    else
+      let arr = Array.make terminal terminal in
+      let current_end = ref terminal in
+      let commands_rev = List.rev (List.mapi (fun i c -> (i, c)) commands) in
+      List.iter
+        (fun (i, c) ->
+          match Serving_schedule.Command.op c with
+          | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _ ->
+              current_end := i;
+              arr.(i) <- i
+          | _ ->
+              arr.(i) <- !current_end)
+        commands_rev;
+      arr
+  in
   let rec collect index storage_by_value
       (intervals : interval Value_map.t) bytes_without_reuse = function
     | [] -> Ok (storage_by_value, intervals, bytes_without_reuse)
@@ -127,7 +152,9 @@ let collect_intervals schedule =
         let inputs = Serving_schedule.Command.inputs command in
         let output = Serving_schedule.Command.output command in
         let use_index =
-          match op with Ir.Op.Output _ -> terminal | _ -> index
+          match op with
+          | Ir.Op.Output _ -> terminal
+          | _ -> stage_ends.(index)
         in
         let* intervals =
           record_inputs storage_by_value intervals use_index inputs

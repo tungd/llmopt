@@ -60,6 +60,9 @@ external batch_copy_stub :
   batch_handle -> buffer_handle -> buffer_handle -> unit
   = "caml_llmopt_metal_batch_copy"
 
+external batch_barrier_stub : batch_handle -> unit
+  = "caml_llmopt_metal_batch_barrier"
+
 external commit_batch_stub : batch_handle -> unit
   = "caml_llmopt_metal_commit_batch"
 
@@ -116,6 +119,9 @@ module Batch = struct
 
   let copy batch ~source ~destination =
     protect (fun () -> batch_copy_stub batch.handle source destination)
+
+  let barrier batch =
+    protect (fun () -> batch_barrier_stub batch.handle)
 
   let commit batch = protect (fun () -> commit_batch_stub batch.handle)
   let abort batch = protect (fun () -> abort_batch_stub batch.handle)
@@ -2140,6 +2146,54 @@ let encode_schedule execution_batch ~schedule ~inputs =
                   ~grid:(grid_x, 1, 1)
               in
               dispatched (Ok (bind_value state output output_buffer, kernel))
+        | ( Ir.Op.Short_conv_step config,
+            [ in_proj; conv_state; conv_weight ],
+            Some output ) ->
+            let channels = Ir.Short_conv_step.channels config in
+            let* in_proj_buf = find_value state in_proj in
+            let* state_buf = find_value state conv_state in
+            let* weight_buf = find_value state conv_weight in
+            let* output_buf = workspace_buffer state output in
+            let* parameters = Parameters.u32s [ channels ] in
+            let* entry =
+              kernel_entry ~name:"llmopt_short_conv_step_f16" runtime
+                ~operation:Kernel_abi.Operation.Short_conv_step
+                ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+            in
+            let* kernel =
+              dispatch ~batch runtime entry
+                ~buffers:[ in_proj_buf; state_buf; weight_buf; output_buf ]
+                ~parameters ~grid:(channels, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buf, kernel))
+        | ( Ir.Op.Short_conv_prefill config,
+            [ in_proj; conv_weight; conv_state_out ],
+            Some output ) ->
+            let channels = Ir.Short_conv_prefill.channels config in
+            let* tokens =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape in_proj) with
+              | [ 1; tokens; _ ] -> Ok tokens
+              | _ ->
+                  Error
+                    "Metal ShortConv prefill in_proj must have shape [1, tokens, \
+                     3*channels]"
+            in
+            let* in_proj_buf = find_value state in_proj in
+            let* weight_buf = find_value state conv_weight in
+            let* output_buf = workspace_buffer state output in
+            let* state_out_buf = find_value state conv_state_out in
+            let* parameters = Parameters.u32s [ tokens; channels ] in
+            let* entry =
+              kernel_entry ~name:"llmopt_short_conv_prefill_f16" runtime
+                ~operation:Kernel_abi.Operation.Short_conv_prefill
+                ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+            in
+            let* kernel =
+              dispatch ~batch runtime entry
+                ~buffers:[ in_proj_buf; weight_buf; output_buf; state_out_buf ]
+                ~parameters ~grid:(channels, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buf, kernel))
         | ( Ir.Op.Primitive Ir.Primitive.Embedding,
             [ indices; weight ],
             Some output ) ->
@@ -2386,6 +2440,12 @@ let encode_schedule execution_batch ~schedule ~inputs =
             let* buffer = find_value state input in
             continue
               { state with outputs_rev = (name, buffer) :: state.outputs_rev }
+        | Ir.Op.Barrier_create _, [], None
+        | Ir.Op.Barrier_arrive _, [], None ->
+            continue state
+        | Ir.Op.Barrier_wait _, [], None ->
+            let* () = Batch.barrier batch in
+            continue state
         | _ -> unsupported ())
   in
   let* execution =

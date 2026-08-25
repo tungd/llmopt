@@ -1,0 +1,57 @@
+LFM2.5-350M Fused Short-Convolution native measurement
+Date: 2026-08-26
+Device: Apple M4 Pro
+
+Package
+-------
+- root: _artifacts/lfm25-350m-q8-short-conv-replan-2026-08-26
+- model: LiquidAI/LFM2.5-350M
+- weights: all 93 linear modules Q8, including lm_head
+- graph commands: 592 prefill / 606 decode
+- package kernels: 74 prefill / 71 decode
+- opaque commands: 0 / 0
+- static tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes
+- runtime Q8 decode: 546 commands, 13 inputs, 6 direct paged attentions, 10 fused short-conv steps
+- runtime KV/recurrent format: Q8-group-64
+
+Native short-trace observation
+------------------------------
+- warmup/scored requests: 4/4 and 4/4 successful (100%)
+- scored output mismatches: 0
+- exact established full-Q8 eager token parity: 4/4
+  * c0000-t000: 1098,5706,803,4481
+  * c0000-t001: 41677,7,2,1
+  * c0001-t000: 1098,5410,4100,856
+  * c0001-t001: 31466,7,2,1
+- scored cached prompt tokens: 80/194
+- sampled server RSS: 77,120 KiB
+
+Scored Metrics
+--------------
+- ERS: 0.510917
+- median TTFT: 56.511 ms
+- mean TTFT: 58.147 ms
+- median TPOT: 5.554 ms
+- mean TPOT: 5.533 ms
+
+Deltas vs RMSNorm-RoPE baseline (exp-0074)
+------------------------------------------
+- ERS: +0.098657 (0.412260 -> 0.510917)
+- median TTFT: -17.195 ms (73.706 ms -> 56.511 ms)
+- mean TTFT: -13.661 ms (71.808 ms -> 58.147 ms)
+- median TPOT: -1.506 ms (7.060 ms -> 5.554 ms)
+- mean TPOT: -1.568 ms (7.101 ms -> 5.533 ms)
+
+Fixed-output needle matrix (6/6 requests)
+-----------------------------------------
+- successful requests: 6/6
+- retrieval: 6/6
+- exact established eager-Q8 12-token parity: 6/6 ([8832, 563, 2880, 522, 31429, 526, 7, 2, 1, 553, 849, 18149])
+- 2,048-token median TTFT/TPOT: 1183.136 ms / 23.013 ms (TTFT -57.955 ms, TPOT -2.404 ms)
+- 4,096-token median TTFT/TPOT: 2828.978 ms / 41.957 ms (TTFT -207.178 ms)
+
+Evidence boundary
+-----------------
+- Fused Short-Convolution pass eliminates 110 prefill commands and 150 decode commands.
+- Apple M4 Pro native execution demonstrates higher ERS (+0.0986), sub-6ms token decode times (5.554 ms median TPOT), and faster long-context prefill across 2K and 4K sequences while preserving 100% token exactness.

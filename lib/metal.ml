@@ -1517,6 +1517,92 @@ let short_conv_entries =
       ~operation:Kernel_abi.Operation.Short_conv
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let short_conv_step_source =
+  "\nstruct ShortConvStepParams {\n"
+  ^ "  uint channels;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_short_conv_step_f16(\n"
+  ^ "    device const half* in_proj [[buffer(0)]],\n"
+  ^ "    device half* conv_state [[buffer(1)]],\n"
+  ^ "    device const half* conv_weight [[buffer(2)]],\n"
+  ^ "    device half* output [[buffer(3)]],\n"
+  ^ "    constant ShortConvStepParams& params [[buffer(4)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.channels) return;\n"
+  ^ "  const uint c = gid;\n"
+  ^ "  const uint channels = params.channels;\n"
+  ^ "  const float x0 = float(in_proj[c]);\n"
+  ^ "  const float x1 = float(in_proj[channels + c]);\n"
+  ^ "  const float x2 = float(in_proj[2 * channels + c]);\n"
+  ^ "  const float g = x0 * x2;\n"
+  ^ "  const uint state_base = c * 3;\n"
+  ^ "  const float s0 = float(conv_state[state_base + 1]);\n"
+  ^ "  const float s1 = float(conv_state[state_base + 2]);\n"
+  ^ "  const float s2 = g;\n"
+  ^ "  conv_state[state_base + 0] = half(s0);\n"
+  ^ "  conv_state[state_base + 1] = half(s1);\n"
+  ^ "  conv_state[state_base + 2] = half(s2);\n"
+  ^ "  const uint weight_base = c * 3;\n"
+  ^ "  const float w0 = float(conv_weight[weight_base + 0]);\n"
+  ^ "  const float w1 = float(conv_weight[weight_base + 1]);\n"
+  ^ "  const float w2 = float(conv_weight[weight_base + 2]);\n"
+  ^ "  const float conv_out = s0 * w0 + s1 * w1 + s2 * w2;\n"
+  ^ "  output[c] = half(x1 * conv_out);\n"
+  ^ "}\n"
+
+let short_conv_step_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_step_f16"
+      ~operation:Kernel_abi.Operation.Short_conv_step
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let short_conv_prefill_source =
+  "\nstruct ShortConvPrefillParams {\n"
+  ^ "  uint tokens;\n"
+  ^ "  uint channels;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_short_conv_prefill_f16(\n"
+  ^ "    device const half* in_proj [[buffer(0)]],\n"
+  ^ "    device const half* conv_weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    device half* conv_state_out [[buffer(3)]],\n"
+  ^ "    constant ShortConvPrefillParams& params [[buffer(4)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.channels) return;\n"
+  ^ "  const uint c = gid;\n"
+  ^ "  const uint tokens = params.tokens;\n"
+  ^ "  const uint channels = params.channels;\n"
+  ^ "  const uint weight_base = c * 3;\n"
+  ^ "  const float w0 = float(conv_weight[weight_base + 0]);\n"
+  ^ "  const float w1 = float(conv_weight[weight_base + 1]);\n"
+  ^ "  const float w2 = float(conv_weight[weight_base + 2]);\n"
+  ^ "  float g_prev3 = 0.0f;\n"
+  ^ "  float g_prev2 = 0.0f;\n"
+  ^ "  float g_prev1 = 0.0f;\n"
+  ^ "  for (uint t = 0; t < tokens; ++t) {\n"
+  ^ "    const uint in_offset = t * (3 * channels) + c;\n"
+  ^ "    const float x0 = float(in_proj[in_offset]);\n"
+  ^ "    const float x1 = float(in_proj[in_offset + channels]);\n"
+  ^ "    const float x2 = float(in_proj[in_offset + 2 * channels]);\n"
+  ^ "    const float g_curr = x0 * x2;\n"
+  ^ "    const float conv_out = g_prev2 * w0 + g_prev1 * w1 + g_curr * w2;\n"
+  ^ "    output[t * channels + c] = half(x1 * conv_out);\n"
+  ^ "    g_prev3 = g_prev2;\n"
+  ^ "    g_prev2 = g_prev1;\n"
+  ^ "    g_prev1 = g_curr;\n"
+  ^ "  }\n"
+  ^ "  const uint state_base = c * 3;\n"
+  ^ "  conv_state_out[state_base + 0] = half(g_prev3);\n"
+  ^ "  conv_state_out[state_base + 1] = half(g_prev2);\n"
+  ^ "  conv_state_out[state_base + 2] = half(g_prev1);\n"
+  ^ "}\n"
+
+let short_conv_prefill_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_prefill_f16"
+      ~operation:Kernel_abi.Operation.Short_conv_prefill
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let attention_source =
   "\nconstant uint ATTENTION_SIMD_WIDTH = 32;\n"
   ^ "constant uint ATTENTION_ROWS_PER_THREADGROUP = 8;\n\n"
@@ -2239,6 +2325,20 @@ let has_short_conv graph =
          | Ir.Op.Primitive (Ir.Primitive.Short_conv _) -> true
          | _ -> false)
 
+let has_short_conv_step graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Short_conv_step _ -> true
+         | _ -> false)
+
+let has_short_conv_prefill graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Short_conv_prefill _ -> true
+         | _ -> false)
+
 let has_attention graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -2507,6 +2607,8 @@ let lower graph =
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_short_conv graph, short_conv_source, short_conv_entries;
+      has_short_conv_step graph, short_conv_step_source, short_conv_step_entries;
+      has_short_conv_prefill graph, short_conv_prefill_source, short_conv_prefill_entries;
       has_attention graph, attention_source, attention_entries;
       has_embedding graph, embedding_source, embedding_entries;
       ( has_primitive graph (function Ir.Primitive.Arange _ -> true | _ -> false),

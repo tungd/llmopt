@@ -559,7 +559,12 @@ static llmopt_metal_batch *require_active_batch(value handle) {
 static id<MTLComputeCommandEncoder>
 batch_compute_encoder(llmopt_metal_batch *batch) {
   if (batch->compute == nil) {
-    batch->compute = [[batch->command computeCommandEncoder] retain];
+    if (@available(macOS 10.14, iOS 12.0, *)) {
+      batch->compute = [[batch->command
+          computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent] retain];
+    } else {
+      batch->compute = [[batch->command computeCommandEncoder] retain];
+    }
     if (batch->compute == nil) {
       caml_failwith("Metal could not create a batched compute encoder");
     }
@@ -683,6 +688,15 @@ CAMLprim value caml_llmopt_metal_batch_copy(value batch_value,
                     size:source->length];
     [blit endEncoding];
     [blit release];
+  }
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_llmopt_metal_batch_barrier(value batch_value) {
+  CAMLparam1(batch_value);
+  llmopt_metal_batch *batch = require_active_batch(batch_value);
+  @autoreleasepool {
+    end_batch_compute(batch);
   }
   CAMLreturn(Val_unit);
 }

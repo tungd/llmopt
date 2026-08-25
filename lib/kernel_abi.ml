@@ -11,6 +11,8 @@ module Operation = struct
     | Rms_norm
     | Rms_rope
     | Short_conv
+    | Short_conv_step
+    | Short_conv_prefill
     | Attention
     | Embedding
     | Arange
@@ -37,6 +39,8 @@ module Operation = struct
     | Rms_norm -> "rms-norm"
     | Rms_rope -> "rms-rope"
     | Short_conv -> "short-conv"
+    | Short_conv_step -> "short-conv-step"
+    | Short_conv_prefill -> "short-conv-prefill"
     | Attention -> "attention"
     | Embedding -> "embedding"
     | Arange -> "arange"
@@ -63,6 +67,8 @@ module Operation = struct
     | "rms-norm" -> Ok Rms_norm
     | "rms-rope" -> Ok Rms_rope
     | "short-conv" -> Ok Short_conv
+    | "short-conv-step" -> Ok Short_conv_step
+    | "short-conv-prefill" -> Ok Short_conv_prefill
     | "attention" -> Ok Attention
     | "embedding" -> Ok Embedding
     | "arange" -> Ok Arange

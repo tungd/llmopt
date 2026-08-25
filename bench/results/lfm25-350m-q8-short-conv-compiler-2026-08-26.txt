@@ -1,0 +1,22 @@
+LFM2.5-350M Fused Short-Convolution compiler boundary
+Date: 2026-08-26
+Target: LiquidAI/LFM2.5-350M (full Q8 weights)
+
+Compiler Optimization:
+- Pass: Passes.fuse_short_conv
+- Graph transformation:
+  * Prefill: Identifies the 13-command causal convolution sequence (transpose(2,1) -> 3x index -> mul -> state slice index -> fill(0) -> copy -> short-conv -> conv index -> mul -> transpose(2,1) -> contiguous) across all 10 Short-Conv layers and folds each into a single `Short_conv_prefill` IR operation.
+  * Decode: Identifies the 16-command step convolution sequence (transpose(2,1) -> 3x index -> mul -> roll(axis=2, shift=-1) -> update-index -> copy -> cast(f16) -> weight index -> mul -> sum(axis=2) -> unsqueeze(2) -> mul -> transpose(2,1) -> contiguous) across all 10 Short-Conv layers and folds each into a single `Short_conv_step` IR operation.
+- SIMD Metal Kernels:
+  * llmopt_short_conv_step_f16: 1024 threads across channels; registers hold state window, in-place state ring buffer update, gated input projection dot product, and output gating.
+  * llmopt_short_conv_prefill_f16: 1024 threads across channels; causal multi-token convolution with input/output gating and final state buffer export.
+- Serving Package ABI: v13 (Operation tags 24 and 25 for Short_conv_step and Short_conv_prefill)
+
+Command & Kernel Summary:
+Prefill commands: 702 -> 592 (-110 commands)
+Decode commands: 756 -> 606 (-150 commands)
+Specialized decode commands: 696 -> 546 (-150 commands)
+Decode allocations: 390 -> 262 (-128 allocations)
+Decode workspace: 1.34 MB -> 1.20 MB (-140 KB)
+Prefill package kernels: 74
+Decode package kernels: 71

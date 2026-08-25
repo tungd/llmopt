@@ -112,6 +112,24 @@ module Rms_rope : sig
   val to_string : t -> string
 end
 
+module Short_conv_step : sig
+  type t
+
+  val create : channels:int -> window:int -> (t, string) result
+  val channels : t -> int
+  val window : t -> int
+  val to_string : t -> string
+end
+
+module Short_conv_prefill : sig
+  type t
+
+  val create : channels:int -> window:int -> (t, string) result
+  val channels : t -> int
+  val window : t -> int
+  val to_string : t -> string
+end
+
 module Paged_attention_q8 : sig
   type t
 
@@ -212,6 +230,8 @@ module Op : sig
     | Relu
     | Rms_norm of { epsilon : float }
     | Rms_rope of Rms_rope.t
+    | Short_conv_step of Short_conv_step.t
+    | Short_conv_prefill of Short_conv_prefill.t
     | Primitive of Primitive.t
     | Opaque of {
         op : string;
@@ -237,6 +257,9 @@ val node_op : node -> Op.t
 val node_inputs : node -> Value.t list
 val node_output : node -> Value.t option
 val node_replace : node -> op:Op.t -> inputs:Value.t list -> node
+val node_reindex : node -> int -> node
+val node_create :
+  id:int -> op:Op.t -> inputs:Value.t list -> output:Value.t option -> node
 
 module Graph : sig
   type t

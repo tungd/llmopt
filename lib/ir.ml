@@ -214,6 +214,38 @@ module Rms_rope = struct
       config.half_dimension
 end
 
+module Short_conv_step = struct
+  type t = { channels : int; window : int }
+
+  let create ~channels ~window =
+    if channels <= 0 then Error "short-conv-step channels must be positive"
+    else if window <= 0 then Error "short-conv-step window must be positive"
+    else Ok { channels; window }
+
+  let channels config = config.channels
+  let window config = config.window
+
+  let to_string config =
+    Printf.sprintf "short-conv-step(channels=%d,window=%d)" config.channels
+      config.window
+end
+
+module Short_conv_prefill = struct
+  type t = { channels : int; window : int }
+
+  let create ~channels ~window =
+    if channels <= 0 then Error "short-conv-prefill channels must be positive"
+    else if window <= 0 then Error "short-conv-prefill window must be positive"
+    else Ok { channels; window }
+
+  let channels config = config.channels
+  let window config = config.window
+
+  let to_string config =
+    Printf.sprintf "short-conv-prefill(channels=%d,window=%d)" config.channels
+      config.window
+end
+
 module Paged_attention_q8 = struct
   type t = {
     scale : float;
@@ -374,6 +406,8 @@ module Op = struct
     | Relu
     | Rms_norm of { epsilon : float }
     | Rms_rope of Rms_rope.t
+    | Short_conv_step of Short_conv_step.t
+    | Short_conv_prefill of Short_conv_prefill.t
     | Primitive of Primitive.t
     | Opaque of {
         op : string;
@@ -414,6 +448,8 @@ module Op = struct
     | Relu -> "relu"
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
     | Rms_rope config -> Rms_rope.to_string config
+    | Short_conv_step config -> Short_conv_step.to_string config
+    | Short_conv_prefill config -> Short_conv_prefill.to_string config
     | Primitive primitive -> Primitive.to_string primitive
     | Opaque { op; target; _ } -> Printf.sprintf "opaque(%s,%s)" op target
     | Output { name } -> Printf.sprintf "output(%s)" name
@@ -452,6 +488,8 @@ let node_op node = node.op
 let node_inputs node = node.inputs
 let node_output node = node.output
 let node_replace node ~op ~inputs = { node with op; inputs }
+let node_reindex node id = { node with id }
+let node_create ~id ~op ~inputs ~output = { id; op; inputs; output }
 
 module Graph = struct
   type t = {
