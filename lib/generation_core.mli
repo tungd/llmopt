@@ -33,6 +33,27 @@ module type Engine = sig
 end
 
 module Make (Engine : Engine) : sig
+  module State : sig
+    type t
+
+    val init :
+      Engine.t ->
+      config:Config.t ->
+      is_stop:(int -> bool) ->
+      prompt:int array ->
+      (t * int, string) result
+
+    val step :
+      Engine.t ->
+      t ->
+      (int option * Finish_reason.t option, string) result
+
+    val is_finished : t -> bool
+    val result : t -> Result.t option
+    val current_tokens : t -> int array
+    val completion_tokens : t -> int list
+  end
+
   val run :
     ?emit:(int -> unit) ->
     Engine.t ->

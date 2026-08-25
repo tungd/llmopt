@@ -56,6 +56,42 @@ let create ~tokenizer ~engine =
   let* chat = Lfm_chat.create tokenizer in
   Ok { tokenizer; chat; engine }
 
+let tokenizer gen = gen.tokenizer
+let engine gen = gen.engine
+let chat gen = gen.chat
+
+module Session = struct
+  type session = {
+    parent : t;
+    driver_state : Driver.State.t;
+  }
+  type t = session
+
+  let init ~generation_instance:parent ~config ?(ignore_eos = false) ~messages =
+    let* prompt = Lfm_chat.encode parent.chat messages in
+    let is_stop =
+      if ignore_eos then Fun.const false
+      else Lfm_chat.is_end_token parent.chat
+    in
+    let* driver_state, first_token =
+      Driver.State.init parent.engine ~config ~is_stop ~prompt
+    in
+    Ok ({ parent; driver_state }, first_token)
+
+  let step session =
+    Driver.State.step session.parent.engine session.driver_state
+
+  let is_finished session =
+    Driver.State.is_finished session.driver_state
+
+  let completion_tokens session =
+    Driver.State.completion_tokens session.driver_state
+
+  let decode_text session =
+    let tokens = Array.of_list (completion_tokens session) in
+    Tokenizer.decode session.parent.tokenizer tokens
+end
+
 let generate ?emit ?(ignore_eos = false) generation ~config ~messages =
   let* prompt = Lfm_chat.encode generation.chat messages in
   let is_stop =

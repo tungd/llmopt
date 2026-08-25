@@ -310,6 +310,41 @@ let () =
     (Generation_core.Result.finish_reason length_result
     = Generation_core.Finish_reason.Length)
     "generation reports length completion";
+  (* Stateful generator stepping tests *)
+  let step_engine =
+    Generation_test_engine.create ~outputs:[ 101; 102; 103; 104 ]
+      ~cached_prompt_tokens:1
+  in
+  let step_config = expect_ok (Generation_core.Config.create ~max_new_tokens:3) in
+  let (state, first_tok) =
+    expect_ok
+      (Generation_test.State.init step_engine ~config:step_config
+         ~is_stop:(fun tok -> tok = 103) ~prompt:[| 10; 20 |])
+  in
+  expect (first_tok = 101) "State.init returns first token 101";
+  expect (not (Generation_test.State.is_finished state)) "state is initially active";
+  expect (Generation_test.State.completion_tokens state = [ 101 ])
+    "completion tokens initially contains first token";
+  let step_res1 = expect_ok (Generation_test.State.step step_engine state) in
+  expect (step_res1 = (Some 102, None)) "step 1 emits token 102 without finish reason";
+  expect (not (Generation_test.State.is_finished state)) "state is active after step 1";
+  expect (Generation_test.State.completion_tokens state = [ 101; 102 ])
+    "completion tokens contains 101, 102";
+  let step_res2 = expect_ok (Generation_test.State.step step_engine state) in
+  expect (step_res2 = (Some 103, Some Generation_core.Finish_reason.End_token))
+    "step 2 emits stop token 103 with End_token finish reason";
+  expect (Generation_test.State.is_finished state) "state is finished after stop token";
+  expect (Generation_test.State.completion_tokens state = [ 101; 102; 103 ])
+    "completion tokens contains 101, 102, 103";
+  let final_result =
+    match Generation_test.State.result state with
+    | Some res -> res
+    | None -> fail "expected final Result.t from finished state"
+  in
+  expect_int_array (Generation_core.Result.completion_tokens final_result)
+    [| 101; 102; 103 |] "State.result has correct completion tokens";
+  expect (Generation_core.Result.cached_prompt_tokens final_result = 1)
+    "State.result preserves cached prompt tokens";
   let tokenizer_bytes = tokenizer_fixture () in
   let tokenizer = expect_ok (Tokenizer.of_bytes tokenizer_bytes) in
   expect_int_array (expect_ok (Tokenizer.encode tokenizer "ab")) [| 0; 3 |]
