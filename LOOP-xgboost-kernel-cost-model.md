@@ -136,3 +136,5 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build metal-runtime-differential`
   - `DONE WHEN`: Full model execution confirms $\ge 15\%$ Q8 linear speedup on non-square shapes and exact token match on 4/4 test prompts.
   - `ESCALATE IF`: Benchmark exhibits performance regression on any tested prompt length.
+  - `ATTEMPT-1`: `ninja -f ninja.build test` passed (OCaml and 42 Python tests); the differential probe stopped before model execution with `FileExistsError` because `_artifacts/phase1-350m-differential/graphs/fallback/weights.llmopt` already existed. No retry was issued under the repository probe instruction.
+  - `BLOCKED`: The written end-to-end gate did not produce a current differential result; existing 2026-08-25 output is retained as prior evidence and does not establish this item.
