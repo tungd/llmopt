@@ -1591,7 +1591,11 @@ let () =
         [ "kernel void llmopt_q8_gemv_simd";
           "thread_index_in_simdgroup";
           "threadgroup_position.x * 8 + simdgroup";
-          "inner += 32";
+          "inner = lane * 4";
+          "inner += 128";
+          "const char4 weight_values";
+          "dot(float4(input_values), float4(dequantized_weights))";
+          "inner = scalar_start + lane";
           "simd_sum(acc)" ]);
   let q8_program = expect_ok (Metal.lower q8_graph) in
   let q8_entries = Metal.Program.kernels q8_program in

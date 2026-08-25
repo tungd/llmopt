@@ -1,0 +1,43 @@
+LFM2.5-350M packed SIMD-group Q8 decode GEMV
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Kernel mapping
+- one 32-lane SIMD group continues to own one output channel
+- previous SIMD loop: one input scalar and one int8 weight per lane iteration, stride 32
+- current SIMD loop: one half4/float4 input and one char4 weight per lane iteration, stride 128
+- four per-element dequantized products are accumulated with one float4 dot operation
+- per-channel scale remains applied to each vector weight before accumulation
+- scalar lane-stride-32 cleanup handles unaligned rows and k tails
+- identity, SiLU, residual, and multiplied-input/residual families use the packed loop in float16 and float32
+- all observed decode k dimensions, 1024 and 4608, are multiples of 128 and use only the packed path
+
+Saved 350M binary-graph replan
+- commands: 808 prefill / 862 decode
+- kernel entries: 61 prefill / 59 decode
+- opaque operations: 0 / 0
+- tensor bindings: 241 / 241 against one 422,137,216-byte binary tensor archive
+- workspace high-water/unreused: 1,098,496/7,692,800 prefill, 262,144/1,791,232 decode
+- prefill package: 95,066 bytes
+- decode package: 98,549 bytes
+- prefill MSL/metallib: 94,220 / 348,813 bytes
+- decode MSL/metallib: 94,715 / 342,547 bytes
+- generated decode source contains 8 packed SIMD kernels, 8 char4 loops, and 8 float4 dot reductions
+- both generated MSL programs compiled and linked with Xcode Metal
+
+Persistent artifact pair
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-packed-gemv-v1-2026-08-25
+- Q8-group-64 and FP16-selectable pair validation: pass
+- prefill/decode binary tensor archive inode: 241927011 / 241927011
+- sequence-specialized workspace sizes remain unchanged
+
+Static verification
+- ninja -f ninja.build test: pass, 37 Python tests and OCaml tests
+- ninja -f ninja.build q8-smoke q8-serving-smoke native-schedule-smoke: pass
+- Xcode Metal compilation and package validation: pass for both model stages
+- ABI-v10 and ABI-v9 packages still parse and validate
+
+Evidence boundary
+- No Metal device execution, model request, token generation, cache replay, needle trace, latency comparison, or ERS scoring ran for the packed loop.
+- Packed dot accumulation changes floating-point association relative to the prior scalar-per-lane SIMD loop.
+- Latest valid native ERS remains 0.23655514122115978 from the preceding optimized-stack package.

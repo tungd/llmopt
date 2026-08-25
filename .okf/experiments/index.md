@@ -53,3 +53,4 @@
 * [Single-pass SIMD online-softmax attention](exp-0051-online-softmax-attention.md) - each LFM query-key score is computed once while scalar fallback remains available.
 * [Optimized native stack measurement](exp-0052-optimized-native-stack.md) - corrected suffix replay and the combined fused/SIMD stack retain exact tokens and measure native ERS 0.236555.
 * [Effective LFM feed-forward shape correction](exp-0053-effective-ff-shape.md) - distinguishes declared 6656 from the auto-adjusted 4608-wide executable projections.
+* [Packed SIMD-group Q8 GEMV](exp-0054-packed-simd-q8-gemv.md) - four activations and int8 weights per lane iteration across all fused decode families.

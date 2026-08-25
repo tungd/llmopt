@@ -212,8 +212,13 @@ let q8_gemv_kernel_with_input ~input_mode ~extra_argument ~output_buffer
 let q8_gemv_kernel = q8_gemv_kernel_with_input ~input_mode:Direct
 
 let q8_gemv_simd_kernel_with_input ~input_mode ~extra_argument ~output_buffer
-    ~parameter_buffer ~name ~value_type ~weight_cast ~scale_type ~store_value =
+    ~parameter_buffer ~name ~value_type ~vector_type ~weight_cast ~scale_type
+    ~store_value =
   let input_signature, input_shift = q8_input_signature ~value_type input_mode in
+  let input_vector_load =
+    q8_input_vector_load ~value_type ~vector_type ~offset:"inner"
+      ~values_name:"input_values" input_mode
+  in
   let input_scalar = q8_input_scalar ~value_type "inner" input_mode in
   "kernel void " ^ name ^ "(\n"
   ^ input_signature
@@ -236,7 +241,21 @@ let q8_gemv_simd_kernel_with_input ~input_mode ~extra_argument ~output_buffer
   ^ "  const " ^ scale_type ^ " channel_scale = scale[col];\n"
   ^ "  const uint weight_base = col * params.k;\n"
   ^ "  float acc = 0.0f;\n"
-  ^ "  for (uint inner = lane; inner < params.k; inner += 32)\n"
+  ^ "  uint scalar_start = 0;\n"
+  ^ "  if ((weight_base & 3u) == 0) {\n"
+  ^ "    const uint vectorized = params.k & ~3u;\n"
+  ^ "    for (uint inner = lane * 4; inner < vectorized; inner += 128) {\n"
+  ^ input_vector_load
+  ^ "      device const char4* weight_vector =\n"
+  ^ "          reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
+  ^ "      const char4 weight_values = *weight_vector;\n"
+  ^ "      const " ^ vector_type ^ " dequantized_weights = " ^ vector_type
+  ^ "(weight_values) * channel_scale;\n"
+  ^ "      acc += dot(float4(input_values), float4(dequantized_weights));\n"
+  ^ "    }\n"
+  ^ "    scalar_start = vectorized;\n"
+  ^ "  }\n"
+  ^ "  for (uint inner = scalar_start + lane; inner < params.k; inner += 32)\n"
   ^ "    acc += float(" ^ input_scalar ^ ") *\n"
   ^ "           float(" ^ weight_cast
   ^ "(weight[weight_base + inner]) * channel_scale);\n"
@@ -446,6 +465,7 @@ let q8_source =
       ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv_simd"
       ~value_type:"half"
+      ~vector_type:"half4"
       ~weight_cast:"half"
       ~scale_type:"half"
       ~store_value:"half(acc)"
@@ -453,6 +473,7 @@ let q8_source =
       ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv_simd_f32"
       ~value_type:"float"
+      ~vector_type:"float4"
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc"
@@ -460,6 +481,7 @@ let q8_source =
       ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv_silu_simd"
       ~value_type:"half"
+      ~vector_type:"half4"
       ~weight_cast:"half"
       ~scale_type:"half"
       ~store_value:
@@ -468,6 +490,7 @@ let q8_source =
       ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv_silu_simd_f32"
       ~value_type:"float"
+      ~vector_type:"float4"
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc / (1.0f + exp(-acc))"
@@ -476,6 +499,7 @@ let q8_source =
       ~output_buffer:5 ~parameter_buffer:6
       ~name:"llmopt_q8_gemv_add_simd"
       ~value_type:"half"
+      ~vector_type:"half4"
       ~weight_cast:"half"
       ~scale_type:"half"
       ~store_value:"half(half(acc) + residual[col])"
@@ -484,6 +508,7 @@ let q8_source =
       ~output_buffer:5 ~parameter_buffer:6
       ~name:"llmopt_q8_gemv_add_simd_f32"
       ~value_type:"float"
+      ~vector_type:"float4"
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc + residual[col]"
@@ -493,6 +518,7 @@ let q8_source =
       ~output_buffer:6 ~parameter_buffer:7
       ~name:"llmopt_q8_gemv_mul_add_simd"
       ~value_type:"half"
+      ~vector_type:"half4"
       ~weight_cast:"half"
       ~scale_type:"half"
       ~store_value:"half(half(acc) + residual[col])"
@@ -502,6 +528,7 @@ let q8_source =
       ~output_buffer:6 ~parameter_buffer:7
       ~name:"llmopt_q8_gemv_mul_add_simd_f32"
       ~value_type:"float"
+      ~vector_type:"float4"
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc + residual[col]"

@@ -369,6 +369,13 @@ to the prior native observation, the aggregate deltas are
 passes. See
 [`bench/results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt`](bench/results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt).
 
+The next decode package packs four activations and four int8 weights into each
+SIMD-lane iteration across all eight Q8 variants, moving the lane stride from
+32 scalars to 128 elements while retaining scalar cleanup. Both model
+metallibs compile, but this packed association order has not run on device and
+does not replace the measured ERS above. See
+[`bench/results/lfm25-350m-q8-packed-simd-gemv-2026-08-25.txt`](bench/results/lfm25-350m-q8-packed-simd-gemv-2026-08-25.txt).
+
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048
 tokens and `100.204` seconds at 4,096. That observation stopped normally on the

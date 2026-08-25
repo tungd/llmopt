@@ -392,6 +392,13 @@ All four Q8 operation families compile in float16 and float32. The combined
 optimized model run exercises them with exact token parity, without isolating
 their individual latency contribution.
 
+The subsequent package vectorizes work within each SIMD lane. Every lane loads
+four activations and a `char4` weight, applies the per-channel scale to the four
+weight elements, accumulates one float4 dot, and advances by 128 reduction
+elements. Scalar stride-32 cleanup remains for alignment and tails. The model's
+1024/4608 decode reductions use the packed path throughout; this package is
+compiled but not yet model-executed.
+
 RMSNorm uses the same launch geometry at the row level. One SIMD group owns a
 row, lanes traverse its final dimension at stride 32, `simd_sum` combines the
 squared-value partials, and the lanes cooperatively write normalized values.
