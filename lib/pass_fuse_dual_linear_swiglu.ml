@@ -20,13 +20,28 @@ let run graph =
         match is_linear node1, is_linear node2 with
         | Some (`Q8 (m1, n1, k1, b1)), Some (`Q8 (m2, n2, k2, b2))
           when m1 = m2 && k1 = k2 && b1 = b2 -> (
-            match Ir.node_inputs node1, Ir.node_inputs node2 with
-            | in1 :: w1_rest, in2 :: w2_rest when value_is in1 in2 ->
+            match
+              Ir.node_inputs node1,
+              Ir.node_inputs node2,
+              Ir.node_output node1,
+              Ir.node_output node2
+            with
+            | in1 :: w1_rest, in2 :: w2_rest, Some w1_output, Some w3_output
+              when value_is in1 in2 ->
                 let fused =
                   Ir.node_create ~id:(Ir.node_id node1)
-                    ~op:(Ir.Op.Q8_dual_linear { m = m1; n1; n2; k = k1; bias = b1 })
+                    ~op:
+                      (Ir.Op.Q8_dual_linear
+                         {
+                           m = m1;
+                           n1;
+                           n2;
+                           k = k1;
+                           bias = b1;
+                           extra_outputs = [ w3_output ];
+                         })
                     ~inputs:(in1 :: (w1_rest @ w2_rest))
-                    ~output:(Ir.node_output node1)
+                    ~output:(Some w1_output)
                 in
                 rewrite prefix (fused :: rest)
             | _ -> rewrite (node1 :: prefix) (node2 :: rest))

@@ -459,6 +459,17 @@ module Parameters = struct
     Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let q8_dual_linear ~m ~n1 ~n2 ~k = u32s [ m; n1; n2; k ]
+
+  let q8_qkv_linear ~m ~n_q ~n_kv ~k = u32s [ m; n_q; n_kv; k ]
+
+  let q8_lm_head_argmax ~m ~n ~k ~epsilon =
+    let bytes = Bytes.make 16 '\000' in
+    let* encoded = u32s [ m; n; k ] in
+    Bytes.blit encoded 0 bytes 0 12;
+    Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
+    Ok bytes
+
   let rms_rope ~batches ~tokens ~heads ~width ~half_dimension ~trig_batches
       ~epsilon =
     let bytes = Bytes.make 28 '\000' in
@@ -1685,6 +1696,223 @@ let dispatch_q8_command batch runtime state ~selection ~epilogue ~m ~n ~k ~has_b
   in
   Ok (bind_value state output output_buffer, kernel)
 
+let q8_macro_kernel_name dtype ~base ~has_bias =
+  match dtype with
+  | Ir.Dtype.Float16 -> Ok (base ^ "_f16" ^ if has_bias then "_bias" else "")
+  | Ir.Dtype.Float32 -> Ok (base ^ "_f32" ^ if has_bias then "_bias" else "")
+  | dtype ->
+      Error
+        (Printf.sprintf "Q8 macro dispatch requires f16 or f32 activations, got %s"
+           (Ir.Dtype.to_string dtype))
+
+let dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias
+    ~extra_outputs values output =
+  let* output2 =
+    match extra_outputs with
+    | [ output2 ] -> Ok output2
+    | _ -> Error "Q8 dual-linear command requires one secondary output"
+  in
+  let* input_value, weight1_value, scale1_value, bias1_value, weight2_value,
+      scale2_value, bias2_value =
+    match values, bias with
+    | [ input; weight1; scale1; weight2; scale2 ], false ->
+        Ok (input, weight1, scale1, None, weight2, scale2, None)
+    | [ input; weight1; scale1; bias1; weight2; scale2; bias2 ], true ->
+        Ok (input, weight1, scale1, Some bias1, weight2, scale2, Some bias2)
+    | _ -> Error "Q8 dual-linear command has inconsistent bias inputs"
+  in
+  let* input = find_value state input_value in
+  let* weight1 = find_value state weight1_value in
+  let* scale1 = find_value state scale1_value in
+  let* weight2 = find_value state weight2_value in
+  let* scale2 = find_value state scale2_value in
+  let* bias1 = Option.fold ~none:(Ok None)
+      ~some:(fun value -> find_value state value |> Result.map Option.some)
+      bias1_value
+  in
+  let* bias2 = Option.fold ~none:(Ok None)
+      ~some:(fun value -> find_value state value |> Result.map Option.some)
+      bias2_value
+  in
+  let* output_buffer = workspace_buffer state output in
+  let* output2_buffer = workspace_buffer state output2 in
+  let* () = validate_linear_shapes ~m ~n:n1 ~k input_value weight1_value output in
+  let* () = validate_linear_shapes ~m ~n:n2 ~k input_value weight2_value output2 in
+  let* kernel_name =
+    q8_macro_kernel_name (Ir.Value.dtype input_value)
+      ~base:"llmopt_q8_dual_linear" ~has_bias:bias
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:(Ir.Value.dtype input_value)
+      ~output_dtype:(Ir.Value.dtype output)
+  in
+  let* parameters = Parameters.q8_dual_linear ~m ~n1 ~n2 ~k in
+  let* bias1 =
+    match bias1 with
+    | Some bias -> Ok bias
+    | None when not bias -> Ok scale1
+    | None -> Error "Q8 dual-linear command is missing bias1"
+  in
+  let* bias2 =
+    match bias2 with
+    | Some bias -> Ok bias
+    | None when not bias -> Ok scale2
+    | None -> Error "Q8 dual-linear command is missing bias2"
+  in
+  let buffers =
+    if bias then
+      [ input; weight1; scale1; bias1; weight2; scale2; bias2; output_buffer;
+        output2_buffer ]
+    else [ input; weight1; scale1; weight2; scale2; output_buffer; output2_buffer ]
+  in
+  let* kernel =
+    dispatch ~batch runtime entry ~buffers ~parameters
+      ~grid:(n1 + n2, m, 1)
+  in
+  Ok (bind_value (bind_value state output output_buffer) output2 output2_buffer, kernel)
+
+let dispatch_q8_qkv_command batch runtime state ~m ~n_q ~n_kv ~k ~bias
+    ~extra_outputs values output =
+  let* key_output, value_output =
+    match extra_outputs with
+    | [ key_output; value_output ] -> Ok (key_output, value_output)
+    | _ -> Error "Q8 QKV command requires key and value secondary outputs"
+  in
+  let* input_value, weight_q_value, scale_q_value, bias_q_value, weight_k_value,
+      scale_k_value, bias_k_value, weight_v_value, scale_v_value, bias_v_value =
+    match values, bias with
+    | [ input; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v ], false ->
+        Ok (input, weight_q, scale_q, None, weight_k, scale_k, None, weight_v,
+          scale_v, None)
+    | [ input; weight_q; scale_q; bias_q; weight_k; scale_k; bias_k; weight_v;
+        scale_v; bias_v ], true ->
+        Ok (input, weight_q, scale_q, Some bias_q, weight_k, scale_k, Some bias_k,
+          weight_v, scale_v, Some bias_v)
+    | _ -> Error "Q8 QKV command has inconsistent bias inputs"
+  in
+  let* input = find_value state input_value in
+  let* weight_q = find_value state weight_q_value in
+  let* scale_q = find_value state scale_q_value in
+  let* weight_k = find_value state weight_k_value in
+  let* scale_k = find_value state scale_k_value in
+  let* weight_v = find_value state weight_v_value in
+  let* scale_v = find_value state scale_v_value in
+  let* bias_q = Option.fold ~none:(Ok None)
+      ~some:(fun value -> find_value state value |> Result.map Option.some)
+      bias_q_value
+  in
+  let* bias_k = Option.fold ~none:(Ok None)
+      ~some:(fun value -> find_value state value |> Result.map Option.some)
+      bias_k_value
+  in
+  let* bias_v = Option.fold ~none:(Ok None)
+      ~some:(fun value -> find_value state value |> Result.map Option.some)
+      bias_v_value
+  in
+  let* output_buffer = workspace_buffer state output in
+  let* key_buffer = workspace_buffer state key_output in
+  let* value_buffer = workspace_buffer state value_output in
+  let* () = validate_linear_shapes ~m ~n:n_q ~k input_value weight_q_value output in
+  let* () = validate_linear_shapes ~m ~n:n_kv ~k input_value weight_k_value key_output in
+  let* () = validate_linear_shapes ~m ~n:n_kv ~k input_value weight_v_value value_output in
+  let* kernel_name =
+    q8_macro_kernel_name (Ir.Value.dtype input_value)
+      ~base:"llmopt_q8_qkv_linear" ~has_bias:bias
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:(Ir.Value.dtype input_value)
+      ~output_dtype:(Ir.Value.dtype output)
+  in
+  let* parameters = Parameters.q8_qkv_linear ~m ~n_q ~n_kv ~k in
+  let* bias_q =
+    match bias_q with
+    | Some bias -> Ok bias
+    | None when not bias -> Ok scale_q
+    | None -> Error "Q8 QKV command is missing bias_q"
+  in
+  let* bias_k =
+    match bias_k with
+    | Some bias -> Ok bias
+    | None when not bias -> Ok scale_k
+    | None -> Error "Q8 QKV command is missing bias_k"
+  in
+  let* bias_v =
+    match bias_v with
+    | Some bias -> Ok bias
+    | None when not bias -> Ok scale_v
+    | None -> Error "Q8 QKV command is missing bias_v"
+  in
+  let buffers =
+    if bias then
+      [ input; weight_q; scale_q; bias_q; weight_k; scale_k; bias_k; weight_v;
+        scale_v; bias_v; output_buffer; key_buffer; value_buffer ]
+    else
+      [ input; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v;
+        output_buffer; key_buffer; value_buffer ]
+  in
+  let* kernel =
+    dispatch ~batch runtime entry ~buffers ~parameters
+      ~grid:(n_q + (2 * n_kv), m, 1)
+  in
+  let state = bind_value state output output_buffer in
+  let state = bind_value state key_output key_buffer in
+  Ok (bind_value state value_output value_buffer, kernel)
+
+let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
+    values output =
+  let* input_value, norm_weight_value, weight_value, scale_value =
+    match values with
+    | [ input; norm_weight; weight; scale ] ->
+        Ok (input, norm_weight, weight, scale)
+    | _ -> Error "Q8 LM-head argmax command has inconsistent inputs"
+  in
+  let* input = find_value state input_value in
+  let* norm_weight = find_value state norm_weight_value in
+  let* weight = find_value state weight_value in
+  let* scale = find_value state scale_value in
+  let* output_buffer = workspace_buffer state output in
+  let* () =
+    if
+      Tensor_shape.numel (Ir.Value.logical_shape input_value) = m * k
+      && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_value) = [ k ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape weight_value) = [ n; k ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape scale_value) = [ n ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape output) = [ m ]
+      && (Ir.Value.dtype input_value = Ir.Dtype.Float16
+          || Ir.Value.dtype input_value = Ir.Dtype.Float32)
+      && Ir.Value.dtype norm_weight_value = Ir.Dtype.Float16
+      && Ir.Value.dtype weight_value = Ir.Dtype.Int8
+      && Ir.Value.dtype scale_value = Ir.Dtype.Float16
+      && Ir.Value.dtype output = Ir.Dtype.Int32
+    then Ok ()
+    else Error "Q8 LM-head argmax input metadata is inconsistent"
+  in
+  let* kernel_name =
+    q8_macro_kernel_name (Ir.Value.dtype input_value)
+      ~base:"llmopt_q8_lm_head_argmax" ~has_bias:false
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~input_dtype:(Ir.Value.dtype input_value)
+      ~output_dtype:Ir.Dtype.Int32
+  in
+  let* parameters = Parameters.q8_lm_head_argmax ~m ~n ~k ~epsilon in
+  let* grid =
+    if m > max_int / 256 then Error "LM-head argmax grid dimension overflows"
+    else Ok (m * 256, 1, 1)
+  in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers:[ input; norm_weight; weight; scale; output_buffer ]
+      ~parameters ~grid
+  in
+  Ok (bind_value state output output_buffer, kernel)
+
 let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
     values output =
   let* input_value, weight_value, scale_value, residual_value, norm_weight_value =
@@ -2548,6 +2776,26 @@ let encode_schedule execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_q8_command batch runtime state ~selection
                  ~epilogue:Mul_add ~m ~n ~k ~has_bias values output)
+        | ( Ir.Op.Q8_dual_linear
+              { m; n1; n2; k; bias; extra_outputs },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias
+                 ~extra_outputs values output)
+        | ( Ir.Op.Q8_qkv_linear
+              { m; n_q; n_kv; k; bias; extra_outputs },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_qkv_command batch runtime state ~m ~n_q ~n_kv ~k ~bias
+                 ~extra_outputs values output)
+        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k
+                 ~epsilon values output)
         | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon },
             values,
             Some output ) ->

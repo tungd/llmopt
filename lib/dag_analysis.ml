@@ -33,6 +33,14 @@ module Resource_class = struct
           +. (Float.of_int (m * n) *. 2.0)
         in
         flops /. max 1.0 bytes
+    | Ir.Op.Q8_lm_head_argmax { m; n; k; _ } ->
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 2.0)
+          +. Float.of_int (n * k)
+          +. (Float.of_int m *. 4.0)
+        in
+        flops /. max 1.0 bytes
     | Ir.Op.Q8_dual_linear { m; n1; n2; k; _ } ->
         let n = n1 + n2 in
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
@@ -74,6 +82,7 @@ module Resource_class = struct
     | Ir.Op.Q8_linear_add _
     | Ir.Op.Q8_linear_mul_add _
     | Ir.Op.Q8_linear_add_norm _
+    | Ir.Op.Q8_lm_head_argmax _
     | Ir.Op.Q8_dual_linear _
     | Ir.Op.Q8_qkv_linear _
     | Ir.Op.Matmul _

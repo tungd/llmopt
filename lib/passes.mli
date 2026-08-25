@@ -7,6 +7,7 @@ module Dual_linear_swiglu = Pass_fuse_dual_linear_swiglu
 module Qkv_linear = Pass_fuse_qkv_linear
 module Short_conv_step_fused = Pass_fuse_short_conv_step
 module Linear_residual_norm = Pass_fuse_linear_residual_norm
+module Lm_head_argmax = Pass_fuse_lm_head_argmax
 module Co_schedule = Pass_co_schedule
 
 val fuse_linear_bias : Ir.Graph.t -> Ir.Graph.t
@@ -20,6 +21,7 @@ val fuse_dual_linear_swiglu : Ir.Graph.t -> Ir.Graph.t
 val fuse_qkv_linear : Ir.Graph.t -> Ir.Graph.t
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
 val fuse_linear_residual_norm : Ir.Graph.t -> Ir.Graph.t
+val fuse_lm_head_argmax : Ir.Graph.t -> Ir.Graph.t
 val co_schedule : Ir.Graph.t -> Ir.Graph.t
 
 val all_passes : Pass.t list

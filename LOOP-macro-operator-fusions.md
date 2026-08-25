@@ -50,8 +50,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build metal` compiles and passes all unit tests.
   - `DONE WHEN`: FFN Gate and Up projections in all 16 layers collapse into 16 dual-linear operations with verified FP16 output.
   - `ESCALATE IF`: Shared input activation tensor has external consumers outside the FFN block.
-  - `ATTEMPT-1`: `ninja -f ninja.build test && ninja -f ninja.build metal` passed after `b01fed9`, covering the typed rewrite, dual-linear source/ABI emission, and schedule round-trip.
-  - `NEEDS PLAN`: The current single-output `Ir.node` contract retains only the W1 output when replacing W1/W3; W3 consumers are not rewritten, and `Passes.optimize` does not run this pass. Choose a packed-output/split rewrite or a multi-output IR contract before claiming the 16-layer collapse and FP16 parity.
+  - `ATTEMPT-2`: Added `Q8_dual_linear.extra_outputs`, secondary-output workspace allocation, schedule version 14 serialization, runtime dispatch, and optimizer wiring. `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal` pass; the fixture preserves both projection outputs through a schedule round-trip.
+  - `NEEDS INTEGRATION`: No full 16-layer command audit or GPU FP16 differential result has been produced yet.
 
 - [ ] **ITEM-02**: Implement Fused 3-in-1 QKV Attention Projection ($W_q + W_k + W_v$)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
@@ -70,8 +70,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test` passes with 100% success on attention fixtures.
   - `DONE WHEN`: All 6 attention blocks emit a single QKV projection kernel instead of 3 separate linear operations.
   - `ESCALATE IF`: GQA head configuration differs between attention layers.
-  - `ATTEMPT-1`: `ninja -f ninja.build test && ninja -f ninja.build metal` passed after `27751c0`, covering the typed rewrite, QKV source/ABI emission, and schedule round-trip.
-  - `NEEDS PLAN`: The same single-output IR contract retains only Q output and drops K/V outputs; no six-block lowering or parity claim is valid until the output representation is selected.
+  - `ATTEMPT-2`: Added `Q8_qkv_linear.extra_outputs`, secondary-output workspace allocation, schedule version 14 serialization, runtime dispatch, LFM specialization remapping, and optimizer wiring. `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal` pass; the fixture preserves Q/K/V outputs through schedule round-trip and specialization.
+  - `NEEDS INTEGRATION`: No full six-block command audit or GPU FP16 differential result has been produced yet.
 
 - [ ] **ITEM-03**: Implement Fused ShortConv Recurrent Step
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
@@ -91,7 +91,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `DONE WHEN`: 10 ShortConv decode stages each collapse from 4 commands to 1 single fused kernel.
   - `ESCALATE IF`: Conv filter width is not 3 or stride is not 1.
   - `ATTEMPT-1`: `ninja -f ninja.build test && ninja -f ninja.build short-conv-smoke` passed; the native schedule fixture and `metal_runtime.ml` also compile. The unit fixture verifies the typed fused op, schedule opcode round-trip, fused MSL entry, and retained ShortConv ABI operation.
-  - `NEEDS INTEGRATION`: `Passes.optimize` does not yet invoke `fuse_short_conv_step`, and no current full LFM2.5 decode package has been regenerated through this new op. The repository therefore has no evidence for the 10-stage collapse or sequential state parity in the full model; carry that proof to ITEM-06 pipeline integration.
+  - `ATTEMPT-2`: `Passes.optimize` now invokes `fuse_short_conv_step`; the existing focused short-conv fixture and native schedule/source gates still pass.
+  - `NEEDS INTEGRATION`: No regenerated full LFM2.5 decode package or sequential state-parity result has been produced yet.
 
 - [ ] **ITEM-04**: Implement Fused Out-Projection + Residual Add + Post-RMSNorm
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
@@ -111,7 +112,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `DONE WHEN`: Out-projection, residual addition, and post-norm across layers execute as single fused kernels.
   - `ESCALATE IF`: Intermediate residual has multiple active consumer nodes.
   - `ATTEMPT-1`: `ninja -f ninja.build test` passed; the generated Metal source, OCaml runtime dispatch, native fixture, and FX executable compile. The fixture verifies the typed rewrite, epsilon and operand preservation, schedule round-trip, threadgroup RMS reduction source, and registered Q8 ABI entry.
-  - `NEEDS INTEGRATION`: `Passes.optimize` does not yet invoke `fuse_linear_residual_norm`, and no current full LFM2.5 package has been regenerated through this new op. The repository therefore has no full-layer numerical or command-count evidence; carry that proof to ITEM-06 pipeline integration.
+  - `ATTEMPT-2`: `Passes.optimize` now invokes `fuse_linear_residual_norm`; `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal` pass, including the generated residual-norm Metal compile.
+  - `NEEDS INTEGRATION`: No regenerated full LFM2.5 package or full-layer numerical/command-count result has been produced yet.
 
 - [ ] **ITEM-05**: Implement Fused Final RMSNorm + LM_Head + On-GPU Tree-Reduction Argmax
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
@@ -130,8 +132,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build demo` yields exact token matches.
   - `DONE WHEN`: Single-token decode outputs a 4-byte token ID with zero logit buffer allocation in DRAM.
   - `ESCALATE IF`: Dynamic sampling parameters (temperature / top-k) require full logit distribution on CPU.
-  - `ATTEMPT-1`: The independent `Sampling.Greedy.on_device` 4-byte little-endian decoder is implemented and covered by `ninja -f ninja.build test`. The compiler/runtime fusion was not claimed because the current graph has no Argmax operation or token-id output representation.
-  - `NEEDS PLAN`: `Ir.node` has one immutable output value and `Ir.Graph.with_nodes` cannot replace `Graph.outputs`; the existing LM-head path therefore exposes an FP16 logits tensor, while this item requires a new Int32/UInt32 token-id output. Select the output-rewrite contract, schedule shape/type rules, package/runtime ABI, and logit-path fallback before adding `Q8_lm_head_argmax` or claiming zero-copy sampling.
+  - `ATTEMPT-2`: Added the explicit graph-output rewrite contract, `Q8_lm_head_argmax` schedule/package/runtime ABI, deterministic Metal reduction source, and optimizer wiring. The focused fixture verifies Int32 `[m]` output, schedule round-trip, ABI entry, workspace planning, and the existing 4-byte decoder; `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal` pass.
+  - `NEEDS INTEGRATION`: The serving path has not yet selected this op for live greedy decode, and no GPU token-id versus CPU-argmax differential result or logit-path fallback exercise has been produced.
 
 - [ ] **ITEM-06**: End-to-End Pipeline Integration, Command Audit & Differential Benchmarks
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
@@ -149,5 +151,5 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build metal-runtime-differential`
   - `DONE WHEN`: Full model execution confirms $\ge 120$ command reduction and $\ge 20\%$ TPOT latency reduction on Apple Silicon GPU.
   - `ESCALATE IF`: Any fusion pass causes circular dependencies or breaks topological sort.
-  - `ATTEMPT-1`: Current compiler, schedule, Metal-source, runtime, and Python unit gates pass for the implemented partial slices; no full-model package or differential run was started from this state.
-  - `NEEDS PLAN`: ITEM-01/02 and ITEM-05 still require explicit multi-output or output-rewrite contracts, while ITEM-03/04 are intentionally not wired into `Passes.optimize`. Choose those contracts before wiring all five passes or running the full-model command audit and differential benchmark.
+  - `ATTEMPT-2`: All five passes are now present in `Passes.optimize`; the compiler/runtime/package slice passes `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal`. No full-model package or differential run has been completed from this state.
+  - `NEEDS EVIDENCE`: Run the written full-model command audit and differential gate before closing the item.

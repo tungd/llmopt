@@ -505,10 +505,11 @@ let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
 
 let q8_dual_linear_kernel ~name ~value_type ~weight_cast ~store_value
     ~has_bias =
-  let weight2_buffer, scale2_buffer, bias1, bias2, output_buffer, parameter_buffer =
+  let weight2_buffer, scale2_buffer, bias1, bias2, output1_buffer,
+      output2_buffer, parameter_buffer =
     if has_bias then 4, 5, "    device const half* bias1 [[buffer(3)]],\n",
-      "    device const half* bias2 [[buffer(6)]],\n", 7, 8
-    else 3, 4, "", "", 5, 6
+      "    device const half* bias2 [[buffer(6)]],\n", 7, 8, 9
+    else 3, 4, "", "", 5, 6, 7
   in
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
@@ -520,8 +521,10 @@ let q8_dual_linear_kernel ~name ~value_type ~weight_cast ~store_value
   ^ "    device const half* scale2 [[buffer(" ^ string_of_int scale2_buffer
   ^ ")]],\n"
   ^ bias2
-  ^ "    device " ^ value_type ^ "* output [[buffer("
-  ^ string_of_int output_buffer ^ ")]],\n"
+  ^ "    device " ^ value_type ^ "* output1 [[buffer("
+  ^ string_of_int output1_buffer ^ ")]],\n"
+  ^ "    device " ^ value_type ^ "* output2 [[buffer("
+  ^ string_of_int output2_buffer ^ ")]],\n"
   ^ "    constant Q8DualParams& params [[buffer("
   ^ string_of_int parameter_buffer ^ ")]],\n"
   ^ "    uint2 gid [[thread_position_in_grid]]) {\n"
@@ -542,7 +545,8 @@ let q8_dual_linear_kernel ~name ~value_type ~weight_cast ~store_value
        "  if (second) accumulator += float(bias2[channel]);\n"
      ^ "  else accumulator += float(bias1[channel]);\n"
      else "")
-  ^ "  output[row * width + col] = " ^ store_value ^ ";\n"
+  ^ "  if (second) output2[row * params.n2 + channel] = " ^ store_value ^ ";\n"
+  ^ "  else output1[row * params.n1 + channel] = " ^ store_value ^ ";\n"
   ^ "}\n"
 
 let q8_dual_linear_source =
@@ -560,12 +564,13 @@ let q8_dual_linear_source =
 
 let q8_qkv_linear_kernel ~name ~value_type ~weight_cast ~store_value ~has_bias =
   let weight_k_buffer, scale_k_buffer, bias_q, bias_k, weight_v_buffer,
-      scale_v_buffer, bias_v, output_buffer, parameter_buffer =
+      scale_v_buffer, bias_v, output_q_buffer, output_k_buffer, output_v_buffer,
+      parameter_buffer =
     if has_bias then
       4, 5, "    device const half* bias_q [[buffer(3)]],\n",
       "    device const half* bias_k [[buffer(6)]],\n", 7, 8,
-      "    device const half* bias_v [[buffer(9)]],\n", 10, 11
-    else 3, 4, "", "", 5, 6, "", 7, 8
+      "    device const half* bias_v [[buffer(9)]],\n", 10, 11, 12, 13
+    else 3, 4, "", "", 5, 6, "", 7, 8, 9, 10
   in
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
@@ -582,8 +587,12 @@ let q8_qkv_linear_kernel ~name ~value_type ~weight_cast ~store_value ~has_bias =
   ^ "    device const half* scale_v [[buffer(" ^ string_of_int scale_v_buffer
   ^ ")]],\n"
   ^ bias_v
-  ^ "    device " ^ value_type ^ "* output [[buffer("
-  ^ string_of_int output_buffer ^ ")]],\n"
+  ^ "    device " ^ value_type ^ "* output_q [[buffer("
+  ^ string_of_int output_q_buffer ^ ")]],\n"
+  ^ "    device " ^ value_type ^ "* output_k [[buffer("
+  ^ string_of_int output_k_buffer ^ ")]],\n"
+  ^ "    device " ^ value_type ^ "* output_v [[buffer("
+  ^ string_of_int output_v_buffer ^ ")]],\n"
   ^ "    constant Q8QkvParams& params [[buffer("
   ^ string_of_int parameter_buffer ^ ")]],\n"
   ^ "    uint2 gid [[thread_position_in_grid]]) {\n"
@@ -609,7 +618,11 @@ let q8_qkv_linear_kernel ~name ~value_type ~weight_cast ~store_value ~has_bias =
      ^ "  else if (group == 1) accumulator += float(bias_k[channel]);\n"
      ^ "  else accumulator += float(bias_v[channel]);\n"
      else "")
-  ^ "  output[row * width + col] = " ^ store_value ^ ";\n"
+  ^ "  if (group == 0) output_q[row * params.n_q + channel] = "
+  ^ store_value ^ ";\n"
+  ^ "  else if (group == 1) output_k[row * params.n_kv + channel] = "
+  ^ store_value ^ ";\n"
+  ^ "  else output_v[row * params.n_kv + channel] = " ^ store_value ^ ";\n"
   ^ "}\n"
 
 let q8_qkv_linear_source =
@@ -655,9 +668,9 @@ let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast =
   ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
   ^ "  const uint row = group_position.x;\n"
   ^ "  if (row >= params.m) return;\n"
-  ^ "  const uint thread = simdgroup * 32 + lane;\n"
+  ^ "  const uint thread_index = simdgroup * 32 + lane;\n"
   ^ "  float square_sum = 0.0f;\n"
-  ^ "  for (uint col = thread; col < params.n; col += 256) {\n"
+  ^ "  for (uint col = thread_index; col < params.n; col += 256) {\n"
   ^ "    const float value = " ^ value_name
   ^ "(row, col, input, weight, scale, residual, params);\n"
   ^ "    square_sum += value * value;\n"
@@ -674,7 +687,7 @@ let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast =
   ^ "    inverse = rsqrt(total / float(params.n) + params.epsilon);\n"
   ^ "  }\n"
   ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  for (uint col = thread; col < params.n; col += 256) {\n"
+  ^ "  for (uint col = thread_index; col < params.n; col += 256) {\n"
   ^ "    const float value = " ^ value_name
   ^ "(row, col, input, weight, scale, residual, params);\n"
   ^ "    output[row * params.n + col] = half(value * inverse * float(norm_weight[col]));\n"
@@ -686,6 +699,77 @@ let q8_linear_add_norm_source =
   ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f16"
       ~value_type:"half" ~weight_cast:"half"
   ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f32"
+      ~value_type:"float" ~weight_cast:"float"
+
+let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const half* norm_weight [[buffer(1)]],\n"
+  ^ "    device const char* weight [[buffer(2)]],\n"
+  ^ "    device const half* scale [[buffer(3)]],\n"
+  ^ "    device uint* token_ids [[buffer(4)]],\n"
+  ^ "    constant Q8LmHeadParams& params [[buffer(5)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint row [[threadgroup_position_in_grid]]) {\n"
+  ^ "  if (row >= params.m) return;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint inner = tid; inner < params.k; inner += 256)\n"
+  ^ "    square_sum += float(input[row * params.k + inner]) *\n"
+  ^ "        float(input[row * params.k + inner]);\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  threadgroup float inverse;\n"
+  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint group = 0; group < 8; ++group) total += partial_sums[group];\n"
+  ^ "    inverse = rsqrt(total / float(params.k) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  threadgroup float best_values[256];\n"
+  ^ "  threadgroup uint best_indices[256];\n"
+  ^ "  float best_value = -3.402823466e+38f;\n"
+  ^ "  uint best_index = 0;\n"
+  ^ "  for (uint col = tid; col < params.n; col += 256) {\n"
+  ^ "    float accumulator = 0.0f;\n"
+  ^ "    for (uint inner = 0; inner < params.k; ++inner) {\n"
+  ^ "      float normalized = float(input[row * params.k + inner]) *\n"
+  ^ "          float(norm_weight[inner]) * inverse;\n"
+  ^ "      accumulator += normalized * float(" ^ weight_cast
+  ^ "(weight[col * params.k + inner])) * float(scale[col]);\n"
+  ^ "    }\n"
+  ^ "    if (accumulator > best_value ||\n"
+  ^ "        (accumulator == best_value && col < best_index)) {\n"
+  ^ "      best_value = accumulator;\n"
+  ^ "      best_index = col;\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  best_values[tid] = best_value;\n"
+  ^ "  best_indices[tid] = best_index;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint width = 128; width > 0; width >>= 1) {\n"
+  ^ "    if (tid < width) {\n"
+  ^ "      float candidate = best_values[tid + width];\n"
+  ^ "      uint candidate_index = best_indices[tid + width];\n"
+  ^ "      if (candidate > best_values[tid] ||\n"
+  ^ "          (candidate == best_values[tid] && candidate_index < best_indices[tid])) {\n"
+  ^ "        best_values[tid] = candidate;\n"
+  ^ "        best_indices[tid] = candidate_index;\n"
+  ^ "      }\n"
+  ^ "    }\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  }\n"
+  ^ "  if (tid == 0) token_ids[row] = best_indices[0];\n"
+  ^ "}\n"
+
+let q8_lm_head_argmax_source =
+  "\nstruct Q8LmHeadParams { uint m; uint n; uint k; float epsilon; };\n\n"
+  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_f16"
+      ~value_type:"half" ~weight_cast:"half"
+  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_f32"
       ~value_type:"float" ~weight_cast:"float"
 
 let q8_source =
@@ -1024,6 +1108,7 @@ let q8_parameterized_source =
 let q8_source = q8_source ^ "\n" ^ q8_dual_linear_source ^ "\n"
   ^ q8_qkv_linear_source ^ "\n"
   ^ q8_linear_add_norm_source ^ "\n"
+  ^ q8_lm_head_argmax_source ^ "\n"
   ^ q8_parameterized_source
 
 let q8_parameterized_entries =
@@ -1193,6 +1278,16 @@ let q8_linear_add_norm_entries =
       ~name:"llmopt_q8_linear_add_norm_f32"
       ~operation:Kernel_abi.Operation.Q8_linear_add
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16 ]
+
+let q8_lm_head_argmax_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_lm_head_argmax_f16"
+      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_lm_head_argmax_f32"
+      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32 ]
 
 let cache_source =
   {|
@@ -2842,6 +2937,13 @@ let has_q8_linear_add_norm graph =
          | Ir.Op.Q8_linear_add_norm _ -> true
          | _ -> false)
 
+let has_q8_lm_head_argmax graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_lm_head_argmax _ -> true
+         | _ -> false)
+
 let has_q8_dual_linear graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -2860,6 +2962,7 @@ let has_q8 graph =
   has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
   || has_q8_linear_mul_add graph || has_q8_linear_add_norm graph
   || has_q8_dual_linear graph || has_q8_qkv_linear graph
+  || has_q8_lm_head_argmax graph
 
 let q8_entries graph =
   q8_all_entries
@@ -2881,6 +2984,10 @@ let q8_entries graph =
   in
   if has_q8_linear_add_norm graph then
     entries @ q8_linear_add_norm_entries
+  else entries
+  |> fun entries ->
+  if has_q8_lm_head_argmax graph then
+    entries @ q8_lm_head_argmax_entries
   else entries
 
 let has_f16_linear graph =

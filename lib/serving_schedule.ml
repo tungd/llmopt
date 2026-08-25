@@ -84,6 +84,23 @@ let scalar_matches_dtype scalar dtype =
       (Ir.Dtype.Float32 | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16) ) -> true
   | _ -> false
 
+let q8_matrix_matches ~rows ~columns ~dtype value =
+  Tensor_shape.dimensions (Ir.Value.logical_shape value) = [ rows; columns ]
+  && Ir.Value.dtype value = dtype
+
+let q8_vector_matches ~length ~dtype value =
+  Tensor_shape.dimensions (Ir.Value.logical_shape value) = [ length ]
+  && Ir.Value.dtype value = dtype
+
+let q8_activation_dtype = function
+  | Ir.Dtype.Float16 | Ir.Dtype.Float32 -> true
+  | _ -> false
+
+let fresh_outputs seen_values outputs =
+  let ids = List.map value_id outputs in
+  List.length ids = List.length (List.sort_uniq Int.compare ids)
+  && List.for_all (fun id -> not (Int_set.mem id seen_values)) ids
+
 let validate_command seen_values command =
   let input_ids = List.map value_id command.Command.inputs in
   match List.find_opt (fun id -> not (Int_set.mem id seen_values)) input_ids with
@@ -130,9 +147,146 @@ let validate_command seen_values command =
             else Error "schedule copy tensor metadata is inconsistent"
         | Ir.Op.Copy _, _, _ ->
             Error "schedule copy must have source/destination dependencies and no result"
+        | ( Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; extra_outputs },
+            inputs,
+            Some output ) ->
+            let metadata_matches =
+              match inputs, bias with
+              | [ input; weight1; scale1; weight2; scale2 ], false ->
+                  q8_activation_dtype (Ir.Value.dtype input)
+                  && q8_matrix_matches ~rows:n1 ~columns:k ~dtype:Ir.Dtype.Int8
+                    weight1
+                  && q8_vector_matches ~length:n1 ~dtype:Ir.Dtype.Float16 scale1
+                  && q8_matrix_matches ~rows:n2 ~columns:k ~dtype:Ir.Dtype.Int8
+                       weight2
+                  && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 scale2
+                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+                  && q8_matrix_matches ~rows:m ~columns:n1
+                       ~dtype:(Ir.Value.dtype input) output
+              | [ input; weight1; scale1; bias1; weight2; scale2; bias2 ], true ->
+                  q8_activation_dtype (Ir.Value.dtype input)
+                  && q8_matrix_matches ~rows:n1 ~columns:k ~dtype:Ir.Dtype.Int8
+                    weight1
+                  && q8_vector_matches ~length:n1 ~dtype:Ir.Dtype.Float16 scale1
+                  && q8_vector_matches ~length:n1 ~dtype:Ir.Dtype.Float16 bias1
+                  && q8_matrix_matches ~rows:n2 ~columns:k ~dtype:Ir.Dtype.Int8
+                       weight2
+                  && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 scale2
+                  && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 bias2
+                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+                  && q8_matrix_matches ~rows:m ~columns:n1
+                       ~dtype:(Ir.Value.dtype input) output
+              | _ -> false
+            in
+            let secondary_matches =
+              match extra_outputs with
+              | [ output2 ] ->
+                  q8_matrix_matches ~rows:m ~columns:n2
+                    ~dtype:(Ir.Value.dtype output) output2
+              | _ -> false
+            in
+            if metadata_matches && secondary_matches
+               && fresh_outputs seen_values (output :: extra_outputs)
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d dual-linear metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Q8_qkv_linear
+              { m; n_q; n_kv; k; bias; extra_outputs },
+            inputs,
+            Some output ) ->
+            let metadata_matches =
+              match inputs, bias with
+              | [ input; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v ],
+                false ->
+                  q8_activation_dtype (Ir.Value.dtype input)
+                  && q8_matrix_matches ~rows:n_q ~columns:k ~dtype:Ir.Dtype.Int8
+                    weight_q
+                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 scale_q
+                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
+                       weight_k
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_k
+                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
+                       weight_v
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
+                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+                  && q8_matrix_matches ~rows:m ~columns:n_q
+                       ~dtype:(Ir.Value.dtype input) output
+              | ( [ input; weight_q; scale_q; bias_q; weight_k; scale_k; bias_k;
+                    weight_v; scale_v; bias_v ],
+                  true ) ->
+                  q8_activation_dtype (Ir.Value.dtype input)
+                  && q8_matrix_matches ~rows:n_q ~columns:k ~dtype:Ir.Dtype.Int8
+                    weight_q
+                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 scale_q
+                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 bias_q
+                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
+                       weight_k
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_k
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 bias_k
+                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
+                       weight_v
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 bias_v
+                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+                  && q8_matrix_matches ~rows:m ~columns:n_q
+                       ~dtype:(Ir.Value.dtype input) output
+              | _ -> false
+            in
+            let secondary_matches =
+              match extra_outputs with
+              | [ key_output; value_output ] ->
+                  q8_matrix_matches ~rows:m ~columns:n_kv
+                    ~dtype:(Ir.Value.dtype output) key_output
+                  && q8_matrix_matches ~rows:m ~columns:n_kv
+                       ~dtype:(Ir.Value.dtype output) value_output
+              | _ -> false
+            in
+            if metadata_matches && secondary_matches
+               && fresh_outputs seen_values (output :: extra_outputs)
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d QKV metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon },
+            [ input; norm_weight; weight; scale ],
+            Some output ) ->
+            let dimensions value = Tensor_shape.dimensions (Ir.Value.logical_shape value) in
+            if
+              Float.is_finite epsilon && epsilon > 0.0
+              && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+              && dimensions norm_weight = [ k ]
+              && dimensions weight = [ n; k ]
+              && dimensions scale = [ n ]
+              && dimensions output = [ m ]
+              && (Ir.Value.dtype input = Ir.Dtype.Float16
+                  || Ir.Value.dtype input = Ir.Dtype.Float32)
+              && Ir.Value.dtype norm_weight = Ir.Dtype.Float16
+              && Ir.Value.dtype weight = Ir.Dtype.Int8
+              && Ir.Value.dtype scale = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Int32
+              && fresh_outputs seen_values [ output ]
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d LM-head argmax metadata is inconsistent"
+                   command.Command.node_id)
         | _, _, Some output when Int_set.mem (value_id output) seen_values ->
             Error
               (Printf.sprintf "schedule redefines value %d" (value_id output))
+        | op, _, Some _
+          when List.find_opt
+                 (fun value -> Int_set.mem (value_id value) seen_values)
+                 (Ir.Op.additional_outputs op)
+               |> Option.is_some ->
+            Error
+              (Printf.sprintf "schedule node %d redefines a secondary output"
+                 command.Command.node_id)
         | ( Ir.Op.Primitive
               (Ir.Primitive.Movement (Ir.Movement.Index index)),
             [ input ],
@@ -589,6 +743,23 @@ let q8_selection_for_command device command =
         | Error _ -> Kernel_cost_model.Gemm_16x16x64
       in
       Some (command.Command.node_id, selection)
+  | Ir.Op.Q8_dual_linear { m; n1; n2; k; _ } ->
+      let selection =
+        match Kernel_cost_model.select_optimal_tile ~m ~n:(n1 + n2) ~k ~device with
+        | Ok selection -> selection
+        | Error _ -> Kernel_cost_model.Gemm_16x16x64
+      in
+      Some (command.Command.node_id, selection)
+  | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; _ } ->
+      let selection =
+        match
+          Kernel_cost_model.select_optimal_tile ~m
+            ~n:(n_q + (2 * n_kv)) ~k ~device
+        with
+        | Ok selection -> selection
+        | Error _ -> Kernel_cost_model.Gemm_16x16x64
+      in
+      Some (command.Command.node_id, selection)
   | _ -> None
 
 let create ?(device = Kernel_cost_model.Device.default) commands =
@@ -606,9 +777,11 @@ let create ?(device = Kernel_cost_model.Device.default) commands =
         else
           let* () = validate_command seen_values command in
           let seen_values =
-            match command.Command.output with
-            | None -> seen_values
-            | Some output -> Int_set.add (value_id output) seen_values
+            List.fold_left
+              (fun seen value -> Int_set.add (value_id value) seen)
+              seen_values
+              (Option.to_list command.Command.output
+              @ Ir.Op.additional_outputs command.Command.op)
           in
           loop (Int_set.add command.Command.node_id seen_nodes) seen_values
             command.Command.node_id
@@ -822,7 +995,27 @@ module Lfm25 = struct
                k = substitute substitutions k;
                epsilon;
              })
-    | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias } ->
+    | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon } ->
+        Ok
+          (Ir.Op.Q8_lm_head_argmax
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               epsilon;
+             })
+    | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; extra_outputs } ->
+        Ok
+          (Ir.Op.Q8_dual_linear
+             {
+               m = substitute substitutions m;
+               n1 = substitute substitutions n1;
+               n2 = substitute substitutions n2;
+               k = substitute substitutions k;
+               bias;
+               extra_outputs;
+             })
+    | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias; extra_outputs } ->
         Ok
           (Ir.Op.Q8_qkv_linear
              {
@@ -831,6 +1024,7 @@ module Lfm25 = struct
                n_kv = substitute substitutions n_kv;
                k = substitute substitutions k;
                bias;
+               extra_outputs;
              })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
@@ -951,6 +1145,9 @@ module Lfm25 = struct
       | Ir.Op.Q8_qkv_linear _ ),
       _ ->
         map_shape substitutions original
+    | Ir.Op.Q8_lm_head_argmax { m; _ }, _ ->
+        Tensor_shape.create [ substitute substitutions m ]
+        |> shape_error
     | _ -> map_shape substitutions original
 
   let output_value substitutions operation inputs original =
@@ -964,6 +1161,46 @@ module Lfm25 = struct
            ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
            ~shape ~dtype:(Ir.Value.dtype original))
     with Invalid_argument message -> Error message
+
+  let specialized_matrix_value substitutions ~rows ~columns original =
+    let* shape =
+      Tensor_shape.create
+        [ substitute substitutions rows; substitute substitutions columns ]
+      |> shape_error
+    in
+    try
+      Ok
+        (Ir.Value.make_tensor
+           ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
+           ~shape ~dtype:(Ir.Value.dtype original))
+    with Invalid_argument message -> Error message
+
+  let specialized_additional_outputs substitutions operation originals =
+    match operation, originals with
+    | Ir.Op.Q8_dual_linear { m; n2; _ }, [ output ] ->
+        specialized_matrix_value substitutions ~rows:m ~columns:n2 output
+        |> Result.map (fun output -> [ output ])
+    | Ir.Op.Q8_qkv_linear { m; n_kv; _ }, [ key_output; value_output ] ->
+        let* key_output =
+          specialized_matrix_value substitutions ~rows:m ~columns:n_kv key_output
+        in
+        let* value_output =
+          specialized_matrix_value substitutions ~rows:m ~columns:n_kv
+            value_output
+        in
+        Ok [ key_output; value_output ]
+    | (Ir.Op.Q8_dual_linear _ | Ir.Op.Q8_qkv_linear _), _ ->
+        Error "multi-output Q8 operation has an inconsistent secondary-output table"
+    | _, [] -> Ok []
+    | _, _ -> Error "unexpected secondary outputs in specialized schedule"
+
+  let replace_additional_outputs operation outputs =
+    match operation with
+    | Ir.Op.Q8_dual_linear config ->
+        Ir.Op.Q8_dual_linear { config with extra_outputs = outputs }
+    | Ir.Op.Q8_qkv_linear config ->
+        Ir.Op.Q8_qkv_linear { config with extra_outputs = outputs }
+    | _ -> operation
 
   type last_token_projection = {
     index_node : int;
@@ -1120,6 +1357,9 @@ module Lfm25 = struct
     let rec map_commands values output = function
       | [] -> create (List.rev output)
       | command :: rest ->
+          let original_additional_outputs =
+            Ir.Op.additional_outputs command.Command.op
+          in
           let* inputs =
             let rec map output = function
               | [] -> Ok (List.rev output)
@@ -1147,6 +1387,11 @@ module Lfm25 = struct
             | Some _ | None ->
                 map_operation substitutions values command.Command.op
           in
+          let* additional_outputs =
+            specialized_additional_outputs substitutions command.Command.op
+              original_additional_outputs
+          in
+          let op = replace_additional_outputs op additional_outputs in
           let* result, values =
             match command.Command.output with
             | None -> Ok (None, values)
@@ -1159,9 +1404,20 @@ module Lfm25 = struct
                   | Some _ | None ->
                       output_value substitutions op inputs original
                 in
-                Ok
-                  ( Some value,
-                    Value_map.add (Ir.Value.id original) value values )
+                let values = Value_map.add (Ir.Value.id original) value values in
+                if
+                  List.length original_additional_outputs
+                  <> List.length additional_outputs
+                then
+                  Error "specialized schedule changed secondary-output arity"
+                else
+                  let values =
+                    List.fold_left2
+                      (fun values original specialized ->
+                        Value_map.add (Ir.Value.id original) specialized values)
+                      values original_additional_outputs additional_outputs
+                  in
+                  Ok (Some value, values)
           in
           map_commands
             values
@@ -2015,6 +2271,10 @@ let write_op writer = function
       Binary.Writer.u8 writer 26;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.float64 writer epsilon
+  | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon } ->
+      Binary.Writer.u8 writer 29;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
+      Binary.Writer.float64 writer epsilon
   | Ir.Op.Rms_rope config ->
       Binary.Writer.u8 writer 20;
       Binary.Writer.float64 writer (Ir.Rms_rope.epsilon config);
@@ -2031,20 +2291,28 @@ let write_op writer = function
       Binary.Writer.u8 writer 22;
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.channels config);
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.window config)
-  | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias } ->
-      Binary.Writer.u8 writer 23;
+  | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; extra_outputs } ->
+      Binary.Writer.u8 writer (if extra_outputs = [] then 23 else 27);
       Binary.Writer.u64 writer m;
       Binary.Writer.u64 writer n1;
       Binary.Writer.u64 writer n2;
       Binary.Writer.u64 writer k;
-      Binary.Writer.bool writer bias
-  | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias } ->
-      Binary.Writer.u8 writer 24;
+      Binary.Writer.bool writer bias;
+      if extra_outputs <> [] then begin
+        Binary.Writer.u8 writer (List.length extra_outputs);
+        List.iter (write_value writer) extra_outputs
+      end
+  | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias; extra_outputs } ->
+      Binary.Writer.u8 writer (if extra_outputs = [] then 24 else 28);
       Binary.Writer.u64 writer m;
       Binary.Writer.u64 writer n_q;
       Binary.Writer.u64 writer n_kv;
       Binary.Writer.u64 writer k;
-      Binary.Writer.bool writer bias
+      Binary.Writer.bool writer bias;
+      if extra_outputs <> [] then begin
+        Binary.Writer.u8 writer (List.length extra_outputs);
+        List.iter (write_value writer) extra_outputs
+      end
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -2137,6 +2405,12 @@ let read_op values reader =
       if Float.is_finite epsilon && epsilon > 0.0 then
         Ok (Ir.Op.Q8_linear_add_norm { m; n; k; epsilon })
       else Error "schedule contains a non-finite linear-add-norm epsilon"
+  | 29 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon && epsilon > 0.0 then
+        Ok (Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon })
+      else Error "schedule contains a non-finite LM-head argmax epsilon"
   | 20 ->
       let* epsilon = Binary.Reader.float64 reader in
       let* half_dimension = Binary.Reader.u64 reader in
@@ -2158,19 +2432,57 @@ let read_op values reader =
       let* n2 = Binary.Reader.u64 reader in
       let* k = Binary.Reader.u64 reader in
       let* bias = Binary.Reader.bool reader in
-      Ok (Ir.Op.Q8_dual_linear { m; n1; n2; k; bias })
+      Ok
+        (Ir.Op.Q8_dual_linear
+           { m; n1; n2; k; bias; extra_outputs = [] })
   | 24 ->
       let* m = Binary.Reader.u64 reader in
       let* n_q = Binary.Reader.u64 reader in
       let* n_kv = Binary.Reader.u64 reader in
       let* k = Binary.Reader.u64 reader in
       let* bias = Binary.Reader.bool reader in
-      Ok (Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias })
+      Ok
+        (Ir.Op.Q8_qkv_linear
+           { m; n_q; n_kv; k; bias; extra_outputs = [] })
   | 25 ->
       let* channels = Binary.Reader.u64 reader in
       let* window = Binary.Reader.u64 reader in
       Ir.Short_conv_step.create ~channels ~window
       |> Result.map (fun config -> Ir.Op.Short_conv_step_fused config)
+  | 27 ->
+      let* m = Binary.Reader.u64 reader in
+      let* n1 = Binary.Reader.u64 reader in
+      let* n2 = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* bias = Binary.Reader.bool reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      Ok
+        (Ir.Op.Q8_dual_linear
+           { m; n1; n2; k; bias; extra_outputs })
+  | 28 ->
+      let* m = Binary.Reader.u64 reader in
+      let* n_q = Binary.Reader.u64 reader in
+      let* n_kv = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* bias = Binary.Reader.bool reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      Ok
+        (Ir.Op.Q8_qkv_linear
+           { m; n_q; n_kv; k; bias; extra_outputs })
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"
@@ -2178,7 +2490,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 13;
+  Binary.Writer.u16 writer 14;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2202,7 +2514,7 @@ let of_bytes ?device bytes =
       version <> 1 && version <> 2 && version <> 3 && version <> 4
       && version <> 5 && version <> 6 && version <> 7 && version <> 8
       && version <> 9 && version <> 10 && version <> 11 && version <> 12
-      && version <> 13
+      && version <> 13 && version <> 14
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else
@@ -2227,12 +2539,12 @@ let of_bytes ?device bytes =
           let command = { Command.node_id; op; inputs; output } in
           let* () = validate_command !seen_values command
           in
-          Option.iter
+          List.iter
             (fun value ->
               let id = value_id value in
               Hashtbl.add values id value;
               seen_values := Int_set.add id !seen_values)
-            output;
+            (Option.to_list output @ Ir.Op.additional_outputs op);
           read_values (command :: acc) (remaining - 1)
       in
       let* commands = read_values [] count in

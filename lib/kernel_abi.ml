@@ -7,6 +7,7 @@ module Operation = struct
     | Q8_linear_silu
     | Q8_linear_add
     | Q8_linear_mul_add
+    | Q8_lm_head_argmax
     | Q8_dequantize
     | Rms_norm
     | Rms_rope
@@ -35,6 +36,7 @@ module Operation = struct
     | Q8_linear_silu -> "q8-linear-silu"
     | Q8_linear_add -> "q8-linear-add"
     | Q8_linear_mul_add -> "q8-linear-mul-add"
+    | Q8_lm_head_argmax -> "q8-lm-head-argmax"
     | Q8_dequantize -> "q8-dequantize"
     | Rms_norm -> "rms-norm"
     | Rms_rope -> "rms-rope"
@@ -63,6 +65,7 @@ module Operation = struct
     | "q8-linear-silu" -> Ok Q8_linear_silu
     | "q8-linear-add" -> Ok Q8_linear_add
     | "q8-linear-mul-add" -> Ok Q8_linear_mul_add
+    | "q8-lm-head-argmax" -> Ok Q8_lm_head_argmax
     | "q8-dequantize" -> Ok Q8_dequantize
     | "rms-norm" -> Ok Rms_norm
     | "rms-rope" -> Ok Rms_rope

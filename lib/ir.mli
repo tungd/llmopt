@@ -250,14 +250,25 @@ module Op : sig
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_add_norm of { m : int; n : int; k : int; epsilon : float }
-    | Q8_dual_linear of { m : int; n1 : int; n2 : int; k : int; bias : bool }
+    | Q8_lm_head_argmax of { m : int; n : int; k : int; epsilon : float }
+    | Q8_dual_linear of {
+        m : int;
+        n1 : int;
+        n2 : int;
+        k : int;
+        bias : bool;
+        extra_outputs : Value.t list;
+      }
     | Q8_qkv_linear of {
         m : int;
         n_q : int;
         n_kv : int;
         k : int;
         bias : bool;
+        extra_outputs : Value.t list;
       }
+
+  val additional_outputs : t -> Value.t list
 
   val to_string : t -> string
 end
@@ -298,5 +309,6 @@ module Graph : sig
   val nodes : t -> node list
   val outputs : t -> (string * Value.t) list
   val with_nodes : t -> node list -> t
+  val with_nodes_and_outputs : t -> node list -> (string * Value.t) list -> t
   val pp : Format.formatter -> t -> unit
 end

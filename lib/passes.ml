@@ -7,6 +7,7 @@ module Dual_linear_swiglu = Pass_fuse_dual_linear_swiglu
 module Qkv_linear = Pass_fuse_qkv_linear
 module Short_conv_step_fused = Pass_fuse_short_conv_step
 module Linear_residual_norm = Pass_fuse_linear_residual_norm
+module Lm_head_argmax = Pass_fuse_lm_head_argmax
 module Co_schedule = Pass_co_schedule
 
 let fuse_linear_bias = Pass_fuse_linear_bias.run
@@ -20,6 +21,7 @@ let fuse_dual_linear_swiglu = Pass_fuse_dual_linear_swiglu.run
 let fuse_qkv_linear = Pass_fuse_qkv_linear.run
 let fuse_short_conv_step = Pass_fuse_short_conv_step.run
 let fuse_linear_residual_norm = Pass_fuse_linear_residual_norm.run
+let fuse_lm_head_argmax = Pass_fuse_lm_head_argmax.run
 let co_schedule = Pass_co_schedule.run
 
 let all_passes =
@@ -31,6 +33,11 @@ let all_passes =
     Pass_fuse_q8_epilogues.pass_silu;
     Pass_fuse_q8_epilogues.pass_add;
     Pass_fuse_q8_epilogues.pass_mul_add;
+    Pass_fuse_dual_linear_swiglu.pass;
+    Pass_fuse_qkv_linear.pass;
+    Pass_fuse_short_conv_step.pass;
+    Pass_fuse_linear_residual_norm.pass;
+    Pass_fuse_lm_head_argmax.pass;
     Pass_co_schedule.pass;
   ]
 

@@ -7,6 +7,7 @@ module Operation : sig
     | Q8_linear_silu
     | Q8_linear_add
     | Q8_linear_mul_add
+    | Q8_lm_head_argmax
     | Q8_dequantize
     | Rms_norm
     | Rms_rope

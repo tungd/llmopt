@@ -2709,8 +2709,8 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 13)
-    "serving package uses binary ABI version 13";
+    (Bytes.get_uint16_le serving_bytes 8 = 14)
+    "serving package uses binary ABI version 14";
   let package_v12 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v12 8 12;
   ignore (Serving_package.of_bytes package_v12 |> expect_ok);
@@ -4514,25 +4514,52 @@ let () =
       ~shape:(Shape.of_ints_exn ~rows:1 ~cols:64) ~dtype:Ir.Dtype.Float16
   in
   let ffn_w1 =
-    Ir.Graph.fresh_value ffn_g
-      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+    Ir.Graph.tensor_input ffn_g ~name:"ffn_w1"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 128; 64 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let ffn_scale1 =
+    Ir.Graph.tensor_input ffn_g ~name:"ffn_scale1"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 128 ]) ~dtype:Ir.Dtype.Float16
   in
   let ffn_w3 =
-    Ir.Graph.fresh_value ffn_g
-      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+    Ir.Graph.tensor_input ffn_g ~name:"ffn_w3"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 128; 64 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let ffn_scale3 =
+    Ir.Graph.tensor_input ffn_g ~name:"ffn_scale3"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 128 ]) ~dtype:Ir.Dtype.Float16
   in
   Ir.Graph.append ffn_g
     ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
-    ~inputs:[ ffn_in ] ~output:(Some ffn_w1);
+    ~inputs:[ ffn_in; ffn_w1; ffn_scale1 ] ~output:(Some (Ir.Graph.fresh_tensor_value ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16));
   Ir.Graph.append ffn_g
     ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
-    ~inputs:[ ffn_in ] ~output:(Some ffn_w3);
+    ~inputs:[ ffn_in; ffn_w3; ffn_scale3 ] ~output:(Some (Ir.Graph.fresh_tensor_value ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16));
   let fused_ffn_g = Passes.fuse_dual_linear_swiglu ffn_g in
   let fused_nodes = Ir.Graph.nodes fused_ffn_g in
-  expect (List.length fused_nodes = 2) "input + 1 fused dual linear node";
-  expect (match Ir.node_op (List.nth fused_nodes 1) with
-    | Ir.Op.Q8_dual_linear { m = 1; n1 = 128; n2 = 128; k = 64; bias = false } -> true
-    | _ -> false)
+  expect
+    (List.exists
+       (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_dual_linear _ -> true
+         | _ -> false)
+       fused_nodes)
+    "parallel FFN branches produce one fused dual linear node";
+  expect
+    (List.exists
+       (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_dual_linear
+             { m = 1; n1 = 128; n2 = 128; k = 64; bias = false } ->
+             true
+         | _ -> false)
+       fused_nodes)
     "parallel FFN branches fuse into Q8_dual_linear";
   let dual_kernel_source =
     Metal.q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16"
@@ -4561,7 +4588,7 @@ let () =
   let qkv_g = Ir.Graph.create () in
   let qkv_in =
     Ir.Graph.tensor_input qkv_g ~name:"qkv_in" ~source:Ir.Input_source.Runtime
-      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+      ~shape:(Tensor_shape.of_ints_exn [ 4; 64 ]) ~dtype:Ir.Dtype.Float16
   in
   let qkv_weight name width =
     Ir.Graph.tensor_input qkv_g ~name ~source:Ir.Input_source.Runtime
@@ -4579,18 +4606,18 @@ let () =
   let v_scale = qkv_scale "v_scale" 64 in
   let qkv_output width =
     Ir.Graph.fresh_tensor_value qkv_g
-      ~shape:(Tensor_shape.of_ints_exn [ 1; width ]) ~dtype:Ir.Dtype.Float16
+      ~shape:(Tensor_shape.of_ints_exn [ 4; width ]) ~dtype:Ir.Dtype.Float16
   in
   Ir.Graph.append qkv_g
-    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~op:(Ir.Op.Q8_linear { m = 4; n = 128; k = 64; bias = false })
     ~inputs:[ qkv_in; q_weight; q_scale ]
     ~output:(Some (qkv_output 128));
   Ir.Graph.append qkv_g
-    ~op:(Ir.Op.Q8_linear { m = 1; n = 64; k = 64; bias = false })
+    ~op:(Ir.Op.Q8_linear { m = 4; n = 64; k = 64; bias = false })
     ~inputs:[ qkv_in; k_weight; k_scale ]
     ~output:(Some (qkv_output 64));
   Ir.Graph.append qkv_g
-    ~op:(Ir.Op.Q8_linear { m = 1; n = 64; k = 64; bias = false })
+    ~op:(Ir.Op.Q8_linear { m = 4; n = 64; k = 64; bias = false })
     ~inputs:[ qkv_in; v_weight; v_scale ]
     ~output:(Some (qkv_output 64));
   let fused_qkv_g = Passes.fuse_qkv_linear qkv_g in
@@ -4598,7 +4625,7 @@ let () =
     (List.exists
        (fun node ->
          match Ir.node_op node with
-         | Ir.Op.Q8_qkv_linear { m = 1; n_q = 128; n_kv = 64; k = 64; bias = false } -> true
+         | Ir.Op.Q8_qkv_linear { m = 4; n_q = 128; n_kv = 64; k = 64; bias = false } -> true
          | _ -> false)
        (Ir.Graph.nodes fused_qkv_g))
     "three parallel projections fuse into Q8_qkv_linear";
@@ -4624,6 +4651,107 @@ let () =
            | Ir.Op.Q8_qkv_linear _ -> true
            | _ -> false))
     "QKV IR survives the serving schedule round-trip";
+  let qkv_specialized =
+    Serving_schedule.Lfm25.specialize_decode ~captured_past:4 ~past_tokens:5
+      qkv_schedule
+    |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands qkv_specialized
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_qkv_linear { m = 5; extra_outputs; _ } ->
+               (match extra_outputs with
+               | [ key_output; value_output ] ->
+                   Tensor_shape.dimensions
+                     (Ir.Value.logical_shape key_output)
+                   = [ 5; 64 ]
+                   && Tensor_shape.dimensions
+                        (Ir.Value.logical_shape value_output)
+                      = [ 5; 64 ]
+               | _ -> false)
+           | _ -> false))
+    "QKV secondary outputs survive LFM schedule specialization";
+
+  (* Opt-in greedy LM-head argmax fusion test *)
+  let lm_graph = Ir.Graph.create () in
+  let lm_hidden =
+    Ir.Graph.tensor_input lm_graph ~name:"lm_hidden"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let lm_norm_weight =
+    Ir.Graph.tensor_input lm_graph ~name:"lm_norm_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "lm_norm_weight" })
+      ~shape:(Tensor_shape.of_ints_exn [ 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let lm_weight =
+    Ir.Graph.tensor_input lm_graph ~name:"lm_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "lm_weight" })
+      ~shape:(Tensor_shape.of_ints_exn [ 6; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let lm_scale =
+    Ir.Graph.tensor_input lm_graph ~name:"lm_scale"
+      ~source:(Ir.Input_source.Tensor_store { key = "lm_scale" })
+      ~shape:(Tensor_shape.of_ints_exn [ 6 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let lm_normalized =
+    Ir.Graph.fresh_tensor_value lm_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append lm_graph ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
+    ~inputs:[ lm_hidden; lm_norm_weight ] ~output:(Some lm_normalized);
+  let lm_logits =
+    Ir.Graph.fresh_tensor_value lm_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 6 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append lm_graph
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 6; k = 4; bias = false })
+    ~inputs:[ lm_normalized; lm_weight; lm_scale ] ~output:(Some lm_logits);
+  Ir.Graph.add_output lm_graph ~name:"token_id" lm_logits;
+  let lm_fused = Passes.fuse_lm_head_argmax lm_graph in
+  expect
+    (Ir.Graph.nodes lm_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_output node with
+           | Ir.Op.Q8_lm_head_argmax { m = 1; n = 6; k = 4; epsilon },
+             Some output ->
+               Float.abs (epsilon -. 1e-5) < 1e-12
+               && Ir.Value.dtype output = Ir.Dtype.Int32
+               && Tensor_shape.dimensions (Ir.Value.logical_shape output) = [ 1 ]
+           | _ -> false))
+    "LM-head fusion emits an Int32 token-id result";
+  expect
+    (match Ir.Graph.outputs lm_fused with
+    | [ ("token_id", output) ] ->
+        Ir.Value.dtype output = Ir.Dtype.Int32
+        && Tensor_shape.dimensions (Ir.Value.logical_shape output) = [ 1 ]
+    | _ -> false)
+    "LM-head fusion rewrites the graph token-id output";
+  let lm_schedule =
+    lm_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands lm_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_lm_head_argmax { m = 1; n = 6; k = 4; _ } -> true
+           | _ -> false))
+    "LM-head argmax opcode survives the serving schedule round-trip";
+  let lm_program = Metal.lower lm_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source lm_program)
+       "kernel void llmopt_q8_lm_head_argmax_f16")
+    "Metal lowering emits the LM-head argmax kernel";
+  expect
+    (Metal.Program.kernels lm_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q8_lm_head_argmax_f16"
+           && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_lm_head_argmax
+           && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Int32))
+    "LM-head argmax registers a uint32 token-id ABI";
+  let _ = expect_ok (Serving_memory_plan.create lm_schedule) in
 
   (* Serving_memory_plan concurrent disjoint tests *)
   let sched = expect_ok (Serving_schedule.of_graph diamond_g) in

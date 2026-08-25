@@ -426,14 +426,28 @@ module Op = struct
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_add_norm of { m : int; n : int; k : int; epsilon : float }
-    | Q8_dual_linear of { m : int; n1 : int; n2 : int; k : int; bias : bool }
+    | Q8_lm_head_argmax of { m : int; n : int; k : int; epsilon : float }
+    | Q8_dual_linear of {
+        m : int;
+        n1 : int;
+        n2 : int;
+        k : int;
+        bias : bool;
+        extra_outputs : Value.t list;
+      }
     | Q8_qkv_linear of {
         m : int;
         n_q : int;
         n_kv : int;
         k : int;
         bias : bool;
+        extra_outputs : Value.t list;
       }
+
+  let additional_outputs = function
+    | Q8_dual_linear { extra_outputs; _ }
+    | Q8_qkv_linear { extra_outputs; _ } -> extra_outputs
+    | _ -> []
 
   let to_string = function
     | Input { name; source } ->
@@ -489,13 +503,15 @@ module Op = struct
     | Q8_linear_add_norm { m; n; k; epsilon } ->
         Printf.sprintf "q8-linear+add+rms-norm[%dx%dx%d,eps=%.9g]" m n k
           epsilon
-    | Q8_dual_linear { m; n1; n2; k; bias = false } ->
+    | Q8_lm_head_argmax { m; n; k; epsilon } ->
+        Printf.sprintf "q8-lm-head-argmax[%dx%dx%d,eps=%.9g]" m n k epsilon
+    | Q8_dual_linear { m; n1; n2; k; bias = false; _ } ->
         Printf.sprintf "q8-dual-linear[%dx(%d+%d)x%d]" m n1 n2 k
-    | Q8_dual_linear { m; n1; n2; k; bias = true } ->
+    | Q8_dual_linear { m; n1; n2; k; bias = true; _ } ->
         Printf.sprintf "q8-dual-linear+bias[%dx(%d+%d)x%d]" m n1 n2 k
-    | Q8_qkv_linear { m; n_q; n_kv; k; bias = false } ->
+    | Q8_qkv_linear { m; n_q; n_kv; k; bias = false; _ } ->
         Printf.sprintf "q8-qkv-linear[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv k
-    | Q8_qkv_linear { m; n_q; n_kv; k; bias = true } ->
+    | Q8_qkv_linear { m; n_q; n_kv; k; bias = true; _ } ->
         Printf.sprintf "q8-qkv-linear+bias[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv
           k
 end
@@ -564,6 +580,9 @@ module Graph = struct
   let outputs graph = List.rev graph.outputs_rev
 
   let with_nodes graph nodes = { graph with nodes_rev = List.rev nodes }
+
+  let with_nodes_and_outputs graph nodes outputs =
+    { graph with nodes_rev = List.rev nodes; outputs_rev = List.rev outputs }
 
   let pp formatter graph =
     let pp_value formatter value =

@@ -144,6 +144,31 @@ let collect_intervals schedule =
         commands_rev;
       arr
   in
+  let allocate_workspace_output index storage_by_value intervals
+      bytes_without_reuse output =
+    let owner = Ir.Value.id output in
+    let* bytes = value_bytes output in
+    let* reserved = align bytes in
+    let* bytes_without_reuse =
+      checked_add bytes_without_reuse reserved
+        "workspace unreused byte count overflows"
+    in
+    let interval = { owner; first = index; last = index; bytes; reserved } in
+    Ok
+      ( Value_map.add owner (Storage.Workspace owner) storage_by_value,
+        Value_map.add owner interval intervals,
+        bytes_without_reuse )
+  in
+  let allocate_additional_outputs index op storage_by_value intervals
+      bytes_without_reuse =
+    List.fold_left
+      (fun result output ->
+        let* storage_by_value, intervals, bytes_without_reuse = result in
+        allocate_workspace_output index storage_by_value intervals
+          bytes_without_reuse output)
+      (Ok (storage_by_value, intervals, bytes_without_reuse))
+      (Ir.Op.additional_outputs op)
+  in
   let rec collect index storage_by_value
       (intervals : interval Value_map.t) bytes_without_reuse = function
     | [] -> Ok (storage_by_value, intervals, bytes_without_reuse)
@@ -164,8 +189,11 @@ let collect_intervals schedule =
             let storage_by_value =
               Value_map.add (Ir.Value.id output) Storage.External storage_by_value
             in
-            collect (index + 1) storage_by_value intervals bytes_without_reuse
-              rest
+            let* storage_by_value, intervals, bytes_without_reuse =
+              allocate_additional_outputs index op storage_by_value intervals
+                bytes_without_reuse
+            in
+            collect (index + 1) storage_by_value intervals bytes_without_reuse rest
         | _, Some output, Some (input, alias) ->
             let* input_bytes = value_bytes input in
             let* output_bytes = value_bytes alias in
@@ -180,26 +208,25 @@ let collect_intervals schedule =
               let storage_by_value =
                 Value_map.add (Ir.Value.id output) storage storage_by_value
               in
-              collect (index + 1) storage_by_value intervals bytes_without_reuse
-                rest
+              let* storage_by_value, intervals, bytes_without_reuse =
+                allocate_additional_outputs index op storage_by_value intervals
+                  bytes_without_reuse
+              in
+              collect (index + 1) storage_by_value intervals bytes_without_reuse rest
         | _, Some output, None ->
-            let owner = Ir.Value.id output in
-            let* bytes = value_bytes output in
-            let* reserved = align bytes in
-            let* bytes_without_reuse =
-              checked_add bytes_without_reuse reserved
-                "workspace unreused byte count overflows"
+            let* storage_by_value, intervals, bytes_without_reuse =
+              allocate_workspace_output index storage_by_value intervals
+                bytes_without_reuse output
             in
-            let interval =
-              { owner; first = index; last = index; bytes; reserved }
+            let* storage_by_value, intervals, bytes_without_reuse =
+              allocate_additional_outputs index op storage_by_value intervals
+                bytes_without_reuse
             in
-            collect (index + 1)
-              (Value_map.add owner (Storage.Workspace owner) storage_by_value)
-              (Value_map.add owner interval intervals)
-              bytes_without_reuse rest
+            collect (index + 1) storage_by_value intervals bytes_without_reuse rest
         | _, None, _ ->
-            collect (index + 1) storage_by_value intervals bytes_without_reuse
-              rest)
+            if Ir.Op.additional_outputs op = [] then
+              collect (index + 1) storage_by_value intervals bytes_without_reuse rest
+            else Error "multi-output schedule command has no primary output")
   in
   collect 0 Value_map.empty Value_map.empty 0 commands
 
@@ -332,4 +359,3 @@ let check_disjoint plan values =
       else check i (j + 1)
   in
   check 0 1
-
