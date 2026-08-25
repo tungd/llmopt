@@ -406,6 +406,19 @@ reports are not interleaved. Compiler evidence is in
 The model measurement is in
 [`bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
+The serving prefill specializer now selects the final hidden row before the
+FP16 LM head, producing `[1,1,65536]` instead of full-sequence logits. At
+4,096 tokens, that output allocation is 131,072 bytes instead of 536,870,912
+bytes and the complete planned workspace is 184,680,448 bytes. One bounded
+LFM2.5-350M run preserves 4/4 exact eager-Q8 scored sequences and 80/194 radix
+reuse while observing ERS `0.3588470515801844`, median TTFT
+`79.15747948572971 ms`, and median TPOT `8.299840342563886 ms`. Against the
+preceding native observation, those change by `+0.02110547841155419`,
+`-13.998041511513293 ms`, and `+0.3516600021005907 ms`; the two uncached
+first-turn TTFT samples change by `-28.875/-26.258 ms`, while cached second
+turns change by `+0.878/+2.180 ms`. See
+[`bench/results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt).
+
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval and all 12 eager-Q8 token IDs. Exact-only text
 is 0/6 because the pinned continuation decodes as `RAVEN-4271Lottery`. Median

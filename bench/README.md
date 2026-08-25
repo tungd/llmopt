@@ -258,6 +258,17 @@ in
 The measurement is in
 [`results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
+The next serving-only compiler pass selects the final hidden row before the
+FP16 vocabulary projection. The real package specializes to one logits row at
+13/128/4,096 tokens; at 4,096 tokens, the output allocation is 131,072 bytes
+and the complete workspace is 184,680,448 bytes. One bounded LFM2.5-350M run
+preserves 4/4 exact eager-Q8 scored token sequences and 80/194 reuse. It
+observes ERS `0.3588470515801844`, median TTFT `79.15747948572971 ms`, and
+median TPOT `8.299840342563886 ms`. Against the previous native report, the
+changes are `+0.02110547841155419`, `-13.998041511513293 ms`, and
+`+0.3516600021005907 ms`; this is a non-interleaved single observation. See
+[`results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt`](results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

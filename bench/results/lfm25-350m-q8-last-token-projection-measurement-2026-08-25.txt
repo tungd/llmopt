@@ -1,0 +1,85 @@
+LFM2.5-350M serving-only last-token projection measurement
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+Compiler commit: 7cea52184d175c295194e677edb0fcb8a1731f59
+
+Validated package
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25
+- model: LiquidAI/LFM2.5-350M
+- weights / KV: Q8 / Q8-group-64
+- captured package and Metal libraries: unchanged from the preceding vector-prefill measurement
+- changed runtime schedule boundary: select the final hidden row before the FP16 LM-head projection
+- specialized logits output: [1,1,65536] at prefill lengths 13/128/4096
+- 4096-token liveness-planned workspace: 184,680,448 bytes
+
+Safety and supervision
+- preflight memory: 44% system-wide free
+- resident LFM/Torch/native-server processes: none
+- port 18088 and output path: unused before launch; port released afterward
+- supervisor: one gtimeout 240-second attempt with TERM and five-second KILL escalation
+- token/checkpoint capacities: 512 / 128
+- completion tokens: pinned to 4 per request
+- memory after warmup: 39% system-wide free
+- sampled server RSS after warmup: 103,520 KiB
+- post-run memory: 42% system-wide free
+- resident llmopt-serve processes after exit: none
+
+Workload and correctness
+- warmup trace: bench/traces/lfm25-mps-warmup.json, 4 serial requests
+- scored trace: bench/traces/lfm25-mps-smoke.json, 4 serial requests
+- warmup: 4/4 successful, 0 token mismatches, ERS 0.25601122166897544
+- scored: 4/4 successful, 0 token mismatches
+- exact scored token parity against eager Q8: 4/4
+- scored cached prompt tokens: 80/194
+
+Last-token-projection native scored observation
+- ERS: 0.3588470515801844
+- median TTFT: 79.15747948572971 ms
+- median TPOT: 8.299840342563886 ms
+- mean TTFT: 81.52287523262203 ms
+- mean TPOT: 8.408243006366925 ms
+- scored TPOT range: 7.963930334274967 to 9.06936100606496 ms
+
+Previous vector-prefill native observation
+- ERS: 0.3377415731686302
+- median TTFT: 93.155520997243 ms
+- median TPOT: 7.948180340463296 ms
+- cached prompt tokens: 80/194
+
+Current-minus-previous observed deltas
+- ERS: +0.02110547841155419
+- median TTFT: -13.998041511513293 ms
+- median TPOT: +0.3516600021005907 ms
+
+Separate eager-Q8 observation
+- ERS: 0.36872784102635947
+- median TTFT: 62.557083496358246 ms
+- median TPOT: 44.406860998909295 ms
+- current native minus eager ERS: -0.009880789446175098
+- current native median TTFT minus eager: +16.600395989371464 ms
+- current native median TPOT minus eager: -36.10702065634541 ms
+
+Per-request scored evidence
+- c0000-t000: score 0.4686407902394579; TTFT 31.010416976641864 ms; TPOT 8.152805676218122 ms; cached 0/39; IDs 1098,5706,803,4481
+- c0000-t001: score 0.2593437974546171; TTFT 127.30454199481755 ms; TPOT 8.446875008909652 ms; cached 42/61; IDs 41677,7,2,1
+- c0001-t000: score 0.4769738801237178; TTFT 29.44504196057096 ms; TPOT 7.963930334274967 ms; cached 0/35; IDs 1098,5410,4100,856
+- c0001-t001: score 0.2304297385029447; TTFT 138.33149999845773 ms; TPOT 9.06936100606496 ms; cached 38/59; IDs 31466,7,2,1
+
+Per-request deltas from the previous native observation
+- c0000-t000: score +0.07655019285127557; TTFT -28.874541050754488 ms; TPOT -0.463402655441314 ms
+- c0000-t001: score -0.00913944359847696; TTFT +0.8784580277279019 ms; TPOT +0.35402799646059613 ms
+- c0001-t000: score +0.05751317273513096; TTFT -26.257833058480173 ms; TPOT +0.16041666579743197 ms
+- c0001-t001: score -0.040502008341712664; TTFT +2.180499956011772 ms; TPOT +1.6803333419375113 ms
+
+Raw external-edge reports
+- current warmup: _artifacts/native-http-last-token-projection-smoke-2026-08-25/warmup.json
+- current scored: _artifacts/native-http-last-token-projection-smoke-2026-08-25/scored.json
+- current server log: _artifacts/native-http-last-token-projection-smoke-2026-08-25/server.log
+- previous native: _artifacts/native-http-vector-prefill-smoke-2026-08-25/scored.json
+- eager: _artifacts/eager-http-parity-2026-08-24/eager/report.json
+
+Evidence boundary
+- This is one bounded, serial observation; the previous-native and eager reports are separate earlier runs rather than interleaved repetitions.
+- The captured package, Metal libraries, Q8 policy, capacities, and request traces are unchanged. The OCaml runtime schedule specialization is the changed compiler boundary.
+- First-turn TTFT changes by -28.875/-26.258 ms, while cached second-turn TTFT changes by +0.878/+2.180 ms. The aggregate observation is recorded without assigning all timing variance to the pass.
+- This attempt did not run the long-context needle matrix or a new eager model process.
