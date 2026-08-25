@@ -361,9 +361,18 @@ The latest RMSNorm–RoPE compiler pass turns twelve 10-command query/key chains
 across the 6 attention layers into twelve fused kernels, eliminating 108 commands
 from both prefill and decode schedules (prefill: 810 → 702; decode: 864 → 756;
 specialized decode: 756 → 696). The clean device probe verifies 49 exact fixture
-outputs on Apple M4 Pro. This compiler record contains no model ERS or needle
-measurement. See
+outputs on Apple M4 Pro. See
 [`results/lfm25-350m-q8-rms-rope-compiler-2026-08-25.txt`](results/lfm25-350m-q8-rms-rope-compiler-2026-08-25.txt).
+
+The bounded 350M short trace through the fused RMSNorm-RoPE package preserves
+4/4 established eager IDs and 80/194 radix reuse while observing ERS
+`0.4122601696838274` and median TTFT/TPOT `73.70556250680238/7.060125004500151 ms`.
+Against the preceding paged-attention report, ERS improves by `+0.028992`,
+median TPOT drops by `-0.975 ms`, and mean TTFT drops by `-3.251 ms`. The separate
+needle matrix retains 6/6 retrieval and 12-token parity, with 4K TPOT dropping
+by `-1.813 ms` (to `39.670 ms`). See
+[`results/lfm25-350m-q8-rms-rope-measurement-2026-08-26.txt`](results/lfm25-350m-q8-rms-rope-measurement-2026-08-26.txt).
+
 
 
 Run the natural needle matrix through the same endpoint with:

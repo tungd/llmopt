@@ -73,4 +73,6 @@
 * [Direct paged-Q8 decode attention](exp-0071-paged-q8-attention.md) - the decode schedule and Metal kernel consume radix-owned Q8 K/V slots directly.
 * [Direct paged-Q8 attention model measurement](exp-0072-paged-q8-attention-measurement.md) - exact bounded 350M tokens with lower long-context TPOT and lower short-trace ERS.
 * [Fused RMSNorm and RoPE](exp-0073-rmsnorm-rope-fusion.md) - twelve 10-command query/key chains across 6 attention layers fuse into single SIMD Metal kernels, reducing prefill/decode plans by 108 commands.
+* [Fused RMSNorm-RoPE model measurement](exp-0074-rmsnorm-rope-measurement.md) - exact bounded 350M tokens with improved short-trace ERS (0.412260) and lower TPOT.
+
 

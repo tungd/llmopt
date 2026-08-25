@@ -93,4 +93,6 @@ okf_version: '0.2'
 * [Direct paged-Q8 decode attention](experiments/exp-0071-paged-q8-attention.md) - generated Metal reads radix-owned Q8 K/V slots without materializing past tensors.
 * [Direct paged-Q8 attention measurement](experiments/exp-0072-paged-q8-attention-measurement.md) - bounded 350M short and long-context evidence with exact tokens and mixed latency deltas.
 * [Fused RMSNorm and RoPE](experiments/exp-0073-rmsnorm-rope-fusion.md) - twelve 10-command query/key chains across 6 attention layers fuse into single SIMD Metal kernels.
+* [Fused RMSNorm-RoPE measurement](experiments/exp-0074-rmsnorm-rope-measurement.md) - bounded 350M trace and needle matrix for the fused RMSNorm-RoPE package.
+
 

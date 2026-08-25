@@ -1,0 +1,110 @@
+LFM2.5-350M RMSNorm-RoPE fusion native measurement
+Date: 2026-08-26
+Compiler commit: 8ca2e1a
+
+Package
+-------
+- root: _artifacts/lfm25-350m-q8-rms-rope-replan-2026-08-25
+- model: LiquidAI/LFM2.5-350M
+- LFM2.5-2.6B: deferred; not loaded or executed
+- weights: all 93 linear modules Q8, including lm_head
+- graph commands: 702 prefill / 756 decode
+- package kernels: 74 / 72
+- opaque commands: 0 / 0
+- static tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes
+- runtime Q8 decode: 696 commands, 13 inputs, 6 direct paged attentions
+- runtime KV/recurrent format: Q8-group-64
+
+Native short-trace attempt
+--------------------------
+- preflight memory: 74% system-wide free
+- resident model/native processes: none
+- port 18097 and output path: unused before launch and released afterward
+- supervisor: one 240-second server-and-runner attempt; exit 0
+- token/checkpoint capacities: 512 / 128
+- warmup/scored requests: 4/4 and 4/4 successful
+- scored output mismatches: 0
+- exact established full-Q8 eager token parity: 4/4
+- scored cached prompt tokens: 80/194
+- memory after warmup/post-exit: 74% / 75% free
+- sampled server RSS: 77,664 KiB
+
+Current scored observation
+--------------------------
+- ERS: 0.4122601696838274
+- median TTFT: 73.70556250680238 ms
+- median TPOT: 7.060125004500151 ms
+- mean TTFT: 71.8084689870011 ms
+- mean TPOT: 7.101552003102067 ms
+
+Current minus previous paged-attention observation
+--------------------------------------------------
+- ERS: +0.02899227286491235
+- median TTFT: +1.15575001109391451 ms
+- median TPOT: -0.97455549985170364 ms
+- mean TTFT: -3.25130175042431802 ms
+- mean TPOT: -0.83281950113208314 ms
+
+Per-request current evidence and paged-attention deltas
+-------------------------------------------------------
+- c0000-t000: score 0.47842120109194947; TTFT 36.6808749968186 ms;
+  TPOT 7.3152360079499585 ms; cached 0/39; IDs 1098,5706,803,4481;
+  delta score/TTFT/TPOT +0.01181376342396473/+8.38395900791510940/
+  -1.26618067345892360
+- c0000-t001: score 0.3380842299707958; TTFT 110.73025001678616 ms;
+  TPOT 6.805014001050343 ms; cached 42/61; IDs 41677,7,2,1;
+  delta score/TTFT/TPOT +0.01900562165992858/-4.77991596562787890/
+  -0.26419432833790779
+- c0001-t000: score 0.49246659005994947; TTFT 26.655458961613476 ms;
+  TPOT 7.644097010294597 ms; cached 0/35; IDs 1098,5410,4100,856;
+  delta score/TTFT/TPOT +0.00248124398937993/-2.93400004738941789/
+  +0.15615268299977014
+- c0001-t001: score 0.34006865761261473; TTFT 113.16729197278619 ms;
+  TPOT 6.641860993113369 ms; cached 38/59; IDs 31466,7,2,1;
+  delta score/TTFT/TPOT +0.08266846238637593/-13.67524999659508467/
+  -1.95705568573127131
+
+Fixed-output needle attempt
+---------------------------
+- preflight memory: 77% free; no resident model/native process
+- port 18098 and output path: unused before launch and released afterward
+- supervisor: one 900-second server-and-runner attempt; exit 0
+- token/checkpoint capacities: 32,768 / 512
+- memory after matrix/post-exit: 75% / 75% free
+- sampled server RSS after matrix: 291,936 KiB
+- successful requests: 6/6
+- retrieval: 6/6
+- exact established eager-Q8 12-token parity: 6/6
+- exact-only text formatting: 0/6 because fixed output is RAVEN-4271Lottery
+- cached prompt tokens: 0/18,432 across six distinct prompts
+- 2,048-token median TTFT/TPOT/latency:
+  1,241.0910410108045 / 25.416818182830784 / 1,520.6933750305325 ms
+- 4,096-token median TTFT/TPOT/latency:
+  3,036.1555000417866 / 39.67043563765897 / 3,492.8893750184216 ms
+
+Needle current minus previous paged-attention observation
+---------------------------------------------------------
+- 2,048-token median TTFT/TPOT/latency:
+  +1.57516601029783487 / +0.66904927371069789 / +10.75679203495383263 ms
+- 4,096-token median TTFT/TPOT/latency:
+  +132.72070902166888118 / -1.81341290854933845 / +139.30808397708460689 ms
+
+Raw artifacts
+-------------
+- current native ERS: _artifacts/native-http-q8-rms-rope-smoke-2026-08-26
+- current native needle: _artifacts/native-http-needle-q8-rms-rope-2026-08-26
+- previous native ERS: _artifacts/native-http-q8-paged-attention-smoke-2026-08-25/scored.json
+- previous native needle: _artifacts/native-http-needle-q8-paged-attention-2026-08-25/report.json
+
+Evidence boundary
+-----------------
+- Current and previous reports are separate non-interleaved single observations.
+- The fused RMSNorm-RoPE pass reduces dispatch overhead by collapsing twelve 10-command
+  chains into twelve SIMD Metal kernels per stage.
+- Exact tokens and radix accounting are unchanged. Short-trace ERS improves from
+  0.383268 to 0.412260, median TPOT improves from 8.035 ms to 7.060 ms, and mean
+  TTFT improves from 75.060 ms to 71.808 ms. 4,096-token needle TPOT drops from
+  41.484 ms to 39.670 ms.
+- No eager process ran; parity uses the established full-Q8 short and fixed-12
+  references.

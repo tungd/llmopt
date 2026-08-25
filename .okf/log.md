@@ -1,5 +1,8 @@
 # Update Log
 
+## 2026-08-26
+* **RMSNorm-RoPE model measurement**: One bounded LFM2.5-350M short trace through the fused RMSNorm-RoPE package preserves 4/4 established eager IDs and 80/194 radix reuse while observing ERS `0.4122601696838274` and median TTFT/TPOT `73.706/7.060 ms`; versus direct paged-attention, ERS improves by `+0.028992`, median TPOT drops by `-0.975 ms`, and mean TTFT drops by `-3.251 ms`. The separate fixed-output 2K/4K matrix remains 6/6 for retrieval and exact 12-token parity, with 4,096-token median TPOT improving by `-1.813 ms` (to `39.670 ms`).
+
 ## 2026-08-25
 * **RMSNorm-RoPE compiler fusion**: The `Passes.fuse_rms_rope` optimizer pass identifies and folds twelve 10-command RMSNorm-RoPE subgraphs across the 6 attention layers into single `Rms_rope` IR operations lowering to the `llmopt_rms_rope_f16_simd_h64` SIMD Metal kernel. Prefill commands reduce from 810 to 702 (74 package kernels), decode commands from 864 to 756 (72 package kernels), and direct-paged specialized decode from 756 to 696 commands (a 108 command reduction). A clean Apple M4 Pro device probe validates 49 exact fixture outputs including `rms-rope-reference: exact`. No model request or ERS run occurred in this compiler record.
 * **Paged-Q8 attention model measurement**: One bounded LFM2.5-350M short trace preserves 4/4 established eager IDs and 80/194 radix reuse while observing ERS `0.38326789681891504` and median TTFT/TPOT `72.550/8.035 ms`; versus vector unpack, those values change by `-0.033392`, `+3.959 ms`, and `+1.135 ms`. The separate fixed-output 2K/4K matrix remains 6/6 for retrieval and exact 12-token parity while median TPOT changes by `-10.083/-22.551 ms` and total latency by `-99.147/-289.810 ms`.
