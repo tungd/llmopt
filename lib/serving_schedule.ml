@@ -1937,6 +1937,13 @@ let write_op writer = function
       Binary.Writer.u8 writer 22;
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.channels config);
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.window config)
+  | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias } ->
+      Binary.Writer.u8 writer 23;
+      Binary.Writer.u64 writer m;
+      Binary.Writer.u64 writer n1;
+      Binary.Writer.u64 writer n2;
+      Binary.Writer.u64 writer k;
+      Binary.Writer.bool writer bias
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -1954,10 +1961,10 @@ let read_op values reader =
         match source_tag with
         | 0 -> Ok Ir.Input_source.Runtime
         | 1 ->
-            Binary.Reader.string reader
-            |> Result.map (fun key -> Ir.Input_source.Tensor_store { key })
+            let* key = Binary.Reader.string reader in
+            Ok (Ir.Input_source.Tensor_store { key })
         | _ ->
-            Error (Printf.sprintf "unknown schedule input-source tag: %d" source_tag)
+            Error (Printf.sprintf "unknown input source tag: %d" source_tag)
       in
       Ok (Ir.Op.Input { name; source })
   | 1 ->
@@ -1976,11 +1983,14 @@ let read_op values reader =
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Linear { m; n; k; bias })
   | 5 ->
-      let* value = Binary.Reader.u8 reader in
-      (match value with
-      | 0 -> Ok (Ir.Op.Add { broadcast = Shape.Same })
-      | 1 -> Ok (Ir.Op.Add { broadcast = Shape.Row })
-      | value -> Error (Printf.sprintf "unknown schedule broadcast tag: %d" value))
+      let* broadcast_tag = Binary.Reader.u8 reader in
+      let* broadcast =
+        match broadcast_tag with
+        | 0 -> Ok Shape.Same
+        | 1 -> Ok Shape.Row
+        | _ -> Error (Printf.sprintf "unknown broadcast tag: %d" broadcast_tag)
+      in
+      Ok (Ir.Op.Add { broadcast })
   | 6 -> Ok Ir.Op.Gelu
   | 7 -> Ok Ir.Op.Relu
   | 8 ->
@@ -2006,7 +2016,7 @@ let read_op values reader =
   | 15 -> read_primitive values reader |> Result.map (fun value -> Ir.Op.Primitive value)
   | 16 ->
       let* epsilon = Binary.Reader.float64 reader in
-      if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm { epsilon })
+      if Float.is_finite epsilon && epsilon > 0.0 then Ok (Ir.Op.Rms_norm { epsilon })
       else Error "schedule contains a non-finite RMSNorm epsilon"
   | 17 ->
       let* m, n, k = read_three_dimensions reader in
@@ -2035,6 +2045,13 @@ let read_op values reader =
       let* window = Binary.Reader.u64 reader in
       Ir.Short_conv_prefill.create ~channels ~window
       |> Result.map (fun config -> Ir.Op.Short_conv_prefill config)
+  | 23 ->
+      let* m = Binary.Reader.u64 reader in
+      let* n1 = Binary.Reader.u64 reader in
+      let* n2 = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* bias = Binary.Reader.bool reader in
+      Ok (Ir.Op.Q8_dual_linear { m; n1; n2; k; bias })
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

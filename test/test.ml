@@ -4265,4 +4265,32 @@ let () =
         Ir.node_id compute_node = 11 && Ir.node_id memory_node = 10
     | _ -> false)
     "complementary pairing pairs Q8_linear with RMSNorm";
+
+  (* fuse_dual_linear_swiglu test *)
+  let ffn_g = Ir.Graph.create () in
+  let ffn_in =
+    Ir.Graph.input ffn_g ~name:"ffn_in" ~source:Ir.Input_source.Runtime
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:64) ~dtype:Ir.Dtype.Float16
+  in
+  let ffn_w1 =
+    Ir.Graph.fresh_value ffn_g
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  let ffn_w3 =
+    Ir.Graph.fresh_value ffn_g
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append ffn_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ ffn_in ] ~output:(Some ffn_w1);
+  Ir.Graph.append ffn_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ ffn_in ] ~output:(Some ffn_w3);
+  let fused_ffn_g = Passes.fuse_dual_linear_swiglu ffn_g in
+  let fused_nodes = Ir.Graph.nodes fused_ffn_g in
+  expect (List.length fused_nodes = 2) "input + 1 fused dual linear node";
+  expect (match Ir.node_op (List.nth fused_nodes 1) with
+    | Ir.Op.Q8_dual_linear { m = 1; n1 = 128; n2 = 128; k = 64; bias = false } -> true
+    | _ -> false)
+    "parallel FFN branches fuse into Q8_dual_linear";
   print_endline "llmopt tests passed"
