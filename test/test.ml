@@ -4202,6 +4202,14 @@ let () =
   expect
     (expect_ok (Sampling.Greedy.f16_last_row ~vocabulary:4 logits) = 2)
     "greedy sampling reads the final float16 logits row and keeps the first tie";
+  expect
+    (expect_ok
+       (Sampling.Greedy.on_device (Bytes.of_string "\x1a\x00\x00\x00"))
+    = 26)
+    "on-device greedy sampling decodes a little-endian token id";
+  (match Sampling.Greedy.on_device (Bytes.of_string "\x1a\x00") with
+  | Ok _ -> fail "on-device greedy sampling accepted a short token buffer"
+  | Error _ -> ());
   let nan_logits = Bytes.copy logits in
   Bytes.set_uint16_le nan_logits 10 0x7e00;
   (match Sampling.Greedy.f16_last_row ~vocabulary:4 nan_logits with
