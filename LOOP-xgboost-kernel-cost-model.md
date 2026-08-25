@@ -104,7 +104,7 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `ESCALATE IF`: Cost model selects invalid tile dimensions that do not divide matrix bounds evenly.
   - `DONE`: `50d34f4` (feat(cost-model): add typed tile selector; verified `ninja -f ninja.build test`, deterministic selection checks for M=1/13/128/4096, positive tile and threadgroup metadata, GEMV mode for decode, and GEMM mode for multi-row shapes).
 
-- [ ] **ITEM-05**: Integrate Dynamic Tile Selection into `Serving_schedule`
+- [x] **ITEM-05**: Integrate Dynamic Tile Selection into `Serving_schedule`
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Compiler schedule lowering and dispatch grid calculation.
   - `IMPORTANT FILES`:
@@ -119,6 +119,7 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build fx-smoke` runs with 100% success.
   - `DONE WHEN`: Generated prefill and decode schedules use cost-model optimized tile geometries.
   - `ESCALATE IF`: Package validator in `lib/serving_validation.ml` rejects dynamically selected kernel names.
+  - `DONE`: `b99308c` (feat(schedule): dispatch q8 kernels from cost model; schedule derivation records typed selections without changing schedule bytes, native Q8 dispatch consumes selections for kernel names and tile-based grid geometry, fused epilogues retain legacy geometry, and both written gates pass).
 
 - [ ] **ITEM-06**: End-to-End Model Verification and Differential Benchmark
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
