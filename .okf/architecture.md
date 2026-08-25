@@ -391,6 +391,14 @@ name and falls back to the scalar name and grid when loading an older package.
 All four Q8 operation families compile in float16 and float32. This changed
 reduction order has no device, token, latency, or ERS observation yet.
 
+RMSNorm uses the same launch geometry at the row level. One SIMD group owns a
+row, lanes traverse its final dimension at stride 32, `simd_sum` combines the
+squared-value partials, and the lanes cooperatively write normalized values.
+Eight rows share a 256-thread group. Both input-dtype variants compile, while
+the runtime retains scalar-name and scalar-grid fallback for older packages.
+The 350M prefill and decode templates each contain 45 such commands; this
+changed reduction order remains static-only.
+
 Physical KV and recurrent cache conversion now batches each unpack or pack
 phase into one ordered command buffer. For the six-attention, ten-recurrent
 350M model, decode changes from 45 synchronous submissions to three including

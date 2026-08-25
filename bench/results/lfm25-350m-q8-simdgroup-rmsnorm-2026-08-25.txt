@@ -1,0 +1,47 @@
+LFM2.5-350M SIMD-group RMSNorm
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Kernel mapping
+- Previous kernel: one Metal thread serially scans one row twice.
+- Current kernel: one 32-lane SIMD group reduces and writes one row.
+- Each lane processes columns lane + 32*i and simd_sum combines the squared-value partials.
+- One 256-thread threadgroup owns eight rows.
+- Float32-to-float16 and float16-to-float16 RMSNorm use the same mapping.
+- Runtime lookup falls back to the scalar name and row grid for older packages.
+
+Saved 350M binary-graph replan
+- RMSNorm commands: 45 prefill / 45 decode
+- decode shapes: 33 rows of width 1024, 6 query-head rows of width 64, and 6 key-head rows of width 64
+- commands: 808 prefill / 862 decode
+- kernel entries: 60 prefill / 58 decode
+- opaque operations: 0 / 0
+- tensor bindings: 241 / 241 against one 422,137,216-byte binary tensor archive
+- workspace high-water/unreused: 1,098,496/7,692,800 prefill, 262,144/1,791,232 decode
+- prefill package: 95,018 bytes
+- decode package: 98,501 bytes
+- prefill MSL/metallib: 85,181 / 339,818 bytes
+- decode MSL/metallib: 85,676 / 333,552 bytes
+- both generated MSL programs compiled and linked with Xcode Metal
+
+Persistent artifact pair
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-simd-rms-v1-2026-08-25
+- Q8-group-64 and FP16-selectable pair validation: pass
+- prefill/decode binary tensor archive inode: 241927011 / 241927011
+- sequence-specialized workspace sizes remain unchanged from the SIMD-GEMV artifact
+
+Static fixture
+- The 153-command package declares SIMD RMSNorm entries for both input dtypes.
+- Xcode Metal compilation and package validation pass with 57 entries, 0 opaque commands, 11,520/12,032 workspace bytes, and 47 allocations.
+- Source tests pin SIMD lane/group indexing, eight-row threadgroup mapping, stride-32 traversal, simd_sum, entry names, and 256-thread launch metadata.
+- ABI-v10 and ABI-v9 packages still parse and validate.
+
+Verification
+- ninja -f ninja.build test: pass, 37 Python tests and OCaml tests
+- ninja -f ninja.build rms-norm-smoke q8-serving-smoke native-schedule-smoke fx-smoke: pass
+- llmopt-package-check on both current stages and older ABI-v10/v9 decode packages: pass
+- llmopt-lfm-serving-check --kv q8 and --kv fp16: pass
+
+Evidence boundary
+- No model request, Metal device execution, token generation, cache replay, needle trace, latency comparison, or ERS scoring ran for this kernel.
+- Latest valid native ERS remains 0.11381808711306604 from the earlier scalar-GEMV cache-submission trace.

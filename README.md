@@ -335,6 +335,13 @@ multiplied-input variants. Both model metallibs compile and old package names
 retain scalar fallback, but the SIMD reduction order has not run on device and
 has no token, latency, or ERS result.
 
+The same packages now replace serial RMSNorm row scans with one SIMD group per
+row and eight rows per 256-thread threadgroup. The preserved 350M templates
+contain 45 RMSNorm commands each; both model metallibs compile, older package
+names retain scalar fallback, and the changed reduction order has not run on
+device. See
+[`bench/results/lfm25-350m-q8-simdgroup-rmsnorm-2026-08-25.txt`](bench/results/lfm25-350m-q8-simdgroup-rmsnorm-2026-08-25.txt).
+
 Batching physical-cache submissions reduces each 350M decode from 45 waits to
 three: cache unpack, generated schedule, and cache pack. Exact Q8/FP16 cache
 bytes, the four eager-Q8 token sequences, and 80/194 reuse remain unchanged.

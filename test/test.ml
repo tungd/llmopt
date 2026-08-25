@@ -2383,12 +2383,29 @@ let () =
            | _ -> false))
     "optimizer emits a typed RMSNorm command";
   let rms_program = expect_ok (Metal.lower primitive_optimized) in
+  let rms_source = Metal.Program.source rms_program in
+  expect
+    (contains_substring rms_source "llmopt_rms_norm_f32_f16_simd"
+    && contains_substring rms_source "llmopt_rms_norm_f16_simd"
+    && contains_substring rms_source
+         "threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP"
+    && contains_substring rms_source "col += RMS_NORM_SIMD_WIDTH"
+    && contains_substring rms_source "square_sum = simd_sum(square_sum)")
+    "RMSNorm lowering emits SIMD-group row reductions";
   expect
     (Metal.Program.kernels rms_program
     |> List.filter (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm)
     |> List.length = 2)
     "fused RMSNorm graph emits both RMSNorm kernel entries";
+  expect
+    (Metal.Program.kernels rms_program
+    |> List.filter (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_norm)
+    |> List.for_all (fun entry ->
+           String.ends_with ~suffix:"_simd" (Kernel_abi.Entry.name entry)
+           && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
+    "RMSNorm package entries select 256-thread SIMD-group kernels";
   expect
     (Metal.Program.kernels rms_program
     |> List.filter (fun entry ->

@@ -1233,6 +1233,35 @@ let linear_f16_grid columns =
     Error "Metal float16 linear grid dimension overflows"
   else Ok (rounded_columns * simd_width)
 
+let rms_norm_grid rows = linear_f16_grid rows
+
+let rms_norm_kernel_name = function
+  | Ir.Dtype.Float32 -> Ok "llmopt_rms_norm_f32_f16_simd"
+  | Ir.Dtype.Float16 -> Ok "llmopt_rms_norm_f16_simd"
+  | dtype ->
+      Error
+        ("unsupported Metal RMSNorm input dtype: " ^ Ir.Dtype.to_string dtype)
+
+let legacy_rms_norm_kernel_name = function
+  | Ir.Dtype.Float32 -> Some "llmopt_rms_norm_f32_f16"
+  | Ir.Dtype.Float16 -> Some "llmopt_rms_norm_f16"
+  | _ -> None
+
+let select_rms_norm_kernel runtime input_dtype output_dtype =
+  let* preferred = rms_norm_kernel_name input_dtype in
+  match
+    kernel_entry ~name:preferred runtime
+      ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype ~output_dtype
+  with
+  | Ok entry -> Ok (entry, true)
+  | Error preferred_error -> (
+      match legacy_rms_norm_kernel_name input_dtype with
+      | None -> Error preferred_error
+      | Some legacy ->
+          kernel_entry ~name:legacy runtime
+            ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype ~output_dtype
+          |> Result.map (fun entry -> entry, false))
+
 let validate_linear_shapes ~m ~n ~k input weight output =
   let input_elements = Tensor_shape.numel (Ir.Value.logical_shape input) in
   let output_elements = Tensor_shape.numel (Ir.Value.logical_shape output) in
@@ -1853,11 +1882,17 @@ let encode_schedule execution_batch ~schedule ~inputs =
             let rows = Tensor_shape.numel input_shape / width in
             let* buffers = find_values state [ input; weight ] in
             let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
-            dispatched
-              (dispatch_output runtime state output
-                 ~operation:Kernel_abi.Operation.Rms_norm
-                 ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
-                 ~grid:(rows, 1, 1))
+            let input_dtype = Ir.Value.dtype input in
+            let* entry, simd =
+              select_rms_norm_kernel runtime input_dtype (Ir.Value.dtype output)
+            in
+            let* grid_x = if simd then rms_norm_grid rows else Ok rows in
+            let* output_buffer = workspace_buffer state output in
+            let* kernel =
+              dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
+                ~parameters ~grid:(grid_x, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buffer, kernel))
         | ( Ir.Op.Primitive Ir.Primitive.Embedding,
             [ indices; weight ],
             Some output ) ->

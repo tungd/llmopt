@@ -49,3 +49,4 @@
 * [Q8 linear-residual epilogue fusion](exp-0047-q8-linear-add-fusion.md) - all 32 same-shape residual boundaries per stage become typed GEMM/GEMV epilogues without absorbing broadcast adds.
 * [Q8 multiplied-input down-projection fusion](exp-0048-q8-multiplied-input-fusion.md) - sixteen materialized SwiGLU products per stage move into typed Q8 down-projection loads.
 * [SIMD-group Q8 decode GEMV](exp-0049-simdgroup-q8-gemv.md) - one SIMD group reduces each Q8 output channel while old packages retain scalar dispatch.
+* [SIMD-group RMSNorm rows](exp-0050-simdgroup-rmsnorm.md) - one SIMD group reduces and writes each row while older packages retain scalar dispatch.
