@@ -4190,4 +4190,50 @@ let () =
     "concurrent interleaved stream 1 exact token sequence";
   expect (Generation_test.State.completion_tokens state2 = [ 301; 302; 303 ])
     "concurrent interleaved stream 2 exact token sequence";
+  (* Dag_analysis unit tests *)
+  let empty_g = Ir.Graph.create () in
+  let empty_dag = expect_ok (Dag_analysis.analyze empty_g) in
+  expect (Dag_analysis.node_count empty_dag = 0) "empty graph has 0 nodes";
+  (* Diamond graph: in_val -> (w1, w3) -> add -> out *)
+  let diamond_g = Ir.Graph.create () in
+  let d_in =
+    Ir.Graph.input diamond_g ~name:"din" ~source:Ir.Input_source.Runtime
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:64) ~dtype:Ir.Dtype.Float16
+  in
+  let d_w1 =
+    Ir.Graph.fresh_value diamond_g
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  let d_w3 =
+    Ir.Graph.fresh_value diamond_g
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  let d_add =
+    Ir.Graph.fresh_value diamond_g
+      ~shape:(Shape.of_ints_exn ~rows:1 ~cols:128) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append diamond_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ d_in ] ~output:(Some d_w1);
+  Ir.Graph.append diamond_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ d_in ] ~output:(Some d_w3);
+  Ir.Graph.append diamond_g ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ d_w1; d_w3 ] ~output:(Some d_add);
+  Ir.Graph.add_output diamond_g ~name:"dout" d_add;
+
+  let diamond_dag = expect_ok (Dag_analysis.analyze diamond_g) in
+  expect (Dag_analysis.node_count diamond_dag = 5) "diamond graph has 5 nodes";
+  let levels = Dag_analysis.topological_levels diamond_dag in
+  expect (List.length levels = 4) "diamond graph has 4 topological depth levels";
+  let nodes_at_l2 =
+    match List.nth_opt levels 1 with
+    | Some ac -> List.map Ir.node_id ac.nodes
+    | None -> []
+  in
+  expect (List.length nodes_at_l2 = 2) "level 2 has 2 parallel nodes (w1 and w3)";
+  expect (Dag_analysis.is_antichain diamond_dag nodes_at_l2)
+    "parallel branches w1 and w3 form a valid antichain";
+  let cp = Dag_analysis.critical_path diamond_dag in
+  expect (cp.length = 4) "critical path length is 4";
   print_endline "llmopt tests passed"
