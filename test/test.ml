@@ -1532,6 +1532,7 @@ let () =
       expect (contains_substring q8_mul_add_source fragment)
         ("Q8 multiplied-input Metal ABI contains " ^ fragment))
     [ "kernel void llmopt_q8_linear_mul_add";
+      "kernel void llmopt_q8_gemv_mul_add_simd";
       "input_right [[buffer(1)]]";
       "weight [[buffer(2)]]";
       "residual [[buffer(5)]]";
@@ -1566,7 +1567,16 @@ let () =
       expect (String.contains source 'c') "Q8 Metal char storage emitted";
       expect
         (contains_substring source "kernel void llmopt_q8_gemv")
-        "Q8 Metal decode-specialized GEMV emitted");
+        "Q8 Metal decode-specialized GEMV emitted";
+      List.iter
+        (fun fragment ->
+          expect (contains_substring source fragment)
+            ("Q8 SIMD-group GEMV contains " ^ fragment))
+        [ "kernel void llmopt_q8_gemv_simd";
+          "thread_index_in_simdgroup";
+          "threadgroup_position.x * 8 + simdgroup";
+          "inner += 32";
+          "simd_sum(acc)" ]);
   let q8_program = expect_ok (Metal.lower q8_graph) in
   let q8_entries = Metal.Program.kernels q8_program in
   let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
@@ -1574,7 +1584,7 @@ let () =
   expect
     (List.exists
        (fun entry ->
-         Kernel_abi.Entry.name entry = "llmopt_q8_gemv"
+         Kernel_abi.Entry.name entry = "llmopt_q8_gemv_simd"
          && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
        q8_entries)
     "Q8 Metal GEMV ABI entry";

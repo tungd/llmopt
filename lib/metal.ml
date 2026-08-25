@@ -211,6 +211,45 @@ let q8_gemv_kernel_with_input ~input_mode ~extra_argument ~output_buffer
 
 let q8_gemv_kernel = q8_gemv_kernel_with_input ~input_mode:Direct
 
+let q8_gemv_simd_kernel_with_input ~input_mode ~extra_argument ~output_buffer
+    ~parameter_buffer ~name ~value_type ~weight_cast ~scale_type ~store_value =
+  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
+  let input_scalar = q8_input_scalar ~value_type "inner" input_mode in
+  "kernel void " ^ name ^ "(\n"
+  ^ input_signature
+  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* bias_or_scale [[buffer("
+  ^ string_of_int (3 + input_shift) ^ ")]],\n"
+  ^ extra_argument
+  ^ "    device " ^ value_type ^ "* output [[buffer("
+  ^ string_of_int output_buffer ^ ")]],\n"
+  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
+  ^ ")]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]]) {\n"
+  ^ "  const uint col = threadgroup_position.x * 8 + simdgroup;\n"
+  ^ "  if (params.m != 1 || col >= params.n) return;\n"
+  ^ "  const " ^ scale_type ^ " channel_scale = scale[col];\n"
+  ^ "  const uint weight_base = col * params.k;\n"
+  ^ "  float acc = 0.0f;\n"
+  ^ "  for (uint inner = lane; inner < params.k; inner += 32)\n"
+  ^ "    acc += float(" ^ input_scalar ^ ") *\n"
+  ^ "           float(" ^ weight_cast
+  ^ "(weight[weight_base + inner]) * channel_scale);\n"
+  ^ "  acc = simd_sum(acc);\n"
+  ^ "  if (lane == 0) {\n"
+  ^ "    if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
+  ^ "    output[col] = " ^ store_value ^ ";\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let q8_gemv_simd_kernel =
+  q8_gemv_simd_kernel_with_input ~input_mode:Direct
+
 let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const char* weight [[buffer(0)]],\n"
@@ -403,6 +442,69 @@ let q8_source =
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc + residual[col]"
+  ^ q8_gemv_simd_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
+      ~name:"llmopt_q8_gemv_simd"
+      ~value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:"half(acc)"
+  ^ q8_gemv_simd_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
+      ~name:"llmopt_q8_gemv_simd_f32"
+      ~value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc"
+  ^ q8_gemv_simd_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
+      ~name:"llmopt_q8_gemv_silu_simd"
+      ~value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:
+        "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
+  ^ q8_gemv_simd_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
+      ~name:"llmopt_q8_gemv_silu_simd_f32"
+      ~value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc / (1.0f + exp(-acc))"
+  ^ q8_gemv_simd_kernel
+      ~extra_argument:"    device const half* residual [[buffer(4)]],\n"
+      ~output_buffer:5 ~parameter_buffer:6
+      ~name:"llmopt_q8_gemv_add_simd"
+      ~value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:"half(half(acc) + residual[col])"
+  ^ q8_gemv_simd_kernel
+      ~extra_argument:"    device const float* residual [[buffer(4)]],\n"
+      ~output_buffer:5 ~parameter_buffer:6
+      ~name:"llmopt_q8_gemv_add_simd_f32"
+      ~value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc + residual[col]"
+  ^ q8_gemv_simd_kernel_with_input
+      ~input_mode:Product
+      ~extra_argument:"    device const half* residual [[buffer(5)]],\n"
+      ~output_buffer:6 ~parameter_buffer:7
+      ~name:"llmopt_q8_gemv_mul_add_simd"
+      ~value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:"half(half(acc) + residual[col])"
+  ^ q8_gemv_simd_kernel_with_input
+      ~input_mode:Product
+      ~extra_argument:"    device const float* residual [[buffer(5)]],\n"
+      ~output_buffer:6 ~parameter_buffer:7
+      ~name:"llmopt_q8_gemv_mul_add_simd_f32"
+      ~value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc + residual[col]"
   ^ q8_dequant_kernel
       ~name:"llmopt_q8_dequantize"
       ~value_type:"half"
@@ -424,10 +526,10 @@ let q8_all_entries =
       ~input_dtype:Ir.Dtype.Float32
       ~output_dtype:Ir.Dtype.Float32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv" ~operation:Kernel_abi.Operation.Q8_linear
+      ~name:"llmopt_q8_gemv_simd" ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_f32" ~operation:Kernel_abi.Operation.Q8_linear
+      ~name:"llmopt_q8_gemv_simd_f32" ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_linear_silu"
       ~operation:Kernel_abi.Operation.Q8_linear_silu
@@ -438,11 +540,11 @@ let q8_all_entries =
       ~input_dtype:Ir.Dtype.Float32
       ~output_dtype:Ir.Dtype.Float32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_silu"
+      ~name:"llmopt_q8_gemv_silu_simd"
       ~operation:Kernel_abi.Operation.Q8_linear_silu
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_silu_f32"
+      ~name:"llmopt_q8_gemv_silu_simd_f32"
       ~operation:Kernel_abi.Operation.Q8_linear_silu
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_linear_add"
@@ -454,11 +556,11 @@ let q8_all_entries =
       ~input_dtype:Ir.Dtype.Float32
       ~output_dtype:Ir.Dtype.Float32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_add"
+      ~name:"llmopt_q8_gemv_add_simd"
       ~operation:Kernel_abi.Operation.Q8_linear_add
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_add_f32"
+      ~name:"llmopt_q8_gemv_add_simd_f32"
       ~operation:Kernel_abi.Operation.Q8_linear_add
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_linear_mul_add"
@@ -470,11 +572,11 @@ let q8_all_entries =
       ~input_dtype:Ir.Dtype.Float32
       ~output_dtype:Ir.Dtype.Float32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_mul_add"
+      ~name:"llmopt_q8_gemv_mul_add_simd"
       ~operation:Kernel_abi.Operation.Q8_linear_mul_add
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_mul_add_f32"
+      ~name:"llmopt_q8_gemv_mul_add_simd_f32"
       ~operation:Kernel_abi.Operation.Q8_linear_mul_add
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_dequantize"

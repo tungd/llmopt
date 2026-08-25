@@ -1,0 +1,50 @@
+LFM2.5-350M SIMD-group Q8 decode GEMV
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Kernel mapping
+- Previous decode kernel: one Metal thread serially reduces one output channel.
+- Current decode kernel: one 32-lane SIMD group reduces one output channel.
+- Each lane processes reduction indices lane + 32*i and simd_sum combines partial accumulators.
+- One 256-thread threadgroup owns eight output channels.
+- Runtime grid: ceil(n / 8) * 256 threads for SIMD GEMV.
+- Float16/float32 identity, SiLU, residual, and multiplied-input/residual families use the same mapping.
+- Multi-row prefill retains the existing 16x16 tiled Q8 GEMM.
+
+Compatibility
+- New package entries use *_simd function names under package ABI v11.
+- Parsed older packages fall back to their scalar GEMV names and prior launch grid when the SIMD name is absent.
+- Buffer order and typed operation tags are unchanged.
+
+Saved 350M binary-graph replan
+- commands: 808 prefill / 862 decode
+- kernel entries: 60 prefill / 58 decode
+- opaque operations: 0 / 0
+- tensor bindings: 241 / 241 against one 422,137,216-byte binary tensor archive
+- workspace high-water/unreused: 1,098,496/7,692,800 prefill, 262,144/1,791,232 decode
+- prefill package: 95,008 bytes
+- decode package: 98,491 bytes
+- prefill MSL/metallib: 83,060 / 330,234 bytes
+- decode MSL/metallib: 83,555 / 323,968 bytes
+- all eight SIMD Q8 GEMV entries are present in the decode package
+- both generated MSL programs compiled and linked with Xcode Metal
+
+Persistent artifact pair
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-simd-gemv-v1-2026-08-25
+- Q8-group-64 and FP16-selectable pair validation: pass
+- prefill/decode binary tensor archive inode: 241927011 / 241927011
+- sequence-specialized workspace sizes remain unchanged from the ABI-v11 multiplied-input artifact
+
+Static fixture
+- The 153-command package declares SIMD decode entries for every Q8 family.
+- Xcode Metal compilation and package validation pass with 57 entries, 0 opaque commands, 11,520/12,032 workspace bytes, and 47 allocations.
+- The 46-output device executable was not launched.
+
+Verification
+- ninja -f ninja.build ocaml-test q8-metal native-schedule-smoke: pass
+- Source tests pin thread-index, eight-output threadgroup mapping, stride-32 reduction, simd_sum, and SIMD entry names.
+- ABI-v10 and ABI-v9 package readers remain valid; device fallback was not launched.
+
+Evidence boundary
+- No model request, token generation, cache replay, needle trace, latency comparison, or ERS scoring ran for this kernel.
+- Latest valid native ERS remains 0.11381808711306604 from the earlier scalar-GEMV cache-submission trace.

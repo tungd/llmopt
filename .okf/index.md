@@ -68,3 +68,4 @@ okf_version: '0.2'
 * [Q8 linear-SiLU epilogue fusion](experiments/exp-0046-q8-linear-silu-fusion.md) - the first real-model epilogue pass removes sixteen workspace round trips and dispatches from each stage.
 * [Q8 linear-residual epilogue fusion](experiments/exp-0047-q8-linear-add-fusion.md) - the second epilogue pass removes 32 residual workspace round trips and dispatches from each stage.
 * [Q8 multiplied-input down-projection fusion](experiments/exp-0048-q8-multiplied-input-fusion.md) - each feed-forward down projection absorbs its sole-consumer SwiGLU product.
+* [SIMD-group Q8 decode GEMV](experiments/exp-0049-simdgroup-q8-gemv.md) - 32 lanes cooperate on each decode output channel with legacy scalar fallback.

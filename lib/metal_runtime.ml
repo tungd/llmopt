@@ -270,26 +270,48 @@ let q8_operation = function
 
 let q8_kernel_name dtype ~m ~epilogue =
   match dtype, m, epilogue with
-  | Ir.Dtype.Float16, 1, Identity -> Ok "llmopt_q8_gemv"
-  | Ir.Dtype.Float32, 1, Identity -> Ok "llmopt_q8_gemv_f32"
+  | Ir.Dtype.Float16, 1, Identity -> Ok "llmopt_q8_gemv_simd"
+  | Ir.Dtype.Float32, 1, Identity -> Ok "llmopt_q8_gemv_simd_f32"
   | Ir.Dtype.Float16, _, Identity -> Ok "llmopt_q8_linear"
   | Ir.Dtype.Float32, _, Identity -> Ok "llmopt_q8_linear_f32"
-  | Ir.Dtype.Float16, 1, Silu -> Ok "llmopt_q8_gemv_silu"
-  | Ir.Dtype.Float32, 1, Silu -> Ok "llmopt_q8_gemv_silu_f32"
+  | Ir.Dtype.Float16, 1, Silu -> Ok "llmopt_q8_gemv_silu_simd"
+  | Ir.Dtype.Float32, 1, Silu -> Ok "llmopt_q8_gemv_silu_simd_f32"
   | Ir.Dtype.Float16, _, Silu -> Ok "llmopt_q8_linear_silu"
   | Ir.Dtype.Float32, _, Silu -> Ok "llmopt_q8_linear_silu_f32"
-  | Ir.Dtype.Float16, 1, Add -> Ok "llmopt_q8_gemv_add"
-  | Ir.Dtype.Float32, 1, Add -> Ok "llmopt_q8_gemv_add_f32"
+  | Ir.Dtype.Float16, 1, Add -> Ok "llmopt_q8_gemv_add_simd"
+  | Ir.Dtype.Float32, 1, Add -> Ok "llmopt_q8_gemv_add_simd_f32"
   | Ir.Dtype.Float16, _, Add -> Ok "llmopt_q8_linear_add"
   | Ir.Dtype.Float32, _, Add -> Ok "llmopt_q8_linear_add_f32"
-  | Ir.Dtype.Float16, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add"
-  | Ir.Dtype.Float32, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add_f32"
+  | Ir.Dtype.Float16, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add_simd"
+  | Ir.Dtype.Float32, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add_simd_f32"
   | Ir.Dtype.Float16, _, Mul_add -> Ok "llmopt_q8_linear_mul_add"
   | Ir.Dtype.Float32, _, Mul_add -> Ok "llmopt_q8_linear_mul_add_f32"
   | dtype, _, _ ->
       Error
         ("Q8 Metal dispatch requires f16 or f32 activations, got "
         ^ Ir.Dtype.to_string dtype)
+
+let q8_legacy_gemv_name dtype = function
+  | Identity ->
+      (match dtype with
+      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv"
+      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_f32"
+      | _ -> None)
+  | Silu ->
+      (match dtype with
+      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv_silu"
+      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_silu_f32"
+      | _ -> None)
+  | Add ->
+      (match dtype with
+      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv_add"
+      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_add_f32"
+      | _ -> None)
+  | Mul_add ->
+      (match dtype with
+      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv_mul_add"
+      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_mul_add_f32"
+      | _ -> None)
 
 let dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n
     ~k =
@@ -1242,20 +1264,34 @@ let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
     | Some _ -> Error "Q8 multiplied inputs have different metadata"
   in
   let operation = q8_operation epilogue in
-  let* name = q8_kernel_name dtype ~m ~epilogue in
-  let* entry =
-    match q8_kernel ~name runtime ~operation dtype with
-    | Some entry -> Ok entry
-    | None ->
+  let* preferred_name = q8_kernel_name dtype ~m ~epilogue in
+  let candidates =
+    if m = 1 then
+      match q8_legacy_gemv_name dtype epilogue with
+      | Some legacy -> [ preferred_name, true; legacy, false ]
+      | None -> [ preferred_name, true ]
+    else [ preferred_name, false ]
+  in
+  let rec select_kernel = function
+    | [] ->
         Error
           ("serving package has no Q8 linear kernel for "
           ^ Ir.Dtype.to_string dtype)
+    | (name, simd) :: rest ->
+        (match q8_kernel ~name runtime ~operation dtype with
+        | Some entry -> Ok (entry, simd)
+        | None -> select_kernel rest)
   in
+  let* entry, simd = select_kernel candidates in
   let bias_buffer, has_bias =
     match bias with Some buffer -> buffer, true | None -> scale, false
   in
   let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
-  let* grid_x = if m = 1 then round_up n 256 else round_up n 16 in
+  let* grid_x =
+    if m = 1 && simd then linear_f16_grid n
+    else if m = 1 then round_up n 256
+    else round_up n 16
+  in
   let* grid_y = if m = 1 then Ok 1 else round_up m 16 in
   let* buffers =
     match epilogue, input_right, residual with

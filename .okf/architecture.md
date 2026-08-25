@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T06:57:09Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T07:07:41Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -382,6 +382,14 @@ selects `llmopt_q8_gemv` and remains exact. On the one matched warmed HTTP
 trace, all four request TPOT values fall by 9.12 to 10.71 ms, median TTFT falls
 by 87.971 ms, and ERS changes from `0.11058587181748172` to
 `0.10860341576307225`; token IDs and 80/194 cache reuse remain unchanged.
+
+Current ABI-v11 packages replace that scalar decode entry with a SIMD-group
+family. One 32-lane group owns an output channel, lanes traverse the reduction
+dimension at stride 32, and `simd_sum` combines their partial accumulators.
+Eight groups share each 256-thread threadgroup. The runtime prefers the new
+name and falls back to the scalar name and grid when loading an older package.
+All four Q8 operation families compile in float16 and float32. This changed
+reduction order has no device, token, latency, or ERS observation yet.
 
 Physical KV and recurrent cache conversion now batches each unpack or pack
 phase into one ordered command buffer. For the six-attention, ten-recurrent

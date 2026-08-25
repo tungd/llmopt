@@ -35,7 +35,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   model-rewrite boundary: int8 weights, per-output-channel float16 scales, and
   FP16 activations by default; FP16 weights remain an explicit fallback.
 - Textual LLVM IR emission for inspection and a tiled Metal Shading Language
-  emitter for the executable backend boundary.
+  emitter for the executable backend boundary. Multi-row Q8 uses 16 by 16
+  threadgroup tiles; one-row decode maps one 32-lane SIMD group to each output
+  channel and keeps scalar GEMV names as fallback for older packages.
 - A versioned OCaml serving-package ABI. The FX compiler emits a copied graph,
   optimized plan, MSL, metallib reference, LLVM IR, typed kernel entries, and
   mandatory radix/Q8-default cache policy. A serving package references one
@@ -325,6 +327,13 @@ changes from `0.11058587181748172` to `0.10860341576307225`. TPOT remains above
 the adopted formula's 10 ms zero-score ceiling, so the ERS delta follows the
 two first-turn TTFT samples. See
 [`bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt).
+
+That measured trace used the original one-thread-per-output GEMV. Current
+ABI-v11 packages instead assign one 32-lane SIMD group per output channel and
+eight channels per threadgroup across identity, SiLU, residual, and
+multiplied-input variants. Both model metallibs compile and old package names
+retain scalar fallback, but the SIMD reduction order has not run on device and
+has no token, latency, or ERS result.
 
 Batching physical-cache submissions reduces each 350M decode from 45 waits to
 three: cache unpack, generated schedule, and cache pack. Exact Q8/FP16 cache
