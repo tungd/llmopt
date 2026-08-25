@@ -12,6 +12,7 @@ dependencies = []
 [project.optional-dependencies]
 torch = ["torch>=2.9"]
 test = ["pytest>=8"]
+cost-model = ["numpy>=2", "xgboost>=2.1"]
 
 [tool.setuptools.packages.find]
 where = ["."]
