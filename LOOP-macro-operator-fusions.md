@@ -130,6 +130,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build demo` yields exact token matches.
   - `DONE WHEN`: Single-token decode outputs a 4-byte token ID with zero logit buffer allocation in DRAM.
   - `ESCALATE IF`: Dynamic sampling parameters (temperature / top-k) require full logit distribution on CPU.
+  - `ATTEMPT-1`: The independent `Sampling.Greedy.on_device` 4-byte little-endian decoder is implemented and covered by `ninja -f ninja.build test`. The compiler/runtime fusion was not claimed because the current graph has no Argmax operation or token-id output representation.
+  - `NEEDS PLAN`: `Ir.node` has one immutable output value and `Ir.Graph.with_nodes` cannot replace `Graph.outputs`; the existing LM-head path therefore exposes an FP16 logits tensor, while this item requires a new Int32/UInt32 token-id output. Select the output-rewrite contract, schedule shape/type rules, package/runtime ABI, and logit-path fallback before adding `Q8_lm_head_argmax` or claiming zero-copy sampling.
 
 - [ ] **ITEM-06**: End-to-End Pipeline Integration, Command Audit & Differential Benchmarks
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
@@ -147,3 +149,5 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build metal-runtime-differential`
   - `DONE WHEN`: Full model execution confirms $\ge 120$ command reduction and $\ge 20\%$ TPOT latency reduction on Apple Silicon GPU.
   - `ESCALATE IF`: Any fusion pass causes circular dependencies or breaks topological sort.
+  - `ATTEMPT-1`: Current compiler, schedule, Metal-source, runtime, and Python unit gates pass for the implemented partial slices; no full-model package or differential run was started from this state.
+  - `NEEDS PLAN`: ITEM-01/02 and ITEM-05 still require explicit multi-output or output-rewrite contracts, while ITEM-03/04 are intentionally not wired into `Passes.optimize`. Choose those contracts before wiring all five passes or running the full-model command audit and differential benchmark.
