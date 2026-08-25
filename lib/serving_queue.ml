@@ -32,7 +32,7 @@ type request_state =
 type request = {
   id : Request_id.t;
   arrival_time : float;
-  state : request_state;
+  mutable state : request_state;
   mutable priority_score : float;
 }
 
@@ -87,21 +87,44 @@ end
 module Request_set = Set.Make (Request_order)
 module Request_map = Map.Make (Request_id)
 
+let default_token_capacity = 32_768
+let default_high_watermark_ratio = 0.90
+let default_low_watermark_ratio = 0.75
+
 type t = {
+  token_capacity : int;
+  high_watermark : int;
+  low_watermark : int;
   alpha_age : float;
   prefill_rate : float;
   decode_rate : float;
+  mutable allocated_tokens : int;
+  mutable is_congested : bool;
   mutable queue : Request_set.t;
   mutable by_id : request Request_map.t;
 }
 
-let create ?(alpha_age = Score.default_alpha_age)
+let create ?(token_capacity = default_token_capacity)
+    ?(high_watermark_ratio = default_high_watermark_ratio)
+    ?(low_watermark_ratio = default_low_watermark_ratio)
+    ?(alpha_age = Score.default_alpha_age)
     ?(prefill_rate = Score.default_prefill_rate)
     ?(decode_rate = Score.default_decode_rate) () =
+  let high_watermark =
+    int_of_float (Float.of_int token_capacity *. high_watermark_ratio)
+  in
+  let low_watermark =
+    int_of_float (Float.of_int token_capacity *. low_watermark_ratio)
+  in
   {
+    token_capacity;
+    high_watermark;
+    low_watermark;
     alpha_age;
     prefill_rate;
     decode_rate;
+    allocated_tokens = 0;
+    is_congested = false;
     queue = Request_set.empty;
     by_id = Request_map.empty;
   }
@@ -109,8 +132,42 @@ let create ?(alpha_age = Score.default_alpha_age)
 let is_empty t = Request_set.is_empty t.queue
 let length t = Request_set.cardinal t.queue
 
+let token_capacity t = t.token_capacity
+let allocated_tokens t = t.allocated_tokens
+let available_tokens t = max 0 (t.token_capacity - t.allocated_tokens)
+let is_congested t = t.is_congested
+let high_watermark t = t.high_watermark
+let low_watermark t = t.low_watermark
+
+let can_admit_prefill t ~tokens =
+  if t.is_congested then
+    t.allocated_tokens <= t.low_watermark
+    && t.allocated_tokens + tokens <= t.high_watermark
+  else
+    t.allocated_tokens + tokens <= t.high_watermark
+
+let reserve_tokens t count =
+  if count <= 0 then Ok ()
+  else if t.allocated_tokens + count > t.token_capacity then
+    Error
+      (Printf.sprintf
+         "KV token capacity exhausted: requested=%d allocated=%d capacity=%d"
+         count t.allocated_tokens t.token_capacity)
+  else (
+    t.allocated_tokens <- t.allocated_tokens + count;
+    if t.allocated_tokens >= t.high_watermark then
+      t.is_congested <- true;
+    Ok ()
+  )
+
+let release_tokens t count =
+  if count > 0 then (
+    t.allocated_tokens <- max 0 (t.allocated_tokens - count);
+    if t.is_congested && t.allocated_tokens <= t.low_watermark then
+      t.is_congested <- false
+  )
+
 let enqueue t req =
-  (* If request already exists, remove it first *)
   (match Request_map.find_opt req.id t.by_id with
   | Some existing ->
       t.queue <- Request_set.remove existing t.queue
@@ -160,3 +217,26 @@ let update_scores t ~current_time =
 
 let to_list t =
   Request_set.elements t.queue
+
+let pop_next_batch t ~max_batch_size ~prefill_chunk_budget =
+  let all_requests = to_list t in
+  let decodes = ref [] in
+  let decode_count = ref 0 in
+  let prefill_candidate = ref None in
+  List.iter
+    (fun (req : request) ->
+      match req.state with
+      | Active_decode _ when !decode_count < max_batch_size ->
+          decodes := req :: !decodes;
+          incr decode_count;
+          ignore (remove t req.id)
+      | Pending_prefill { remaining_prefill; _ }
+        when !prefill_candidate = None && not (is_congested t) ->
+          let slice_tokens = min remaining_prefill prefill_chunk_budget in
+          if can_admit_prefill t ~tokens:slice_tokens then (
+            prefill_candidate := Some (req, slice_tokens);
+            ignore (remove t req.id)
+          )
+      | _ -> ())
+    all_requests;
+  (List.rev !decodes, !prefill_candidate)

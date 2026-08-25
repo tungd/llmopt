@@ -4069,4 +4069,68 @@ let () =
   let removed = Serving_queue.remove q id2 in
   expect removed "remove succeeded for existing request";
   expect (Serving_queue.is_empty q) "queue is empty after removal";
+  (* Watermark Admission Control & Capacity Accounting unit tests *)
+  let cap_q =
+    Serving_queue.create ~token_capacity:1000 ~high_watermark_ratio:0.90
+      ~low_watermark_ratio:0.75 ()
+  in
+  expect (Serving_queue.token_capacity cap_q = 1000) "capacity is 1000";
+  expect (Serving_queue.high_watermark cap_q = 900) "high watermark is 900";
+  expect (Serving_queue.low_watermark cap_q = 750) "low watermark is 750";
+  expect (not (Serving_queue.is_congested cap_q)) "initially not congested";
+  expect (Serving_queue.can_admit_prefill cap_q ~tokens:500) "can admit 500 tokens";
+  let res = Serving_queue.reserve_tokens cap_q 800 in
+  expect (Result.is_ok res) "reserved 800 tokens";
+  expect (Serving_queue.allocated_tokens cap_q = 800) "allocated tokens is 800";
+  expect (not (Serving_queue.is_congested cap_q)) "not congested at 800/1000";
+  expect (not (Serving_queue.can_admit_prefill cap_q ~tokens:150))
+    "cannot admit 150 tokens as it would exceed 900 high watermark";
+  let res2 = Serving_queue.reserve_tokens cap_q 150 in
+  expect (Result.is_ok res2) "reserved additional 150 tokens (total 950)";
+  expect (Serving_queue.is_congested cap_q) "queue is now congested at 950 >= 900";
+  expect (not (Serving_queue.can_admit_prefill cap_q ~tokens:10))
+    "prefill is blocked during congestion";
+  (* Release tokens down to 800 (above 750 low watermark -> still congested) *)
+  Serving_queue.release_tokens cap_q 150;
+  expect (Serving_queue.allocated_tokens cap_q = 800) "allocated tokens is 800";
+  expect (Serving_queue.is_congested cap_q) "still congested at 800 > 750 (hysteresis)";
+  (* Release tokens below 750 -> congestion cleared *)
+  Serving_queue.release_tokens cap_q 100;
+  expect (Serving_queue.allocated_tokens cap_q = 700) "allocated tokens is 700";
+  expect (not (Serving_queue.is_congested cap_q)) "congestion cleared at 700 <= 750";
+  expect (Serving_queue.can_admit_prefill cap_q ~tokens:100) "can admit prefill after recovery";
+  (* Test pop_next_batch with mixed decode and prefill under normal vs congested states *)
+  let dec_id = Serving_queue.Request_id.create () in
+  let pref_id = Serving_queue.Request_id.create () in
+  let dec_req : Serving_queue.request = {
+    id = dec_id;
+    arrival_time = 0.0;
+    state = Serving_queue.Active_decode {
+      prompt_length = 50;
+      generated_tokens = [ 1 ];
+      max_new_tokens = 10;
+      ignore_eos = false;
+    };
+    priority_score = 10.0;
+  } in
+  let pref_req : Serving_queue.request = {
+    id = pref_id;
+    arrival_time = 1.0;
+    state = Serving_queue.Pending_prefill {
+      prompt_tokens = Array.make 100 1;
+      cached_tokens = 0;
+      remaining_prefill = 100;
+      max_new_tokens = 10;
+      ignore_eos = false;
+    };
+    priority_score = 5.0;
+  } in
+  Serving_queue.enqueue cap_q dec_req;
+  Serving_queue.enqueue cap_q pref_req;
+  let (batch_decodes, batch_pref) =
+    Serving_queue.pop_next_batch cap_q ~max_batch_size:4 ~prefill_chunk_budget:64
+  in
+  expect (List.length batch_decodes = 1) "popped 1 decode request";
+  expect (match batch_pref with Some (r, slice) -> Serving_queue.Request_id.equal r.id pref_id && slice = 64 | None -> false)
+    "popped chunked prefill request with slice budget 64";
   print_endline "llmopt tests passed"

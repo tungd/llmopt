@@ -26,7 +26,7 @@ type request_state =
 type request = {
   id : Request_id.t;
   arrival_time : float;
-  state : request_state;
+  mutable state : request_state;
   mutable priority_score : float;
 }
 
@@ -55,7 +55,14 @@ end
 
 type t
 
+val default_token_capacity : int
+val default_high_watermark_ratio : float
+val default_low_watermark_ratio : float
+
 val create :
+  ?token_capacity:int ->
+  ?high_watermark_ratio:float ->
+  ?low_watermark_ratio:float ->
   ?alpha_age:float ->
   ?prefill_rate:float ->
   ?decode_rate:float ->
@@ -65,9 +72,26 @@ val create :
 val is_empty : t -> bool
 val length : t -> int
 
+val token_capacity : t -> int
+val allocated_tokens : t -> int
+val available_tokens : t -> int
+val is_congested : t -> bool
+val high_watermark : t -> int
+val low_watermark : t -> int
+
+val can_admit_prefill : t -> tokens:int -> bool
+val reserve_tokens : t -> int -> (unit, string) result
+val release_tokens : t -> int -> unit
+
 val enqueue : t -> request -> unit
 val peek_next : t -> request option
 val pop_next : t -> request option
+
+val pop_next_batch :
+  t ->
+  max_batch_size:int ->
+  prefill_chunk_budget:int ->
+  request list * (request * int) option
 
 val remove : t -> Request_id.t -> bool
 val find : t -> Request_id.t -> request option
