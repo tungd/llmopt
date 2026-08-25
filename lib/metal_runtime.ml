@@ -83,29 +83,36 @@ type runtime = t
 module Batch = struct
   type t = {
     handle : batch_handle;
-    library : library_handle;
+    context : context_handle;
   }
 
   let create (runtime : runtime) =
     protect (fun () ->
-        { handle = begin_batch_stub runtime.library; library = runtime.library })
+        {
+          handle = begin_batch_stub runtime.library;
+          context = runtime.context;
+        })
 
-  let dispatch batch ~name ~buffers ~parameters ~grid ~group =
+  let dispatch batch ~(runtime : runtime) ~name ~buffers ~parameters ~grid
+      ~group =
     let grid_x, grid_y, grid_z = grid in
     let group_x, group_y, group_z = group in
-    protect (fun () ->
-        batch_dispatch_stub
-          ( batch.handle,
-            batch.library,
-            name,
-            buffers,
-            parameters,
-            grid_x,
-            grid_y,
-            grid_z,
-            group_x,
-            group_y,
-            group_z ))
+    if batch.context != runtime.context then
+      Error "Metal batch and dispatch runtime use different device contexts"
+    else
+      protect (fun () ->
+          batch_dispatch_stub
+            ( batch.handle,
+              runtime.library,
+              name,
+              buffers,
+              parameters,
+              grid_x,
+              grid_y,
+              grid_z,
+              group_x,
+              group_y,
+              group_z ))
 
   let copy batch ~source ~destination =
     protect (fun () -> batch_copy_stub batch.handle source destination)
@@ -337,7 +344,7 @@ let dispatch ?batch runtime entry ~buffers ~parameters ~grid =
                 group_y,
                 group_z ))
     | Some batch ->
-        Batch.dispatch batch ~name ~buffers ~parameters
+        Batch.dispatch batch ~runtime ~name ~buffers ~parameters
           ~grid:(grid_x, grid_y, grid_z) ~group:(group_x, group_y, group_z)
   in
   Ok name
@@ -1040,6 +1047,72 @@ module Execution = struct
   let workspace_bytes execution = execution.workspace_bytes
 end
 
+module Execution_batch = struct
+  type t = {
+    runtime : runtime;
+    commands : Batch.t;
+    mutable resources : Buffer.t list;
+    mutable schedules : int;
+  }
+end
+
+let with_execution_batch runtime operation =
+  let* commands = Batch.create runtime in
+  let batch =
+    { Execution_batch.runtime; commands; resources = []; schedules = 0 }
+  in
+  let release_resources () = batch.resources <- [] in
+  match operation batch with
+  | Error message ->
+      ignore (Batch.abort commands);
+      release_resources ();
+      Error message
+  | Ok value ->
+      let completion =
+        if batch.schedules = 0 then Batch.abort commands
+        else Batch.commit commands
+      in
+      release_resources ();
+      let* () = completion in
+      Ok value
+  | exception exception_value ->
+      ignore (Batch.abort commands);
+      release_resources ();
+      raise exception_value
+
+let encode_cache execution_batch cache operation =
+  let batch =
+    {
+      Cache.cache;
+      commands = execution_batch.Execution_batch.commands;
+      resources = [];
+      dispatches = 0;
+    }
+  in
+  let retain_resources () =
+    execution_batch.resources <- batch.resources @ execution_batch.resources
+  in
+  match operation batch with
+  | Error _ as error ->
+      retain_resources ();
+      error
+  | Ok value ->
+      retain_resources ();
+      execution_batch.schedules <-
+        execution_batch.schedules + batch.dispatches;
+      Ok value
+
+let encode_cache_pack_attention_slice execution_batch ~cache ~layer ~kind
+    ~slots ~source_items ~source_offset ~source =
+  encode_cache execution_batch cache (fun batch ->
+      Cache.batch_pack_attention_slice batch ~layer ~kind ~slots ~source_items
+        ~source_offset ~source)
+
+let encode_cache_pack_checkpoint execution_batch ~cache ~layer ~checkpoint
+    ~source =
+  encode_cache execution_batch cache (fun batch ->
+      Cache.batch_pack_checkpoint batch ~layer ~checkpoint ~source)
+
 type execution_state = {
   values : Buffer.t Value_map.t;
   outputs_rev : (string * Buffer.t) list;
@@ -1291,7 +1364,9 @@ let update_slice_kernel destination source output =
            (Ir.Dtype.to_string source_dtype)
            (Ir.Dtype.to_string output_dtype))
 
-let execute_schedule runtime ~schedule ~inputs =
+let encode_schedule execution_batch ~schedule ~inputs =
+  let runtime = execution_batch.Execution_batch.runtime in
+  let batch = execution_batch.commands in
   let* runtime_inputs = runtime_input_map inputs in
   let* memory_plan = Serving_memory_plan.create schedule in
   let workspace_bytes = Serving_memory_plan.workspace_bytes memory_plan in
@@ -1299,11 +1374,11 @@ let execute_schedule runtime ~schedule ~inputs =
     if workspace_bytes = 0 then Ok None
     else Buffer.create ~runtime ~bytes:workspace_bytes |> Result.map Option.some
   in
-  let* batch = Batch.create runtime in
+  execution_batch.resources <-
+    List.map snd inputs @ Option.to_list workspace @ execution_batch.resources;
   let dispatch_output ?name = dispatch_output ?name ~batch in
   let rec run state = function
     | [] ->
-        let* () = Batch.commit batch in
         Ok
           {
             Execution.outputs = List.rev state.outputs_rev;
@@ -1800,7 +1875,7 @@ let execute_schedule runtime ~schedule ~inputs =
               { state with outputs_rev = (name, buffer) :: state.outputs_rev }
         | _ -> unsupported ())
   in
-  let result =
+  let* execution =
     run
       {
         values = Value_map.empty;
@@ -1811,11 +1886,12 @@ let execute_schedule runtime ~schedule ~inputs =
       }
       (Serving_schedule.commands schedule)
   in
-  match result with
-  | Ok _ -> result
-  | Error _ as error ->
-      ignore (Batch.abort batch);
-      error
+  execution_batch.schedules <- execution_batch.schedules + 1;
+  Ok execution
+
+let execute_schedule runtime ~schedule ~inputs =
+  with_execution_batch runtime (fun batch ->
+      encode_schedule batch ~schedule ~inputs)
 
 let execute runtime ~inputs =
   execute_schedule runtime

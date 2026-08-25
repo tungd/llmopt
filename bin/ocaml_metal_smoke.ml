@@ -155,8 +155,19 @@ let () =
     |> Metal_runtime.Buffer.of_bytes ~runtime
     |> expect_ok
   in
-  let execution =
-    expect_ok (Metal_runtime.execute runtime ~inputs:[ "input", input ])
+  let first_execution, execution =
+    Metal_runtime.with_execution_batch runtime (fun batch ->
+        let schedule = Serving_package.schedule package in
+        let* first =
+          Metal_runtime.encode_schedule batch ~schedule
+            ~inputs:[ "input", input ]
+        in
+        let* second =
+          Metal_runtime.encode_schedule batch ~schedule
+            ~inputs:[ "input", input ]
+        in
+        Ok (first, second))
+    |> expect_ok
   in
   let output =
     match Metal_runtime.Execution.output execution ~name:"q8_linear" with
@@ -165,10 +176,26 @@ let () =
   in
   let actual = expect_ok (Metal_runtime.Buffer.contents output) |> f16_values in
   let expected_bits = [| 0x4300; 0x4800; 0x3c00; 0x3e00; 0x4400; 0x4000 |] in
-  if Array.length actual <> Array.length expected_bits then
+  let first_output =
+    match Metal_runtime.Execution.output first_execution ~name:"q8_linear" with
+    | Some output -> output
+    | None -> fail "first batched Metal schedule did not produce q8_linear"
+  in
+  let first_actual =
+    expect_ok (Metal_runtime.Buffer.contents first_output) |> f16_values
+  in
+  if
+    Array.length first_actual <> Array.length expected_bits
+    || Array.length actual <> Array.length expected_bits
+  then
     fail "OCaml Metal output length mismatch";
   Array.iteri
     (fun index expected_value ->
+      if first_actual.(index) <> expected_value then
+        fail
+          (Printf.sprintf
+             "first OCaml Metal output mismatch at %d: expected=0x%04x actual=0x%04x"
+             index expected_value first_actual.(index));
       if actual.(index) <> expected_value then
         fail
           (Printf.sprintf
@@ -192,7 +219,7 @@ let () =
   if List.length q8_kernels + List.length f16_kernels <> 12 then
     fail "physical cache did not dispatch twelve pack/unpack kernels";
   Printf.printf
-    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\ncache-formats: q8-group-64,f16\ncache-dispatches: 12\ncache-submissions: 2\nq8-pools: %d token bytes, %d checkpoint bytes\nf16-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
+    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\nschedule-dispatches: 2\nschedule-submissions: 1\ncache-formats: q8-group-64,f16\ncache-dispatches: 12\ncache-submissions: 2\nq8-pools: %d token bytes, %d checkpoint bytes\nf16-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.Stage.to_string (Serving_package.stage package))
     kernel q8_token_bytes q8_checkpoint_bytes f16_token_bytes

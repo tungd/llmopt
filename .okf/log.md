@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-25
+* **Cached-suffix batching attempt**: Planned one matched-prefix unpack plus one dependent schedule/cache-write command buffer while retaining a recurrent checkpoint at every page-size-one suffix boundary. At 50% free memory with no resident model process, the one supervised model attempt completed both first turns exactly but failed both second turns because the attention transition omitted recurrent input bindings; no scored trace or ERS was produced. A canonical typed decode-buffer state fixes the omission, its regression test passes, and the full static Ninja gate passes; the fixed model path was not rerun.
 * **Native cache-submission batching**: Grouped the 22 LFM cache-unpack and 22 cache-pack kernels around each decode into two ordered command buffers, reducing decode from 45 synchronous submissions to three including the generated schedule. At 44% free memory with no model process, one device probe retained exact Q8/FP16 attention and checkpoint bytes across 12 dispatches in two submissions. The matched 4-request trace retained all eager token IDs and 80/194 reuse; all TPOT values fell by 2.82 to 5.45 ms and ERS changed from `0.10860341576307225` to `0.11381808711306604`.
 
 ## 2026-08-24

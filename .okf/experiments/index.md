@@ -44,3 +44,4 @@
 * [Batched native Metal schedule submission](exp-0042-batched-metal-command.md) - one ordered command buffer per schedule preserves exact outputs and raises warmed native ERS from 0.061695 to 0.110586.
 * [Q8 decode-specialized Metal GEMV](exp-0043-q8-decode-gemv.md) - one-row Q8 dispatch preserves exact tokens and lowers every measured TPOT while the one-trace ERS delta is recorded exactly.
 * [Native cache-submission batching](exp-0044-cache-submission-batching.md) - ordered unpack and pack phases reduce decode submission waits while preserving exact cache bytes and tokens.
+* [Cached-suffix command-buffer batching attempt](exp-0045-cached-suffix-batching-attempt.md) - dependent decode and per-token cache writes share one planned batch; the first model attempt failed before scoring and the correction has static evidence only.

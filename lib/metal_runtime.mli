@@ -127,6 +127,40 @@ module Execution : sig
   val workspace_bytes : t -> int
 end
 
+module Execution_batch : sig
+  type t
+end
+
+val with_execution_batch :
+  runtime ->
+  (Execution_batch.t -> ('a, string) result) ->
+  ('a, string) result
+
+val encode_schedule :
+  Execution_batch.t ->
+  schedule:Serving_schedule.t ->
+  inputs:(string * Buffer.t) list ->
+  (Execution.t, string) result
+
+val encode_cache_pack_attention_slice :
+  Execution_batch.t ->
+  cache:Cache.t ->
+  layer:int ->
+  kind:Cache.Attention.t ->
+  slots:Kv_cache.Slot.t array ->
+  source_items:int ->
+  source_offset:int ->
+  source:Buffer.t ->
+  (string, string) result
+
+val encode_cache_pack_checkpoint :
+  Execution_batch.t ->
+  cache:Cache.t ->
+  layer:int ->
+  checkpoint:Kv_cache.Checkpoint.t ->
+  source:Buffer.t ->
+  (string, string) result
+
 val execute :
   t -> inputs:(string * Buffer.t) list -> (Execution.t, string) result
 

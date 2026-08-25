@@ -38,6 +38,26 @@ let expect_int_array actual expected message =
       (Printf.sprintf "%s: expected [%s], got [%s]" message (show expected)
          (show actual))
 
+let () =
+  let buffers =
+    Serving_replay.Decode_buffers.create
+      ~attention:[ "attention-0", ("key", 1), ("value", 2) ]
+      ~recurrent:[ "recurrent-0", ("state", 3) ]
+  in
+  let buffers =
+    Serving_replay.Decode_buffers.update_attention buffers ~f:(function
+      | "attention-0" -> Ok (4, 5)
+      | binding -> Error ("unexpected attention binding: " ^ binding))
+    |> expect_ok
+  in
+  expect
+    (Serving_replay.Decode_buffers.inputs buffers
+    = [ ("key", 4); ("value", 5); ("state", 3) ])
+    "dependent decode inputs retain recurrent state after attention advances";
+  expect
+    (Serving_replay.Decode_buffers.recurrent buffers = [ "recurrent-0", 3 ])
+    "dependent decode buffers preserve recurrent checkpoint ownership"
+
 let fx_argument kind fields = `Assoc (("kind", `String kind) :: fields)
 let fx_node_argument name = fx_argument "node" [ ("name", `String name) ]
 let fx_int_argument value = fx_argument "int" [ ("value", `Int value) ]

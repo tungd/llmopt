@@ -190,6 +190,13 @@ round-trips Q8 and FP16 attention/checkpoint bytes exactly across 12 kernels in
 two command buffers. The record is
 [`results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt`](results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt).
 
+The subsequent cached-suffix batching attempt completed both first turns
+exactly but failed both second turns on an omitted recurrent-state input. It
+therefore completed 2/4 warmup requests, did not start the scored trace, and
+has no ERS result. The typed-state correction and static Ninja gate pass, but
+the fixed model path was not rerun; the exact boundary is recorded in
+[`results/lfm25-350m-q8-native-suffix-batching-attempt-2026-08-25.txt`](results/lfm25-350m-q8-native-suffix-batching-attempt-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

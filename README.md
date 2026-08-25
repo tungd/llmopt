@@ -62,6 +62,13 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   checkpoints; the OCaml runtime owns their physical Metal pools. Each prefill
   or decode cache phase uses one ordered command buffer instead of waiting
   after every layer conversion.
+- A dependent cached-suffix replay implementation that keeps attention and
+  recurrent bindings in one typed state, reserves one radix checkpoint per
+  suffix token, and can interleave generated schedules with physical cache
+  writes in one command buffer. Its first model attempt failed on an omitted
+  recurrent binding before scoring; the corrected path passes static tests but
+  has not been rerun on device, so the latest measured runtime remains the
+  three-submission serial decode.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -363,6 +370,7 @@ OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout and Metal pools (implemented; Q8 default)
         ├── ordered cache unpack/pack submission batches (implemented)
+        ├── dependent cached-suffix command batch (static-only after failed probe)
         ├── Metal package loading/mapped weights/per-family dispatch (implemented)
         ├── alias-aware liveness workspace allocation (implemented)
         ├── request-length specialization + repeated radix-backed decode (implemented)

@@ -1,0 +1,53 @@
+LFM2.5-350M Q8 native cached-suffix batching attempt
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Intended change
+- The matched scored prompts previously reused 42/61 and 38/59 tokens, leaving suffixes of 19 and 21 tokens.
+- Before: each suffix token performed one cache-unpack submission, one generated-schedule submission, and one cache-pack submission.
+- Intended after: unpack the matched prefix once, encode every dependent decode schedule and its cache writes into one ordered command buffer, then wait once.
+- Each suffix token retains its own attention slot and recurrent checkpoint so page-size-one radix branches do not lose an intermediate reusable prefix.
+- Graph, package, tensor, tokenizer, KV, and request-internal data remain binary or typed; JSON is confined to the external benchmark records and HTTP/SSE compatibility edge.
+
+Safety and supervision
+- preflight memory: 50% free
+- resident model/Torch/native-server processes: none
+- port: 18083, unused before launch
+- supervisor: 240 seconds with TERM and five-second KILL escalation
+- weights and KV: Q8 / Q8-group-64
+- token/checkpoint capacities: 512 / 128
+
+Observed attempt
+- warmup requests: 4
+- successful warmup requests: 2/4
+- first-turn token sequences: exact against the preceding cache-batched warmup
+- second-turn failures: 2/2
+- server error: runtime input is not bound: l_kwargs_past_key_values_layers_0_conv_states
+- scored trace: not started
+- scored ERS: none
+- memory after inspection: 47% free
+- resident model/native-server process after exit: none
+
+Diagnosis and correction
+- The attention transition rebuilt the next schedule's input list from attention outputs but omitted the separately stored recurrent bindings.
+- A pure, parametric Serving_replay.Decode_buffers value now owns attention and recurrent bindings together and derives runtime inputs from that one representation.
+- The regression test first failed with the recurrent input absent and passes after the canonical representation retained it.
+- The execution batch can now interleave generated decode schedules with physical attention/checkpoint pack kernels.
+- Replay reserves one checkpoint per suffix token and inserts each completed prefix after command-buffer completion, preserving the prior page-size-one radix behavior.
+
+Post-correction static evidence
+- ninja -f ninja.build all test q8-serving-smoke native-schedule-smoke: pass
+- OCaml tests: pass
+- Python tests: 37/37 pass
+- llmopt-serve: links under Ninja
+- package ABI and generated Metal artifacts: unchanged
+
+Evidence boundary
+- The failed fixed attempt was not rerun.
+- There is no post-correction model token-parity, latency, cache-accounting, or ERS observation.
+- The latest valid scored native result remains ERS 0.11381808711306604 from cache-submission batching.
+
+Raw external-edge artifacts
+- _artifacts/native-http-suffix-batched-smoke-2026-08-25/warmup.json
+- _artifacts/native-http-suffix-batched-smoke-2026-08-25/server.log
+- no scored.json exists

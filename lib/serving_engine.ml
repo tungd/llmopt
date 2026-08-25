@@ -334,7 +334,7 @@ let create ~config ~prefill ~decode =
   else
     let* contract = contract ~config ~prefill:prefill_package ~decode:decode_package in
     let* physical_cache =
-      Metal_runtime.Cache.create ~runtime:prefill
+      Metal_runtime.Cache.create ~runtime:decode
         ~config:(Serving_cache.Config.kv config)
     in
     Ok
@@ -484,11 +484,6 @@ let prefill engine ~tokens =
   | Ok _ as result -> result
   | Error message -> abort engine.logical_cache reservation message
 
-type decode_buffers = {
-  inputs : (string * Metal_runtime.Buffer.t) list;
-  recurrent : (recurrent_binding * Metal_runtime.Buffer.t) list;
-}
-
 let checked_bytes label factors =
   let rec multiply product = function
     | [] -> Ok product
@@ -513,9 +508,9 @@ let prepare_decode_buffers engine slots checkpoint =
       [ 2; Kv_cache.Layout.recurrent_width layout;
         Kv_cache.Layout.recurrent_window layout ]
   in
-  let rec attention batch inputs (bindings : attention_binding list) =
+  let rec attention batch buffers (bindings : attention_binding list) =
     match bindings with
-    | [] -> Ok inputs
+    | [] -> Ok (List.rev buffers)
     | binding :: rest ->
         let* key =
           Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:attention_bytes
@@ -534,12 +529,15 @@ let prepare_decode_buffers engine slots checkpoint =
             ~slots ~destination:value
         in
         attention batch
-          ((binding.value_input, value) :: (binding.key_input, key) :: inputs)
+          (( binding,
+             (binding.key_input, key),
+             (binding.value_input, value) )
+          :: buffers)
           rest
   in
-  let rec recurrent batch inputs buffers (bindings : recurrent_binding list) =
+  let rec recurrent batch buffers (bindings : recurrent_binding list) =
     match bindings with
-    | [] -> Ok { inputs; recurrent = List.rev buffers }
+    | [] -> Ok (List.rev buffers)
     | binding :: rest ->
         let* state =
           Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:recurrent_bytes
@@ -548,12 +546,20 @@ let prepare_decode_buffers engine slots checkpoint =
           Metal_runtime.Cache.batch_unpack_checkpoint batch
             ~layer:binding.cache_layer ~checkpoint ~destination:state
         in
-        recurrent batch ((binding.state_input, state) :: inputs)
-          ((binding, state) :: buffers) rest
+        recurrent batch
+          ((binding, (binding.state_input, state)) :: buffers)
+          rest
   in
   Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
-      let* inputs = attention batch [] engine.contract.attentions in
-      recurrent batch inputs [] engine.contract.recurrents)
+      let* attention = attention batch [] engine.contract.attentions in
+      let* recurrent = recurrent batch [] engine.contract.recurrents in
+      Ok (Serving_replay.Decode_buffers.create ~attention ~recurrent))
+
+let decode_buffers_from_execution execution buffers =
+  Serving_replay.Decode_buffers.update_attention buffers ~f:(fun binding ->
+      let* key = output execution binding.key_output in
+      let* value = output execution binding.value_output in
+      Ok (key, value))
 
 let rec pack_decode_attention batch execution slots ~source_items
     ~source_offset (bindings : attention_binding list) =
@@ -586,6 +592,37 @@ let rec pack_decode_recurrent batch checkpoint
       in
       pack_decode_recurrent batch checkpoint rest
 
+let rec encode_decode_attention batch cache execution slot ~source_items
+    ~source_offset (bindings : attention_binding list) =
+  match bindings with
+  | [] -> Ok ()
+  | binding :: rest ->
+      let* key = output execution binding.key_output in
+      let* _ =
+        Metal_runtime.encode_cache_pack_attention_slice batch ~cache
+          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
+          ~slots:[| slot |] ~source_items ~source_offset ~source:key
+      in
+      let* value = output execution binding.value_output in
+      let* _ =
+        Metal_runtime.encode_cache_pack_attention_slice batch ~cache
+          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
+          ~slots:[| slot |] ~source_items ~source_offset ~source:value
+      in
+      encode_decode_attention batch cache execution slot ~source_items
+        ~source_offset rest
+
+let rec encode_decode_recurrent batch cache checkpoint
+    (buffers : (recurrent_binding * Metal_runtime.Buffer.t) list) =
+  match buffers with
+  | [] -> Ok ()
+  | (binding, state) :: rest ->
+      let* _ =
+        Metal_runtime.encode_cache_pack_checkpoint batch ~cache
+          ~layer:binding.cache_layer ~checkpoint ~source:state
+      in
+      encode_decode_recurrent batch cache checkpoint rest
+
 let with_match engine match_ operation =
   let result = operation () in
   let release = Serving_cache.release_match engine.logical_cache match_ in
@@ -615,7 +652,8 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           in
           let* token_input = token_buffer engine.decode [| token |] in
           let inputs =
-            (engine.contract.input_ids, token_input) :: buffers.inputs
+            (engine.contract.input_ids, token_input)
+            :: Serving_replay.Decode_buffers.inputs buffers
           in
           let* execution =
             Metal_runtime.execute_schedule engine.decode ~schedule ~inputs
@@ -628,7 +666,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
                     engine.contract.attentions
                 in
                 pack_decode_recurrent batch reservation.checkpoint
-                  buffers.recurrent)
+                  (Serving_replay.Decode_buffers.recurrent buffers))
           in
           let tokens = Array.append prefix [| token |] in
           let slots = Array.append matched_slots reservation.slots in
@@ -649,6 +687,181 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
         | Ok _ as result -> result
         | Error message -> abort engine.logical_cache reservation message)
 
+type replay_reservation = {
+  slots : Kv_cache.Slot.t array;
+  checkpoints : Kv_cache.Checkpoint.t array;
+}
+
+let release_checkpoints cache checkpoints offset =
+  let rec release failures index =
+    if index = Array.length checkpoints then
+      match List.rev failures with
+      | [] -> Ok ()
+      | failures -> Error (String.concat "; " failures)
+    else
+      let failures =
+        match Serving_cache.release_checkpoint cache checkpoints.(index) with
+        | Ok () -> failures
+        | Error message -> message :: failures
+      in
+      release failures (index + 1)
+  in
+  release [] offset
+
+let reserve_replay cache token_count =
+  match Serving_cache.reserve_tokens cache token_count with
+  | Error error -> Error (Kv_cache.error_to_string error)
+  | Ok slots ->
+      let rec checkpoints output remaining =
+        if remaining = 0 then
+          Ok
+            {
+              slots;
+              checkpoints = Array.of_list (List.rev output);
+            }
+        else
+          match Serving_cache.reserve_checkpoint cache with
+          | Ok checkpoint -> checkpoints (checkpoint :: output) (remaining - 1)
+          | Error error ->
+              let message = Kv_cache.error_to_string error in
+              let allocated = Array.of_list output in
+              let token_release = Serving_cache.release_tokens cache slots in
+              let checkpoint_release = release_checkpoints cache allocated 0 in
+              let rollback =
+                [ (match token_release with
+                  | Ok () -> None
+                  | Error value -> Some value);
+                  (match checkpoint_release with
+                  | Ok () -> None
+                  | Error value -> Some value) ]
+                |> List.filter_map Fun.id
+              in
+              if rollback = [] then Error message
+              else
+                Error
+                  (message ^ "; replay reservation rollback failed: "
+                 ^ String.concat "; " rollback)
+      in
+      checkpoints [] token_count
+
+let abort_replay cache reservation offset message =
+  let remaining = Array.length reservation.slots - offset in
+  let token_result =
+    if remaining = 0 then Ok ()
+    else
+      Serving_cache.release_tokens cache
+        (Array.sub reservation.slots offset remaining)
+  in
+  let checkpoint_result =
+    release_checkpoints cache reservation.checkpoints offset
+  in
+  let failures =
+    [ (match token_result with Ok () -> None | Error value -> Some value);
+      (match checkpoint_result with
+      | Ok () -> None
+      | Error value -> Some value) ]
+    |> List.filter_map Fun.id
+  in
+  if failures = [] then Error message
+  else
+    Error
+      (message ^ "; replay cache rollback failed: "
+     ^ String.concat "; " failures)
+
+let insert_replay engine ~tokens ~cached_tokens ~matched_slots reservation =
+  let rec insert index =
+    if index = Array.length reservation.slots then Error (index, "empty replay")
+    else
+      let suffix_length = index + 1 in
+      let prefix_length = cached_tokens + suffix_length in
+      let prefix_tokens = Array.sub tokens 0 prefix_length in
+      let prefix_slots =
+        Array.append matched_slots
+          (Array.sub reservation.slots 0 suffix_length)
+      in
+      match
+        Serving_cache.insert engine.logical_cache ~tokens:prefix_tokens
+          ~slots:prefix_slots ~checkpoint:reservation.checkpoints.(index) ()
+      with
+      | Error message -> Error (index, message)
+      | Ok cached_prefix when suffix_length = Array.length reservation.slots ->
+          Ok cached_prefix
+      | Ok _ -> insert (index + 1)
+  in
+  insert 0
+
+let replay_matched engine match_ ~tokens ~cached_tokens =
+  let token_count = Array.length tokens in
+  let suffix_tokens = token_count - cached_tokens in
+  let matched = Serving_cache.Match.tokens match_ in
+  if suffix_tokens <= 0 then Error "prompt replay requires an uncached suffix"
+  else if matched <> cached_tokens then
+    Error
+      (Printf.sprintf "prompt cache miss: requested %d tokens; matched %d"
+         cached_tokens matched)
+  else
+    match Serving_cache.Match.checkpoint match_ with
+    | None -> Error "prompt cache match has no recurrent checkpoint"
+    | Some source_checkpoint ->
+        let* reservation = reserve_replay engine.logical_cache suffix_tokens in
+        let before_insert result =
+          Result.map_error (fun message -> (0, message)) result
+        in
+        let result =
+          let matched_slots = Serving_cache.Match.slots match_ in
+          let* initial_buffers =
+            prepare_decode_buffers engine matched_slots source_checkpoint
+            |> before_insert
+          in
+          let* execution =
+            Metal_runtime.with_execution_batch engine.decode (fun batch ->
+                let rec replay buffers offset =
+                  let* schedule = decode_schedule engine offset in
+                  let* token_input = token_buffer engine.decode [| tokens.(offset) |] in
+                  let inputs =
+                    (engine.contract.input_ids, token_input)
+                    :: Serving_replay.Decode_buffers.inputs buffers
+                  in
+                  let* execution =
+                    Metal_runtime.encode_schedule batch ~schedule ~inputs
+                  in
+                  let* buffers = decode_buffers_from_execution execution buffers in
+                  let suffix_index = offset - cached_tokens in
+                  let* () =
+                    encode_decode_attention batch engine.physical_cache execution
+                      reservation.slots.(suffix_index)
+                      ~source_items:(offset + 1) ~source_offset:offset
+                      engine.contract.attentions
+                  in
+                  let* () =
+                    encode_decode_recurrent batch engine.physical_cache
+                      reservation.checkpoints.(suffix_index)
+                      (Serving_replay.Decode_buffers.recurrent buffers)
+                  in
+                  let next = offset + 1 in
+                  if next = token_count then Ok execution
+                  else replay buffers next
+                in
+                replay initial_buffers cached_tokens)
+            |> before_insert
+          in
+          let* logits = output execution engine.contract.logits |> before_insert in
+          let* cached_prefix =
+            insert_replay engine ~tokens ~cached_tokens ~matched_slots reservation
+          in
+          Ok
+            {
+              Step.logits;
+              tokens = Array.copy tokens;
+              cached_prefix;
+              kernels = Metal_runtime.Execution.kernels execution;
+            }
+        in
+        (match result with
+        | Ok _ as result -> result
+        | Error (inserted, message) ->
+            abort_replay engine.logical_cache reservation inserted message)
+
 let decode engine ~prefix ~token =
   let* () = validate_tokens engine [| token |] in
   let match_ =
@@ -660,7 +873,6 @@ let decode engine ~prefix ~token =
 
 let prompt engine ~tokens =
   let* () = validate_tokens engine tokens in
-  let token_count = Array.length tokens in
   let match_ =
     Serving_cache.match_prefix engine.logical_cache ~reserve_tail:1 tokens
   in
@@ -670,22 +882,11 @@ let prompt engine ~tokens =
     let* step = prefill engine ~tokens in
     Ok { Prompt.step; cached_tokens = 0 }
   else
-    let prefix = Array.sub tokens 0 cached_tokens in
-    let token = tokens.(cached_tokens) in
     let* step =
       with_match engine match_ (fun () ->
-          let* schedule = decode_schedule engine cached_tokens in
-          decode_matched engine match_ ~schedule ~prefix ~token)
+          replay_matched engine match_ ~tokens ~cached_tokens)
     in
-    let rec replay step offset =
-      if offset = token_count then Ok { Prompt.step; cached_tokens }
-      else
-        let* step =
-          decode engine ~prefix:(Step.tokens step) ~token:tokens.(offset)
-        in
-        replay step (offset + 1)
-    in
-    replay step (cached_tokens + 1)
+    Ok { Prompt.step; cached_tokens }
 
 let stats engine = Serving_cache.stats engine.logical_cache
 let validate engine = Serving_cache.validate engine.logical_cache
