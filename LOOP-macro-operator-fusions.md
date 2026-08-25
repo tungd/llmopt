@@ -90,6 +90,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build short-conv-smoke` runs cleanly.
   - `DONE WHEN`: 10 ShortConv decode stages each collapse from 4 commands to 1 single fused kernel.
   - `ESCALATE IF`: Conv filter width is not 3 or stride is not 1.
+  - `ATTEMPT-1`: `ninja -f ninja.build test && ninja -f ninja.build short-conv-smoke` passed; the native schedule fixture and `metal_runtime.ml` also compile. The unit fixture verifies the typed fused op, schedule opcode round-trip, fused MSL entry, and retained ShortConv ABI operation.
+  - `NEEDS INTEGRATION`: `Passes.optimize` does not yet invoke `fuse_short_conv_step`, and no current full LFM2.5 decode package has been regenerated through this new op. The repository therefore has no evidence for the 10-stage collapse or sequential state parity in the full model; carry that proof to ITEM-06 pipeline integration.
 
 - [ ] **ITEM-04**: Implement Fused Out-Projection + Residual Add + Post-RMSNorm
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
