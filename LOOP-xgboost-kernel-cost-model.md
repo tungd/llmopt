@@ -34,7 +34,7 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
 
 ### Execution Items
 
-- [ ] **ITEM-01**: Implement Microbenchmark Profiling Sweep Harness (`bench/bench_kernel_sweep.py`)
+- [x] **ITEM-01**: Implement Microbenchmark Profiling Sweep Harness (`bench/bench_kernel_sweep.py`)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Benchmark grid sweep and latency collection for Metal Q8 linear & GEMM kernels.
   - `IMPORTANT FILES`:
@@ -48,8 +48,9 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `VERIFY`: `python3 bench/bench_kernel_sweep.py --dry-run --samples 5` records 5 valid measurement rows.
   - `DONE WHEN`: `bench/bench_kernel_sweep.py` runs cleanly and writes valid profiling rows to `bench/results/kernel_sweep_dataset.jsonl`.
   - `ESCALATE IF`: Metal command buffer execution fails or crashes on non-standard tile shapes.
+  - `DONE`: `2dffff7` (feat(bench): add kernel cost sweep harness; verified five positive JSONL rows with recorded medians, deterministic repeat hash `d16e5396094ffa635b21731ca8bded0b1b1512ea5db3cd4ecc14d95552542453`, Python compilation, and clean diff checks).
 
-- [ ] **ITEM-02**: Implement Parameterized MSL Kernel Templates for Variable Tile Geometries
+- [x] **ITEM-02**: Implement Parameterized MSL Kernel Templates for Variable Tile Geometries
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Metal code generation in `lib/metal.ml`.
   - `IMPORTANT FILES`:
@@ -64,8 +65,9 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build metal` compiles all parameterized MSL variants with zero warnings.
   - `DONE WHEN`: Parameterized kernels pass all unit tests and produce identical FP16 results to CPU reference.
   - `ESCALATE IF`: MSL compiler (`xcrun metal`) rejects threadgroup sizes or exceeds maximum threadgroup memory limits (32 KB).
+  - `DONE`: `dfe42cc` (feat(metal): add parameterized q8 tile kernels; verified `ninja -f ninja.build test`, `ninja -f ninja.build metal`, and `ninja -f ninja.build q8-metal`; seven parameterized Q8 tile families compiled with legacy entry points retained).
 
-- [ ] **ITEM-03**: Implement XGBoost Training Pipeline and OCaml Code Transpiler
+- [x] **ITEM-03**: Implement XGBoost Training Pipeline and OCaml Code Transpiler
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Machine learning training and pure OCaml code emitter in Python adapter.
   - `IMPORTANT FILES`:
@@ -80,6 +82,9 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `VERIFY`: `pytest python/tests/test_cost_model.py` passes with 100% assertion success.
   - `DONE WHEN`: Transpiler successfully outputs valid, compilable OCaml code to `lib/kernel_cost_model.ml`.
   - `ESCALATE IF`: Tree depth or ensemble size causes OCaml compiler stack overflow or excessive binary bloat (> 50 KB).
+  - `ATTEMPT-1`: `PYTHONPATH=python python3.13 -m pytest -q python/tests/test_cost_model.py` failed because a root-leaf JSON tree was not accepted by the transpiler; parser fix applied before retry.
+  - `ATTEMPT-2`: the parser retry reached OCaml compilation but the test runner could not see `Kernel_cost_model` when source files were linked in one invocation; test probe changed to compile the generated module before linking.
+  - `DONE`: `1c6c6ba` (feat(cost-model): train and transpile xgboost trees; verified isolated XGBoost/native-saved-model tests `3 passed`, active-environment tests `2 passed, 1 skipped` because XGBoost is not installed there, 1,000-point native-versus-portable max absolute delta `4.4432189927334775e-08`, generated OCaml size `1,040` bytes, `ocamlopt` compilation, and `git diff --check`).
 
 - [ ] **ITEM-04**: Implement `Kernel_cost_model` Module and Tile Selection Logic in OCaml
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
