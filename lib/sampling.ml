@@ -12,11 +12,11 @@ let float16 bits =
       *. Float.ldexp (1.0 +. (float_of_int fraction /. 1024.0))
            (exponent - 15)
 
-module Greedy = struct
-  let f16_last_row ~vocabulary bytes =
-    if vocabulary <= 0 then Error "greedy vocabulary must be positive"
+module Float16_logits = struct
+  let row_offset ~vocabulary bytes =
+    if vocabulary <= 0 then Error "float16 logits vocabulary must be positive"
     else if vocabulary > max_int / 2 then
-      Error "greedy vocabulary byte length overflows"
+      Error "float16 logits vocabulary byte length overflows"
     else
       let row_bytes = 2 * vocabulary in
       let length = Bytes.length bytes in
@@ -25,24 +25,32 @@ module Greedy = struct
           (Printf.sprintf
              "float16 logits contain %d bytes; expected complete %d-byte rows"
              length row_bytes)
-      else
-        let row_offset = length - row_bytes in
-        let value token =
-          Bytes.get_uint16_le bytes (row_offset + (2 * token)) |> float16
-        in
-        let first = value 0 in
-        if Float.is_nan first then Error "float16 logits contain NaN at token 0"
+      else Ok (length - row_bytes, row_bytes)
+
+  let last_row ~vocabulary bytes =
+    let ( let* ) = Result.bind in
+    let* row_offset, row_bytes = row_offset ~vocabulary bytes in
+    Ok (Bytes.sub bytes row_offset row_bytes)
+end
+
+module Greedy = struct
+  let f16_last_row ~vocabulary bytes =
+    let ( let* ) = Result.bind in
+    let* row = Float16_logits.last_row ~vocabulary bytes in
+    let value token = Bytes.get_uint16_le row (2 * token) |> float16 in
+    let first = value 0 in
+    if Float.is_nan first then Error "float16 logits contain NaN at token 0"
+    else
+      let rec select best_token best_value token =
+        if token = vocabulary then Ok best_token
         else
-          let rec select best_token best_value token =
-            if token = vocabulary then Ok best_token
-            else
-              let candidate = value token in
-              if Float.is_nan candidate then
-                Error
-                  (Printf.sprintf "float16 logits contain NaN at token %d" token)
-              else if candidate > best_value then
-                select token candidate (token + 1)
-              else select best_token best_value (token + 1)
-          in
-          select 0 first 1
+          let candidate = value token in
+          if Float.is_nan candidate then
+            Error
+              (Printf.sprintf "float16 logits contain NaN at token %d" token)
+          else if candidate > best_value then
+            select token candidate (token + 1)
+          else select best_token best_value (token + 1)
+      in
+      select 0 first 1
 end

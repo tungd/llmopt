@@ -3,6 +3,7 @@ let ( let* ) = Result.bind
 let usage () =
   prerr_endline
     "usage: llmopt-lfm-serving-smoke [--kv q8|fp16] [--tokens count] \
+     [--input-ids id,id,...] [--prefill-logits path] \
      <prefill-directory> <decode-directory>";
   exit 64
 
@@ -11,27 +12,81 @@ let format = function
   | "fp16" | "f16" -> Ok Kv_cache.Format.f16
   | value -> Error ("unsupported KV format: " ^ value)
 
+let input_ids value =
+  let values = String.split_on_char ',' value in
+  let parse token =
+    let token = String.trim token in
+    match int_of_string_opt token with
+    | Some token
+      when token >= 0 && token < Lfm25.Config.default.vocab_size ->
+        Ok token
+    | Some token ->
+        Error
+          (Printf.sprintf "input token ID %d is outside [0, %d)" token
+             Lfm25.Config.default.vocab_size)
+    | None -> Error ("invalid input token ID: " ^ token)
+  in
+  if values = [] || List.exists (fun value -> String.trim value = "") values
+  then Error "--input-ids must contain a non-empty comma-separated token list"
+  else
+    values
+    |> List.fold_left
+         (fun parsed value ->
+           let* parsed = parsed in
+           let* value = parse value in
+           Ok (value :: parsed))
+         (Ok [])
+    |> Result.map (fun values -> values |> List.rev |> Array.of_list)
+
+type arguments = {
+  kv_format : Kv_cache.Format.t;
+  generated_tokens : int;
+  input : int array;
+  prefill_logits : string option;
+  prefill_root : string;
+  decode_root : string;
+}
+
 let arguments () =
-  let rec parse kv_format generated_tokens positional = function
+  let rec parse kv_format generated_tokens input prefill_logits positional =
+    function
     | [] ->
         (match List.rev positional with
         | [ prefill; decode ] ->
             if generated_tokens <= 0 then
               Error "generated token count must be positive"
-            else Ok (kv_format, generated_tokens, prefill, decode)
+            else
+              Ok
+                {
+                  kv_format;
+                  generated_tokens;
+                  input;
+                  prefill_logits;
+                  prefill_root = prefill;
+                  decode_root = decode;
+                }
         | _ -> usage ())
     | "--kv" :: value :: rest ->
         let* kv_format = format value in
-        parse kv_format generated_tokens positional rest
+        parse kv_format generated_tokens input prefill_logits positional rest
     | "--tokens" :: value :: rest ->
         (match int_of_string_opt value with
         | Some generated_tokens ->
-            parse kv_format generated_tokens positional rest
+            parse kv_format generated_tokens input prefill_logits positional rest
         | None -> Error ("invalid generated token count: " ^ value))
-    | value :: rest -> parse kv_format generated_tokens (value :: positional) rest
+    | "--input-ids" :: value :: rest ->
+        let* input = input_ids value in
+        parse kv_format generated_tokens input prefill_logits positional rest
+    | "--prefill-logits" :: value :: rest ->
+        parse kv_format generated_tokens input (Some value) positional rest
+    | value :: rest ->
+        parse kv_format generated_tokens input prefill_logits
+          (value :: positional) rest
   in
   match Array.to_list Sys.argv with
-  | _ :: arguments -> parse Kv_cache.Format.default 4 [] arguments
+  | _ :: arguments ->
+      parse Kv_cache.Format.default 4 [| 1; 2; 3; 4; 5; 6 |] None []
+        arguments
   | [] -> usage ()
 
 let package root =
@@ -39,9 +94,24 @@ let package root =
 
 let elapsed since = Unix.gettimeofday () -. since
 
-let greedy step =
+let logits_row step =
   let* bytes = Metal_runtime.Buffer.contents (Serving_engine.Step.logits step) in
-  Sampling.Greedy.f16_last_row ~vocabulary:Lfm25.Config.default.vocab_size bytes
+  Sampling.Float16_logits.last_row
+    ~vocabulary:Lfm25.Config.default.vocab_size bytes
+
+let greedy step =
+  let* row = logits_row step in
+  Sampling.Greedy.f16_last_row ~vocabulary:Lfm25.Config.default.vocab_size row
+
+let write_bytes path bytes =
+  try
+    let channel = open_out_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr channel)
+      (fun () -> output_bytes channel bytes);
+    Ok ()
+  with Sys_error message ->
+    Error (Printf.sprintf "cannot write prefill logits to %s: %s" path message)
 
 type decode_observation = {
   token : int;
@@ -72,14 +142,15 @@ let decode_tokens engine ~prefix ~first_token ~count =
   generate prefix first_token [] (count - 1)
 
 let run () =
-  let* kv_format, generated_tokens, prefill_root, decode_root = arguments () in
-  let* prefill_package = package prefill_root in
-  let* decode_package = package decode_root in
+  let* arguments = arguments () in
+  let* prefill_package = package arguments.prefill_root in
+  let* decode_package = package arguments.decode_root in
   let page_size =
     prefill_package |> Serving_package.cache |> Serving_package.Cache.page_size
   in
   let* config =
-    Serving_cache.Config.create ~model:Lfm25.Config.default ~kv_format
+    Serving_cache.Config.create ~model:Lfm25.Config.default
+      ~kv_format:arguments.kv_format
       ~token_capacity:64 ~checkpoint_capacity:8 ~page_size ()
   in
   let* () =
@@ -89,7 +160,8 @@ let run () =
   let load_started = Unix.gettimeofday () in
   let* runtimes =
     Metal_runtime.load_packages
-      [ prefill_root, prefill_package; decode_root, decode_package ]
+      [ arguments.prefill_root, prefill_package;
+        arguments.decode_root, decode_package ]
   in
   let load_seconds = elapsed load_started in
   let* prefill_runtime, decode_runtime =
@@ -100,13 +172,22 @@ let run () =
   let* engine =
     Serving_engine.create ~config ~prefill:prefill_runtime ~decode:decode_runtime
   in
-  let input = [| 1; 2; 3; 4; 5; 6 |] in
   let prefill_started = Unix.gettimeofday () in
-  let* prefill = Serving_engine.prefill engine ~tokens:input in
+  let* prefill = Serving_engine.prefill engine ~tokens:arguments.input in
   let prefill_seconds = elapsed prefill_started in
-  let* first_token = greedy prefill in
+  let* prefill_logits = logits_row prefill in
+  let* () =
+    match arguments.prefill_logits with
+    | None -> Ok ()
+    | Some path -> write_bytes path prefill_logits
+  in
+  let* first_token =
+    Sampling.Greedy.f16_last_row ~vocabulary:Lfm25.Config.default.vocab_size
+      prefill_logits
+  in
   let* decodes =
-    decode_tokens engine ~prefix:input ~first_token ~count:generated_tokens
+    decode_tokens engine ~prefix:arguments.input ~first_token
+      ~count:arguments.generated_tokens
   in
   let* () = Serving_engine.validate engine in
   let stats = Serving_engine.stats engine in
@@ -122,8 +203,14 @@ let run () =
     |> String.concat ","
   in
   Printf.printf "device: %s\n" (Metal_runtime.device_name prefill_runtime);
-  Printf.printf "format: %s\n" (Kv_cache.Format.to_string kv_format);
-  Printf.printf "input: 1,2,3,4,5,6\n";
+  Printf.printf "format: %s\n"
+    (Kv_cache.Format.to_string arguments.kv_format);
+  Printf.printf "input: %s\n"
+    (arguments.input |> Array.to_list |> List.map string_of_int
+   |> String.concat ",");
+  Option.iter
+    (fun path -> Printf.printf "prefill-logits: %s\n" path)
+    arguments.prefill_logits;
   Printf.printf "tokens: %s\n"
     (tokens |> List.map string_of_int |> String.concat ",");
   Printf.printf "load-seconds: %.6f\n" load_seconds;

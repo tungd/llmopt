@@ -3127,6 +3127,16 @@ let () =
   List.iteri
     (fun index bits -> Bytes.set_uint16_le logits (2 * index) bits)
     [ 0x3c00; 0x4000; 0x4200; 0x4400; 0xbc00; 0x3c00; 0x4000; 0x4000 ];
+  let last_row =
+    expect_ok (Sampling.Float16_logits.last_row ~vocabulary:4 logits)
+  in
+  expect (Bytes.length last_row = 8) "float16 last row has one vocabulary row";
+  expect
+    (Bytes.get_uint16_le last_row 0 = 0xbc00
+    && Bytes.get_uint16_le last_row 2 = 0x3c00
+    && Bytes.get_uint16_le last_row 4 = 0x4000
+    && Bytes.get_uint16_le last_row 6 = 0x4000)
+    "float16 last row preserves little-endian values";
   expect
     (expect_ok (Sampling.Greedy.f16_last_row ~vocabulary:4 logits) = 2)
     "greedy sampling reads the final float16 logits row and keeps the first tie";

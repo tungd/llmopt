@@ -119,6 +119,29 @@ PYTHONPATH=bench python3.13 -m racebench.cli run \
   --output _artifacts/native-http/scored.json
 ```
 
+For a fixed native-versus-eager prefill comparison, first export the native
+last-token vocabulary row, then load eager Q8 once and compare the exact same
+token IDs:
+
+```sh
+mkdir -p _artifacts/native-logits
+_build/bin/llmopt-lfm-serving-smoke \
+  --kv q8 --tokens 1 --input-ids 1,2,3,4,5,6 \
+  --prefill-logits _artifacts/native-logits/native-prefill.f16 \
+  /path/to/prefill-package-directory \
+  /path/to/decode-package-directory \
+  > _artifacts/native-logits/native.txt
+PYTHONPATH=python:bench python3.13 bench/lfm25_reference_tokens.py \
+  --model LiquidAI/LFM2.5-350M --tokens 1 --input-ids 1,2,3,4,5,6 \
+  --compare-prefill-logits _artifacts/native-logits/native-prefill.f16 \
+  --output _artifacts/native-logits/comparison.txt
+```
+
+The `.f16` artifact is one raw 65,536-element little-endian FP16 row
+(131,072 bytes). The text comparison records both hashes, exact byte equality,
+maximum and mean absolute error, both argmax token IDs, and argmax parity. It
+does not use JSON for tensor transport.
+
 The protocol is JSON only at the OpenAI-compatible HTTP/SSE edge. FX graphs,
 compiled packages, weights, tokenizer state, schedules, KV state, and Metal
 dispatch do not use JSON. Each native SSE token event includes

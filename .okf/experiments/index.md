@@ -57,3 +57,4 @@
 * [Packed SIMD Q8 GEMV model measurement](exp-0055-packed-simd-q8-gemv-measurement.md) - one bounded 350M run with exact tokens, unchanged radix reuse, and ERS 0.325370.
 * [Vector-staged Q8 prefill kernel](exp-0056-vector-staged-q8-prefill.md) - 64-wide activation4/weight4 staging with fourfold fewer reduction barriers.
 * [Vector-staged Q8 prefill model measurement](exp-0057-vector-prefill-measurement.md) - one bounded 350M run with exact tokens, unchanged radix reuse, and ERS 0.337742.
+* [Native FP16 logit comparison path](exp-0058-native-logit-export.md) - raw OCaml Metal vocabulary-row export and eager-Q8 numeric comparison without JSON tensor transport.
