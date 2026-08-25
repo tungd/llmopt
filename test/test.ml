@@ -1606,11 +1606,22 @@ let () =
           "const char4 weight_values";
           "dot(float4(input_values), float4(dequantized_weights))";
           "inner = scalar_start + lane";
-          "simd_sum(acc)" ]);
+          "simd_sum(acc)" ];
+      List.iter
+        (fun fragment ->
+          expect (contains_substring source fragment)
+            ("Q8 paired SIMD-group GEMV contains " ^ fragment))
+        [ "kernel void llmopt_q8_gemv_pair_simd";
+          "threadgroup_position.x * 16 + simdgroup * 2";
+          "const uint next_col = col + 1";
+          "float next_acc = 0.0f";
+          "const char4 next_weight_values";
+          "next_acc += dot(float4(input_values)";
+          "next_acc = simd_sum(next_acc)" ]);
   let q8_program = expect_ok (Metal.lower q8_graph) in
   let q8_entries = Metal.Program.kernels q8_program in
   let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
-  expect (List.length q8_entries = 6) "Q8 Metal kernel ABI entries";
+  expect (List.length q8_entries = 8) "Q8 Metal kernel ABI entries";
   expect
     (List.exists
        (fun entry ->
@@ -1618,6 +1629,13 @@ let () =
          && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
        q8_entries)
     "Q8 Metal GEMV ABI entry";
+  expect
+    (List.exists
+       (fun entry ->
+         Kernel_abi.Entry.name entry = "llmopt_q8_gemv_pair_simd"
+         && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
+       q8_entries)
+    "Q8 paired Metal GEMV ABI entry";
   let mixed_matmul_q8_kernel () =
     let lhs = Tile.input ~name:"mixed_lhs" ~shape:left () in
     let rhs = Tile.input ~name:"mixed_rhs" ~shape:right () in

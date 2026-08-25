@@ -1,0 +1,60 @@
+LFM2.5-350M paired SIMD-group Q8 decode compiler slice
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Kernel mapping
+- each 32-lane SIMD group computes two adjacent output channels instead of one
+- each 256-thread threadgroup covers 16 output channels instead of 8
+- both output accumulators reuse one activation half4/float4 load per reduction step
+- int8 weight traffic is unchanged and remains one char4 load per channel
+- each channel retains the packed stride-128 reduction and its own simd_sum
+- odd output tails are guarded; the exact device fixture exercises n=3
+- identity, SiLU, residual, and multiplied-input/residual families have paired float16 and float32 entries
+- packages without paired entries retain the single-channel SIMD and scalar fallback path
+
+Structural dispatch reduction
+- n=65,536 vocabulary projection: 8,192 to 4,096 threadgroups
+- n=4,608 projection: 576 to 288 threadgroups
+- n=1,024 projection: 128 to 64 threadgroups
+- activation vector loads per pair of output channels: two to one
+- these are emitted-structure counts, not model latency measurements
+
+Saved full-Q8 350M binary-graph replan
+- root: _artifacts/lfm25-350m-q8-paired-simd-replan-2026-08-25
+- commands: 810 prefill / 864 decode
+- kernel entries: 68 prefill / 66 decode
+- opaque operations: 0 / 0
+- tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes, inode 243608469 across root/prefill/decode
+- workspace high-water/unreused: 1,098,496/7,692,800 prefill, 262,144/1,791,232 decode
+- serving-specialized prefill workspaces at 13/128/4096 tokens: 676,864 / 5,525,504 / 184,680,448 bytes
+- serving-specialized decode workspaces at past 1/127/4095: 189,440 / 2,260,736 / 71,371,520 bytes
+- prefill/decode package bytes: 95,652 / 99,135
+- prefill/decode MSL bytes: 113,329 / 113,824
+- prefill/decode AIR bytes: 82,784 / 82,656
+- prefill/decode metallib bytes: 390,792 / 384,526
+- each generated stage contains eight paired SIMD kernels
+- Q8-group-64 and selectable FP16 serving-pair validation: pass
+
+Exact synthetic Metal execution
+- preflight memory: 59% system-wide free
+- resident LFM/Torch/native serving processes: none
+- supervisor: one 60-second gtimeout attempt
+- device: Apple M4 Pro
+- package: 153 commands, 66 kernel declarations, 11,520-byte workspace
+- dispatched commands: 47
+- outputs: 46 exact
+- selected paired kernels: identity, SiLU, residual, and multiplied-input/residual
+- no LFM model weights were loaded
+
+Static verification
+- ninja -f ninja.build all test q8-smoke q8-serving-smoke native-schedule-smoke: pass
+- 42 Python tests and OCaml tests: pass
+- generated Q8 Metal and LLVM inspection artifacts compile
+- both full-Q8 350M MSL programs compile and link with Xcode Metal
+- both full-Q8 packages validate with zero opaque commands
+
+Evidence boundary
+- No LFM2.5-350M model request, token generation, radix replay, needle trace, latency comparison, or ERS scoring ran for this compiler slice.
+- Per-output reduction order is retained in source and the odd-tail synthetic fixture is byte-exact; model token parity remains to be measured.
+- The latest measured native ERS remains 0.3908962321067631 from the preceding single-channel SIMD package.

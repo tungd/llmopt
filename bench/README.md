@@ -281,6 +281,14 @@ the changes are `+0.032049180526578736`, `-7.680833485210314 ms`, and
 and
 [`results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
 
+The paired SIMD decode kernel computes two adjacent Q8 output channels per
+SIMD group and shares each packed activation load. The 65,536-channel head
+therefore changes from 8,192 to 4,096 threadgroups. Full-Q8 replanning emits
+68/66-entry, zero-opaque packages; both stages compile and one preflighted
+synthetic Metal run selects all four paired epilogues with 46/46 exact outputs.
+That compiler-only record has no model latency or ERS observation. See
+[`results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt`](results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

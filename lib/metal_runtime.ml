@@ -262,6 +262,10 @@ let q8_kernel ?name runtime ~operation dtype =
 
 type q8_epilogue = Identity | Silu | Add | Mul_add
 
+module Q8_decode_layout = struct
+  type t = Scalar | Simd_single | Simd_pair
+end
+
 let q8_operation = function
   | Identity -> Kernel_abi.Operation.Q8_linear
   | Silu -> Kernel_abi.Operation.Q8_linear_silu
@@ -290,6 +294,26 @@ let q8_kernel_name dtype ~m ~epilogue =
       Error
         ("Q8 Metal dispatch requires f16 or f32 activations, got "
         ^ Ir.Dtype.to_string dtype)
+
+let q8_pair_kernel_name dtype = function
+  | epilogue ->
+      let* suffix =
+        match dtype with
+        | Ir.Dtype.Float16 -> Ok ""
+        | Ir.Dtype.Float32 -> Ok "_f32"
+        | dtype ->
+            Error
+              ("paired Q8 Metal dispatch requires f16 or f32 activations, got "
+              ^ Ir.Dtype.to_string dtype)
+      in
+      let base =
+        match epilogue with
+        | Identity -> "llmopt_q8_gemv_pair_simd"
+        | Silu -> "llmopt_q8_gemv_silu_pair_simd"
+        | Add -> "llmopt_q8_gemv_add_pair_simd"
+        | Mul_add -> "llmopt_q8_gemv_mul_add_pair_simd"
+      in
+      Ok (base ^ suffix)
 
 let q8_legacy_gemv_name dtype = function
   | Identity ->
@@ -1225,6 +1249,23 @@ let round_up value multiple =
     Error "Metal grid dimension overflows"
   else Ok (((value + multiple - 1) / multiple) * multiple)
 
+let q8_simd_grid ~outputs_per_simdgroup columns =
+  let simdgroups_per_threadgroup = 8 in
+  let simd_width = 32 in
+  let* rounded_columns = round_up columns outputs_per_simdgroup in
+  let simdgroups = rounded_columns / outputs_per_simdgroup in
+  let* rounded_simdgroups = round_up simdgroups simdgroups_per_threadgroup in
+  if rounded_simdgroups > max_int / simd_width then
+    Error "Metal Q8 decode grid dimension overflows"
+  else Ok (rounded_simdgroups * simd_width)
+
+let q8_decode_grid columns = function
+  | Q8_decode_layout.Scalar -> round_up columns 256
+  | Q8_decode_layout.Simd_single ->
+      q8_simd_grid ~outputs_per_simdgroup:1 columns
+  | Q8_decode_layout.Simd_pair ->
+      q8_simd_grid ~outputs_per_simdgroup:2 columns
+
 let linear_f16_grid columns =
   let simdgroups_per_threadgroup = 8 in
   let simd_width = 32 in
@@ -1319,30 +1360,36 @@ let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
   let* preferred_name = q8_kernel_name dtype ~m ~epilogue in
   let candidates =
     if m = 1 then
-      match q8_legacy_gemv_name dtype epilogue with
-      | Some legacy -> [ preferred_name, true; legacy, false ]
-      | None -> [ preferred_name, true ]
-    else [ preferred_name, false ]
+      let* pair_name = q8_pair_kernel_name dtype epilogue in
+      Ok
+        (match q8_legacy_gemv_name dtype epilogue with
+        | Some legacy ->
+            [ pair_name, Q8_decode_layout.Simd_pair;
+              preferred_name, Q8_decode_layout.Simd_single;
+              legacy, Q8_decode_layout.Scalar ]
+        | None ->
+            [ pair_name, Q8_decode_layout.Simd_pair;
+              preferred_name, Q8_decode_layout.Simd_single ])
+    else Ok [ preferred_name, Q8_decode_layout.Scalar ]
   in
+  let* candidates = candidates in
   let rec select_kernel = function
     | [] ->
         Error
           ("serving package has no Q8 linear kernel for "
           ^ Ir.Dtype.to_string dtype)
-    | (name, simd) :: rest ->
+    | (name, layout) :: rest ->
         (match q8_kernel ~name runtime ~operation dtype with
-        | Some entry -> Ok (entry, simd)
+        | Some entry -> Ok (entry, layout)
         | None -> select_kernel rest)
   in
-  let* entry, simd = select_kernel candidates in
+  let* entry, layout = select_kernel candidates in
   let bias_buffer, has_bias =
     match bias with Some buffer -> buffer, true | None -> scale, false
   in
   let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
   let* grid_x =
-    if m = 1 && simd then linear_f16_grid n
-    else if m = 1 then round_up n 256
-    else round_up n 16
+    if m = 1 then q8_decode_grid n layout else round_up n 16
   in
   let* grid_y = if m = 1 then Ok 1 else round_up m 16 in
   let* buffers =

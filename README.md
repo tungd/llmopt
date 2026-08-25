@@ -434,6 +434,16 @@ preceding final-row FP16-head native report, the observed changes are
 and
 [`bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
 
+The next decode kernel maps two adjacent Q8 output channels to each SIMD group
+and reuses one packed activation load across both independent reductions. This
+changes the 65,536-channel vocabulary projection from 8,192 to 4,096
+threadgroups while retaining the prior single-channel and scalar entries as
+package fallbacks. Both full-Q8 350M stages compile with 68/66 entries and zero
+opaque commands; one bounded synthetic Metal run selects all four paired
+epilogues and returns 46/46 exact outputs. No model ERS run is included in that
+compiler result. See
+[`bench/results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt`](bench/results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt).
+
 The full-Q8 native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval and all 12 eager-Q8 token IDs. Exact-only text
 is 0/6 because the pinned continuation decodes as `RAVEN-4271Lottery`. Median

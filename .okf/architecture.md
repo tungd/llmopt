@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T09:36:28Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T09:52:24Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -75,6 +75,9 @@ sources:
   - id: current-full-q8-result
     resource: /bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt
     title: Current full-Q8 native serving observation
+  - id: paired-simd-result
+    resource: /bench/results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt
+    title: Paired SIMD Q8 compiler evidence
 ---
 
 # Overview
@@ -408,6 +411,16 @@ bounded model run preserves all four eager-Q8 sequences and 80/194 reuse while
 observing ERS
 `0.3253700872862615`, median TTFT `95.60127052827738 ms`, and median TPOT
 `7.93296533326308 ms`.
+
+The next decode mapping shares each packed activation load across two adjacent
+output channels. One SIMD group owns two independent accumulators and retains
+the existing per-channel dot and `simd_sum` order; eight groups cover 16
+channels per threadgroup. The 65,536-channel vocabulary projection therefore
+uses 4,096 instead of 8,192 threadgroups. Paired entries exist for all four Q8
+epilogue families and both activation dtypes, with typed fallback to the prior
+single-channel or scalar layouts. Both full-Q8 350M stages compile and one
+odd-tail synthetic Metal fixture returns 46/46 exact outputs; model latency is
+not measured in that compiler-only observation.
 
 The vector-staged prefill package reduces synchronization without changing the
 16 by 16 output ownership. For k=1024/4608, 64/288 scalar reduction tiles

@@ -264,7 +264,7 @@ let () =
       (Printf.sprintf "native fixture workspace is %d bytes instead of 11520"
          workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 46 exact\nq8-decode-kernel: llmopt_q8_gemv_simd\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu_simd\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add_simd\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add_simd\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 46 exact\nq8-decode-kernel: llmopt_q8_gemv_pair_simd\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu_pair_simd\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add_pair_simd\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add_pair_simd\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes
