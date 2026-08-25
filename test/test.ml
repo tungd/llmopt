@@ -1700,6 +1700,42 @@ let () =
          && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
        q8_entries)
     "Q8 paired Metal GEMV ABI entry";
+  let cost_model_device =
+    expect_ok
+      (Kernel_cost_model.Device.create ~gpu_core_count:16
+         ~memory_bandwidth_gbps:273.0)
+  in
+  let check_cost_model_selection ~m ~n ~k ~expect_gemv =
+    let selection =
+      expect_ok
+        (Kernel_cost_model.select_optimal_tile ~m ~n ~k
+           ~device:cost_model_device)
+    in
+    let repeated =
+      expect_ok
+        (Kernel_cost_model.select_optimal_tile ~m ~n ~k
+           ~device:cost_model_device)
+    in
+    let tile_m, tile_n, tile_k = Kernel_cost_model.tile selection in
+    let group_x, group_y, group_z = Kernel_cost_model.threadgroup selection in
+    expect (selection = repeated)
+      (Printf.sprintf "cost-model selection is deterministic for M=%d" m);
+    expect (tile_m > 0 && tile_n > 0 && tile_k > 0 && tile_k mod 4 = 0)
+      (Printf.sprintf "cost-model tile is valid for M=%d" m);
+    expect (group_x > 0 && group_y > 0 && group_z > 0)
+      (Printf.sprintf "cost-model threadgroup is valid for M=%d" m);
+    expect
+      ((Kernel_cost_model.mode selection = Kernel_cost_model.Gemv_single
+       || Kernel_cost_model.mode selection = Kernel_cost_model.Gemv_pair)
+      = expect_gemv)
+      (Printf.sprintf "cost-model dispatch mode for M=%d" m);
+    expect (String.length (Kernel_cost_model.kernel_name selection) > 0)
+      (Printf.sprintf "cost-model kernel name for M=%d" m)
+  in
+  check_cost_model_selection ~m:1 ~n:4096 ~k:4096 ~expect_gemv:true;
+  check_cost_model_selection ~m:13 ~n:4096 ~k:4096 ~expect_gemv:false;
+  check_cost_model_selection ~m:128 ~n:4096 ~k:4096 ~expect_gemv:false;
+  check_cost_model_selection ~m:4096 ~n:4096 ~k:4096 ~expect_gemv:false;
   let mixed_matmul_q8_kernel () =
     let lhs = Tile.input ~name:"mixed_lhs" ~shape:left () in
     let rhs = Tile.input ~name:"mixed_rhs" ~shape:right () in
