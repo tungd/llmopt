@@ -86,7 +86,7 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `ATTEMPT-2`: the parser retry reached OCaml compilation but the test runner could not see `Kernel_cost_model` when source files were linked in one invocation; test probe changed to compile the generated module before linking.
   - `DONE`: `1c6c6ba` (feat(cost-model): train and transpile xgboost trees; verified isolated XGBoost/native-saved-model tests `3 passed`, active-environment tests `2 passed, 1 skipped` because XGBoost is not installed there, 1,000-point native-versus-portable max absolute delta `4.4432189927334775e-08`, generated OCaml size `1,040` bytes, `ocamlopt` compilation, and `git diff --check`).
 
-- [ ] **ITEM-04**: Implement `Kernel_cost_model` Module and Tile Selection Logic in OCaml
+- [x] **ITEM-04**: Implement `Kernel_cost_model` Module and Tile Selection Logic in OCaml
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Compiler cost model module and tile selector in OCaml.
   - `IMPORTANT FILES`:
@@ -102,6 +102,7 @@ Design and implement an offline XGBoost / GBDT kernel cost model that profiles M
   - `VERIFY`: `ninja -f ninja.build test` compiles and runs the cost model unit tests cleanly.
   - `DONE WHEN`: Unit tests verify correct tile configuration selection across $M=1$ (decode), $M=13$, $M=128$, and $M=4096$.
   - `ESCALATE IF`: Cost model selects invalid tile dimensions that do not divide matrix bounds evenly.
+  - `DONE`: `50d34f4` (feat(cost-model): add typed tile selector; verified `ninja -f ninja.build test`, deterministic selection checks for M=1/13/128/4096, positive tile and threadgroup metadata, GEMV mode for decode, and GEMM mode for multi-row shapes).
 
 - [ ] **ITEM-05**: Integrate Dynamic Tile Selection into `Serving_schedule`
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
