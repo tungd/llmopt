@@ -33,7 +33,7 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
 
 ### Execution Items
 
-- [ ] **ITEM-01**: Implement Fused SwiGLU Dual-Linear Projection ($W_1 + W_3$)
+- [x] **ITEM-01**: Implement Fused SwiGLU Dual-Linear Projection ($W_1 + W_3$)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: FFN Gate and Up projection fusion in compiler passes and MSL emitter.
   - `IMPORTANT FILES`:
@@ -53,9 +53,9 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `ATTEMPT-2`: Added `Q8_dual_linear.extra_outputs`, secondary-output workspace allocation, schedule version 14 serialization, runtime dispatch, and optimizer wiring. `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal` pass; the fixture preserves both projection outputs through a schedule round-trip.
   - `ATTEMPT-3`: Added the explicit SwiGLU activation variant and rank-aware secondary-output validation. Fresh full-Q8 prefill/decode plans each contain 16 `q8-dual-linear+silu` operations; generated Metal and both package checks pass.
   - `ATTEMPT-4`: A fresh full-package native probe was staged from the audited prefill/decode packages, but `llmopt-package-check` stopped before device execution because the staging command constructed invalid absolute symlink targets for `package.llmopt`. No Metal execution or parity result was produced by this attempt.
-  - `NEEDS PLAN`: The fresh compiler audit records all 16 `q8-dual-linear+silu` operations in each full plan, but the only fresh native package probe stopped at staging before device execution and is not retried under the repository instruction; a repaired native-package/parity plan is required.
+  - `DONE`: The actual `llmopt` benchsuite packages `graph-0000`/`graph-0004` validate with 94 kernels, 767 commands, and 0 opaque commands for prefill; every decode package validates with 91 kernels, 787 commands, and 0 opaque commands. Prefill and decode plans each contain 16 `q8-dual-linear+silu` operations, and the benchsuite records exact cross-process FP16 logits plus 4/4 warmup and 4/4 scored token parity. Evidence: `bench/results/lfm25-350m-q8-macro-fusion-integration-2026-08-26.txt`.
 
-- [ ] **ITEM-02**: Implement Fused 3-in-1 QKV Attention Projection ($W_q + W_k + W_v$)
+- [x] **ITEM-02**: Implement Fused 3-in-1 QKV Attention Projection ($W_q + W_k + W_v$)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Attention projection fusion in compiler passes and MSL emitter.
   - `IMPORTANT FILES`:
@@ -74,9 +74,9 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `ESCALATE IF`: GQA head configuration differs between attention layers.
   - `ATTEMPT-2`: Added `Q8_qkv_linear.extra_outputs`, secondary-output workspace allocation, schedule version 14 serialization, runtime dispatch, LFM specialization remapping, and optimizer wiring. `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal` pass; the fixture preserves Q/K/V outputs through schedule round-trip and specialization.
   - `ATTEMPT-3`: Generalized the matcher across intervening view/RoPE nodes and registered secondary outputs in co-scheduling and DAG producer maps. Fresh full-Q8 prefill/decode plans each contain 6 `q8-qkv-linear` operations; rank-3 schedule fixtures, generated Metal, and both package checks pass.
-  - `NEEDS PLAN`: The fresh compiler audit records all 6 `q8-qkv-linear` operations in each full plan, but the only fresh native package probe stopped at staging before device execution and is not retried under the repository instruction; a repaired native-package/parity plan is required.
+  - `DONE`: The validated `llmopt` prefill and decode packages each contain 6 `q8-qkv-linear` operations, and the same model-level artifact records exact cross-process FP16 logits plus 4/4 warmup and 4/4 scored token parity. Evidence: `bench/results/lfm25-350m-q8-macro-fusion-integration-2026-08-26.txt`.
 
-- [ ] **ITEM-03**: Implement Fused ShortConv Recurrent Step
+- [x] **ITEM-03**: Implement Fused ShortConv Recurrent Step
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: ShortConv recurrent decode step fusion in compiler and MSL emitter.
   - `IMPORTANT FILES`:
@@ -96,7 +96,7 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `ATTEMPT-1`: `ninja -f ninja.build test && ninja -f ninja.build short-conv-smoke` passed; the native schedule fixture and `metal_runtime.ml` also compile. The unit fixture verifies the typed fused op, schedule opcode round-trip, fused MSL entry, and retained ShortConv ABI operation.
   - `ATTEMPT-2`: `Passes.optimize` now invokes `fuse_short_conv_step`; the existing focused short-conv fixture and native schedule/source gates still pass.
   - `ATTEMPT-3`: The fresh full-Q8 decode plan contains 10 `short-conv-step-fused` operations and the generated decode package passes validation; prefill retains the separate multi-token ShortConv path.
-  - `NEEDS PLAN`: The fresh decode plan records 10 `short-conv-step-fused` operations and the generated package validates, but no regenerated full-package sequential state-parity run exists; the shared native probe stopped at staging and is not retried under the repository instruction.
+  - `DONE`: Each validated `llmopt` decode package contains 10 `short-conv-step-fused` operations; the full model benchsuite completes with exact cross-process FP16 logits and 4/4 warmup and 4/4 scored token parity. Evidence: `bench/results/lfm25-350m-q8-macro-fusion-integration-2026-08-26.txt`.
 
 - [ ] **ITEM-04**: Implement Fused Out-Projection + Residual Add + Post-RMSNorm
   - `REPO`: `/Users/tung/Projects/std23/llmopt`

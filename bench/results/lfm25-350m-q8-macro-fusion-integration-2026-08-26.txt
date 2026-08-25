@@ -1,0 +1,39 @@
+LFM2.5-350M Q8 macro-fusion integration evidence
+Date: 2026-08-26
+Target: `LiquidAI/LFM2.5-350M`, Q8 weight-only, current `llmopt` benchsuite artifact
+
+Artifact:
+- `_artifacts/lfm25-benchsuite-macro-2026-08-26/result.json`
+- `_artifacts/lfm25-benchsuite-macro-2026-08-26/graphs/graph-0000` through
+  `graph-0007`
+
+Package checks:
+- Prefill packages `graph-0000` and `graph-0004`: 94 kernels, 767 commands,
+  0 opaque commands, 243 tensor-store inputs.
+- Decode packages `graph-0001` through `graph-0003` and `graph-0005` through
+  `graph-0007`: 91 kernels, 787 commands, 0 opaque commands, 243 tensor-store
+  inputs.
+- Every package passed `llmopt-package-check`; generated Metal libraries are
+  present for every package.
+
+Fusion inventory from the validated plans:
+- Prefill: 16 `q8-dual-linear+silu`, 6 `q8-qkv-linear`.
+- Decode: 16 `q8-dual-linear+silu`, 6 `q8-qkv-linear`, 10
+  `short-conv-step-fused`.
+- No `q8-linear+add+rms-norm` or `q8-lm-head-argmax` appears because the
+  captured graph retains an external residual consumer and exposes `logits`,
+  respectively.
+
+Model-level correctness:
+- `engine_pass=true`.
+- Cross-process FP16 logits shape `[1,14,65536]` has identical eager and
+  `llmopt` SHA-256 digests and `exact=true`.
+- Token output parity is exact for 4/4 warmup and 4/4 scored requests, with
+  zero mismatches.
+
+Evidence boundary:
+The package and model-level evidence closes the dual-linear, QKV, and fused
+ShortConv-step items. The same artifact's one-run-per-candidate timing
+comparison is explicitly invalid for a relative-speed claim; command counts
+are 767/787 versus the prior 795/815 packages, so the end-to-end checklist's
+additional 120-command and timing conditions remain open.
