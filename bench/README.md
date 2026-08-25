@@ -321,6 +321,14 @@ observation, those values change by `-0.004860666959368376`,
 needle matrix ran. See
 [`results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt`](results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt).
 
+Q8 cache restoration now uses aligned `char4` loads and `half4` stores, reducing
+unpack threads and repeated scale loads by four for Q8-group-64. The full-Q8
+350M replan emits 72/70-entry zero-opaque packages; both stages compile, and one
+preflighted synthetic Metal invocation selects both vec4 unpack entries with
+exact Q8/FP16 attention and recurrent data. This compiler-only record has no
+model latency or ERS observation. See
+[`results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt`](results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

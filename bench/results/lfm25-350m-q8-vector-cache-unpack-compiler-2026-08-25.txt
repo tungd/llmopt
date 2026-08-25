@@ -1,0 +1,55 @@
+LFM2.5-350M vectorized Q8 cache-unpack compiler slice
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Kernel mapping
+- attention KV and recurrent-checkpoint Q8 unpack process four adjacent int8 values per Metal thread
+- each thread performs one aligned char4 load, one FP16 scale load, and one half4 store
+- default group-size 64 reduces unpack threads and repeated scale loads by four
+- vec4 selection requires group_size divisible by four; layout validation already requires that group size divide attention head width and recurrent layer elements
+- packages missing the vec4 entries and formats with non-divisible group sizes retain scalar unpack
+- SIMD Q8 pack, FP16 pack/unpack, and cache storage bytes are unchanged
+
+Test-first evidence
+- the narrow OCaml test first failed because the two vec4 ABI entries were absent
+- after implementation, ninja -f ninja.build test passes 42 Python tests and the OCaml suite
+- cache ABI entries increase from ten to twelve: four FP16, four scalar Q8, two SIMD Q8 pack, and two vec4 Q8 unpack entries
+
+Static verification
+- ninja -f ninja.build all test q8-smoke q8-serving-smoke native-schedule-smoke: pass
+- generated Q8 Metal and LLVM inspection artifacts compile
+- synthetic serving package: 20 kernels, 6 commands, 0 opaque
+- typed primitive package: 66 kernels, 153 commands, 0 opaque
+
+Exact synthetic Metal invocation
+- preflight memory: 56% system-wide free
+- resident LFM/Torch/native serving processes: none
+- output path: fresh; network port: not used
+- supervisor: one 60-second gtimeout invocation, exit 0
+- device: Apple M4 Pro
+- selected vector entries: llmopt_cache_unpack_attention_q8_vec4 and llmopt_cache_unpack_checkpoint_q8_vec4
+- selected pack entries remain llmopt_cache_pack_attention_q8_simd and llmopt_cache_pack_checkpoint_q8_simd
+- Q8-group-64 attention key/value and recurrent checkpoint: exact
+- FP16 attention key/value and recurrent checkpoint: exact
+
+Saved full-Q8 350M binary-graph replan
+- root: _artifacts/lfm25-350m-q8-vector-cache-unpack-replan-2026-08-25
+- commands: 810 prefill / 864 decode
+- kernel entries: 72 prefill / 70 decode
+- opaque operations: 0 / 0
+- tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes, inode 243608469 across root/prefill/decode
+- workspace high-water/unreused: 1,098,496/7,692,800 prefill, 262,144/1,791,232 decode
+- serving-specialized prefill workspaces at 13/128/4096 tokens: 676,864 / 5,525,504 / 184,680,448 bytes
+- serving-specialized decode workspaces at past 1/127/4095: 189,440 / 2,260,736 / 71,371,520 bytes
+- prefill/decode package bytes: 95,874 / 99,357
+- prefill/decode MSL bytes: 119,581 / 120,076
+- prefill/decode AIR bytes: 86,112 / 85,984
+- prefill/decode metallib bytes: 410,978 / 404,712
+- both stages contain both vec4 Q8 cache-unpack entries
+- Q8-group-64 and selectable FP16 serving-pair validation: pass
+
+Evidence boundary
+- No LFM2.5-350M request, token generation, latency trace, needle matrix, or ERS scoring ran for this compiler slice.
+- Exact synthetic unpack behavior and runtime vec4 selection are established; model token parity and latency remain to be measured on the new package.
+- The latest Q8-cache model observation remains ERS 0.4021550914067862 with median TTFT/TPOT 73.13212499138899/7.307645835680887 ms.

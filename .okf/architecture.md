@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T10:18:13Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T10:23:44Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -90,6 +90,9 @@ sources:
   - id: simd-cache-pack-measurement
     resource: /bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt
     title: SIMD-group Q8 cache-pack model measurement
+  - id: vector-cache-unpack-result
+    resource: /bench/results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt
+    title: Vectorized Q8 cache-unpack compiler evidence
 ---
 
 # Overview
@@ -173,10 +176,12 @@ implementations.[^sglang-radix-cache] [^sglang-mamba-radix-cache]
 
 The KV layout accepts FP16 or grouped Q8 and defaults to Q8 at the serving
 configuration boundary. Native OCaml owns physical token and recurrent
-checkpoint `MTLBuffer` pools. Current packages declare ten cache entries:
-four FP16, four scalar Q8, and two preferred SIMD-group Q8 pack kernels.
-The runtime models the pack layout explicitly, assigns one SIMD group per Q8
-quantization group, and falls back to scalar pack entries for older packages.
+checkpoint `MTLBuffer` pools. Current packages declare twelve cache entries:
+four FP16, four scalar Q8, two preferred SIMD-group Q8 pack kernels, and two
+preferred vec4 Q8 unpack kernels. The runtime models both dispatch layouts,
+assigns one SIMD group per Q8 quantization group, restores four adjacent values
+per vec4 thread, and falls back to scalar entries for older packages or
+non-divisible group sizes.
 Package ABI v8 added source slicing for decode append while retaining earlier
 reads. `Serving_engine` now coordinates model execution, slot/checkpoint
 reservation, physical packing, radix insertion, leased prefix reuse, state

@@ -716,16 +716,25 @@ module Cache = struct
     type t = Scalar | Simdgroup
   end
 
+  module Unpack_layout = struct
+    type t = Scalar | Vec4
+  end
+
   type pack_kernel = {
     entry : Kernel_abi.Entry.t;
     dispatch_layout : Pack_layout.t;
   }
 
+  type unpack_kernel = {
+    entry : Kernel_abi.Entry.t;
+    unpack_layout : Unpack_layout.t;
+  }
+
   type kernels = {
     pack_attention : pack_kernel;
-    unpack_attention : Kernel_abi.Entry.t;
+    unpack_attention : unpack_kernel;
     pack_checkpoint : pack_kernel;
-    unpack_checkpoint : Kernel_abi.Entry.t;
+    unpack_checkpoint : unpack_kernel;
   }
 
   type t = {
@@ -818,6 +827,19 @@ module Cache = struct
             let* entry = cache_entry runtime scalar_name dtypes in
             Ok { entry; dispatch_layout = Pack_layout.Scalar })
 
+  let select_unpack_kernel runtime format scalar_name dtypes =
+    match format with
+    | Kv_cache.Format.Q8 { group_size } when group_size mod 4 = 0 ->
+        let vector_name = scalar_name ^ "_vec4" in
+        (match cache_entry_opt runtime vector_name dtypes with
+        | Some entry -> Ok { entry; unpack_layout = Unpack_layout.Vec4 }
+        | None ->
+            let* entry = cache_entry runtime scalar_name dtypes in
+            Ok { entry; unpack_layout = Unpack_layout.Scalar })
+    | Kv_cache.Format.Q8 _ | Kv_cache.Format.F16 ->
+        let* entry = cache_entry runtime scalar_name dtypes in
+        Ok { entry; unpack_layout = Unpack_layout.Scalar }
+
   let create ~runtime ~config =
     if Serving_package.stage runtime.package <> Serving_package.Stage.Serving then
       Error "physical Metal cache requires a serving-stage package"
@@ -842,13 +864,13 @@ module Cache = struct
           select_pack_kernel runtime format pack_attention pack_dtype
         in
         let* unpack_attention =
-          cache_entry runtime unpack_attention unpack_dtype
+          select_unpack_kernel runtime format unpack_attention unpack_dtype
         in
         let* pack_checkpoint =
           select_pack_kernel runtime format pack_checkpoint pack_dtype
         in
         let* unpack_checkpoint =
-          cache_entry runtime unpack_checkpoint unpack_dtype
+          select_unpack_kernel runtime format unpack_checkpoint unpack_dtype
         in
         let* token_pool =
           Buffer.create ~runtime ~bytes:(Kv_cache.Config.token_pool_bytes config)
@@ -891,6 +913,11 @@ module Cache = struct
             / simdgroups_per_threadgroup
           in
           checked_product threadgroups 256 "SIMD pack grid"
+
+  let unpack_grid kernel elements =
+    match kernel.unpack_layout with
+    | Unpack_layout.Scalar -> elements
+    | Unpack_layout.Vec4 -> elements / 4
 
   let exact_buffer_length buffer expected label =
     let actual = Buffer.byte_length buffer in
@@ -1009,7 +1036,7 @@ module Cache = struct
     in
     let entry =
       if pack then cache.kernels.pack_attention.entry
-      else cache.kernels.unpack_attention
+      else cache.kernels.unpack_attention.entry
     in
     let buffers =
       if pack then [ buffer; slots_buffer; cache.token_pool ]
@@ -1017,7 +1044,7 @@ module Cache = struct
     in
     let* grid =
       if pack then pack_grid cache.kernels.pack_attention groups
-      else Ok elements
+      else Ok (unpack_grid cache.kernels.unpack_attention elements)
     in
     Option.iter
       (fun batch -> batch.resources <- slots_buffer :: batch.resources)
@@ -1108,7 +1135,7 @@ module Cache = struct
       let* parameters = checkpoint_parameters cache ~layer ~checkpoint in
       let entry =
         if pack then cache.kernels.pack_checkpoint.entry
-        else cache.kernels.unpack_checkpoint
+        else cache.kernels.unpack_checkpoint.entry
       in
       let buffers =
         if pack then [ buffer; cache.checkpoint_pool ]
@@ -1121,7 +1148,8 @@ module Cache = struct
               (layer_elements / group_size)
         | true, Kv_cache.Format.F16 ->
             pack_grid cache.kernels.pack_checkpoint layer_elements
-        | false, _ -> Ok layer_elements
+        | false, _ ->
+            Ok (unpack_grid cache.kernels.unpack_checkpoint layer_elements)
       in
       let* kernel =
         dispatch ?batch:(Option.map (fun batch -> batch.commands) batch)

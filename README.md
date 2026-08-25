@@ -259,8 +259,8 @@ schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.txt`. The same probe executes
 twelve physical-cache dispatches and exactly round-trips separate attention
 key/value slots plus a recurrent checkpoint in Q8-group-64 and FP16. Current
-Q8 packages select SIMD-group attention and checkpoint pack kernels while
-retaining scalar names for older-package fallback.
+Q8 packages select SIMD-group pack plus vec4 unpack kernels while retaining
+scalar names for older-package and non-divisible-group fallback.
 `native-schedule-smoke` generates a JSON-free, 153-command typed package and
 compiles its 66 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
@@ -480,6 +480,15 @@ token sequences and 80/194 radix reuse. It observes ERS
 values change by `-0.004860666959368376`, `-2.092812501359731 ms`, and
 `+0.37099299758362303 ms`; request-level changes are mixed. See
 [`bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt).
+
+Q8 cache restoration now loads four adjacent int8 values per thread, reuses
+one FP16 scale, and writes one `half4`; scalar unpack remains available for old
+packages or Q8 group sizes not divisible by four. The full-Q8 350M replan has
+72/70 entries and zero opaque commands. Both stages compile, and one
+preflighted Apple M4 Pro invocation selects both vec4 entries with exact
+Q8/FP16 attention and recurrent round trips. No model or ERS request is
+included in that compiler result. See
+[`bench/results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt).
 
 The preceding single-channel full-Q8 native HTTP needle runner also completed
 all six 2,048/4,096-token prompts with exact `RAVEN-4271` retrieval and all 12

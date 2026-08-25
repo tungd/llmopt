@@ -1715,13 +1715,17 @@ let () =
     |> List.filter (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Cache)
   in
-  expect (List.length cache_entries = 10)
-    "serving Metal program declares FP16, scalar Q8, and SIMD Q8 cache kernels";
+  expect (List.length cache_entries = 12)
+    "serving Metal program declares FP16, scalar Q8, and vector Q8 cache kernels";
   expect
     (contains_substring (Metal.Program.source cache_program)
        "kernel void llmopt_cache_pack_attention_q8_simd"
     && contains_substring (Metal.Program.source cache_program)
          "kernel void llmopt_cache_pack_checkpoint_q8_simd"
+    && contains_substring (Metal.Program.source cache_program)
+         "kernel void llmopt_cache_unpack_attention_q8_vec4"
+    && contains_substring (Metal.Program.source cache_program)
+         "kernel void llmopt_cache_unpack_checkpoint_q8_vec4"
     && contains_substring (Metal.Program.source cache_program) "simd_max"
     && contains_substring (Metal.Program.source cache_program)
          "llmopt_cache_unpack_checkpoint_f16")
@@ -1735,8 +1739,10 @@ let () =
              && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
            cache_entries)
        [ "llmopt_cache_pack_attention_q8_simd";
-         "llmopt_cache_pack_checkpoint_q8_simd" ])
-    "SIMD Q8 cache pack kernels declare the 256-thread ABI";
+         "llmopt_cache_pack_checkpoint_q8_simd";
+         "llmopt_cache_unpack_attention_q8_vec4";
+         "llmopt_cache_unpack_checkpoint_q8_vec4" ])
+    "vector Q8 cache kernels declare the 256-thread ABI";
   let prefill_template = Ir.Graph.create () in
   let prefill_input =
     Ir.Graph.tensor_input prefill_template ~name:"prefill_ids"
