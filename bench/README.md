@@ -347,6 +347,16 @@ inputs, and workspace 171,008/172,800/199,424 bytes at past lengths
 See
 [`results/lfm25-350m-q8-paged-attention-compiler-2026-08-25.txt`](results/lfm25-350m-q8-paged-attention-compiler-2026-08-25.txt).
 
+The bounded 350M run through that direct path preserves 4/4 established eager
+IDs and 80/194 radix reuse. It observes ERS `0.38326789681891504` and median
+TTFT/TPOT `72.54981249570847/8.034680504351854 ms`; against vector unpack,
+those values change by `-0.03339199781233493`, `+3.959479508921504 ms`, and
+`+1.1348958360031247 ms`. The separate 2K/4K needle matrix retains 6/6
+retrieval and 12-token parity while median TPOT changes by
+`-10.082787908190351/-22.55124990849501 ms` and total latency by
+`-99.1467090207152/-289.8096669232473 ms`. See
+[`results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt`](results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

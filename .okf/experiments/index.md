@@ -71,3 +71,4 @@
 * [Vectorized Q8 cache unpack](exp-0069-vector-q8-cache-unpack.md) - vec4 attention and recurrent restoration with scalar fallback.
 * [Vector Q8 cache-unpack measurement](exp-0070-vector-q8-cache-unpack-measurement.md) - bounded 350M trace and long-context evidence.
 * [Direct paged-Q8 decode attention](exp-0071-paged-q8-attention.md) - the decode schedule and Metal kernel consume radix-owned Q8 K/V slots directly.
+* [Direct paged-Q8 attention model measurement](exp-0072-paged-q8-attention-measurement.md) - exact bounded 350M tokens with lower long-context TPOT and lower short-trace ERS.

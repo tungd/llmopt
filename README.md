@@ -499,6 +499,18 @@ matrix remains 6/6 for retrieval and 12-token parity, but median TTFT/TPOT is
 higher at both 2,048 and 4,096 tokens. See
 [`bench/results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt).
 
+Direct paged-Q8 decode attention then replaces twelve layer-specific past-K/V
+inputs with one radix-owned Q8 pool and slot map. Specialized decode has 804
+commands, 13 runtime inputs, and workspace 199,424 bytes at past length 4,095;
+FP16 retains the materialized path. The bounded 350M short trace preserves 4/4
+eager sequences and 80/194 reuse while observing ERS `0.38326789681891504` and
+median TTFT/TPOT `72.54981249570847/8.034680504351854 ms`. Versus vector
+unpack, those values change by `-0.03339199781233493`,
+`+3.959479508921504 ms`, and `+1.1348958360031247 ms`. The 2K/4K needle matrix
+remains 6/6 for retrieval and exact token parity while median TPOT changes by
+`-10.083/-22.551 ms`. See
+[`bench/results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt).
+
 The preceding single-channel full-Q8 native HTTP needle runner also completed
 all six 2,048/4,096-token prompts with exact `RAVEN-4271` retrieval and all 12
 eager-Q8 token IDs. Exact-only text is 0/6 because the pinned continuation

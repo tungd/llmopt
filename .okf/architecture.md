@@ -63,6 +63,9 @@ sources:
   - id: paged-q8-attention-result
     resource: /bench/results/lfm25-350m-q8-paged-attention-compiler-2026-08-25.txt
     title: Direct paged-Q8 attention compiler evidence
+  - id: paged-q8-attention-measurement
+    resource: /bench/results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt
+    title: Direct paged-Q8 attention model evidence
   - id: local-radix-cache
     resource: /lib/radix_cache.ml
     title: OCaml compressed radix prefix cache
@@ -516,6 +519,14 @@ commands and 23 inputs to 804 commands and 13 inputs; the selectable FP16 path
 retains the materialized schedule. Q8 workspace is 199,424 bytes at past 4,095
 instead of the FP16 materialized path's 71,371,520 bytes. One exact synthetic
 Metal attempt selects the new kernel and returns all 47 outputs exactly.
+
+The bounded 350M short trace through this path preserves all four established
+eager-Q8 sequences and 80/194 radix reuse. It observes ERS
+`0.38326789681891504` and median TTFT/TPOT `72.550/8.035 ms`; relative to the
+preceding vector-unpack observation, those values change by `-0.033392`,
+`+3.959 ms`, and `+1.135 ms`. The separate 2,048/4,096-token matrix preserves
+6/6 retrieval and token parity while median TPOT changes by
+`-10.083/-22.551 ms` and total latency by `-99.147/-289.810 ms`.
 
 Dependent cached-suffix replay now goes further: it unpacks the matched prefix
 once, then encodes each dependent decode schedule and its per-token cache

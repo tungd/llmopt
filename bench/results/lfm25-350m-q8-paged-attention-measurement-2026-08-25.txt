@@ -1,0 +1,107 @@
+LFM2.5-350M direct paged-Q8 attention native measurement
+Date: 2026-08-25
+Compiler commit: c8dc089
+
+Package
+-------
+- root: _artifacts/lfm25-350m-q8-paged-attention-replan-2026-08-25
+- model: LiquidAI/LFM2.5-350M
+- LFM2.5-2.6B: deferred; not loaded or executed
+- weights: all 93 linear modules Q8, including lm_head
+- graph commands: 810 prefill / 864 decode
+- package kernels: 73 / 71
+- opaque commands: 0 / 0
+- static tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes
+- runtime Q8 decode: 804 commands, 13 inputs, 6 direct paged attentions
+- runtime KV/recurrent format: Q8-group-64
+
+Native short-trace attempt
+--------------------------
+- preflight memory: 50% system-wide free
+- resident model/native processes: none
+- port 18097 and output path: unused before launch and released afterward
+- supervisor: one 240-second server-and-runner attempt; exit 0
+- token/checkpoint capacities: 512 / 128
+- warmup/scored requests: 4/4 and 4/4 successful
+- scored output mismatches: 0
+- exact established full-Q8 eager token parity: 4/4
+- scored cached prompt tokens: 80/194
+- memory after warmup/post-exit: 45% / 46% free
+- sampled server RSS: 65,456 KiB
+
+Current scored observation
+--------------------------
+- ERS: 0.38326789681891504
+- median TTFT: 72.54981249570847 ms
+- median TPOT: 8.034680504351854 ms
+- mean TTFT: 75.05977073742542 ms
+- mean TPOT: 7.93437150423415 ms
+
+Current minus previous vector-unpack observation
+------------------------------------------------
+- ERS: -0.03339199781233493
+- median TTFT: +3.959479508921504 ms
+- median TPOT: +1.1348958360031247 ms
+- mean TTFT: +4.2462189885554835 ms
+- mean TPOT: +0.8813020831439644 ms
+
+Per-request current evidence and vector-unpack deltas
+-----------------------------------------------------
+- c0000-t000: score 0.46660743766798474; TTFT 28.296915988903493 ms;
+  TPOT 8.581416681408882 ms; cached 0/39; IDs 1098,5706,803,4481;
+  delta score/TTFT/TPOT -0.039012490499120145/-3.3257920295000076/
+  +1.6867640078999102
+- c0000-t001: score 0.3190786083108672; TTFT 115.51016598241404 ms;
+  TPOT 7.069208329388251 ms; cached 42/61; IDs 41677,7,2,1;
+  delta +0.0026650152276584405/+9.952208027243614/-0.6748056815316286
+- c0001-t000: score 0.48998534607056954; TTFT 29.589459009002894 ms;
+  TPOT 7.4879443272948265 ms; cached 0/35; IDs 1098,5410,4100,856;
+  delta -0.03658803990545911/+2.878625993616879/+0.8192499905514223
+- c0001-t001: score 0.2574001952262388; TTFT 126.84254196938127 ms;
+  TPOT 8.59891667884464 ms; cached 38/59; IDs 31466,7,2,1;
+  delta -0.06063247607241873/+7.4798339628614485/+1.6940000156561528
+
+Fixed-output needle attempt
+---------------------------
+- preflight memory: 51% free; no resident model/native process
+- port 18098 and output path: unused before launch and released afterward
+- supervisor: one 900-second server-and-runner attempt; exit 0
+- token/checkpoint capacities: 32,768 / 512
+- memory after matrix/post-exit: 45% / 46% free
+- sampled server RSS after matrix: 69,424 KiB
+- successful requests: 6/6
+- retrieval: 6/6
+- exact established eager-Q8 12-token parity: 6/6
+- exact-only text formatting: 0/6 because fixed output is RAVEN-4271Lottery
+- cached prompt tokens: 0/18,432 across six distinct prompts
+- 2,048-token median TTFT/TPOT/latency:
+  1,239.5158750005066 / 24.747768909120087 / 1,509.9365829955786 ms
+- 4,096-token median TTFT/TPOT/latency:
+  2,903.4347910201177 / 41.48384854620831 / 3,353.581291041337 ms
+
+Needle current minus previous vector-unpack observation
+-------------------------------------------------------
+- 2,048-token median TTFT/TPOT/latency:
+  +10.036125022452325 / -10.082787908190351 / -99.1467090207152 ms
+- 4,096-token median TTFT/TPOT/latency:
+  -31.565208977553993 / -22.55124990849501 / -289.8096669232473 ms
+
+Raw artifacts
+-------------
+- current native ERS: _artifacts/native-http-q8-paged-attention-smoke-2026-08-25
+- current native needle: _artifacts/native-http-needle-q8-paged-attention-2026-08-25
+- previous native ERS: _artifacts/native-http-vector-cache-unpack-smoke-2026-08-25/scored.json
+- previous native needle: _artifacts/native-http-needle-vector-cache-unpack-2026-08-25/report.json
+
+Evidence boundary
+-----------------
+- Current and previous reports are separate non-interleaved single observations.
+- The Q8 path changes attention dataflow, kernel entry, runtime inputs, and
+  workspace while retaining model weights, cache format, capacities, request
+  traces, and radix policy.
+- Exact tokens and radix accounting are unchanged. The short trace observes
+  higher median TTFT/TPOT and lower ERS, while the separate long-context matrix
+  observes lower median TPOT and total latency at both lengths.
+- No eager process ran; parity uses the established full-Q8 short and fixed-12
+  references.
