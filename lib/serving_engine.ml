@@ -943,3 +943,60 @@ let prompt engine ~tokens =
 
 let stats engine = Serving_cache.stats engine.logical_cache
 let validate engine = Serving_cache.validate engine.logical_cache
+
+module Batch_item = struct
+  type decode_request = {
+    prefix : int array;
+    token : int;
+  }
+
+  type prefill_slice = {
+    tokens : int array;
+    offset : int;
+    length : int;
+  }
+end
+
+module Batch_result = struct
+  type t = {
+    decodes : (Step.t, string) result list;
+    prefill : (Step.t, string) result option;
+  }
+end
+
+let step_batch engine ~decodes ~prefill:prefill_slice_opt =
+  let decodes_results =
+    List.map
+      (fun (req : Batch_item.decode_request) ->
+        decode engine ~prefix:req.prefix ~token:req.token)
+      decodes
+  in
+  let prefill_result =
+    match prefill_slice_opt with
+    | None -> None
+    | Some (slice : Batch_item.prefill_slice) ->
+        let sub_tokens = Array.sub slice.tokens slice.offset slice.length in
+        let res =
+          if slice.offset = 0 then
+            let* p = prompt engine ~tokens:sub_tokens in
+            Ok (Prompt.step p)
+          else
+            let prefix = Array.sub slice.tokens 0 slice.offset in
+            let rec step_slice current_prefix idx =
+              if idx >= slice.length - 1 then
+                decode engine ~prefix:current_prefix ~token:sub_tokens.(idx)
+              else
+                let* _ = decode engine ~prefix:current_prefix ~token:sub_tokens.(idx) in
+                let next_prefix = Array.append current_prefix [| sub_tokens.(idx) |] in
+                step_slice next_prefix (idx + 1)
+            in
+            if slice.length = 0 then Error "prefill slice length must be positive"
+            else if slice.length = 1 then
+              decode engine ~prefix ~token:sub_tokens.(0)
+            else
+              step_slice prefix 0
+        in
+        Some res
+  in
+  Ok { Batch_result.decodes = decodes_results; prefill = prefill_result }
+

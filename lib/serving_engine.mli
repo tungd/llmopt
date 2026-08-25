@@ -14,6 +14,26 @@ module Prompt : sig
   val cached_tokens : t -> int
 end
 
+module Batch_item : sig
+  type decode_request = {
+    prefix : int array;
+    token : int;
+  }
+
+  type prefill_slice = {
+    tokens : int array;
+    offset : int;
+    length : int;
+  }
+end
+
+module Batch_result : sig
+  type t = {
+    decodes : (Step.t, string) result list;
+    prefill : (Step.t, string) result option;
+  }
+end
+
 type t
 
 val validate_packages :
@@ -33,5 +53,11 @@ val past_tokens : t -> int
 val prompt : t -> tokens:int array -> (Prompt.t, string) result
 val prefill : t -> tokens:int array -> (Step.t, string) result
 val decode : t -> prefix:int array -> token:int -> (Step.t, string) result
+val step_batch :
+  t ->
+  decodes:Batch_item.decode_request list ->
+  prefill:Batch_item.prefill_slice option ->
+  (Batch_result.t, string) result
+
 val stats : t -> Serving_cache.Stats.t
 val validate : t -> (unit, string) result
