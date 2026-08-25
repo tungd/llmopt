@@ -4,7 +4,7 @@ title: 'LFM2.5-350M PyTorch MPS comparison protocol'
 description: 'Record compiler and runtime measurements separately when comparing llmopt with eager PyTorch MPS on the same host.'
 tags: [benchmark, lfm2.5, pytorch, mps, apple-silicon]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T09:36:28Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T09:57:58Z' }
 sources:
   - id: local-protocol
     resource: /bench/README.md
@@ -19,8 +19,8 @@ sources:
     resource: /bench/racebench/http.py
     title: reference-style concurrent HTTP runner
   - id: current-native-result
-    resource: /bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt
-    title: Current native OCaml full-Q8 observation
+    resource: /bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt
+    title: Current native OCaml paired full-Q8 observation
 ---
 
 # Scope
@@ -127,18 +127,18 @@ changes by `+7.4727915052790195 ms`, median TPOT by
 is
 [`/bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt`](/bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt).
 
-# Current native full-Q8 observation
+# Current native paired full-Q8 observation
 
-The current bounded native trace uses the package with all 93 linears,
-including `lm_head`, quantized to Q8. It completes 4/4 warmup and 4/4 scored
-requests, matches all separately measured full-Q8 eager token IDs, and reuses
-80/194 prompt tokens. ERS is `0.3908962321067631`, median TTFT is
-`71.4766460005194 ms`, and median TPOT is `7.31056933485282 ms`. Relative to
-the preceding final-row FP16-head native observation, those values change by
-`+0.032049180526578736`, `-7.680833485210314 ms`, and
-`-0.989271007711066 ms`. The reports are separate non-interleaved single
+The current bounded native trace uses the paired-channel package with all 93
+linears, including `lm_head`, quantized to Q8. It completes 4/4 warmup and 4/4
+scored requests, matches all established full-Q8 eager token IDs, and reuses
+80/194 prompt tokens. ERS is `0.40701575836615456`, median TTFT is
+`75.22493749274872 ms`, and median TPOT is `6.936652838097264 ms`. Relative to
+the preceding single-channel full-Q8 observation, those values change by
+`+0.016119526259391448`, `+3.7482914922293276 ms`, and
+`-0.37391649675555616 ms`. The reports are separate non-interleaved single
 observations. The exact record is
-[`/bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](/bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
+[`/bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt`](/bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt).
 
 # Native long-context retrieval
 
@@ -149,9 +149,9 @@ match the first seven eager-Q8 IDs in every case. The existing benchmark forces
 historical normal-EOS observation is recorded in
 [`/bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).
 
-The current full-Q8 matrix completes 6/6 requests, retrieves the code in 6/6,
-and matches all 12 established eager-Q8 IDs in every case. Exact-only text is
-0/6 because the fixed continuation is `RAVEN-4271Lottery`. Median TTFT/TPOT is
-`1164.398/33.007 ms` for 2,048-token prompts and `2706.019/60.866 ms` for
+The current paired full-Q8 matrix completes 6/6 requests, retrieves the code
+in 6/6, and matches all 12 established eager-Q8 IDs in every case. Exact-only
+text is 0/6 because the fixed continuation is `RAVEN-4271Lottery`. Median TTFT/TPOT is
+`1160.473/33.729 ms` for 2,048-token prompts and `2701.152/62.192 ms` for
 4,096-token prompts. The observation is recorded in
-[`/bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](/bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
+[`/bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt`](/bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt).

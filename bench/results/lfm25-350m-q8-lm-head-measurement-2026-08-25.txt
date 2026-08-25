@@ -78,7 +78,7 @@ Q8-head fixed-output needle attempt
 - retrieval: 6/6
 - exact established eager-Q8 12-token parity: 6/6
 - exact-only text formatting: 0/6 because fixed output is RAVEN-4271Lottery
-- cached prompt tokens: 0/24,576 across six distinct prompts
+- cached prompt tokens: 0/18,432 across six distinct prompts
 - 2,048-token median TTFT/TPOT/latency: 1,164.3980839871801 / 33.00704163583842 / 1,527.4854999734089 ms
 - 4,096-token median TTFT/TPOT/latency: 2,706.0189999756403 / 60.8662159118632 / 3,380.614165973384 ms
 

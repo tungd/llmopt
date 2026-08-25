@@ -444,9 +444,20 @@ epilogues and returns 46/46 exact outputs. No model ERS run is included in that
 compiler result. See
 [`bench/results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt`](bench/results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt).
 
-The full-Q8 native HTTP needle runner also completed all six 2,048/4,096-token prompts
-with exact `RAVEN-4271` retrieval and all 12 eager-Q8 token IDs. Exact-only text
-is 0/6 because the pinned continuation decodes as `RAVEN-4271Lottery`. Median
+The bounded paired-package trace then preserves all four established full-Q8
+eager sequences and 80/194 radix reuse. It observes ERS
+`0.40701575836615456`, median TTFT `75.22493749274872 ms`, and median TPOT
+`6.936652838097264 ms`. Against the preceding single-channel report, those
+values change by `+0.016119526259391448`, `+3.7482914922293276 ms`, and
+`-0.37391649675555616 ms`; request-level changes are mixed. The paired needle
+matrix remains 6/6 for retrieval and 12-token parity, with median TTFT/TPOT
+`1160.473/33.729 ms` at 2,048 and `2701.152/62.192 ms` at 4,096 tokens. See
+[`bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt).
+
+The preceding single-channel full-Q8 native HTTP needle runner also completed
+all six 2,048/4,096-token prompts with exact `RAVEN-4271` retrieval and all 12
+eager-Q8 token IDs. Exact-only text is 0/6 because the pinned continuation
+decodes as `RAVEN-4271Lottery`. Median
 TTFT/TPOT is `1164.398/33.007 ms` at 2,048 tokens and `2706.019/60.866 ms` at
 4,096. See
 [`bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).

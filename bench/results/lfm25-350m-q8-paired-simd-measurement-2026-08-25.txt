@@ -1,0 +1,90 @@
+LFM2.5-350M paired SIMD-group Q8 native measurement
+Date: 2026-08-25
+Compiler commit: b88e385
+
+Package
+- root: _artifacts/lfm25-350m-q8-paired-simd-replan-2026-08-25
+- model: LiquidAI/LFM2.5-350M
+- weights: all 93 linear modules Q8, including lm_head
+- commands: 810 prefill / 864 decode
+- kernels: 68 / 66
+- opaque commands: 0 / 0
+- static tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes
+- runtime KV/recurrent format: Q8-group-64
+- one-token Q8 layout: two output channels per SIMD group
+
+Native ERS attempt
+- preflight memory: 57% system-wide free
+- resident model/native processes: none
+- port 18091 and output path: unused before launch and released afterward
+- supervisor: one 240-second server-and-runner attempt
+- token/checkpoint capacities: 512 / 128
+- warmup/scored requests: 4/4 and 4/4 successful
+- scored output mismatches: 0
+- exact scored token parity against the established full-Q8 eager run: 4/4
+- scored cached prompt tokens: 80/194
+- memory after warmup: 53% free
+- sampled server RSS: 113,824 KiB
+- post-run memory: 54% free; no resident server
+- warmup/scored JSON files are complete
+- supervisor shell exit: 143 because `set -e` propagated the server's expected TERM status from `wait` after both runner commands completed; no retry occurred
+
+Current paired scored observation
+- ERS: 0.40701575836615456
+- median TTFT: 75.22493749274872 ms
+- median TPOT: 6.936652838097264 ms
+- mean TTFT: 73.31890625937376 ms
+- mean TPOT: 7.178989583432364 ms
+- TPOT range: 6.7061389951656265 to 8.136513662369302 ms
+
+Previous single-channel full-Q8 observation
+- ERS: 0.3908962321067631
+- median TTFT: 71.4766460005194 ms
+- median TPOT: 7.31056933485282 ms
+- mean TTFT: 74.12735425168648 ms
+- mean TPOT: 7.808906249313926 ms
+
+Current-minus-previous native deltas
+- ERS: +0.016119526259391448
+- median TTFT: +3.7482914922293276 ms
+- median TPOT: -0.37391649675555616 ms
+- mean TTFT: -0.8084479923127219 ms
+- mean TPOT: -0.629916665881562 ms
+
+Per-request paired evidence and previous-native deltas
+- c0000-t000: score 0.4745575510227933; TTFT 42.120874975807965 ms; TPOT 7.055278013770779 ms; cached 0/39; IDs 1098,5706,803,4481; delta score/TTFT/TPOT -0.02406944227665625/+11.975457950029522/-0.12877763947471976
+- c0000-t001: score 0.34215770713460714; TTFT 108.32900000968948 ms; TPOT 6.8180276624237495 ms; cached 42/61; IDs 41677,7,2,1; delta +0.06902001780394112/-4.478874965570867/-2.612403011880816
+- c0001-t000: score 0.5248047323757427; TTFT 26.80754102766514 ms; TPOT 6.7061389951656265 ms; cached 0/35; IDs 1098,5410,4100,856; delta +0.022704334557012706/-1.3053759466856718/-0.5208886771773296
+- c0001-t001: score 0.28654304293147514; TTFT 116.01820902433246 ms; TPOT 8.136513662369302 ms; cached 38/59; IDs 31466,7,2,1; delta -0.00317680504673179/-9.424999007023871/+0.742402665006618
+
+Paired fixed-output needle attempt
+- preflight memory: 55% free; no resident model/native process
+- port 18092 and output path: unused before launch and released afterward
+- supervisor: one 900-second attempt; runner exited 0 in 18.8 seconds and the intentionally terminated server exited 143
+- token/checkpoint capacities: 32,768 / 512
+- memory after matrix/post-exit: 46% / 54% free
+- sampled server RSS after matrix: 713,952 KiB
+- successful requests: 6/6
+- retrieval: 6/6
+- exact established eager-Q8 12-token parity: 6/6
+- exact-only text formatting: 0/6 because fixed output is RAVEN-4271Lottery
+- cached prompt tokens: 0/18,432 across six distinct prompts
+- 2,048-token median TTFT/TPOT/latency: 1,160.472874995321 / 33.72942418156361 / 1,531.5087499911897 ms
+- 4,096-token median TTFT/TPOT/latency: 2,701.1522919638082 / 62.192352271681145 / 3,378.840334014967 ms
+
+Needle current-minus-single-channel deltas
+- 2,048-token median TTFT/TPOT/latency: -3.925208991859108 / +0.7223825457251891 / +4.023250017780811 ms
+- 4,096-token median TTFT/TPOT/latency: -4.866708011832088 / +1.3261363598179443 / -1.7738319584168494 ms
+
+Raw artifacts
+- paired native ERS: _artifacts/native-http-paired-simd-smoke-2026-08-25
+- paired native needle: _artifacts/native-http-needle-paired-simd-2026-08-25
+- previous single-channel native: _artifacts/native-http-q8-head-smoke-2026-08-25/scored.json
+- previous single-channel needle: _artifacts/native-http-needle-fixed12-q8-head-2026-08-25/report.json
+
+Evidence boundary
+- Current and previous reports are separate non-interleaved single observations.
+- The paired package changes one-token Q8 dispatch layout and adds kernel entries while retaining graph commands, weights, cache policy, capacities, and request traces.
+- No new eager process was loaded; parity uses the established full-Q8 eager short and 12-token references.
+- Short-trace TPOT improves in three of four requests and regresses in one; long-context median TPOT regresses at both lengths.

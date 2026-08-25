@@ -42,7 +42,7 @@ Correctness
 - Every output token SHA-256:
   386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8
 - Every prompt was constructed at its exact target length.
-- Cached prompt tokens: 0/24,576 across this six-distinct-prompt matrix.
+- Cached prompt tokens: 0/18,432 across this six-distinct-prompt matrix.
 
 Median measurements
 -------------------

@@ -289,6 +289,15 @@ synthetic Metal run selects all four paired epilogues with 46/46 exact outputs.
 That compiler-only record has no model latency or ERS observation. See
 [`results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt`](results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt).
 
+The paired package then completes 4/4 scored requests with exact established
+full-Q8 eager IDs and 80/194 radix reuse. ERS is `0.40701575836615456`, median
+TTFT is `75.22493749274872 ms`, and median TPOT is
+`6.936652838097264 ms`. Relative to the preceding single-channel package,
+those values change by `+0.016119526259391448`, `+3.7482914922293276 ms`, and
+`-0.37391649675555616 ms`. Its needle matrix retains 6/6 retrieval/parity;
+long-context TPOT changes by `+0.722/+1.326 ms`. See
+[`results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt`](results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh
@@ -309,9 +318,9 @@ preceded that default correction and used normal EOS stopping. Its historical
 boundary is recorded in
 [`results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).
 
-The current full-Q8 matrix completes 6/6 requests with 6/6 retrieval
-and exact parity against all 12 eager-Q8 IDs. Exact-only text remains 0/6
-because the pinned sequence decodes as `RAVEN-4271Lottery`. Median TTFT/TPOT
-is `1164.398/33.007 ms` at 2,048 tokens and `2706.019/60.866 ms` at 4,096
-tokens. See
+The preceding single-channel full-Q8 matrix completes 6/6 requests with 6/6
+retrieval and exact parity against all 12 eager-Q8 IDs. Exact-only text remains
+0/6 because the pinned sequence decodes as `RAVEN-4271Lottery`. Median
+TTFT/TPOT is `1164.398/33.007 ms` at 2,048 tokens and
+`2706.019/60.866 ms` at 4,096 tokens. See
 [`results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).

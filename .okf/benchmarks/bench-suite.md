@@ -4,7 +4,7 @@ title: 'LFM2.5 MPS ERS benchsuite'
 description: 'Racebench-compatible local MPS runner with the reference HTTP contract, shape-matched warmup, full workload shape, and natural needle-in-a-haystack validation.'
 tags: [benchmark, ERS, trace, needle, lfm2.5, mps]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-23T16:28:23Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T09:57:58Z' }
 sources:
   - id: score
     resource: /bench/racebench/score.py
@@ -57,6 +57,9 @@ sources:
   - id: result-native-cache-batching
     resource: /bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt
     title: native cache-submission batching result
+  - id: result-paired-simd
+    resource: /bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt
+    title: current paired full-Q8 native and needle result
   - id: result-preintegration
     resource: /_artifacts/lfm25-benchsuite-q8-radix-e3d0d15/result.json
     title: post-cache-implementation pre-integration observation
@@ -88,10 +91,10 @@ The same HTTP runner now drives the persistent native OCaml server. Native SSE
 events carry exact token IDs in addition to decoded text so special tokens and
 split UTF-8 scalars retain token-level timing. The first warmed serial smoke
 records 4/4 eager-Q8 token parity, 80/194 cached prompt tokens, native ERS
-`0.06169548638841863`, and eager ERS `0.36872784102635947`. The current native
-fixed-12-token long matrix retrieves 6/6 and matches all 12 eager-Q8 IDs in
-every request; exact-only text is 0/6. The native semantic 5x3 profile remains
-a separate measurement.
+`0.06169548638841863`, and eager ERS `0.36872784102635947`. The current paired
+native fixed-12-token long matrix retrieves 6/6 and matches all 12 eager-Q8 IDs
+in every request; exact-only text is 0/6. The native semantic 5x3 profile
+remains a separate measurement.
 
 Schedule-wide command-buffer batching preserves those four eager-Q8 sequences
 and 80/194 cached tokens. On the identical warmed serial trace, native ERS

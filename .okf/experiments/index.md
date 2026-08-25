@@ -64,3 +64,4 @@
 * [Q8-default LM-head compiler boundary](exp-0062-q8-lm-head-compiler.md) - the frontend quantizes the vocabulary projection and typed prefill specialization reduces it to one Q8 row.
 * [Full-Q8 LM-head capture and native measurement](exp-0063-q8-lm-head-measurement.md) - bounded 350M capture, exact short-trace parity, ERS 0.390896, and 6/6 long-context retrieval/token parity.
 * [Paired SIMD-group Q8 decode GEMV](exp-0064-paired-simd-q8-gemv.md) - two output channels share each activation vector load, halving one-token threadgroup scheduling with exact synthetic Metal outputs.
+* [Paired SIMD-group Q8 model measurement](exp-0065-paired-simd-measurement.md) - exact short and needle tokens with observed ERS 0.407016 and mixed latency deltas.
