@@ -272,6 +272,8 @@ target writes a plain-text report when explicitly launched.
 `--prefill-logits`. The latter writes exactly one raw little-endian FP16
 vocabulary row from the native Metal result so the same fixed input can be
 compared numerically with eager Q8 without serializing tensor data as JSON.
+The first bounded 350M comparison retained argmax token `19130` on both paths
+while measuring `max_abs=0.078125` and `mean_abs=0.014548537321388721`.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.

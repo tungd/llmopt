@@ -15,6 +15,9 @@ sources:
   - id: protocol
     resource: /bench/README.md
     title: Bounded comparison command
+  - id: evidence
+    resource: /bench/results/lfm25-350m-q8-native-logits-2026-08-25.txt
+    title: Memory-bounded 350M comparison
 ---
 
 # Boundary
@@ -30,11 +33,17 @@ It records both SHA-256 digests, exact byte equality, maximum and mean absolute
 error, eager/native argmax token IDs, and argmax parity. Tensor payloads remain
 raw little-endian FP16; JSON is not involved in this compiler/runtime boundary.
 
-# Static verification
+# Verification
 
 The OCaml test extracts the final row from a two-row byte buffer and retains
 the existing greedy tie and NaN checks. Python tests cover FP16 extraction,
 numeric comparison, argmax parity, and byte-length rejection. The full Ninja
-OCaml and Python test targets pass. No LFM2.5-350M model or Metal device ran in
-this implementation step, so the native-versus-eager numeric result remains
-open.
+OCaml and Python test targets pass.
+
+At 49% free memory with no resident model/native process, one supervised,
+sequential native-then-eager LFM2.5-350M Q8 attempt exited 0. The native raw row
+had exactly 131,072 bytes. Native and eager both selected token `19130`; their
+rows were not byte-exact, with maximum absolute difference `0.078125` and mean
+absolute difference `0.014548537321388721`. Memory was 41% free after both
+processes exited, with no model process left resident. This attempt ran no
+decode, ERS, or needle workload.

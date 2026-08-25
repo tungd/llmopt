@@ -142,6 +142,12 @@ The `.f16` artifact is one raw 65,536-element little-endian FP16 row
 maximum and mean absolute error, both argmax token IDs, and argmax parity. It
 does not use JSON for tensor transport.
 
+The first memory-bounded comparison used input IDs `1,2,3,4,5,6`. Native and
+eager Q8 both selected token `19130`; their FP16 rows were not byte-exact, with
+maximum absolute difference `0.078125` and mean absolute difference
+`0.014548537321388721`. The complete observation is recorded in
+[`results/lfm25-350m-q8-native-logits-2026-08-25.txt`](results/lfm25-350m-q8-native-logits-2026-08-25.txt).
+
 The protocol is JSON only at the OpenAI-compatible HTTP/SSE edge. FX graphs,
 compiled packages, weights, tokenizer state, schedules, KV state, and Metal
 dispatch do not use JSON. Each native SSE token event includes

@@ -1,0 +1,71 @@
+LFM2.5-350M Q8 native prefill-logit comparison
+================================================
+
+Scope
+-----
+- llmopt commit: 0e2ee03
+- model: LiquidAI/LFM2.5-350M
+- weights: Q8 weight-only, per-output-channel scale, 92 converted linear modules
+- KV format: Q8-group-64
+- input token IDs: 1,2,3,4,5,6
+- generated tokens: 1 prefill token; no decode step
+- package: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25
+- prefill/decode package inventory: 808/862 commands, 61/59 kernels, 0/0 opaque
+- tensor archive: 422,137,216 bytes, shared inode 241927011
+
+Safety and supervision
+----------------------
+- Preflight system-wide memory free: 49%.
+- No resident LFM, Torch benchmark, llmopt-serve, or serving-smoke process was present.
+- The output path was fresh and 25 GiB of filesystem capacity was available.
+- One sequential native-then-eager attempt ran under `gtimeout --signal=TERM
+  --kill-after=5s 240s` and exited 0.
+- Eager recorded 47% free before model load and 36% after inference while its
+  process was still alive. System-wide free memory was 41% after both processes
+  exited, and no model/native process remained resident.
+
+Native observation
+------------------
+- Device: Apple M4 Pro.
+- Native package load: 0.024276 s.
+- Native prefill: 0.298316 s.
+- Native prefill kernels: 458.
+- Native token: 19130.
+- Native raw last-row size: 131,072 bytes (65,536 little-endian FP16 values).
+- Native last-row SHA-256:
+  e95f3f9b7b3a30c8dda16d5a4a20c5be3fb78a6998cc638425850c986d107d38
+
+Eager-Q8 observation
+--------------------
+- Model load: 1.324521 s.
+- Prefill run: 0.370303 s.
+- Eager token: 19130.
+- Full eager prefill-logit SHA-256:
+  6c7083ead317dd83da30dffee9c2a30c19d09fdbff9e1a7396630c2f37682dcc
+- Eager last-row SHA-256:
+  0be46d92f5ecf3cdcc4d945d31a4385d2e4e4280f51a47b4a1d03d1bd2ae5d14
+
+Numeric comparison
+------------------
+- Byte exact: false.
+- Maximum absolute difference: 0.078125.
+- Mean absolute difference: 0.014548537321388721.
+- Eager argmax: 19130.
+- Native argmax: 19130.
+- Argmax parity: true.
+
+Artifacts
+---------
+- _artifacts/lfm25-350m-native-logits-vector-prefill-2026-08-25/native-prefill.f16
+- _artifacts/lfm25-350m-native-logits-vector-prefill-2026-08-25/native.txt
+- _artifacts/lfm25-350m-native-logits-vector-prefill-2026-08-25/comparison.txt
+- _artifacts/lfm25-350m-native-logits-vector-prefill-2026-08-25/reference.stdout.txt
+- _artifacts/lfm25-350m-native-logits-vector-prefill-2026-08-25/native.stderr.txt
+- _artifacts/lfm25-350m-native-logits-vector-prefill-2026-08-25/reference.stderr.txt
+
+Interpretation boundary
+-----------------------
+This probe establishes the native optimized schedule's numerical difference
+from eager Q8 at one fixed prefill boundary while preserving greedy argmax. It
+is one diagnostic observation, not a latency comparison. It ran no decode,
+ERS trace, radix-reuse comparison, or needle request.
