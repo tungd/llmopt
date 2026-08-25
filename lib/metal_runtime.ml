@@ -1469,7 +1469,7 @@ let same_value_metadata left right =
        (Ir.Value.logical_shape left)
        (Ir.Value.logical_shape right)
 
-let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
+let dispatch_q8_linear_batched batch runtime ~selection ~epilogue ~dtype ~input_value
     ~input_right_value ~weight_value ~input ~input_right ~weight ~scale ~bias
     ~residual ~output_value ~output ~m ~n ~k =
   let* () = validate_linear_shapes ~m ~n ~k input_value weight_value output_value in
@@ -1481,40 +1481,87 @@ let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
   in
   let operation = q8_operation epilogue in
   let* preferred_name = q8_kernel_name dtype ~m ~epilogue in
-  let candidates =
+  let legacy_candidates =
     if m = 1 then
       let* pair_name = q8_pair_kernel_name dtype epilogue in
       Ok
         (match q8_legacy_gemv_name dtype epilogue with
         | Some legacy ->
-            [ pair_name, Q8_decode_layout.Simd_pair;
-              preferred_name, Q8_decode_layout.Simd_single;
-              legacy, Q8_decode_layout.Scalar ]
+            [ pair_name, Q8_decode_layout.Simd_pair, None;
+              preferred_name, Q8_decode_layout.Simd_single, None;
+              legacy, Q8_decode_layout.Scalar, None ]
         | None ->
-            [ pair_name, Q8_decode_layout.Simd_pair;
-              preferred_name, Q8_decode_layout.Simd_single ])
-    else Ok [ preferred_name, Q8_decode_layout.Scalar ]
+            [ pair_name, Q8_decode_layout.Simd_pair, None;
+              preferred_name, Q8_decode_layout.Simd_single, None ])
+    else Ok [ preferred_name, Q8_decode_layout.Scalar, None ]
   in
-  let* candidates = candidates in
+  let selected_candidate =
+    match selection with
+    | None -> Ok None
+    | Some selected ->
+        let mode = Kernel_cost_model.mode selected in
+        let* name, layout, tile =
+          match mode with
+          | Kernel_cost_model.Gemv_pair ->
+              q8_pair_kernel_name dtype epilogue
+              |> Result.map (fun name ->
+                     (name, Q8_decode_layout.Simd_pair, None))
+          | Kernel_cost_model.Gemv_single ->
+              q8_kernel_name dtype ~m:1 ~epilogue
+              |> Result.map (fun name ->
+                     (name, Q8_decode_layout.Simd_single, None))
+          | Kernel_cost_model.Gemm ->
+              (match epilogue with
+              | Identity ->
+                  let name = Kernel_cost_model.kernel_name selected in
+                  let name =
+                    match dtype with
+                    | Ir.Dtype.Float32 -> name ^ "_f32"
+                    | Ir.Dtype.Float16 -> name
+                    | _ -> name
+                  in
+                  Ok
+                    ( name,
+                      Q8_decode_layout.Scalar,
+                      Some (Kernel_cost_model.tile selected) )
+              | (Silu | Add | Mul_add) ->
+                  q8_kernel_name dtype ~m ~epilogue
+                  |> Result.map (fun name ->
+                         (name, Q8_decode_layout.Scalar, None)))
+        in
+        Ok (Some (name, layout, tile))
+  in
+  let* selected_candidate = selected_candidate in
+  let* legacy_candidates = legacy_candidates in
+  let candidates =
+    match selected_candidate with
+    | None -> legacy_candidates
+    | Some selected -> selected :: legacy_candidates
+  in
   let rec select_kernel = function
     | [] ->
         Error
           ("serving package has no Q8 linear kernel for "
           ^ Ir.Dtype.to_string dtype)
-    | (name, layout) :: rest ->
+    | (name, layout, tile) :: rest ->
         (match q8_kernel ~name runtime ~operation dtype with
-        | Some entry -> Ok (entry, layout)
+        | Some entry -> Ok (entry, layout, tile)
         | None -> select_kernel rest)
   in
-  let* entry, layout = select_kernel candidates in
+  let* entry, layout, tile = select_kernel candidates in
   let bias_buffer, has_bias =
     match bias with Some buffer -> buffer, true | None -> scale, false
   in
+  let tile_m, tile_n =
+    match tile with
+    | Some (tile_m, tile_n, _) -> tile_m, tile_n
+    | None -> 16, 16
+  in
   let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
   let* grid_x =
-    if m = 1 then q8_decode_grid n layout else round_up n 16
+    if m = 1 then q8_decode_grid n layout else round_up n tile_n
   in
-  let* grid_y = if m = 1 then Ok 1 else round_up m 16 in
+  let* grid_y = if m = 1 then Ok 1 else round_up m tile_m in
   let* buffers =
     match epilogue, input_right, residual with
     | (Identity | Silu), None, None ->
@@ -1534,7 +1581,7 @@ let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
   dispatch ~batch runtime entry ~buffers ~parameters
     ~grid:(grid_x, grid_y, 1)
 
-let dispatch_q8_command batch runtime state ~epilogue ~m ~n ~k ~has_bias
+let dispatch_q8_command batch runtime state ~selection ~epilogue ~m ~n ~k ~has_bias
     values output =
   let* values, residual_value =
     match epilogue, List.rev values with
@@ -1624,7 +1671,7 @@ let dispatch_q8_command batch runtime state ~epilogue ~m ~n ~k ~has_bias
   in
   let* output_buffer = workspace_buffer state output in
   let* kernel =
-    dispatch_q8_linear_batched batch runtime ~epilogue
+    dispatch_q8_linear_batched batch runtime ~selection ~epilogue
       ~dtype:(Ir.Value.dtype output) ~input_value ~input_right_value ~weight_value
       ~input ~input_right ~weight ~scale ~bias ~residual ~output_value:output
       ~output:output_buffer ~m ~n ~k
@@ -1793,6 +1840,9 @@ let encode_schedule execution_batch ~schedule ~inputs =
           }
     | command :: rest ->
         let node_id = Serving_schedule.Command.node_id command in
+        let selection =
+          Serving_schedule.q8_selection schedule ~node_id
+        in
         let op = Serving_schedule.Command.op command in
         let command_inputs = Serving_schedule.Command.inputs command in
         let command_output = Serving_schedule.Command.output command in
@@ -2416,26 +2466,26 @@ let encode_schedule execution_batch ~schedule ~inputs =
                  ~grid:(Tensor_shape.numel (Ir.Value.logical_shape output), 1, 1))
         | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, values, Some output ->
             dispatched
-              (dispatch_q8_command batch runtime state ~epilogue:Identity ~m ~n ~k
-                 ~has_bias values output)
+              (dispatch_q8_command batch runtime state ~selection
+                 ~epilogue:Identity ~m ~n ~k ~has_bias values output)
         | ( Ir.Op.Q8_linear_silu { m; n; k; bias = has_bias },
             values,
             Some output ) ->
             dispatched
-              (dispatch_q8_command batch runtime state ~epilogue:Silu ~m ~n ~k
-                 ~has_bias values output)
+              (dispatch_q8_command batch runtime state ~selection ~epilogue:Silu
+                 ~m ~n ~k ~has_bias values output)
         | ( Ir.Op.Q8_linear_add { m; n; k; bias = has_bias },
             values,
             Some output ) ->
             dispatched
-              (dispatch_q8_command batch runtime state ~epilogue:Add ~m ~n ~k
-                 ~has_bias values output)
+              (dispatch_q8_command batch runtime state ~selection ~epilogue:Add
+                 ~m ~n ~k ~has_bias values output)
         | ( Ir.Op.Q8_linear_mul_add { m; n; k; bias = has_bias },
             values,
             Some output ) ->
             dispatched
-              (dispatch_q8_command batch runtime state ~epilogue:Mul_add ~m ~n
-                 ~k ~has_bias values output)
+              (dispatch_q8_command batch runtime state ~selection
+                 ~epilogue:Mul_add ~m ~n ~k ~has_bias values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue

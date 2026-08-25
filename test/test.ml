@@ -1656,6 +1656,30 @@ let () =
   let q8_program = expect_ok (Metal.lower q8_graph) in
   let q8_entries = Metal.Program.kernels q8_program in
   let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
+  let q8_command =
+    List.find
+      (fun command ->
+        match Serving_schedule.Command.op command with
+        | Ir.Op.Q8_linear _ -> true
+        | _ -> false)
+      (Serving_schedule.commands q8_schedule)
+  in
+  let q8_node_id = Serving_schedule.Command.node_id q8_command in
+  let q8_selection =
+    match Serving_schedule.q8_selection q8_schedule ~node_id:q8_node_id with
+    | Some selection -> selection
+    | None -> fail "Q8 schedule did not record a cost-model selection"
+  in
+  expect (Kernel_cost_model.mode q8_selection = Kernel_cost_model.Gemm)
+    "multi-row Q8 schedule records a GEMM cost-model selection";
+  let q8_schedule_roundtrip =
+    q8_schedule |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes
+    |> expect_ok
+  in
+  expect
+    (Serving_schedule.q8_selection q8_schedule_roundtrip ~node_id:q8_node_id
+    = Some q8_selection)
+    "Q8 cost-model selection survives schedule round trip";
   expect (List.length q8_entries = 22) "Q8 Metal kernel ABI entries";
   List.iter
     (fun (tile_m, tile_n, tile_k) ->

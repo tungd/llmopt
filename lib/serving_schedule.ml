@@ -40,7 +40,10 @@ module Tensor_input = struct
   let value input = input.value
 end
 
-type t = { commands : Command.t list }
+type t = {
+  commands : Command.t list;
+  q8_selections : (int * Kernel_cost_model.selection) list;
+}
 
 let commands schedule = schedule.commands
 
@@ -573,9 +576,26 @@ let validate_command seen_values command =
                  command.Command.node_id)
         | _ -> Ok ()
 
-let create commands =
+let q8_selection_for_command device command =
+  match command.Command.op with
+  | Ir.Op.Q8_linear { m; n; k; _ }
+  | Ir.Op.Q8_linear_silu { m; n; k; _ }
+  | Ir.Op.Q8_linear_add { m; n; k; _ }
+  | Ir.Op.Q8_linear_mul_add { m; n; k; _ } ->
+      let selection =
+        match Kernel_cost_model.select_optimal_tile ~m ~n ~k ~device with
+        | Ok selection -> selection
+        | Error _ -> Kernel_cost_model.Gemm_16x16x64
+      in
+      Some (command.Command.node_id, selection)
+  | _ -> None
+
+let create ?(device = Kernel_cost_model.Device.default) commands =
+  let q8_selections commands =
+    List.filter_map (q8_selection_for_command device) commands
+  in
   let rec loop seen_nodes seen_values previous_node_id = function
-    | [] -> Ok { commands }
+    | [] -> Ok { commands; q8_selections = q8_selections commands }
     | command :: rest ->
         if Int_set.mem command.Command.node_id seen_nodes then
           Error
@@ -595,7 +615,7 @@ let create commands =
   in
   loop Int_set.empty Int_set.empty (-1) commands
 
-let of_graph graph =
+let of_graph ?device graph =
   graph |> Ir.Graph.nodes
   |> List.map (fun node ->
          {
@@ -604,7 +624,10 @@ let of_graph graph =
            inputs = Ir.node_inputs node;
            output = Ir.node_output node;
          })
-  |> create
+  |> create ?device
+
+let q8_selection schedule ~node_id =
+  List.assoc_opt node_id schedule.q8_selections
 
 let tensor_inputs schedule =
   schedule.commands
@@ -2114,7 +2137,7 @@ let to_bytes schedule =
     schedule.commands;
   Binary.Writer.contents writer
 
-let of_bytes bytes =
+let of_bytes ?device bytes =
   let reader = Binary.Reader.create bytes in
   let* actual_magic = Binary.Reader.raw_string reader ~length:(String.length magic) in
   if actual_magic <> magic then Error "invalid serving schedule magic"
@@ -2159,4 +2182,4 @@ let of_bytes bytes =
       in
       let* commands = read_values [] count in
       let* () = Binary.Reader.finish reader in
-      create commands
+      create ?device commands
