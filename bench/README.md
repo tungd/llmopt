@@ -148,6 +148,37 @@ maximum absolute difference `0.078125` and mean absolute difference
 `0.014548537321388721`. The complete observation is recorded in
 [`results/lfm25-350m-q8-native-logits-2026-08-25.txt`](results/lfm25-350m-q8-native-logits-2026-08-25.txt).
 
+## Kernel cost-model sweep
+
+`bench_kernel_sweep.py` profiles isolated Q8 linear dispatches over a stable
+Cartesian product of `M`, `N`, `K`, and `Tm x Tn x Tk` values. Each JSONL row
+contains one sample latency in microseconds and the median for that shape/tile
+sample set, along with host and GPU metadata. The device path warms the
+generated Metal dispatch and synchronizes around each measurement; it does not
+load a model or run a model forward pass.
+
+Run the deterministic pipeline check without MPS:
+
+```sh
+python3 bench/bench_kernel_sweep.py --dry-run --samples 5
+```
+
+This writes five rows for the small default fixture to
+`bench/results/kernel_sweep_dataset.jsonl`. Device collection uses the full
+default shape grid and the currently generated `16x16x64` entry point:
+
+```sh
+python3 bench/bench_kernel_sweep.py \
+  --library _build/q8-fx-example/kernel.metallib \
+  --samples 25 --warmup 5
+```
+
+Pass comma-separated shape values such as `--m 1,13,128,4096` and
+semicolon-separated tile values such as `--tiles 16x16x64;32x8x64` when
+profiling generated tile variants. The native bridge currently dispatches the
+fixed `llmopt_q8_linear` entry point; additional tile entry points are added by
+the parameterized MSL work.
+
 The protocol is JSON only at the OpenAI-compatible HTTP/SSE edge. FX graphs,
 compiled packages, weights, tokenizer state, schedules, KV state, and Metal
 dispatch do not use JSON. Each native SSE token event includes
