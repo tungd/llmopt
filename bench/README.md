@@ -329,6 +329,14 @@ exact Q8/FP16 attention and recurrent data. This compiler-only record has no
 model latency or ERS observation. See
 [`results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt`](results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt).
 
+The vec4 package preserves 4/4 short-trace eager token sequences and 80/194
+reuse while observing ERS `0.41665989463124997` and median TTFT/TPOT
+`68.59033298678696/6.89978466834873 ms`. Relative to SIMD-pack Q8, those values
+change by `+0.014504803224463791`, `-4.54179200460203 ms`, and
+`-0.4078611673321575 ms`. The separate long matrix retains 6/6 retrieval and
+12-token parity but observes TTFT/TPOT increases at both lengths. See
+[`results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt`](results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

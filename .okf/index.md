@@ -89,3 +89,4 @@ okf_version: '0.2'
 * [SIMD-group Q8 cache packing](experiments/exp-0067-simd-q8-cache-pack.md) - attention and recurrent quantization use one SIMD group per Q8 group.
 * [SIMD Q8 cache-pack measurement](experiments/exp-0068-simd-q8-cache-pack-measurement.md) - bounded 350M token, radix, latency, and ERS evidence.
 * [Vectorized Q8 cache unpack](experiments/exp-0069-vector-q8-cache-unpack.md) - vec4 attention and recurrent restoration with scalar fallback.
+* [Vector Q8 cache-unpack measurement](experiments/exp-0070-vector-q8-cache-unpack-measurement.md) - bounded 350M trace and long-context evidence.

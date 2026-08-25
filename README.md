@@ -490,6 +490,15 @@ Q8/FP16 attention and recurrent round trips. No model or ERS request is
 included in that compiler result. See
 [`bench/results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt).
 
+The bounded vec4-package trace preserves all four eager token sequences and
+80/194 radix reuse while observing ERS `0.41665989463124997` and median
+TTFT/TPOT `68.59033298678696/6.89978466834873 ms`. Against the preceding
+SIMD-pack Q8 report, those values change by `+0.014504803224463791`,
+`-4.54179200460203 ms`, and `-0.4078611673321575 ms`. Its separate needle
+matrix remains 6/6 for retrieval and 12-token parity, but median TTFT/TPOT is
+higher at both 2,048 and 4,096 tokens. See
+[`bench/results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt).
+
 The preceding single-channel full-Q8 native HTTP needle runner also completed
 all six 2,048/4,096-token prompts with exact `RAVEN-4271` retrieval and all 12
 eager-Q8 token IDs. Exact-only text is 0/6 because the pinned continuation

@@ -1,0 +1,88 @@
+LFM2.5-350M vectorized Q8 cache-unpack native measurement
+Date: 2026-08-25
+Compiler commit: b89862d
+
+Package
+- root: _artifacts/lfm25-350m-q8-vector-cache-unpack-replan-2026-08-25
+- model: LiquidAI/LFM2.5-350M
+- weights: all 93 linear modules Q8, including lm_head
+- commands: 810 prefill / 864 decode
+- kernels: 72 / 70
+- opaque commands: 0 / 0
+- static tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes
+- runtime KV/recurrent format: Q8-group-64
+- Q8 cache transfer: SIMD-group pack plus vec4 unpack
+
+Native ERS attempt
+- preflight memory: 57% system-wide free
+- resident model/native processes: none
+- port 18095 and output path: unused before launch and released afterward
+- supervisor: one 240-second server-and-runner attempt
+- token/checkpoint capacities: 512 / 128
+- warmup/scored requests: 4/4 and 4/4 successful
+- scored output mismatches: 0
+- exact scored token parity against the preceding SIMD-pack package and established full-Q8 eager run: 4/4
+- scored cached prompt tokens: 80/194
+- memory after warmup/post-exit: 48% / 48% free
+- sampled server RSS: 112,080 KiB
+- server exit: 143 after intentional TERM; supervising attempt exited 0
+
+Current vec4-unpack scored observation
+- ERS: 0.41665989463124997
+- median TTFT: 68.59033298678696 ms
+- median TPOT: 6.89978466834873 ms
+- mean TTFT: 70.81355174886994 ms
+- mean TPOT: 7.053069421090186 ms
+
+Current-minus-previous SIMD-pack Q8 deltas
+- ERS: +0.014504803224463791
+- median TTFT: -4.54179200460203 ms
+- median TPOT: -0.4078611673321575 ms
+- mean TTFT: -1.7378024786012247 ms
+- mean TPOT: -0.2664375788299367 ms
+
+Current Q8 minus previous FP16-cache observation
+- ERS: -0.013043320444070139
+- median TTFT: -0.5728960095439106 ms
+- median TPOT: +0.20157633116468787 ms
+- mean TTFT: +1.6034264990594238 ms
+- mean TPOT: +0.3029479169830056 ms
+
+Per-request current evidence and SIMD-pack deltas
+- c0000-t000: score 0.5056199281671049; TTFT 31.6227080184035 ms; TPOT 6.894652673508972 ms; cached 0/39; IDs 1098,5706,803,4481; delta score/TTFT/TPOT +0.030847540276672025/-11.521416949108243/-0.08944466632480452
+- c0000-t001: score 0.31641359308320877; TTFT 105.55795795517042 ms; TPOT 7.744014010919879 ms; cached 42/61; IDs 41677,7,2,1; delta -0.005377969045379183/+2.437832939904183/+0.022833351977169514
+- c0001-t000: score 0.5265733859760287; TTFT 26.710833015386015 ms; TPOT 6.668694336743404 ms; cached 0/35; IDs 1098,5410,4100,856; delta +0.039092227231270704/-2.1354169584810734/-0.9624999947845936
+- c0001-t001: score 0.31803267129865753; TTFT 119.36270800651982 ms; TPOT 6.904916663188487 ms; cached 38/59; IDs 31466,7,2,1; delta -0.006542585564708381/+4.267791053280234/-0.03663900618751814
+
+Fixed-output needle attempt
+- preflight memory: 57% free; no resident model/native process
+- port 18096 and output path: unused before launch and released afterward
+- supervisor: one 900-second attempt; runner and supervisor exited 0, intentionally terminated server exited 143
+- token/checkpoint capacities: 32,768 / 512
+- memory after matrix/post-exit: 47% / 48% free
+- sampled server RSS after matrix: 548,304 KiB
+- successful requests: 6/6
+- retrieval: 6/6
+- exact established eager-Q8 12-token parity: 6/6
+- exact-only text formatting: 0/6 because fixed output is RAVEN-4271Lottery
+- cached prompt tokens: 0/18,432 across six distinct prompts
+- 2,048-token median TTFT/TPOT/latency: 1,229.4797499780543 / 34.83055681731044 / 1,609.0832920162939 ms
+- 4,096-token median TTFT/TPOT/latency: 2,934.9999999976717 / 64.03509845470332 / 3,643.3909579645842 ms
+
+Needle current-minus-prior-paired deltas
+- 2,048-token median TTFT/TPOT/latency: +69.00687498273328 / +1.1011326357468292 / +77.57454202510417 ms
+- 4,096-token median TTFT/TPOT/latency: +233.84770803386346 / +1.8427461830221716 / +264.55062394961715 ms
+
+Raw artifacts
+- current native ERS: _artifacts/native-http-vector-cache-unpack-smoke-2026-08-25
+- current native needle: _artifacts/native-http-needle-vector-cache-unpack-2026-08-25
+- previous SIMD-pack trace: _artifacts/native-http-simd-cache-pack-smoke-2026-08-25/scored.json
+- previous paired needle: _artifacts/native-http-needle-paired-simd-2026-08-25/report.json
+- previous paired FP16 cache: _artifacts/native-http-paired-simd-fp16-kv-smoke-2026-08-25/scored.json
+
+Evidence boundary
+- Current and previous reports are separate non-interleaved single observations.
+- The package changes Q8 unpack vector width and launch geometry while retaining graph commands, weights, cache format, capacities, request traces, and radix policy.
+- Exact tokens and radix accounting are unchanged. The short trace observes lower medians and higher ERS, while the separate long-context matrix observes higher TTFT, TPOT, and latency at both lengths.
+- No eager process ran; parity uses the established full-Q8 short and fixed-12 references.

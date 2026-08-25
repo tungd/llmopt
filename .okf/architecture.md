@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T10:23:44Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T10:28:14Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -93,6 +93,9 @@ sources:
   - id: vector-cache-unpack-result
     resource: /bench/results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt
     title: Vectorized Q8 cache-unpack compiler evidence
+  - id: vector-cache-unpack-measurement
+    resource: /bench/results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt
+    title: Vectorized Q8 cache-unpack model measurement
 ---
 
 # Overview
@@ -201,6 +204,13 @@ The subsequent Q8 package uses SIMD-group pack kernels and completes the same
 preceding paired Q8-cache observation, those values change by `-0.004861`,
 `-2.093 ms`, and `+0.371 ms`; the separate FP16-cache median TPOT remains
 `0.609 ms` lower than this Q8 observation.
+
+Adding vec4 Q8 unpack preserves the same short-trace tokens and reuse while
+observing ERS `0.41665989463124997` and median TTFT/TPOT `68.590/6.900 ms`.
+Against SIMD-pack Q8, those values change by `+0.014505`, `-4.542 ms`, and
+`-0.408 ms`. Its separate 2,048/4,096-token matrix remains 6/6 for retrieval
+and 12-token parity, but median TTFT/TPOT is higher by
+`69.007/1.101 ms` and `233.848/1.843 ms` respectively.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed
