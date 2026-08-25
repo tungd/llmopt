@@ -276,6 +276,45 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d paged Q8 attention metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Rms_rope config,
+            [ input; weight; cosine; sine ],
+            Some output ) ->
+            let metadata_matches =
+              match
+                Tensor_shape.dimensions (Ir.Value.logical_shape input),
+                Tensor_shape.dimensions (Ir.Value.logical_shape weight),
+                Tensor_shape.dimensions (Ir.Value.logical_shape cosine),
+                Tensor_shape.dimensions (Ir.Value.logical_shape sine),
+                Tensor_shape.dimensions (Ir.Value.logical_shape output)
+              with
+              | ( [ batches; tokens; heads; width ],
+                  [ weight_width ],
+                  [ cosine_batches; 1; cosine_tokens; cosine_width ],
+                  [ sine_batches; 1; sine_tokens; sine_width ],
+                  [ output_batches; output_heads; output_tokens; output_width ] ) ->
+                  width = 2 * Ir.Rms_rope.half_dimension config
+                  && weight_width = width
+                  && (cosine_batches = 1 || cosine_batches = batches)
+                  && sine_batches = cosine_batches
+                  && cosine_tokens = tokens && sine_tokens = tokens
+                  && cosine_width = width && sine_width = width
+                  && output_batches = batches && output_heads = heads
+                  && output_tokens = tokens && output_width = width
+              | _ -> false
+            in
+            if
+              metadata_matches
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && Ir.Value.dtype weight = Ir.Dtype.Float16
+              && Ir.Value.dtype cosine = Ir.Dtype.Float16
+              && Ir.Value.dtype sine = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d RMSNorm-RoPE metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive Ir.Primitive.Embedding,
             [ indices; weight ],
             Some output ) ->
@@ -721,6 +760,9 @@ module Lfm25 = struct
     | Ir.Op.Primitive primitive, inputs ->
         primitive_shape substitutions original primitive inputs
     | Ir.Op.Rms_norm _, [ input; _weight ] -> Ok (Ir.Value.logical_shape input)
+    | Ir.Op.Rms_rope _, input :: _ ->
+        Tensor_shape.transpose (Ir.Value.logical_shape input) ~axis0:1 ~axis1:2
+        |> shape_error
     | Ir.Op.Gelu, [ input ]
     | Ir.Op.Relu, [ input ] -> Ok (Ir.Value.logical_shape input)
     | Ir.Op.Add _, [ left; right ] ->
@@ -1792,6 +1834,10 @@ let write_op writer = function
       Binary.Writer.u8 writer 19;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
+  | Ir.Op.Rms_rope config ->
+      Binary.Writer.u8 writer 20;
+      Binary.Writer.float64 writer (Ir.Rms_rope.epsilon config);
+      Binary.Writer.u64 writer (Ir.Rms_rope.half_dimension config)
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -1875,6 +1921,11 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Q8_linear_mul_add { m; n; k; bias })
+  | 20 ->
+      let* epsilon = Binary.Reader.float64 reader in
+      let* half_dimension = Binary.Reader.u64 reader in
+      Ir.Rms_rope.create ~epsilon ~half_dimension
+      |> Result.map (fun config -> Ir.Op.Rms_rope config)
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"
@@ -1882,7 +1933,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 11;
+  Binary.Writer.u16 writer 12;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -1905,7 +1956,7 @@ let of_bytes bytes =
     if
       version <> 1 && version <> 2 && version <> 3 && version <> 4
       && version <> 5 && version <> 6 && version <> 7 && version <> 8
-      && version <> 9 && version <> 10 && version <> 11
+      && version <> 9 && version <> 10 && version <> 11 && version <> 12
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else

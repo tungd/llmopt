@@ -2479,8 +2479,8 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 11)
-    "serving package uses binary ABI version 11";
+    (Bytes.get_uint16_le serving_bytes 8 = 12)
+    "serving package uses binary ABI version 12";
   let package_v7 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v7 8 7;
   ignore (Serving_package.of_bytes package_v7 |> expect_ok);
@@ -2742,6 +2742,145 @@ let () =
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Movement)
     |> List.length = 11)
     "RMSNorm graph emits the materialized movement kernel family";
+  let rms_rope_graph = Ir.Graph.create () in
+  let rms_rope_input =
+    Ir.Graph.tensor_input rms_rope_graph ~name:"rms_rope_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 2; 4 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let rms_rope_weight =
+    Ir.Graph.tensor_input rms_rope_graph ~name:"rms_rope_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let rms_rope_cosine =
+    Ir.Graph.tensor_input rms_rope_graph ~name:"rms_rope_cosine"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 1; 4 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let rms_rope_sine =
+    Ir.Graph.tensor_input rms_rope_graph ~name:"rms_rope_sine"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 1; 4 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let append op inputs shape dtype =
+    let output =
+      Ir.Graph.fresh_tensor_value rms_rope_graph
+        ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+    in
+    Ir.Graph.append rms_rope_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let pointwise_binary operation left right shape =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( operation,
+                 Ir.Pointwise.Tensor left,
+                 Ir.Pointwise.Tensor right ))))
+      [ left; right ] shape Ir.Dtype.Float16
+  in
+  let rms_rope_cast =
+    append (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+      [ rms_rope_input ] [ 1; 1; 2; 4 ] Ir.Dtype.Float32
+  in
+  let rms_rope_norm =
+    append (Ir.Op.Rms_norm { epsilon = 0.0 })
+      [ rms_rope_cast; rms_rope_weight ] [ 1; 1; 2; 4 ] Ir.Dtype.Float16
+  in
+  let rms_rope_transpose =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+      [ rms_rope_norm ] [ 1; 2; 1; 4 ] Ir.Dtype.Float16
+  in
+  let rms_rope_direct =
+    pointwise_binary Ir.Pointwise.Mul rms_rope_transpose rms_rope_cosine
+      [ 1; 2; 1; 4 ]
+  in
+  let rope_index start =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start; step = 1; length = 2 } ]
+    |> expect_ok
+  in
+  let rms_rope_low =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (rope_index 0))))
+      [ rms_rope_transpose ] [ 1; 2; 1; 2 ] Ir.Dtype.Float16
+  in
+  let rms_rope_high =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index (rope_index 2))))
+      [ rms_rope_transpose ] [ 1; 2; 1; 2 ] Ir.Dtype.Float16
+  in
+  let rms_rope_negated =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Neg, rms_rope_high))))
+      [ rms_rope_high ] [ 1; 2; 1; 2 ] Ir.Dtype.Float16
+  in
+  let rms_rope_rotated =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 3 })))
+      [ rms_rope_negated; rms_rope_low ] [ 1; 2; 1; 4 ] Ir.Dtype.Float16
+  in
+  let rms_rope_rotated =
+    pointwise_binary Ir.Pointwise.Mul rms_rope_rotated rms_rope_sine
+      [ 1; 2; 1; 4 ]
+  in
+  let rms_rope_output =
+    pointwise_binary Ir.Pointwise.Add rms_rope_direct rms_rope_rotated
+      [ 1; 2; 1; 4 ]
+  in
+  Ir.Graph.add_output rms_rope_graph ~name:"rms_rope" rms_rope_output;
+  let rms_rope_optimized = Passes.fuse_rms_rope rms_rope_graph in
+  expect (List.length (Ir.Graph.nodes rms_rope_optimized) = 6)
+    "RMSNorm-RoPE fusion replaces ten commands with one";
+  expect
+    (Ir.Graph.nodes rms_rope_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Rms_rope config, [ input; weight; cosine; sine ] ->
+               Ir.Value.equal input rms_rope_input
+               && Ir.Value.equal weight rms_rope_weight
+               && Ir.Value.equal cosine rms_rope_cosine
+               && Ir.Value.equal sine rms_rope_sine
+               && Ir.Rms_rope.half_dimension config = 2
+           | _ -> false))
+    "RMSNorm-RoPE fusion records typed source tensors and half dimension";
+  let rms_rope_schedule =
+    rms_rope_optimized |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands rms_rope_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Rms_rope config -> Ir.Rms_rope.half_dimension config = 2
+           | _ -> false))
+    "binary schedule preserves fused RMSNorm-RoPE";
+  let rms_rope_program = Metal.lower rms_rope_optimized |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source rms_rope_program)
+       "kernel void llmopt_rms_rope_f16_simd_h64")
+    "Metal lowering emits fused RMSNorm-RoPE";
+  expect
+    (Metal.Program.kernels rms_rope_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Rms_rope))
+    "Metal lowering declares the fused RMSNorm-RoPE ABI";
   let primitive_schedule =
     primitive_graph |> Serving_schedule.of_graph |> expect_ok
   in

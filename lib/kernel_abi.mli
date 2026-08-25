@@ -9,6 +9,7 @@ module Operation : sig
     | Q8_linear_mul_add
     | Q8_dequantize
     | Rms_norm
+    | Rms_rope
     | Short_conv
     | Attention
     | Embedding

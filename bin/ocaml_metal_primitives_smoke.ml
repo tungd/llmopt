@@ -69,6 +69,31 @@ let expect_bytes execution name expected =
       (Printf.sprintf "%s mismatch: expected=%s actual=%s" name
          (hex expected) (hex actual))
 
+let expect_rms_rope_values bytes =
+  let rows = 4 in
+  let width = 64 in
+  if Bytes.length bytes <> rows * width * 2 then
+    fail
+      (Printf.sprintf "RMSNorm-RoPE result has %d bytes instead of %d"
+         (Bytes.length bytes) (rows * width * 2));
+  for row = 0 to rows - 1 do
+    for column = 0 to width - 1 do
+      let actual = Bytes.get_uint16_le bytes (2 * ((row * width) + column)) in
+      if column = 32 then (
+        let expected = if row mod 2 = 0 then 0x4800 else 0xc800 in
+        if actual <> expected then
+          fail
+            (Printf.sprintf
+               "RMSNorm-RoPE row %d column %d expected 0x%04x, got 0x%04x"
+               row column expected actual))
+      else if actual land 0x7fff <> 0 then
+        fail
+          (Printf.sprintf
+             "RMSNorm-RoPE row %d column %d expected signed zero, got 0x%04x"
+             row column actual)
+    done
+  done
+
 let usage () =
   prerr_endline "usage: llmopt-ocaml-metal-primitives-smoke <package-directory>";
   exit 64
@@ -76,6 +101,12 @@ let usage () =
 let () =
   if Array.length Sys.argv <> 2 then usage ();
   let root = Sys.argv.(1) in
+  let rms_rope_input_values =
+    List.init (4 * 64) (fun index ->
+        if index mod 64 <> 0 then 0
+        else if index / 64 < 2 then 0x3c00
+        else 0xbc00)
+  in
   let package =
     Serving_package.of_file (Filename.concat root "package.llmopt") |> expect_ok
   in
@@ -97,6 +128,13 @@ let () =
             (bytes_of_f32 [ 1.; 0.; 0.; 0.; 0.; 1.; 0.; 0. ]);
           input runtime "rms_weight"
             (bytes_of_u16 [ 0x3c00; 0x3c00; 0x3c00; 0x3c00 ]);
+          input runtime "rms_rope_input" (bytes_of_u16 rms_rope_input_values);
+          input runtime "rms_rope_weight"
+            (bytes_of_u16 (List.init 64 (Fun.const 0x3c00)));
+          input runtime "rms_rope_cosine"
+            (bytes_of_u16 (List.init 128 (Fun.const 0)));
+          input runtime "rms_rope_sine"
+            (bytes_of_u16 (List.init 128 (Fun.const 0x3c00)));
           input runtime "short_input"
             (bytes_of_u16
                [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4500; 0x4600; 0x4700;
@@ -202,6 +240,11 @@ let () =
   expect_bytes execution "gather2" (bytes_of_i64 [ 22; 20; 21 ]);
   expect_bytes execution "rms_norm"
     (bytes_of_u16 [ 0x4000; 0; 0; 0; 0; 0x4000; 0; 0 ]);
+  let rms_rope_reference = output execution "rms_rope_reference" in
+  let rms_rope_fused = output execution "rms_rope" in
+  if not (Bytes.equal rms_rope_fused rms_rope_reference) then
+    fail "fused RMSNorm-RoPE differs byte-for-byte from its materialized GPU chain";
+  expect_rms_rope_values rms_rope_reference;
   expect_bytes execution "short_conv"
     (bytes_of_u16
        [ 0xbc00; 0xc000; 0xc000; 0xc000; 0x4200; 0x4400; 0x4100; 0x4800;
@@ -280,17 +323,17 @@ let () =
       "fused Q8 multiplied input differs from materialized multiply and residual";
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 48 then
+  if List.length kernels <> 59 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 48"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 59"
          (List.length kernels));
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
-  if workspace_bytes <> 11_776 then
+  if workspace_bytes <> 12_800 then
     fail
-      (Printf.sprintf "native fixture workspace is %d bytes instead of 11776"
+      (Printf.sprintf "native fixture workspace is %d bytes instead of 12800"
          workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 47 exact\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\nq8-decode-kernel: llmopt_q8_gemv_pair_simd\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu_pair_simd\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add_pair_simd\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add_pair_simd\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 49 exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\nq8-decode-kernel: llmopt_q8_gemv_pair_simd\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu_pair_simd\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add_pair_simd\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add_pair_simd\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

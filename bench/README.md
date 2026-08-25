@@ -357,6 +357,15 @@ retrieval and 12-token parity while median TPOT changes by
 `-99.1467090207152/-289.8096669232473 ms`. See
 [`results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt`](results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt).
 
+The latest RMSNorm–RoPE compiler pass turns twelve 10-command query/key chains
+across the 6 attention layers into twelve fused kernels, eliminating 108 commands
+from both prefill and decode schedules (prefill: 810 → 702; decode: 864 → 756;
+specialized decode: 756 → 696). The clean device probe verifies 49 exact fixture
+outputs on Apple M4 Pro. This compiler record contains no model ERS or needle
+measurement. See
+[`results/lfm25-350m-q8-rms-rope-compiler-2026-08-25.txt`](results/lfm25-350m-q8-rms-rope-compiler-2026-08-25.txt).
+
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

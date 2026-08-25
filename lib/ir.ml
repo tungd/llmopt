@@ -196,6 +196,24 @@ module Attention = struct
     Printf.sprintf "attention(scale=%.9g,causal=%b)" config.scale config.causal
 end
 
+module Rms_rope = struct
+  type t = { epsilon : float; half_dimension : int }
+
+  let create ~epsilon ~half_dimension =
+    if not (Float.is_finite epsilon) then
+      Error "RMSNorm-RoPE epsilon must be finite"
+    else if half_dimension <= 0 then
+      Error "RMSNorm-RoPE half dimension must be positive"
+    else Ok { epsilon; half_dimension }
+
+  let epsilon config = config.epsilon
+  let half_dimension config = config.half_dimension
+
+  let to_string config =
+    Printf.sprintf "rms-rope(eps=%.9g,half=%d)" config.epsilon
+      config.half_dimension
+end
+
 module Paged_attention_q8 = struct
   type t = {
     scale : float;
@@ -355,6 +373,7 @@ module Op = struct
     | Gelu
     | Relu
     | Rms_norm of { epsilon : float }
+    | Rms_rope of Rms_rope.t
     | Primitive of Primitive.t
     | Opaque of {
         op : string;
@@ -394,6 +413,7 @@ module Op = struct
     | Gelu -> "gelu"
     | Relu -> "relu"
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
+    | Rms_rope config -> Rms_rope.to_string config
     | Primitive primitive -> Primitive.to_string primitive
     | Opaque { op; target; _ } -> Printf.sprintf "opaque(%s,%s)" op target
     | Output { name } -> Printf.sprintf "output(%s)" name

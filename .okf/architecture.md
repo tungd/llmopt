@@ -66,6 +66,9 @@ sources:
   - id: paged-q8-attention-measurement
     resource: /bench/results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt
     title: Direct paged-Q8 attention model evidence
+  - id: rms-rope-result
+    resource: /bench/results/lfm25-350m-q8-rms-rope-compiler-2026-08-25.txt
+    title: RMSNorm-RoPE compiler fusion evidence
   - id: local-radix-cache
     resource: /lib/radix_cache.ml
     title: OCaml compressed radix prefix cache
@@ -527,6 +530,16 @@ preceding vector-unpack observation, those values change by `-0.033392`,
 `+3.959 ms`, and `+1.135 ms`. The separate 2,048/4,096-token matrix preserves
 6/6 retrieval and token parity while median TPOT changes by
 `-10.083/-22.551 ms` and total latency by `-99.147/-289.810 ms`.
+
+Attention query and key paths now fuse RMSNorm, head transposition, and rotary
+position embedding (RoPE) into a single typed `Rms_rope` IR operation. The
+`Passes.fuse_rms_rope` optimizer matches twelve 10-command chains across the 6
+attention layers and lowers them to the `llmopt_rms_rope_f16_simd_h64` Metal kernel.
+Prefill commands reduce from 810 to 702 (74 package kernels), decode from 864 to
+756 (72 package kernels), and specialized decode from 756 to 696 (a 108 command
+reduction per schedule). The clean device probe verifies 49 exact fixture outputs
+on Apple M4 Pro.
+
 
 Dependent cached-suffix replay now goes further: it unpacks the matched prefix
 once, then encodes each dependent decode schedule and its per-token cache

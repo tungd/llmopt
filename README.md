@@ -535,6 +535,7 @@ typed graph + schedule timeline
         │ pure passes
         ├── linear/bias fusion
         ├── RMSNorm fusion (implemented)
+        ├── RMSNorm-RoPE fusion (implemented)
         ├── one-row Q8 decode specialization (implemented)
         ├── Q8 linear/SiLU epilogue fusion (implemented)
         ├── Q8 linear/residual epilogue fusion (implemented)
@@ -572,17 +573,17 @@ OCaml serving runtime
 diagnostic; neither is a serving input. Set `LLMOPT_FX_DIAGNOSTICS=1` to emit
 optional `fx.json` and `runtime.json` files. The native runtime consumes only
 `package.llmopt`, the declared `.metallib`, and `weights.llmopt`. Package ABI
-v11 references weight-archive ABI v1, declares fused Q8-SiLU, Q8-residual,
-multiplied-input Q8 down-projection, and cache conversion kernels, and retains
-read compatibility with ABI v2 through v10; neither file contains JSON.
+v12 references weight-archive ABI v1, declares fused RMSNorm-RoPE, fused Q8-SiLU,
+Q8-residual, multiplied-input Q8 down-projection, and cache conversion kernels,
+and retains read compatibility with ABI v2 through v11; neither file contains JSON.
 
 The current full-Q8 capture contains 1,157-node prefill and 1,197-node decode
-graphs. Compilation emits ABI-v11 packages with 810/864 commands, 60/58
-kernels, zero opaque commands, and all 243 tensor bindings validated. Sixteen
-Q8-linear/SiLU, 32 Q8-linear/residual, and sixteen multiplied-input down
-projection boundaries per stage become tiled prefill or one-row decode
-kernels; FP16/Q8 cache conversion and ordinary Q8 GEMM/GEMV remain separate
-families. The packages share one 489,377,152-byte binary tensor archive.
+graphs. Compilation emits ABI-v12 packages with 702/756 commands (696 in
+specialized decode), 74/72 kernels, zero opaque commands, and all 243 tensor
+bindings validated. Twelve RMSNorm-RoPE, sixteen Q8-linear/SiLU, 32 Q8-linear/residual,
+and sixteen multiplied-input down projection boundaries per stage become tiled prefill
+or one-row decode kernels; FP16/Q8 cache conversion and ordinary Q8 GEMM/GEMV remain
+separate families. The packages share one 489,377,152-byte binary tensor archive.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

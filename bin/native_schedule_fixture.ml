@@ -89,6 +89,88 @@ let graph () =
     [ 1; 2; 4 ] Ir.Dtype.Float16
   |> output graph "rms_norm";
 
+  let rms_rope_input =
+    input graph "rms_rope_input" [ 1; 2; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rms_rope_weight =
+    input graph "rms_rope_weight" [ 64 ] Ir.Dtype.Float16
+  in
+  let rms_rope_cosine =
+    input graph "rms_rope_cosine" [ 1; 1; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rms_rope_sine =
+    input graph "rms_rope_sine" [ 1; 1; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rms_rope_binary operation left right shape =
+    primitive graph
+      (Ir.Primitive.Pointwise
+         (Ir.Pointwise.Binary
+            ( operation,
+              Ir.Pointwise.Tensor left,
+              Ir.Pointwise.Tensor right )))
+      [ left; right ] shape Ir.Dtype.Float16
+  in
+  let rms_rope_cast =
+    primitive graph (Ir.Primitive.Cast Ir.Dtype.Float32) [ rms_rope_input ]
+      [ 1; 2; 2; 64 ] Ir.Dtype.Float32
+  in
+  let rms_rope_normalized =
+    command graph (Ir.Op.Rms_norm { epsilon = 0.0 })
+      [ rms_rope_cast; rms_rope_weight ] [ 1; 2; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rms_rope_transposed =
+    primitive graph
+      (Ir.Primitive.Movement
+         (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 }))
+      [ rms_rope_normalized ] [ 1; 2; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rms_rope_direct =
+    rms_rope_binary Ir.Pointwise.Mul rms_rope_transposed rms_rope_cosine
+      [ 1; 2; 2; 64 ]
+  in
+  let rope_half start =
+    index
+      [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 };
+        Tensor_shape.Index.Slice { start; step = 1; length = 32 } ]
+  in
+  let rms_rope_low =
+    primitive graph
+      (Ir.Primitive.Movement (Ir.Movement.Index (rope_half 0)))
+      [ rms_rope_transposed ] [ 1; 2; 2; 32 ] Ir.Dtype.Float16
+  in
+  let rms_rope_high =
+    primitive graph
+      (Ir.Primitive.Movement (Ir.Movement.Index (rope_half 32)))
+      [ rms_rope_transposed ] [ 1; 2; 2; 32 ] Ir.Dtype.Float16
+  in
+  let rms_rope_negated =
+    primitive graph
+      (Ir.Primitive.Pointwise
+         (Ir.Pointwise.Unary (Ir.Pointwise.Neg, rms_rope_high)))
+      [ rms_rope_high ] [ 1; 2; 2; 32 ] Ir.Dtype.Float16
+  in
+  let rms_rope_rotated =
+    primitive graph
+      (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 3 }))
+      [ rms_rope_negated; rms_rope_low ] [ 1; 2; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rms_rope_turned =
+    rms_rope_binary Ir.Pointwise.Mul rms_rope_rotated rms_rope_sine
+      [ 1; 2; 2; 64 ]
+  in
+  rms_rope_binary Ir.Pointwise.Add rms_rope_direct rms_rope_turned
+    [ 1; 2; 2; 64 ]
+  |> output graph "rms_rope_reference";
+  let rms_rope =
+    expect_ok (Ir.Rms_rope.create ~epsilon:0.0 ~half_dimension:32)
+  in
+  command graph (Ir.Op.Rms_rope rms_rope)
+    [ rms_rope_input; rms_rope_weight; rms_rope_cosine; rms_rope_sine ]
+    [ 1; 2; 2; 64 ] Ir.Dtype.Float16
+  |> output graph "rms_rope";
+
   let short_input = input graph "short_input" [ 1; 2; 4 ] Ir.Dtype.Float16 in
   let short_weight = input graph "short_weight" [ 2; 1; 3 ] Ir.Dtype.Float16 in
   let short_conv =

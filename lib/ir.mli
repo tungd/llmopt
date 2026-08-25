@@ -103,6 +103,15 @@ module Attention : sig
   val to_string : t -> string
 end
 
+module Rms_rope : sig
+  type t
+
+  val create : epsilon:float -> half_dimension:int -> (t, string) result
+  val epsilon : t -> float
+  val half_dimension : t -> int
+  val to_string : t -> string
+end
+
 module Paged_attention_q8 : sig
   type t
 
@@ -202,6 +211,7 @@ module Op : sig
     | Gelu
     | Relu
     | Rms_norm of { epsilon : float }
+    | Rms_rope of Rms_rope.t
     | Primitive of Primitive.t
     | Opaque of {
         op : string;

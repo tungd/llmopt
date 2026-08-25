@@ -9,6 +9,7 @@ module Operation = struct
     | Q8_linear_mul_add
     | Q8_dequantize
     | Rms_norm
+    | Rms_rope
     | Short_conv
     | Attention
     | Embedding
@@ -34,6 +35,7 @@ module Operation = struct
     | Q8_linear_mul_add -> "q8-linear-mul-add"
     | Q8_dequantize -> "q8-dequantize"
     | Rms_norm -> "rms-norm"
+    | Rms_rope -> "rms-rope"
     | Short_conv -> "short-conv"
     | Attention -> "attention"
     | Embedding -> "embedding"
@@ -59,6 +61,7 @@ module Operation = struct
     | "q8-linear-mul-add" -> Ok Q8_linear_mul_add
     | "q8-dequantize" -> Ok Q8_dequantize
     | "rms-norm" -> Ok Rms_norm
+    | "rms-rope" -> Ok Rms_rope
     | "short-conv" -> Ok Short_conv
     | "attention" -> Ok Attention
     | "embedding" -> Ok Embedding

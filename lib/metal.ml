@@ -1424,6 +1424,63 @@ let rms_norm_entries =
       ~operation:Kernel_abi.Operation.Rms_norm
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let rms_rope_source =
+  "\nconstant uint RMS_ROPE_SIMD_WIDTH = 32;\n"
+  ^ "constant uint RMS_ROPE_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct RmsRopeParams {\n"
+  ^ "  uint batches; uint tokens; uint heads; uint width;\n"
+  ^ "  uint half_dimension; uint trig_batches; float epsilon;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_rms_rope_f16_simd_h64(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device const half* cosine [[buffer(2)]],\n"
+  ^ "    device const half* sine [[buffer(3)]],\n"
+  ^ "    device half* output [[buffer(4)]],\n"
+  ^ "    constant RmsRopeParams& params [[buffer(5)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_ROPE_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  const uint rows = params.batches * params.heads * params.tokens;\n"
+  ^ "  if (row >= rows) return;\n"
+  ^ "  const uint batch = row / (params.heads * params.tokens);\n"
+  ^ "  const uint head_token = row % (params.heads * params.tokens);\n"
+  ^ "  const uint head = head_token / params.tokens;\n"
+  ^ "  const uint token = head_token % params.tokens;\n"
+  ^ "  const uint input_row = (batch * params.tokens + token) * params.heads + head;\n"
+  ^ "  const uint input_base = input_row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[input_base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  const uint trig_batch = params.trig_batches == 1 ? 0 : batch;\n"
+  ^ "  const uint trig_base = (trig_batch * params.tokens + token) * params.width;\n"
+  ^ "  const uint output_base = row * params.width;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_SIMD_WIDTH) {\n"
+  ^ "    const half normalized = half(float(input[input_base + col]) * inverse\n"
+  ^ "        * float(weight[col]));\n"
+  ^ "    const uint rotated_col = col < params.half_dimension\n"
+  ^ "        ? col + params.half_dimension : col - params.half_dimension;\n"
+  ^ "    half rotated = half(float(input[input_base + rotated_col]) * inverse\n"
+  ^ "        * float(weight[rotated_col]));\n"
+  ^ "    if (col < params.half_dimension) rotated = -rotated;\n"
+  ^ "    const half direct = half(normalized * cosine[trig_base + col]);\n"
+  ^ "    const half turned = half(rotated * sine[trig_base + col]);\n"
+  ^ "    output[output_base + col] = half(direct + turned);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let rms_rope_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Rms_rope
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let short_conv_source =
   "\nstruct ShortConvParams {\n"
   ^ "  uint batches; uint channels; uint input_width; uint output_width;\n"
@@ -2170,6 +2227,11 @@ let has_rms_norm graph =
   |> List.exists (fun node ->
          match Ir.node_op node with Ir.Op.Rms_norm _ -> true | _ -> false)
 
+let has_rms_rope graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with Ir.Op.Rms_rope _ -> true | _ -> false)
+
 let has_short_conv graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -2443,6 +2505,7 @@ let lower graph =
     [ has_q8 graph, q8_source, q8_entries graph;
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
+      has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_short_conv graph, short_conv_source, short_conv_entries;
       has_attention graph, attention_source, attention_entries;
       has_embedding graph, embedding_source, embedding_entries;

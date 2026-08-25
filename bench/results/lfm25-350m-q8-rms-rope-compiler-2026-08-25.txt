@@ -1,0 +1,66 @@
+LFM2.5-350M RMSNorm-RoPE compiler fusion result
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Scope
+-----
+- primary model: LiquidAI/LFM2.5-350M
+- deferred model: LiquidAI/LFM2.5-2.6B; not loaded or executed
+- input: the saved full-Q8 prefill/decode LLMOPTFX graphs
+- Q8-group-64 remains the default KV format; FP16 remains selectable
+
+Compiler and runtime rewrite
+----------------------------
+- Added typed Rms_rope IR operation, schedule serialization, and Metal lowering.
+- Passes.fuse_rms_rope identifies the twelve 10-command RMSNorm -> transpose -> RoPE
+  subgraphs (cast, RMSNorm, transpose, direct cosine mul, slices, neg, concat,
+  sine mul, add) across the 6 attention layers and folds each into one Rms_rope op.
+- Generated llmopt_rms_rope_f16_simd_h64 Metal kernel executes RMSNorm, half-dimension
+  rotation, cosine/sine scaling, and transposition in SIMD groups with width 64.
+- Package ABI v12 and serving schedule version 12 retain backwards compatibility
+  with versions 1 through 11.
+
+Full-Q8 offline package evidence
+--------------------------------
+- package root: _artifacts/lfm25-350m-q8-rms-rope-replan-2026-08-25
+- graph commands: 702 prefill / 756 decode (reduced by 108 commands from 810 / 864)
+- package kernels: 74 prefill / 72 decode
+- opaque commands: 0 / 0
+- tensor bindings: 243 / 243
+- shared binary tensor archive: one inode, 489,377,152 bytes
+- package bytes: 87,274 / 90,757
+- MSL bytes: 127,213 / 127,708
+- AIR bytes: 89,888 / 89,760
+- metallib bytes: 423,212 / 416,946
+
+Specialized decode evidence
+---------------------------
+- Q8: 696 commands (reduced from 756), 13 runtime inputs, 6 paged-Q8 attention commands
+- Workspaces:
+  - prefill-13 / 128 / 4,096: 676,864 / 5,525,504 / 184,680,448 bytes
+  - decode-past-1 / 127 / 4,095: 171,008 / 172,800 / 199,424 bytes
+
+Exact Metal probe
+-----------------
+- preflight: 50% system-wide free memory, no resident model/native process
+- supervisor: one 60-second attempt on Apple M4 Pro; exit 0
+- commands: 178
+- dispatched kernels: 59
+- workspace: 12,800 bytes
+- outputs: 49 exact
+- selected entry: llmopt_rms_rope_f16_simd_h64 (exact vs reference)
+- paged attention: llmopt_attention_q8_paged_simd_h64 (exact vs reference)
+- raw artifact: _artifacts/rms-rope-device-clean-2026-08-25.txt
+
+Static validation
+-----------------
+- ninja -f ninja.build all test ocaml-metal-primitives-smoke
+- 42 Python tests and the OCaml test suite pass
+- both full-Q8 MSL stages compile and both package checks pass
+- Q8 and FP16 LFM serving-pair checks pass
+
+Evidence boundary
+-----------------
+- This compiler record does not contain model latency, ERS, or needle results.
+- The complete 350M ERS and needle comparison has not yet been rerun after RMS–RoPE,
+  so there is no measured latency or ESR delta for this latest fusion.

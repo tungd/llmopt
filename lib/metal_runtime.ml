@@ -446,6 +446,16 @@ module Parameters = struct
     Bytes.set_int32_le bytes 8 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let rms_rope ~batches ~tokens ~heads ~width ~half_dimension ~trig_batches
+      ~epsilon =
+    let bytes = Bytes.make 28 '\000' in
+    let* () =
+      u32s [ batches; tokens; heads; width; half_dimension; trig_batches ]
+      |> Result.map (fun encoded -> Bytes.blit encoded 0 bytes 0 24)
+    in
+    Bytes.set_int32_le bytes 24 (Int32.bits_of_float epsilon);
+    Ok bytes
+
   let arange ~count ~start ~step =
     let bytes = Bytes.make 24 '\000' in
     let* () = set_u32 bytes 0 count in
@@ -2070,6 +2080,66 @@ let encode_schedule execution_batch ~schedule ~inputs =
                 ~parameters ~grid:(grid_x, 1, 1)
             in
             dispatched (Ok (bind_value state output output_buffer, kernel))
+        | ( Ir.Op.Rms_rope config,
+            [ input; weight; cosine; sine ],
+            Some output ) ->
+            let* batches, tokens, heads, width =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
+              | [ batches; tokens; heads; width ]
+                when batches > 0 && tokens > 0 && heads > 0 && width > 0 ->
+                  Ok (batches, tokens, heads, width)
+              | _ -> Error "Metal RMSNorm-RoPE input must have rank four"
+            in
+            let* trig_batches =
+              match
+                Tensor_shape.dimensions (Ir.Value.logical_shape cosine),
+                Tensor_shape.dimensions (Ir.Value.logical_shape sine)
+              with
+              | ( [ cosine_batches; 1; cosine_tokens; cosine_width ],
+                  [ sine_batches; 1; sine_tokens; sine_width ] )
+                when (cosine_batches = 1 || cosine_batches = batches)
+                     && sine_batches = cosine_batches
+                     && cosine_tokens = tokens && sine_tokens = tokens
+                     && cosine_width = width && sine_width = width ->
+                  Ok cosine_batches
+              | _ ->
+                  Error "Metal RMSNorm-RoPE trigonometric tables are inconsistent"
+            in
+            let half_dimension = Ir.Rms_rope.half_dimension config in
+            let output_shape =
+              Tensor_shape.dimensions (Ir.Value.logical_shape output)
+            in
+            if width <> 2 * half_dimension then
+              Error "Metal RMSNorm-RoPE width is inconsistent with its half dimension"
+            else if
+              Tensor_shape.dimensions (Ir.Value.logical_shape weight) <> [ width ]
+              || output_shape <> [ batches; heads; tokens; width ]
+              || Ir.Value.dtype input <> Ir.Dtype.Float16
+              || Ir.Value.dtype weight <> Ir.Dtype.Float16
+              || Ir.Value.dtype cosine <> Ir.Dtype.Float16
+              || Ir.Value.dtype sine <> Ir.Dtype.Float16
+              || Ir.Value.dtype output <> Ir.Dtype.Float16
+            then Error "Metal RMSNorm-RoPE tensor metadata is inconsistent"
+            else
+              let* buffers = find_values state [ input; weight; cosine; sine ] in
+              let* parameters =
+                Parameters.rms_rope ~batches ~tokens ~heads ~width
+                  ~half_dimension ~trig_batches
+                  ~epsilon:(Ir.Rms_rope.epsilon config)
+              in
+              let* entry =
+                kernel_entry ~name:"llmopt_rms_rope_f16_simd_h64" runtime
+                  ~operation:Kernel_abi.Operation.Rms_rope
+                  ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+              in
+              let* grid_x = simd_rows_grid (batches * heads * tokens) in
+              let* output_buffer = workspace_buffer state output in
+              let* kernel =
+                dispatch ~batch runtime entry
+                  ~buffers:(buffers @ [ output_buffer ]) ~parameters
+                  ~grid:(grid_x, 1, 1)
+              in
+              dispatched (Ok (bind_value state output output_buffer, kernel))
         | ( Ir.Op.Primitive Ir.Primitive.Embedding,
             [ indices; weight ],
             Some output ) ->
