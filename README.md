@@ -143,21 +143,22 @@ complete schedule execution, request-length specialization, and repeated
 radix-backed decode are implemented. Native tokenizer/chat integration and the
 HTTP/SSE request owner are implemented; native long-context needle execution
 has 6/6 retrieval and complete eager-Q8 parity across the corrected pinned
-12-token matrix, while the broader scored profile remains separate. The bounded use-cache capture produced
-separate prefill and one-token decode graphs with one physical
-422,137,216-byte archive. Offline replanning produces 872 prefill commands and
-926 decode commands, both with zero opaque operations; both generated MSL
-programs compile and their serving packages validate all 241 static bindings.
+12-token matrix, while the broader scored profile remains separate. The
+current full-Q8 capture produces separate prefill and one-token decode graphs
+with one physical 489,377,152-byte archive. Compilation produces 810 prefill
+commands and 864 decode commands, both with zero opaque operations; both
+generated MSL programs compile and their serving packages validate all 243
+static bindings.
 Native execution covers every built-in, cast, pointwise, movement,
 reduction, recurrent-update, and final float16-linear kernel family required by
 those packages. Offline planning reduces the prefill workspace from 9,855,488
 aligned bytes without reuse to a 1,153,792-byte high-water mark and decode from
 2,151,680 to 271,360 bytes for the captured shapes. Typed specialization also
 plans real prefill lengths 13/128/4,096 and decode-past lengths 1/127/4,095.
-One native Q8 run executed prefill plus three decode steps with radix hits at
-prefixes 6/7/8 and exactly matched eager tokens
-`19130,11040,11207,1414`. Batched command-buffer execution and one-row Q8 GEMV
-dispatch are implemented. The boundary is documented in
+The current native Q8 run completes 4/4 warmup and 4/4 scored requests with
+80/194 cached prompt tokens and exact full-Q8 eager token sequences. Batched
+command-buffer execution and one-row Q8 GEMV dispatch are implemented. The
+boundary is documented in
 [the OKF architecture](.okf/architecture.md).
 
 ## Build and run
@@ -408,8 +409,7 @@ The model measurement is in
 [`bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
 The serving prefill specializer selects the final hidden row before an FP16 or
-Q8 LM head, producing `[1,1,65536]` instead of full-sequence logits. The
-currently measured ABI-v11 package uses its historical FP16 tied head. At
+Q8 LM head, producing `[1,1,65536]` instead of full-sequence logits. At
 4,096 tokens, that output allocation is 131,072 bytes instead of 536,870,912
 bytes and the complete planned workspace is 184,680,448 bytes. One bounded
 LFM2.5-350M run preserves 4/4 exact eager-Q8 scored sequences and 80/194 radix
@@ -421,12 +421,25 @@ first-turn TTFT samples change by `-28.875/-26.258 ms`, while cached second
 turns change by `+0.878/+2.180 ms`. See
 [`bench/results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt).
 
-The native HTTP needle runner also completed all six 2,048/4,096-token prompts
+The current capture quantizes all 93 linear modules, including `lm_head`, while
+retaining the tied FP16 token embedding. Its 810/864-command, 60/58-kernel
+packages have zero opaque commands and share one 489,377,152-byte archive with
+243 tensors. One bounded native run preserves 4/4 full-Q8 eager sequences and
+80/194 radix reuse while observing ERS `0.3908962321067631`, median TTFT
+`71.4766460005194 ms`, and median TPOT `7.31056933485282 ms`. Against the
+preceding final-row FP16-head native report, the observed changes are
+`+0.032049180526578736`, `-7.680833485210314 ms`, and
+`-0.989271007711066 ms`. Capture and runtime evidence are in
+[`bench/results/lfm25-350m-q8-lm-head-capture-2026-08-25.txt`](bench/results/lfm25-350m-q8-lm-head-capture-2026-08-25.txt)
+and
+[`bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
+
+The full-Q8 native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval and all 12 eager-Q8 token IDs. Exact-only text
 is 0/6 because the pinned continuation decodes as `RAVEN-4271Lottery`. Median
-TTFT/TPOT is `2859.034/34.252 ms` at 2,048 tokens and `6540.756/65.629 ms` at
+TTFT/TPOT is `1164.398/33.007 ms` at 2,048 tokens and `2706.019/60.866 ms` at
 4,096. See
-[`bench/results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt`](bench/results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt).
+[`bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
 
 ## Architecture
 
@@ -483,15 +496,13 @@ v11 references weight-archive ABI v1, declares fused Q8-SiLU, Q8-residual,
 multiplied-input Q8 down-projection, and cache conversion kernels, and retains
 read compatibility with ABI v2 through v10; neither file contains JSON.
 
-The preserved 1,155-node prefill graph encodes as 253,354 binary bytes versus
-776,844 diagnostic JSON bytes; the 1,195-node decode graph encodes as 259,928
-bytes versus 796,970. Exact Python round trips preserve both manifests. Offline
-binary-input replanning emits ABI-v11 packages with 808/862 commands, 60/58
-kernels, zero opaque commands, and all 241 tensor bindings validated. Sixteen
+The current full-Q8 capture contains 1,157-node prefill and 1,197-node decode
+graphs. Compilation emits ABI-v11 packages with 810/864 commands, 60/58
+kernels, zero opaque commands, and all 243 tensor bindings validated. Sixteen
 Q8-linear/SiLU, 32 Q8-linear/residual, and sixteen multiplied-input down
 projection boundaries per stage become tiled prefill or one-row decode
 kernels; FP16/Q8 cache conversion and ordinary Q8 GEMM/GEMV remain separate
-families. No model load or device dispatch was used for that replan.
+families. The packages share one 489,377,152-byte binary tensor archive.
 
 The Python backend invokes the OCaml planner and returns `DirectMpsExecutable`,
 which calls the generated FX GraphModule directly through PyTorch MPS. When the

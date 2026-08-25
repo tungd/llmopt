@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T08:40:41Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T09:36:28Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -72,6 +72,9 @@ sources:
   - id: sglang-mamba-radix-cache
     resource: https://github.com/sgl-project/sglang/blob/d1af3c89233c475fc1bf11939d86787e6cddd58c/python/sglang/srt/mem_cache/mamba_radix_cache.py
     title: SGLang hybrid recurrent-cache reference revision
+  - id: current-full-q8-result
+    resource: /bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt
+    title: Current full-Q8 native serving observation
 ---
 
 # Overview
@@ -117,9 +120,10 @@ diagnostics; neither format is read by serving.
 | serving prefix lookup, eviction, and cache ownership | OCaml serving runtime |
 | serving KV format policy and slot allocation | OCaml serving runtime |
 
-The cache rows and standalone OCaml Metal primitives are implemented. The
-model-level execution path still uses the Python/PyTorch bridge because the
-complete LFM2.5 Q8 schedule is not yet interpreted inside the OCaml process.
+The direct FX callable remains a PyTorch MPS comparison path. Separately, the
+native OCaml server loads and executes the complete captured LFM2.5-350M
+prefill/decode package, owns radix and physical Q8 KV/recurrent state, and
+serves the HTTP/SSE benchmark without Python or PyTorch in its hot path.
 
 # Current scope
 
@@ -158,8 +162,9 @@ checkpoint `MTLBuffer` pools. Package ABI v8 declares eight cache entries and
 adds source slicing for decode append, while retaining ABI-v2 through ABI-v7
 reads. `Serving_engine` now coordinates model execution, slot/checkpoint
 reservation, physical packing, radix insertion, leased prefix reuse, state
-unpacking, and rollback. One fixed model run reused all six prefill positions
-and appended a seventh Q8 slot; request-level ownership remains open.
+unpacking, and rollback. The current serial HTTP trace completes 4/4 warmup
+and 4/4 scored requests, reuses 80/194 prompt tokens, and matches all full-Q8
+eager output sequences.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed

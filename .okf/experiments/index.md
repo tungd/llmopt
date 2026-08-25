@@ -62,3 +62,4 @@
 * [Serving-only last-token vocabulary projection](exp-0060-last-token-vocab-projection.md) - typed prefill specialization projects one FP16 vocabulary row and avoids the full-sequence logits allocation.
 * [Last-token vocabulary projection model measurement](exp-0061-last-token-projection-measurement.md) - one bounded 350M run preserves exact tokens and 80/194 reuse while observing ERS 0.358847.
 * [Q8-default LM-head compiler boundary](exp-0062-q8-lm-head-compiler.md) - the frontend quantizes the vocabulary projection and typed prefill specialization reduces it to one Q8 row.
+* [Full-Q8 LM-head capture and native measurement](exp-0063-q8-lm-head-measurement.md) - bounded 350M capture, exact short-trace parity, ERS 0.390896, and 6/6 long-context retrieval/token parity.

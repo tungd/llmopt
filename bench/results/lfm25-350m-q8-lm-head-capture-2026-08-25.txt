@@ -1,0 +1,57 @@
+LFM2.5-350M full-Q8 LM-head capture
+Date: 2026-08-25
+Compiler commit: 158fe10
+
+Safety and supervision
+- model: LiquidAI/LFM2.5-350M from the complete local checkpoint
+- preflight memory: 42% system-wide free
+- resident LFM/Torch/native-server processes: none
+- available disk: 29 GiB
+- output path: unused before launch
+- supervisor: one gtimeout 600-second attempt with TERM and five-second KILL escalation
+- MPS high/low watermarks: 0.8 / 0.7
+- capture exited 0 in 9.81 seconds
+- script-reported memory after capture: 34% free
+- post-process memory: 43% free, with no model process resident
+
+Quantization
+- scheme: Q8 weight-only, symmetric per output channel
+- converted linear modules: 93
+- lm_head converted: yes
+- skipped modules: none
+- FP16 token embedding retained because it remains a distinct embedding operation
+
+Captured graph pair
+- prefill: 1,157 FX nodes -> 810 optimized commands
+- decode: 1,197 FX nodes -> 864 optimized commands
+- runtime inputs: 1 / 23
+- static tensor bindings: 243 / 243
+- kernel entries: 60 / 58
+- opaque commands: 0 / 0
+- package bytes: 95,258 / 98,741
+- metallib bytes: 333,398 / 327,372
+- shared binary tensor archive: 489,377,152 bytes
+- archive inode across root/prefill/decode: 243608469 / 243608469 / 243608469
+- archive growth from the FP16-head package: 67,239,936 bytes, exactly one 65,536x1,024 int8 matrix plus 65,536 FP16 scales
+
+Vocabulary projection
+- prefill plan: q8-linear[6x65536x1024]
+- decode plan: q8-linear[1x65536x1024]
+- serving specialization logits rows at 13/128/4096 tokens: 1 / 1 / 1
+- prefill workspace at 4096 tokens: 184,680,448 bytes
+- Q8-group-64 serving-pair validation: pass
+- selectable FP16 serving-pair validation: pass
+
+Capture-time PyTorch parity
+- eager versus torch.compile prefill logits: exact, max_abs 0.0, mean_abs 0.0
+- eager versus torch.compile decode logits: exact, max_abs 0.0, mean_abs 0.0
+- next token parity: true, token 19130
+- prefill SHA-256: 1a9d9272ad2a6185314bffbbcb750d8893d224c0bb9eec8b84b923aaa6633365
+- decode SHA-256: 5adbc5356be0f67c431dceb20ea4f777d9b1add73fe3e1377fac3691d1ada6a6
+
+Artifact root
+- _artifacts/lfm25-350m-q8-full-head-capture-2026-08-25
+
+Evidence boundary
+- Capture-time parity exercises the torch.compile exact generated path, not the native OCaml Q8 Metal schedule.
+- Native serving, radix reuse, ERS, and long-context needle results are recorded separately.

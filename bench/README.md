@@ -259,8 +259,7 @@ The measurement is in
 [`results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
 The serving-only compiler pass selects the final hidden row before an FP16 or
-Q8 vocabulary projection. The currently measured package uses its historical
-FP16 tied head and specializes to one logits row at
+Q8 vocabulary projection. The full-Q8 package specializes to one logits row at
 13/128/4,096 tokens; at 4,096 tokens, the output allocation is 131,072 bytes
 and the complete workspace is 184,680,448 bytes. One bounded LFM2.5-350M run
 preserves 4/4 exact eager-Q8 scored token sequences and 80/194 reuse. It
@@ -269,6 +268,18 @@ median TPOT `8.299840342563886 ms`. Against the previous native report, the
 changes are `+0.02110547841155419`, `-13.998041511513293 ms`, and
 `+0.3516600021005907 ms`; this is a non-interleaved single observation. See
 [`results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt`](results/lfm25-350m-q8-last-token-projection-measurement-2026-08-25.txt).
+
+The current capture converts all 93 linears including `lm_head`, emits
+810/864-command zero-opaque packages, and retains the tied FP16 embedding beside
+a separate Q8 head in one 489,377,152-byte archive. One bounded native trace
+preserves 4/4 full-Q8 eager sequences and 80/194 reuse while observing ERS
+`0.3908962321067631`, median TTFT `71.4766460005194 ms`, and median TPOT
+`7.31056933485282 ms`. Against the preceding final-row FP16-head native report,
+the changes are `+0.032049180526578736`, `-7.680833485210314 ms`, and
+`-0.989271007711066 ms`. See
+[`results/lfm25-350m-q8-lm-head-capture-2026-08-25.txt`](results/lfm25-350m-q8-lm-head-capture-2026-08-25.txt)
+and
+[`results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
 
 Run the natural needle matrix through the same endpoint with:
 
@@ -290,9 +301,9 @@ preceded that default correction and used normal EOS stopping. Its historical
 boundary is recorded in
 [`results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).
 
-The corrected optimized matrix now completes 6/6 requests with 6/6 retrieval
+The current full-Q8 matrix completes 6/6 requests with 6/6 retrieval
 and exact parity against all 12 eager-Q8 IDs. Exact-only text remains 0/6
 because the pinned sequence decodes as `RAVEN-4271Lottery`. Median TTFT/TPOT
-is `2859.034/34.252 ms` at 2,048 tokens and `6540.756/65.629 ms` at 4,096
+is `1164.398/33.007 ms` at 2,048 tokens and `2706.019/60.866 ms` at 4,096
 tokens. See
-[`results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt`](results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt).
+[`results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt`](results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt).
