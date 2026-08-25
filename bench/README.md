@@ -264,13 +264,17 @@ Run the natural needle matrix through the same endpoint with:
 python3.13 bench/lfm25_http_needle.py \
   --base-url http://127.0.0.1:8000 \
   --lengths 2048,4096 --positions 10,50,90 \
-  --max-tokens 12 --output _artifacts/native-http-needle/report.json
+  --max-tokens 12 \
+  --expected-token-ids 8832,563,2880,522,31429,526,7,2,1,553,849,18149 \
+  --output _artifacts/native-http-needle/report.json
 ```
 
 By default this matches the existing fixed-output contract with
 `min_tokens=max_tokens` and `ignore_eos=true`; `--allow-eos` permits normal
-message-end termination. The first long native observation preceded that
-default correction and used normal EOS stopping: it retrieved `RAVEN-4271`
+message-end termination. `--expected-token-ids` records per-request and
+aggregate exact parity against the separately captured eager-Q8 sequence; it
+does not change the process exit status. The first long native observation
+preceded that default correction and used normal EOS stopping: it retrieved `RAVEN-4271`
 exactly in 6/6 prompts and matched the first seven eager-Q8 IDs, then stopped at
 token `7`. Median latency was `39.362` seconds at 2,048 tokens and `100.204`
 seconds at 4,096 tokens. The corrected fixed-12-token matrix was not rerun; the

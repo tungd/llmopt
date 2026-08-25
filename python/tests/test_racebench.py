@@ -130,6 +130,21 @@ class RacebenchContractTest(unittest.TestCase):
             token_output_parity([result("a", [1, 2])], [result("a", [1, 3])])["equal"]
         )
 
+    def test_native_needle_token_parity_is_explicit_and_optional(self):
+        from lfm25_http_needle import _token_ids, token_parity
+
+        expected = _token_ids("8832,563,2880,522,31429,526,7,2,1,553,849,18149")
+        self.assertTrue(
+            token_parity(
+                [8832, 563, 2880, 522, 31429, 526, 7, 2, 1, 553, 849, 18149],
+                expected,
+            )
+        )
+        self.assertFalse(token_parity([8832, 563], expected))
+        self.assertIsNone(token_parity([8832, 563], None))
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            _token_ids("8832,-1")
+
     def test_semantic_profile_matches_reference_shape(self):
         scored = semantic_5x3()
         warmup = semantic_5x3(warmup=True)
