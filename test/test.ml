@@ -4168,4 +4168,26 @@ let () =
   expect (List.length batch_decodes = 1) "popped 1 decode request";
   expect (match batch_pref with Some (r, slice) -> Serving_queue.Request_id.equal r.id pref_id && slice = 64 | None -> false)
     "popped chunked prefill request with slice budget 64";
+  (* Test concurrent SRPT step interleaving vs sequential exact token parity *)
+  let engine_seq1 =
+    Generation_test_engine.create ~outputs:[ 201; 202; 203 ] ~cached_prompt_tokens:0
+  in
+  let engine_seq2 =
+    Generation_test_engine.create ~outputs:[ 301; 302; 303 ] ~cached_prompt_tokens:0
+  in
+  let cfg = expect_ok (Generation_core.Config.create ~max_new_tokens:3) in
+  let (state1, tok1_0) =
+    expect_ok (Generation_test.State.init engine_seq1 ~config:cfg ~is_stop:(Fun.const false) ~prompt:[| 1 |])
+  in
+  let (state2, tok2_0) =
+    expect_ok (Generation_test.State.init engine_seq2 ~config:cfg ~is_stop:(Fun.const false) ~prompt:[| 2 |])
+  in
+  let (_tok1_1, _) = expect_ok (Generation_test.State.step engine_seq1 state1) in
+  let (_tok2_1, _) = expect_ok (Generation_test.State.step engine_seq2 state2) in
+  let (_tok1_2, _) = expect_ok (Generation_test.State.step engine_seq1 state1) in
+  let (_tok2_2, _) = expect_ok (Generation_test.State.step engine_seq2 state2) in
+  expect (Generation_test.State.completion_tokens state1 = [ 201; 202; 203 ])
+    "concurrent interleaved stream 1 exact token sequence";
+  expect (Generation_test.State.completion_tokens state2 = [ 301; 302; 303 ])
+    "concurrent interleaved stream 2 exact token sequence";
   print_endline "llmopt tests passed"
