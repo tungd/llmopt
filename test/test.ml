@@ -1897,6 +1897,67 @@ let () =
        last_token_commands)
     "LFM prefill logits output exposes the final vocabulary row";
   let _ = expect_ok (Serving_memory_plan.create last_token_prefill) in
+  let q8_logits_template = Ir.Graph.create () in
+  let q8_logits_hidden =
+    Ir.Graph.tensor_input q8_logits_template ~name:"q8_logits_hidden"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 6; 2 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_logits_weight =
+    Ir.Graph.tensor_input q8_logits_template ~name:"q8_logits_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q8_logits_weight" })
+      ~shape:(Tensor_shape.of_ints_exn [ 4; 2 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let q8_logits_scale =
+    Ir.Graph.tensor_input q8_logits_template ~name:"q8_logits_scale"
+      ~source:(Ir.Input_source.Tensor_store { key = "q8_logits_scale" })
+      ~shape:(Tensor_shape.of_ints_exn [ 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_logits_index, q8_logits_index_shape =
+    expect_ok
+      (Tensor_shape.index (Ir.Value.logical_shape q8_logits_hidden)
+         [ full_slice; full_slice; full_slice ]
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  let q8_indexed_hidden =
+    Ir.Graph.fresh_tensor_value q8_logits_template ~shape:q8_logits_index_shape
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_logits_template
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index q8_logits_index)))
+    ~inputs:[ q8_logits_hidden ] ~output:(Some q8_indexed_hidden);
+  let q8_full_logits =
+    Ir.Graph.fresh_tensor_value q8_logits_template
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 6; 4 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_logits_template
+    ~op:(Ir.Op.Q8_linear { m = 6; n = 4; k = 2; bias = false })
+    ~inputs:[ q8_indexed_hidden; q8_logits_weight; q8_logits_scale ]
+    ~output:(Some q8_full_logits);
+  Ir.Graph.add_output q8_logits_template ~name:"logits" q8_full_logits;
+  let q8_last_token_prefill =
+    q8_logits_template |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.Lfm25.specialize_prefill ~captured_tokens:6 ~tokens:13
+    |> expect_ok
+  in
+  expect
+    (List.exists
+       (fun command ->
+         match
+           ( Serving_schedule.Command.op command,
+             Serving_schedule.Command.output command )
+         with
+         | Ir.Op.Q8_linear { m = 1; n = 4; k = 2; _ }, Some output ->
+             Tensor_shape.dimensions (Ir.Value.logical_shape output)
+             = [ 1; 1; 4 ]
+         | _ -> false)
+       (Serving_schedule.commands q8_last_token_prefill))
+    "LFM prefill specialization projects one Q8 vocabulary row";
+  let _ = expect_ok (Serving_memory_plan.create q8_last_token_prefill) in
   (match
      prefill_template |> Serving_schedule.of_graph |> expect_ok
      |> Serving_schedule.Lfm25.specialize_prefill ~captured_tokens:6 ~tokens:2

@@ -26,7 +26,7 @@ module Lfm25 : sig
   (** Rebuild a captured LFM prefill template for [tokens]. The request must
       cover the model's three-token recurrent window. When the [logits] output
       is the full-sequence vocabulary projection, specialize its existing
-      identity index and linear command to the final token row. *)
+      identity index and FP16 or Q8 linear command to the final token row. *)
   val specialize_prefill :
     captured_tokens:int -> tokens:int -> t -> (t, string) result
 

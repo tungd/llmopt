@@ -30,7 +30,7 @@ class QuantizationTest(unittest.TestCase):
         actual = quantized(input)
         torch.testing.assert_close(actual, expected)
 
-    def test_model_rewrite_keeps_lm_head_fp16(self):
+    def test_model_rewrite_quantizes_lm_head_by_default(self):
         class Tiny(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -39,9 +39,24 @@ class QuantizationTest(unittest.TestCase):
 
         model = Tiny()
         summary = quantize_model_(model)
+        self.assertEqual(summary["converted_linear_modules"], 2)
+        self.assertIsInstance(model.proj, Q8Linear)
+        self.assertIsInstance(model.lm_head, Q8Linear)
+        self.assertEqual(summary["skipped_modules"], [])
+
+    def test_model_rewrite_retains_explicit_skip_suffixes(self):
+        class Tiny(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = torch.nn.Linear(4, 3)
+                self.lm_head = torch.nn.Linear(3, 8)
+
+        model = Tiny()
+        summary = quantize_model_(model, skip_suffixes=("lm_head",))
         self.assertEqual(summary["converted_linear_modules"], 1)
         self.assertIsInstance(model.proj, Q8Linear)
         self.assertIsInstance(model.lm_head, torch.nn.Linear)
+        self.assertEqual(summary["skipped_modules"], ["lm_head"])
 
     def test_fx_manifest_preserves_q8_operator_boundary(self):
         class Tiny(torch.nn.Module):

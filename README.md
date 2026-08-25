@@ -34,7 +34,8 @@ values are recorded in [the OKF target concept](.okf/target-lfm25.md).
   consumer; broadcast adds remain separate.
 - A Q8 weight-only linear lowering pass, typed compiler fixture, and Python
   model-rewrite boundary: int8 weights, per-output-channel float16 scales, and
-  FP16 activations by default; FP16 weights remain an explicit fallback.
+  FP16 activations by default. Every eligible linear, including `lm_head`, is
+  quantized by default; explicit suffix opt-out retains FP16 fallback.
 - Textual LLVM IR emission for inspection and a tiled Metal Shading Language
   emitter for the executable backend boundary. Multi-row Q8 uses 16 by 16
   output tiles with a 64-wide activation4/weight4 reduction stage; one-row
@@ -406,8 +407,9 @@ reports are not interleaved. Compiler evidence is in
 The model measurement is in
 [`bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
-The serving prefill specializer now selects the final hidden row before the
-FP16 LM head, producing `[1,1,65536]` instead of full-sequence logits. At
+The serving prefill specializer selects the final hidden row before an FP16 or
+Q8 LM head, producing `[1,1,65536]` instead of full-sequence logits. The
+currently measured ABI-v11 package uses its historical FP16 tied head. At
 4,096 tokens, that output allocation is 131,072 bytes instead of 536,870,912
 bytes and the complete planned workspace is 184,680,448 bytes. One bounded
 LFM2.5-350M run preserves 4/4 exact eager-Q8 scored sequences and 80/194 radix

@@ -1,0 +1,29 @@
+LFM2.5-350M Q8 LM-head compiler slice
+Date: 2026-08-25
+
+Frontend boundary
+- quantize_model_ now converts every eligible nn.Linear by default, including lm_head
+- explicit skip_suffixes remains available and tested
+- the tied token-embedding module remains FP16; replacing lm_head creates a separate int8 weight and per-output-channel scale
+
+Typed serving specialization
+- final-row detection accepts Ir.Op.Linear and Ir.Op.Q8_linear
+- both forms require a named logits output, a sole-consumer projection, and a sole-consumer full identity index
+- specialization rewrites the identity index to the final hidden row
+- Q8 specialization rewrites m to 1 while preserving n, k, bias, qweight, and scale inputs
+- the resulting one-row Q8 operation selects the existing packed SIMD-group GEMV runtime path
+
+Regression evidence
+- a Python test proves lm_head is Q8 by default
+- a Python test proves explicit lm_head skipping still works
+- an OCaml graph test specializes q8-linear[6x4x2] to q8-linear[1x4x2], infers [1,1,4], and passes liveness planning
+- the existing FP16 final-row test remains green
+- ninja -f ninja.build all test q8-smoke q8-serving-smoke native-schedule-smoke passed
+- OCaml tests passed
+- Python tests: 42 passed
+- generated Metal, generated LLVM, and package checks passed
+
+Execution boundary
+- no model was loaded and no Metal model schedule ran for this implementation record
+- the existing ABI-v11 LFM2.5-350M package still contains the historical tied FP16 LM head
+- one memory-bounded LFM2.5-350M recapture is required to materialize the new qweight and scale tensors

@@ -258,8 +258,9 @@ in
 The measurement is in
 [`results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
-The next serving-only compiler pass selects the final hidden row before the
-FP16 vocabulary projection. The real package specializes to one logits row at
+The serving-only compiler pass selects the final hidden row before an FP16 or
+Q8 vocabulary projection. The currently measured package uses its historical
+FP16 tied head and specializes to one logits row at
 13/128/4,096 tokens; at 4,096 tokens, the output allocation is 131,072 bytes
 and the complete workspace is 184,680,448 bytes. One bounded LFM2.5-350M run
 preserves 4/4 exact eager-Q8 scored token sequences and 80/194 reuse. It

@@ -124,7 +124,7 @@ class Q8Linear(nn.Module):
 def quantize_model_(
     model: nn.Module,
     *,
-    skip_suffixes: Iterable[str] = ("lm_head",),
+    skip_suffixes: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Replace eligible linear children in place and return an audit summary."""
 

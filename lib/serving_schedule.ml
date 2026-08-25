@@ -701,6 +701,11 @@ module Lfm25 = struct
                0 command.Command.inputs)
          0
 
+  let projection_dimensions = function
+    | Ir.Op.Linear { m; n; k; _ } | Ir.Op.Q8_linear { m; n; k; _ } ->
+        Some (m, n, k)
+    | _ -> None
+
   let is_identity_index source index =
     let dimensions =
       Ir.Value.logical_shape source |> Tensor_shape.dimensions
@@ -729,44 +734,53 @@ module Lfm25 = struct
     with
     | None -> Ok None
     | Some logits ->
-        (match producer commands logits with
-        | Some
-            {
-              Command.node_id = linear_node;
-              op = Ir.Op.Linear { m; n; k; _ };
-              inputs = indexed :: _;
-              output = Some _;
-            } ->
-            (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
-            | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
-            | [ 1; tokens; output_width ]
-              when tokens = m && output_width = n && use_count commands logits = 1 ->
-                (match producer commands indexed with
-                | Some
-                    {
-                      Command.node_id = index_node;
-                      op =
-                        Ir.Op.Primitive
-                          (Ir.Primitive.Movement (Ir.Movement.Index index));
-                      inputs = [ source ];
-                      output = Some _;
-                    }
-                  when use_count commands indexed = 1
-                       && is_identity_index source index ->
-                    (match
-                       Tensor_shape.dimensions (Ir.Value.logical_shape source)
-                     with
-                    | [ 1; source_tokens; width ]
-                      when source_tokens = tokens && width = k ->
-                        Ok (Some { index_node; linear_node })
-                    | _ ->
-                        Error
-                          "LFM prefill logits index has an unexpected source shape")
-                | _ ->
-                    Error
-                      "LFM prefill logits projection is not fed by a sole-consumer identity index")
-            | _ -> Error "LFM prefill logits has an unexpected projection shape")
-        | _ -> Error "LFM prefill logits is not produced by a linear command")
+        let* linear_node, indexed, m, n, k =
+          match producer commands logits with
+          | Some
+              {
+                Command.node_id = linear_node;
+                op;
+                inputs = indexed :: _;
+                output = Some _;
+              } ->
+              (match projection_dimensions op with
+              | Some (m, n, k) -> Ok (linear_node, indexed, m, n, k)
+              | None ->
+                  Error
+                    "LFM prefill logits is not produced by a supported projection command")
+          | _ ->
+              Error
+                "LFM prefill logits is not produced by a supported projection command"
+        in
+        (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
+        | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
+        | [ 1; tokens; output_width ]
+          when tokens = m && output_width = n && use_count commands logits = 1 ->
+            let* index_node, source =
+              match producer commands indexed with
+              | Some
+                  {
+                    Command.node_id = index_node;
+                    op =
+                      Ir.Op.Primitive
+                        (Ir.Primitive.Movement (Ir.Movement.Index index));
+                    inputs = [ source ];
+                    output = Some _;
+                  }
+                when use_count commands indexed = 1
+                     && is_identity_index source index ->
+                  Ok (index_node, source)
+              | _ ->
+                  Error
+                    "LFM prefill logits projection is not fed by a sole-consumer identity index"
+            in
+            (match Tensor_shape.dimensions (Ir.Value.logical_shape source) with
+            | [ 1; source_tokens; width ]
+              when source_tokens = tokens && width = k ->
+                Ok (Some { index_node; linear_node })
+            | _ ->
+                Error "LFM prefill logits index has an unexpected source shape")
+        | _ -> Error "LFM prefill logits has an unexpected projection shape")
 
   let last_token_index = function
     | [ input ] ->
@@ -796,8 +810,8 @@ module Lfm25 = struct
     | _ -> Error "LFM final-token index expects one input"
 
   let last_token_linear_output operation inputs original =
-    match operation, inputs with
-    | Ir.Op.Linear { m = 1; n; k; _ }, input :: _ ->
+    match projection_dimensions operation, inputs with
+    | Some (1, n, k), input :: _ ->
         (match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
         | [ batch; 1; width ] when batch > 0 && width = k ->
             let* shape =
@@ -837,9 +851,11 @@ module Lfm25 = struct
                 (match command.Command.op with
                 | Ir.Op.Linear { n; k; bias; _ } ->
                     Ok (Ir.Op.Linear { m = 1; n; k; bias })
+                | Ir.Op.Q8_linear { n; k; bias; _ } ->
+                    Ok (Ir.Op.Q8_linear { m = 1; n; k; bias })
                 | _ ->
                     Error
-                      "LFM final-token projection node is no longer linear")
+                      "LFM final-token projection node is no longer supported")
             | Some _ | None ->
                 map_operation substitutions values command.Command.op
           in
