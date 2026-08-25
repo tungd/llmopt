@@ -3985,4 +3985,88 @@ let () =
   expect (barrier_count = 2) "co_schedule inserted 2 stage barriers";
   let schedule_res = Serving_schedule.of_graph scheduled in
   expect (Result.is_ok schedule_res) "co-scheduled graph validates into Serving_schedule";
+  (* Serving_queue unit tests *)
+  let q = Serving_queue.create ~alpha_age:0.01 ~prefill_rate:100.0 ~decode_rate:10.0 () in
+  expect (Serving_queue.is_empty q) "queue is initially empty";
+  expect (Serving_queue.length q = 0) "queue initial length is 0";
+  let id1 = Serving_queue.Request_id.create () in
+  let id2 = Serving_queue.Request_id.create () in
+  let id3 = Serving_queue.Request_id.create () in
+  expect (Serving_queue.Request_id.compare id1 id2 < 0) "request IDs monotonically increase";
+  (* Short prefill request vs long prefill request *)
+  let short_req : Serving_queue.request = {
+    id = id1;
+    arrival_time = 0.0;
+    state = Serving_queue.Pending_prefill {
+      prompt_tokens = [| 1; 2; 3; 4 |];
+      cached_tokens = 0;
+      remaining_prefill = 4;
+      max_new_tokens = 2;
+      ignore_eos = false;
+    };
+    priority_score = 0.0;
+  } in
+  let long_req : Serving_queue.request = {
+    id = id2;
+    arrival_time = 0.0;
+    state = Serving_queue.Pending_prefill {
+      prompt_tokens = Array.make 2048 1;
+      cached_tokens = 0;
+      remaining_prefill = 2048;
+      max_new_tokens = 100;
+      ignore_eos = false;
+    };
+    priority_score = 0.0;
+  } in
+  let decode_req : Serving_queue.request = {
+    id = id3;
+    arrival_time = 0.0;
+    state = Serving_queue.Active_decode {
+      prompt_length = 100;
+      generated_tokens = [ 1; 2 ];
+      max_new_tokens = 3;
+      ignore_eos = false;
+    };
+    priority_score = 0.0;
+  } in
+  short_req.priority_score <-
+    Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
+      ~current_time:0.0 ~arrival_time:short_req.arrival_time short_req.state;
+  long_req.priority_score <-
+    Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
+      ~current_time:0.0 ~arrival_time:long_req.arrival_time long_req.state;
+  decode_req.priority_score <-
+    Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
+      ~current_time:0.0 ~arrival_time:decode_req.arrival_time decode_req.state;
+  expect (short_req.priority_score > long_req.priority_score)
+    "short request has higher SRPT priority than long request";
+  expect (decode_req.priority_score > short_req.priority_score)
+    "near-completion decode has higher SRPT priority than short prefill";
+  Serving_queue.enqueue q long_req;
+  Serving_queue.enqueue q short_req;
+  Serving_queue.enqueue q decode_req;
+  expect (Serving_queue.length q = 3) "queue length is 3";
+  let popped1 = Serving_queue.pop_next q in
+  expect (match popped1 with Some r -> Serving_queue.Request_id.equal r.id id3 | None -> false)
+    "pop_next returns highest priority decode request first";
+  let popped2 = Serving_queue.pop_next q in
+  expect (match popped2 with Some r -> Serving_queue.Request_id.equal r.id id1 | None -> false)
+    "pop_next returns short prefill second";
+  let popped3 = Serving_queue.pop_next q in
+  expect (match popped3 with Some r -> Serving_queue.Request_id.equal r.id id2 | None -> false)
+    "pop_next returns long prefill last";
+  expect (Serving_queue.is_empty q) "queue is empty after popping all requests";
+  (* Test aging score update *)
+  let aged_req : Serving_queue.request = {
+    id = id2;
+    arrival_time = 0.0;
+    state = long_req.state;
+    priority_score = 0.0;
+  } in
+  Serving_queue.enqueue q aged_req;
+  Serving_queue.update_scores q ~current_time:1000.0;
+  expect (aged_req.priority_score > 9.0) "aging increases priority score over time to prevent starvation";
+  let removed = Serving_queue.remove q id2 in
+  expect removed "remove succeeded for existing request";
+  expect (Serving_queue.is_empty q) "queue is empty after removal";
   print_endline "llmopt tests passed"
