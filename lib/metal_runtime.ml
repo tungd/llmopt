@@ -653,6 +653,36 @@ module Cache = struct
     kernels : kernels;
   }
 
+  type batch = {
+    cache : t;
+    commands : Batch.t;
+    mutable resources : Buffer.t list;
+    mutable dispatches : int;
+  }
+
+  let release_batch_resources batch = batch.resources <- []
+
+  let with_batch cache operation =
+    let* commands = Batch.create cache.runtime in
+    let batch = { cache; commands; resources = []; dispatches = 0 } in
+    match operation batch with
+    | Error message ->
+        ignore (Batch.abort commands);
+        release_batch_resources batch;
+        Error message
+    | Ok value ->
+        let completion =
+          if batch.dispatches = 0 then Batch.abort commands
+          else Batch.commit commands
+        in
+        release_batch_resources batch;
+        let* () = completion in
+        Ok value
+    | exception exception_value ->
+        ignore (Batch.abort commands);
+        release_batch_resources batch;
+        raise exception_value
+
   let format cache = Kv_cache.Layout.format cache.layout
   let token_pool_bytes cache = Kv_cache.Config.token_pool_bytes cache.config
 
@@ -818,8 +848,8 @@ module Cache = struct
     in
     Ok (elements, groups)
 
-  let attention cache ~pack ~layer ~kind ~slots ~source_items ~source_offset
-      buffer =
+  let attention ?batch cache ~pack ~layer ~kind ~slots ~source_items
+      ~source_offset buffer =
     let* () =
       validate_layer layer (Kv_cache.Layout.attention_layers cache.layout)
         "attention"
@@ -866,7 +896,17 @@ module Cache = struct
       if pack then groups
       else elements
     in
-    dispatch cache.runtime entry ~buffers ~parameters ~grid:(grid, 1, 1)
+    Option.iter
+      (fun batch -> batch.resources <- slots_buffer :: batch.resources)
+      batch;
+    let* kernel =
+      dispatch ?batch:(Option.map (fun batch -> batch.commands) batch)
+        cache.runtime entry ~buffers ~parameters ~grid:(grid, 1, 1)
+    in
+    Option.iter
+      (fun batch -> batch.dispatches <- batch.dispatches + 1)
+      batch;
+    Ok kernel
 
   let pack_attention cache ~layer ~kind ~slots ~source =
     attention cache ~pack:true ~layer ~kind ~slots
@@ -882,6 +922,22 @@ module Cache = struct
 
   let unpack_attention cache ~layer ~kind ~slots ~destination =
     attention cache ~pack:false ~layer ~kind ~slots
+      ~source_items:(Array.length slots) ~source_offset:0 destination
+
+  let batch_pack_attention batch ~layer ~kind ~slots ~source =
+    attention ~batch batch.cache ~pack:true ~layer ~kind ~slots
+      ~source_items:(Array.length slots) ~source_offset:0 source
+
+  let batch_pack_attention_slice batch ~layer ~kind ~slots ~source_items
+      ~source_offset ~source =
+    if Serving_package.abi_version batch.cache.runtime.package < 8 then
+      Error "attention cache source slicing requires serving-package ABI v8"
+    else
+      attention ~batch batch.cache ~pack:true ~layer ~kind ~slots ~source_items
+        ~source_offset source
+
+  let batch_unpack_attention batch ~layer ~kind ~slots ~destination =
+    attention ~batch batch.cache ~pack:false ~layer ~kind ~slots
       ~source_items:(Array.length slots) ~source_offset:0 destination
 
   let checkpoint_parameters cache ~layer ~checkpoint =
@@ -902,7 +958,7 @@ module Cache = struct
         group_size (format cache); checkpoint_elements; checkpoint_groups;
         Kv_cache.Layout.bytes_per_checkpoint layout ]
 
-  let transfer_checkpoint cache ~pack ~layer ~checkpoint buffer =
+  let transfer_checkpoint ?batch cache ~pack ~layer ~checkpoint buffer =
     let* () =
       validate_layer layer (Kv_cache.Layout.recurrent_layers cache.layout)
         "checkpoint"
@@ -941,13 +997,27 @@ module Cache = struct
             layer_elements / group_size
         | _ -> layer_elements
       in
-      dispatch cache.runtime entry ~buffers ~parameters ~grid:(grid, 1, 1)
+      let* kernel =
+        dispatch ?batch:(Option.map (fun batch -> batch.commands) batch)
+          cache.runtime entry ~buffers ~parameters ~grid:(grid, 1, 1)
+      in
+      Option.iter
+        (fun batch -> batch.dispatches <- batch.dispatches + 1)
+        batch;
+      Ok kernel
 
   let pack_checkpoint cache ~layer ~checkpoint ~source =
     transfer_checkpoint cache ~pack:true ~layer ~checkpoint source
 
   let unpack_checkpoint cache ~layer ~checkpoint ~destination =
     transfer_checkpoint cache ~pack:false ~layer ~checkpoint destination
+
+  let batch_pack_checkpoint batch ~layer ~checkpoint ~source =
+    transfer_checkpoint ~batch batch.cache ~pack:true ~layer ~checkpoint source
+
+  let batch_unpack_checkpoint batch ~layer ~checkpoint ~destination =
+    transfer_checkpoint ~batch batch.cache ~pack:false ~layer ~checkpoint
+      destination
 end
 
 module Value_map = Map.Make (struct

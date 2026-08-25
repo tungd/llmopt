@@ -51,6 +51,9 @@ sources:
   - id: result-native-gemv
     resource: /bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt
     title: native decode-GEMV optimization result
+  - id: result-native-cache-batching
+    resource: /bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt
+    title: native cache-submission batching result
   - id: result-preintegration
     resource: /_artifacts/lfm25-benchsuite-q8-radix-e3d0d15/result.json
     title: post-cache-implementation pre-integration observation
@@ -98,6 +101,11 @@ four TPOT values decrease by 9.12 to 10.71 ms, median TTFT decreases by 87.971
 ms, and ERS changes by `-0.0019824560544094705` to
 `0.10860341576307225`. TPOT remains above the formula's 10 ms zero-score
 ceiling, so ERS follows the two score-contributing first-turn TTFT samples.
+
+Cache-submission batching again preserves four exact token sequences and
+80/194 cached tokens. Relative to the GEMV trace, all four TPOT values decrease
+by 2.82 to 5.45 ms, median TTFT changes by `+7.4727915052790195 ms`, and ERS
+changes by `+0.005214671349993788` to `0.11381808711306604`.
 
 # Scoring
 

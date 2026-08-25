@@ -39,6 +39,9 @@ sources:
   - id: q8-gemv-result
     resource: /bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt
     title: Decode-specialized Q8 GEMV observation
+  - id: cache-batching-result
+    resource: /bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt
+    title: Physical cache-submission batching observation
   - id: local-serving-engine
     resource: /lib/serving_engine.ml
     title: Native prefill, decode, and radix coordinator
@@ -377,6 +380,13 @@ selects `llmopt_q8_gemv` and remains exact. On the one matched warmed HTTP
 trace, all four request TPOT values fall by 9.12 to 10.71 ms, median TTFT falls
 by 87.971 ms, and ERS changes from `0.11058587181748172` to
 `0.10860341576307225`; token IDs and 80/194 cache reuse remain unchanged.
+
+Physical KV and recurrent cache conversion now batches each unpack or pack
+phase into one ordered command buffer. For the six-attention, ten-recurrent
+350M model, decode changes from 45 synchronous submissions to three including
+the generated schedule. The exact Q8/FP16 cache probe retains all bytes. The
+matched HTTP trace retains token parity and 80/194 reuse, lowers all four TPOT
+values by 2.82 to 5.45 ms, and measures ERS `0.11381808711306604`.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

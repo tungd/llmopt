@@ -6,6 +6,8 @@ let expect_ok = function
   | Ok value -> value
   | Error message -> fail message
 
+let ( let* ) = Result.bind
+
 let f16_bytes values =
   let bytes = Bytes.create (2 * Array.length values) in
   Array.iteri
@@ -91,41 +93,38 @@ let exercise_cache runtime format =
   let key_destination = destination (Bytes.length key_bytes) in
   let value_destination = destination (Bytes.length value_bytes) in
   let checkpoint_destination = destination (Bytes.length checkpoint_bytes) in
-  let pack_key =
-    Metal_runtime.Cache.pack_attention cache ~layer:0
-      ~kind:Metal_runtime.Cache.Attention.Key ~slots ~source:key_source
-    |> expect_ok
-  in
-  let pack_value =
-    Metal_runtime.Cache.pack_attention cache ~layer:0
-      ~kind:Metal_runtime.Cache.Attention.Value ~slots ~source:value_source
-    |> expect_ok
-  in
-  let unpack_key =
-    Metal_runtime.Cache.unpack_attention cache ~layer:0
-      ~kind:Metal_runtime.Cache.Attention.Key ~slots
-      ~destination:key_destination
-    |> expect_ok
-  in
-  let unpack_value =
-    Metal_runtime.Cache.unpack_attention cache ~layer:0
-      ~kind:Metal_runtime.Cache.Attention.Value ~slots
-      ~destination:value_destination
-    |> expect_ok
-  in
-  let pack_checkpoint =
-    Metal_runtime.Cache.pack_checkpoint cache ~layer:0 ~checkpoint
-      ~source:checkpoint_source
-    |> expect_ok
-  in
-  let unpack_checkpoint =
-    Metal_runtime.Cache.unpack_checkpoint cache ~layer:0 ~checkpoint
-      ~destination:checkpoint_destination
-    |> expect_ok
-  in
   let kernels =
-    [ pack_key; pack_value; unpack_key; unpack_value; pack_checkpoint;
-      unpack_checkpoint ]
+    Metal_runtime.Cache.with_batch cache (fun batch ->
+        let* pack_key =
+          Metal_runtime.Cache.batch_pack_attention batch ~layer:0
+            ~kind:Metal_runtime.Cache.Attention.Key ~slots ~source:key_source
+        in
+        let* pack_value =
+          Metal_runtime.Cache.batch_pack_attention batch ~layer:0
+            ~kind:Metal_runtime.Cache.Attention.Value ~slots ~source:value_source
+        in
+        let* unpack_key =
+          Metal_runtime.Cache.batch_unpack_attention batch ~layer:0
+            ~kind:Metal_runtime.Cache.Attention.Key ~slots
+            ~destination:key_destination
+        in
+        let* unpack_value =
+          Metal_runtime.Cache.batch_unpack_attention batch ~layer:0
+            ~kind:Metal_runtime.Cache.Attention.Value ~slots
+            ~destination:value_destination
+        in
+        let* pack_checkpoint =
+          Metal_runtime.Cache.batch_pack_checkpoint batch ~layer:0 ~checkpoint
+            ~source:checkpoint_source
+        in
+        let* unpack_checkpoint =
+          Metal_runtime.Cache.batch_unpack_checkpoint batch ~layer:0
+            ~checkpoint ~destination:checkpoint_destination
+        in
+        Ok
+          [ pack_key; pack_value; unpack_key; unpack_value; pack_checkpoint;
+            unpack_checkpoint ])
+    |> expect_ok
   in
   expect_buffer (Kv_cache.Format.to_string format ^ " attention key") key_bytes
     key_destination;
@@ -193,7 +192,7 @@ let () =
   if List.length q8_kernels + List.length f16_kernels <> 12 then
     fail "physical cache did not dispatch twelve pack/unpack kernels";
   Printf.printf
-    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\ncache-formats: q8-group-64,f16\ncache-dispatches: 12\nq8-pools: %d token bytes, %d checkpoint bytes\nf16-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
+    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\ncache-formats: q8-group-64,f16\ncache-dispatches: 12\ncache-submissions: 2\nq8-pools: %d token bytes, %d checkpoint bytes\nf16-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.Stage.to_string (Serving_package.stage package))
     kernel q8_token_bytes q8_checkpoint_bytes f16_token_bytes

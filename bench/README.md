@@ -182,6 +182,14 @@ formula's 10 ms zero-score ceiling, so this observation's ERS change follows
 the two first-turn TTFT values. The record is
 [`results/lfm25-350m-q8-native-gemv-2026-08-24.txt`](results/lfm25-350m-q8-native-gemv-2026-08-24.txt).
 
+After physical-cache submission batching, the same trace remains 4/4 exact
+with 80/194 cache reuse. All four TPOT values decrease by 2.82 to 5.45 ms,
+median TTFT changes by `+7.4727915052790195 ms`, and ERS changes from
+`0.10860341576307225` to `0.11381808711306604`. The cache device probe also
+round-trips Q8 and FP16 attention/checkpoint bytes exactly across 12 kernels in
+two command buffers. The record is
+[`results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt`](results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

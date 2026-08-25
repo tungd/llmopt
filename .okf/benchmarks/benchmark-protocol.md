@@ -117,6 +117,13 @@ values all improve but remain at or above the formula's 10 ms zero-score
 ceiling; the exact record is
 [`/bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt).
 
+Grouping each physical-cache unpack and pack phase retains 4/4 exact token
+parity and 80/194 cached prompt tokens. Relative to the GEMV trace, median TTFT
+changes by `+7.4727915052790195 ms`, median TPOT by
+`-5.181236173181503 ms`, and ERS by `+0.005214671349993788`. The exact record
+is
+[`/bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt`](/bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt).
+
 # Native long-context retrieval
 
 The native endpoint completed the six 2,048/4,096-token natural prompts with

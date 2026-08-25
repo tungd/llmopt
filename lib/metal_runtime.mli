@@ -27,11 +27,15 @@ module Cache : sig
   end
 
   type t
+  type batch
 
   val create : runtime:runtime -> config:Kv_cache.Config.t -> (t, string) result
   val format : t -> Kv_cache.Format.t
   val token_pool_bytes : t -> int
   val checkpoint_pool_bytes : t -> int
+
+  val with_batch :
+    t -> (batch -> ('a, string) result) -> ('a, string) result
 
   val pack_attention :
     t ->
@@ -59,6 +63,32 @@ module Cache : sig
     destination:Buffer.t ->
     (string, string) result
 
+  val batch_pack_attention :
+    batch ->
+    layer:int ->
+    kind:Attention.t ->
+    slots:Kv_cache.Slot.t array ->
+    source:Buffer.t ->
+    (string, string) result
+
+  val batch_pack_attention_slice :
+    batch ->
+    layer:int ->
+    kind:Attention.t ->
+    slots:Kv_cache.Slot.t array ->
+    source_items:int ->
+    source_offset:int ->
+    source:Buffer.t ->
+    (string, string) result
+
+  val batch_unpack_attention :
+    batch ->
+    layer:int ->
+    kind:Attention.t ->
+    slots:Kv_cache.Slot.t array ->
+    destination:Buffer.t ->
+    (string, string) result
+
   val pack_checkpoint :
     t ->
     layer:int ->
@@ -68,6 +98,20 @@ module Cache : sig
 
   val unpack_checkpoint :
     t ->
+    layer:int ->
+    checkpoint:Kv_cache.Checkpoint.t ->
+    destination:Buffer.t ->
+    (string, string) result
+
+  val batch_pack_checkpoint :
+    batch ->
+    layer:int ->
+    checkpoint:Kv_cache.Checkpoint.t ->
+    source:Buffer.t ->
+    (string, string) result
+
+  val batch_unpack_checkpoint :
+    batch ->
     layer:int ->
     checkpoint:Kv_cache.Checkpoint.t ->
     destination:Buffer.t ->

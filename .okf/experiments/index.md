@@ -43,3 +43,4 @@
 * [Native long-context needle retrieval with EOS boundary](exp-0041-native-long-needle.md) - the 2,048/4,096-token matrix retrieves 6/6 and records the fixed-output contract correction without rerunning it.
 * [Batched native Metal schedule submission](exp-0042-batched-metal-command.md) - one ordered command buffer per schedule preserves exact outputs and raises warmed native ERS from 0.061695 to 0.110586.
 * [Q8 decode-specialized Metal GEMV](exp-0043-q8-decode-gemv.md) - one-row Q8 dispatch preserves exact tokens and lowers every measured TPOT while the one-trace ERS delta is recorded exactly.
+* [Native cache-submission batching](exp-0044-cache-submission-batching.md) - ordered unpack and pack phases reduce decode submission waits while preserving exact cache bytes and tokens.

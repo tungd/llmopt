@@ -416,36 +416,36 @@ let abort cache reservation message =
       in
       Error (message ^ "; cache rollback failed: " ^ failures)
 
-let rec pack_prefill_attention engine execution slots
+let rec pack_prefill_attention batch execution slots
     (bindings : attention_binding list) =
   match bindings with
   | [] -> Ok ()
   | binding :: rest ->
       let* key = output execution binding.key_output in
       let* _ =
-        Metal_runtime.Cache.pack_attention engine.physical_cache
+        Metal_runtime.Cache.batch_pack_attention batch
           ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
           ~slots ~source:key
       in
       let* value = output execution binding.value_output in
       let* _ =
-        Metal_runtime.Cache.pack_attention engine.physical_cache
+        Metal_runtime.Cache.batch_pack_attention batch
           ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
           ~slots ~source:value
       in
-      pack_prefill_attention engine execution slots rest
+      pack_prefill_attention batch execution slots rest
 
-let rec pack_prefill_recurrent engine execution checkpoint
+let rec pack_prefill_recurrent batch execution checkpoint
     (bindings : recurrent_binding list) =
   match bindings with
   | [] -> Ok ()
   | binding :: rest ->
       let* state = output execution binding.state_output in
       let* _ =
-        Metal_runtime.Cache.pack_checkpoint engine.physical_cache
+        Metal_runtime.Cache.batch_pack_checkpoint batch
           ~layer:binding.cache_layer ~checkpoint ~source:state
       in
-      pack_prefill_recurrent engine execution checkpoint rest
+      pack_prefill_recurrent batch execution checkpoint rest
 
 let prefill engine ~tokens =
   let* () = validate_tokens engine tokens in
@@ -459,12 +459,13 @@ let prefill engine ~tokens =
   let* reservation = reserve engine.logical_cache token_count in
   let result =
     let* () =
-      pack_prefill_attention engine execution reservation.slots
-        engine.contract.attentions
-    in
-    let* () =
-      pack_prefill_recurrent engine execution reservation.checkpoint
-        engine.contract.recurrents
+      Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+          let* () =
+            pack_prefill_attention batch execution reservation.slots
+              engine.contract.attentions
+          in
+          pack_prefill_recurrent batch execution reservation.checkpoint
+            engine.contract.recurrents)
     in
     let* logits = output execution engine.contract.logits in
     let* cached_prefix =
@@ -512,7 +513,7 @@ let prepare_decode_buffers engine slots checkpoint =
       [ 2; Kv_cache.Layout.recurrent_width layout;
         Kv_cache.Layout.recurrent_window layout ]
   in
-  let rec attention inputs (bindings : attention_binding list) =
+  let rec attention batch inputs (bindings : attention_binding list) =
     match bindings with
     | [] -> Ok inputs
     | binding :: rest ->
@@ -520,7 +521,7 @@ let prepare_decode_buffers engine slots checkpoint =
           Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:attention_bytes
         in
         let* _ =
-          Metal_runtime.Cache.unpack_attention engine.physical_cache
+          Metal_runtime.Cache.batch_unpack_attention batch
             ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
             ~slots ~destination:key
         in
@@ -528,16 +529,15 @@ let prepare_decode_buffers engine slots checkpoint =
           Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:attention_bytes
         in
         let* _ =
-          Metal_runtime.Cache.unpack_attention engine.physical_cache
+          Metal_runtime.Cache.batch_unpack_attention batch
             ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
             ~slots ~destination:value
         in
-        attention
+        attention batch
           ((binding.value_input, value) :: (binding.key_input, key) :: inputs)
           rest
   in
-  let* inputs = attention [] engine.contract.attentions in
-  let rec recurrent inputs buffers (bindings : recurrent_binding list) =
+  let rec recurrent batch inputs buffers (bindings : recurrent_binding list) =
     match bindings with
     | [] -> Ok { inputs; recurrent = List.rev buffers }
     | binding :: rest ->
@@ -545,44 +545,46 @@ let prepare_decode_buffers engine slots checkpoint =
           Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:recurrent_bytes
         in
         let* _ =
-          Metal_runtime.Cache.unpack_checkpoint engine.physical_cache
+          Metal_runtime.Cache.batch_unpack_checkpoint batch
             ~layer:binding.cache_layer ~checkpoint ~destination:state
         in
-        recurrent ((binding.state_input, state) :: inputs)
+        recurrent batch ((binding.state_input, state) :: inputs)
           ((binding, state) :: buffers) rest
   in
-  recurrent inputs [] engine.contract.recurrents
+  Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+      let* inputs = attention batch [] engine.contract.attentions in
+      recurrent batch inputs [] engine.contract.recurrents)
 
-let rec pack_decode_attention engine execution slots ~source_items
+let rec pack_decode_attention batch execution slots ~source_items
     ~source_offset (bindings : attention_binding list) =
   match bindings with
   | [] -> Ok ()
   | binding :: rest ->
       let* key = output execution binding.key_output in
       let* _ =
-        Metal_runtime.Cache.pack_attention_slice engine.physical_cache
+        Metal_runtime.Cache.batch_pack_attention_slice batch
           ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
           ~slots ~source_items ~source_offset ~source:key
       in
       let* value = output execution binding.value_output in
       let* _ =
-        Metal_runtime.Cache.pack_attention_slice engine.physical_cache
+        Metal_runtime.Cache.batch_pack_attention_slice batch
           ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
           ~slots ~source_items ~source_offset ~source:value
       in
-      pack_decode_attention engine execution slots ~source_items ~source_offset
+      pack_decode_attention batch execution slots ~source_items ~source_offset
         rest
 
-let rec pack_decode_recurrent engine checkpoint
+let rec pack_decode_recurrent batch checkpoint
     (buffers : (recurrent_binding * Metal_runtime.Buffer.t) list) =
   match buffers with
   | [] -> Ok ()
   | (binding, state) :: rest ->
       let* _ =
-        Metal_runtime.Cache.pack_checkpoint engine.physical_cache
+        Metal_runtime.Cache.batch_pack_checkpoint batch
           ~layer:binding.cache_layer ~checkpoint ~source:state
       in
-      pack_decode_recurrent engine checkpoint rest
+      pack_decode_recurrent batch checkpoint rest
 
 let with_match engine match_ operation =
   let result = operation () in
@@ -619,12 +621,14 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
             Metal_runtime.execute_schedule engine.decode ~schedule ~inputs
           in
           let* () =
-            pack_decode_attention engine execution reservation.slots
-              ~source_items:(past_tokens + 1) ~source_offset:past_tokens
-              engine.contract.attentions
-          in
-          let* () =
-            pack_decode_recurrent engine reservation.checkpoint buffers.recurrent
+            Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+                let* () =
+                  pack_decode_attention batch execution reservation.slots
+                    ~source_items:(past_tokens + 1) ~source_offset:past_tokens
+                    engine.contract.attentions
+                in
+                pack_decode_recurrent batch reservation.checkpoint
+                  buffers.recurrent)
           in
           let tokens = Array.append prefix [| token |] in
           let slots = Array.append matched_slots reservation.slots in

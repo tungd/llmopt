@@ -59,7 +59,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
   vectorized GEMV entry while multi-row prefill retains the 16 by 16 tiled
   kernel. Serving packages additionally declare native FP16
   and grouped-Q8 pack/unpack kernels for attention KV and recurrent
-  checkpoints; the OCaml runtime owns their physical Metal pools.
+  checkpoints; the OCaml runtime owns their physical Metal pools. Each prefill
+  or decode cache phase uses one ordered command buffer instead of waiting
+  after every layer conversion.
 - Dynamo static-input capture that binds model parameters and buffers to stable
   FX tensor keys, then streams them one tensor at a time into the single
   archive. Prefill and decode specializations share one 241-tensor archive by
@@ -308,6 +310,14 @@ the adopted formula's 10 ms zero-score ceiling, so the ERS delta follows the
 two first-turn TTFT samples. See
 [`bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt`](bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt).
 
+Batching physical-cache submissions reduces each 350M decode from 45 waits to
+three: cache unpack, generated schedule, and cache pack. Exact Q8/FP16 cache
+bytes, the four eager-Q8 token sequences, and 80/194 reuse remain unchanged.
+Relative to the GEMV trace, every TPOT falls by 2.82 to 5.45 ms, median TTFT
+changes by `+7.4727915052790195 ms`, and ERS changes to
+`0.11381808711306604`. See
+[`bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt`](bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt).
+
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048
 tokens and `100.204` seconds at 4,096. That observation stopped normally on the
@@ -352,6 +362,7 @@ generated serving package (fixture boundary implemented)
 OCaml serving runtime
         ├── mandatory radix prefix cache (implemented)
         ├── FP16 or Q8 KV ownership/layout and Metal pools (implemented; Q8 default)
+        ├── ordered cache unpack/pack submission batches (implemented)
         ├── Metal package loading/mapped weights/per-family dispatch (implemented)
         ├── alias-aware liveness workspace allocation (implemented)
         ├── request-length specialization + repeated radix-backed decode (implemented)
