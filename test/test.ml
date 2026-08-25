@@ -1715,14 +1715,28 @@ let () =
     |> List.filter (fun entry ->
            Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Cache)
   in
-  expect (List.length cache_entries = 8)
-    "serving Metal program declares FP16 and Q8 cache kernels";
+  expect (List.length cache_entries = 10)
+    "serving Metal program declares FP16, scalar Q8, and SIMD Q8 cache kernels";
   expect
     (contains_substring (Metal.Program.source cache_program)
-       "llmopt_cache_pack_attention_q8"
+       "kernel void llmopt_cache_pack_attention_q8_simd"
+    && contains_substring (Metal.Program.source cache_program)
+         "kernel void llmopt_cache_pack_checkpoint_q8_simd"
+    && contains_substring (Metal.Program.source cache_program) "simd_max"
     && contains_substring (Metal.Program.source cache_program)
          "llmopt_cache_unpack_checkpoint_f16")
-    "serving Metal program emits attention and recurrent cache source";
+    "serving Metal program emits SIMD Q8 attention and recurrent cache source";
+  expect
+    (List.for_all
+       (fun name ->
+         List.exists
+           (fun entry ->
+             Kernel_abi.Entry.name entry = name
+             && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
+           cache_entries)
+       [ "llmopt_cache_pack_attention_q8_simd";
+         "llmopt_cache_pack_checkpoint_q8_simd" ])
+    "SIMD Q8 cache pack kernels declare the 256-thread ABI";
   let prefill_template = Ir.Graph.create () in
   let prefill_input =
     Ir.Graph.tensor_input prefill_template ~name:"prefill_ids"

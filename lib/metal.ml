@@ -891,6 +891,47 @@ kernel void llmopt_cache_pack_attention_q8(
   scales[params.segment * segment_groups + local_group] = stored_scale;
 }
 
+kernel void llmopt_cache_pack_attention_q8_simd(
+    device const half* source [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device uchar* pool [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint groups_per_head = params.head_dim / params.group_size;
+  const uint segment_groups = params.heads * groups_per_head;
+  const uint logical_group = gid / 32;
+  if (logical_group >= params.items * segment_groups) return;
+  const uint item = logical_group / segment_groups;
+  const uint local_group = logical_group - item * segment_groups;
+  const uint head = local_group / groups_per_head;
+  const uint group_in_head = local_group - head * groups_per_head;
+  const uint source_base =
+      (head * params.source_items + params.source_offset + item) * params.head_dim
+      + group_in_head * params.group_size;
+  float maximum = 0.0f;
+  for (uint index = lane; index < params.group_size; index += 32)
+    maximum = max(maximum, abs(float(source[source_base + index])));
+  maximum = simd_max(maximum);
+  const half stored_scale = half(
+      maximum == 0.0f ? 1.0f : maximum / 127.0f);
+  const float scale = float(stored_scale);
+  const uint slot_base = slots[item] * params.token_stride;
+  device char* values = reinterpret_cast<device char*>(pool + slot_base);
+  device half* scales = reinterpret_cast<device half*>(
+      pool + slot_base + params.token_elements);
+  const uint value_base =
+      params.segment * params.heads * params.head_dim
+      + head * params.head_dim + group_in_head * params.group_size;
+  for (uint index = lane; index < params.group_size; index += 32) {
+    const int quantized = clamp(
+        int(rint(float(source[source_base + index]) / scale)), -127, 127);
+    values[value_base + index] = char(quantized);
+  }
+  if (lane == 0)
+    scales[params.segment * segment_groups + local_group] = stored_scale;
+}
+
 kernel void llmopt_cache_unpack_attention_q8(
     device const uchar* pool [[buffer(0)]],
     device const uint* slots [[buffer(1)]],
@@ -971,6 +1012,39 @@ kernel void llmopt_cache_pack_checkpoint_q8(
   scales[params.layer * layer_groups + gid] = stored_scale;
 }
 
+kernel void llmopt_cache_pack_checkpoint_q8_simd(
+    device const half* source [[buffer(0)]],
+    device uchar* pool [[buffer(1)]],
+    constant CheckpointCacheParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint layer_groups = params.layer_elements / params.group_size;
+  const uint logical_group = gid / 32;
+  if (logical_group >= layer_groups) return;
+  const uint source_base = logical_group * params.group_size;
+  float maximum = 0.0f;
+  for (uint index = lane; index < params.group_size; index += 32)
+    maximum = max(maximum, abs(float(source[source_base + index])));
+  maximum = simd_max(maximum);
+  const half stored_scale = half(
+      maximum == 0.0f ? 1.0f : maximum / 127.0f);
+  const float scale = float(stored_scale);
+  const uint checkpoint_base = params.checkpoint * params.checkpoint_stride;
+  device char* values =
+      reinterpret_cast<device char*>(pool + checkpoint_base);
+  device half* scales = reinterpret_cast<device half*>(
+      pool + checkpoint_base + params.checkpoint_elements);
+  const uint value_base = params.layer * params.layer_elements
+      + logical_group * params.group_size;
+  for (uint index = lane; index < params.group_size; index += 32) {
+    const int quantized = clamp(
+        int(rint(float(source[source_base + index]) / scale)), -127, 127);
+    values[value_base + index] = char(quantized);
+  }
+  if (lane == 0)
+    scales[params.layer * layer_groups + logical_group] = stored_scale;
+}
+
 kernel void llmopt_cache_unpack_checkpoint_q8(
     device const uchar* pool [[buffer(0)]],
     device half* destination [[buffer(1)]],
@@ -1008,9 +1082,13 @@ let cache_f16_entries =
 let cache_q8_entries =
   [ cache_entry "llmopt_cache_pack_attention_q8" Ir.Dtype.Float16
       Ir.Dtype.Int8;
+    cache_entry "llmopt_cache_pack_attention_q8_simd" Ir.Dtype.Float16
+      Ir.Dtype.Int8;
     cache_entry "llmopt_cache_unpack_attention_q8" Ir.Dtype.Int8
       Ir.Dtype.Float16;
     cache_entry "llmopt_cache_pack_checkpoint_q8" Ir.Dtype.Float16
+      Ir.Dtype.Int8;
+    cache_entry "llmopt_cache_pack_checkpoint_q8_simd" Ir.Dtype.Float16
       Ir.Dtype.Int8;
     cache_entry "llmopt_cache_unpack_checkpoint_q8" Ir.Dtype.Int8
       Ir.Dtype.Float16 ]

@@ -213,14 +213,26 @@ let () =
   let q8_kernels, q8_token_bytes, q8_checkpoint_bytes =
     exercise_cache runtime Kv_cache.Format.default
   in
+  let q8_pack_kernels =
+    match q8_kernels with
+    | [ pack_key; pack_value; _; _; pack_checkpoint; _ ] ->
+        let attention = "llmopt_cache_pack_attention_q8_simd" in
+        let checkpoint = "llmopt_cache_pack_checkpoint_q8_simd" in
+        if pack_key <> attention || pack_value <> attention then
+          fail "Q8 attention cache did not select the SIMD pack kernel";
+        if pack_checkpoint <> checkpoint then
+          fail "Q8 checkpoint cache did not select the SIMD pack kernel";
+        attention ^ "," ^ checkpoint
+    | _ -> fail "Q8 physical cache did not dispatch six kernels"
+  in
   let f16_kernels, f16_token_bytes, f16_checkpoint_bytes =
     exercise_cache runtime Kv_cache.Format.f16
   in
   if List.length q8_kernels + List.length f16_kernels <> 12 then
     fail "physical cache did not dispatch twelve pack/unpack kernels";
   Printf.printf
-    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\nschedule-dispatches: 2\nschedule-submissions: 1\ncache-formats: q8-group-64,f16\ncache-dispatches: 12\ncache-submissions: 2\nq8-pools: %d token bytes, %d checkpoint bytes\nf16-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
+    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\nschedule-dispatches: 2\nschedule-submissions: 1\ncache-formats: q8-group-64,f16\nq8-pack-kernels: %s\ncache-dispatches: 12\ncache-submissions: 2\nq8-pools: %d token bytes, %d checkpoint bytes\nf16-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.Stage.to_string (Serving_package.stage package))
-    kernel q8_token_bytes q8_checkpoint_bytes f16_token_bytes
+    kernel q8_pack_kernels q8_token_bytes q8_checkpoint_bytes f16_token_bytes
     f16_checkpoint_bytes

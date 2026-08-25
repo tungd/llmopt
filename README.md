@@ -258,9 +258,11 @@ executor bind runtime/static inputs and allocate outputs from the binary
 schedule, dispatches `llmopt_q8_linear`, and records the deterministic output in
 `_build/q8-serving-example/ocaml-metal-smoke.txt`. The same probe executes
 twelve physical-cache dispatches and exactly round-trips separate attention
-key/value slots plus a recurrent checkpoint in Q8-group-64 and FP16.
+key/value slots plus a recurrent checkpoint in Q8-group-64 and FP16. Current
+Q8 packages select SIMD-group attention and checkpoint pack kernels while
+retaining scalar names for older-package fallback.
 `native-schedule-smoke` generates a JSON-free, 153-command typed package and
-compiles its 57 emitted Metal entry points without launching a device.
+compiles its 66 emitted Metal entry points without launching a device.
 `ocaml-metal-primitives-smoke` is the explicit device probe: one OCaml process
 executes 47 kernels across matmul, linear, normalization, convolution, attention,
 embedding, position/mask, fill, cast, pointwise, and movement forms and checks
@@ -462,6 +464,14 @@ observing ERS `0.4297032150753201` and median TTFT/TPOT
 report, those values change by `+0.022687456709165554`,
 `-6.06170849641785 ms`, and `-0.23844450091322233 ms`. See
 [`bench/results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt).
+
+Q8 attention and recurrent cache packing now assigns one 32-lane SIMD group
+to each quantization group instead of scanning the group in one thread. The
+full-Q8 350M replan has 70/68 entries and zero opaque commands; both MSL stages
+compile, and one preflighted Apple M4 Pro invocation selects both new pack
+kernels with exact Q8/FP16 attention and recurrent round trips. No model or ERS
+request is included in that compiler result. See
+[`bench/results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt`](bench/results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt).
 
 The preceding single-channel full-Q8 native HTTP needle runner also completed
 all six 2,048/4,096-token prompts with exact `RAVEN-4271` retrieval and all 12

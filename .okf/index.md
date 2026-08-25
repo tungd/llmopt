@@ -69,3 +69,21 @@ okf_version: '0.2'
 * [Q8 linear-residual epilogue fusion](experiments/exp-0047-q8-linear-add-fusion.md) - the second epilogue pass removes 32 residual workspace round trips and dispatches from each stage.
 * [Q8 multiplied-input down-projection fusion](experiments/exp-0048-q8-multiplied-input-fusion.md) - each feed-forward down projection absorbs its sole-consumer SwiGLU product.
 * [SIMD-group Q8 decode GEMV](experiments/exp-0049-simdgroup-q8-gemv.md) - 32 lanes cooperate on each decode output channel with legacy scalar fallback.
+* [SIMD-group RMSNorm](experiments/exp-0050-simdgroup-rmsnorm.md) - one SIMD group reduces and writes each normalization row.
+* [Single-pass SIMD attention](experiments/exp-0051-online-softmax-attention.md) - each query-key score is computed once with online softmax accumulation.
+* [Optimized native stack measurement](experiments/exp-0052-optimized-native-stack.md) - corrected suffix replay and the fused/SIMD stack measured on 350M.
+* [Effective feed-forward shape](experiments/exp-0053-effective-ff-shape.md) - executable SwiGLU projections use the auto-adjusted width 4,608.
+* [Packed SIMD Q8 GEMV](experiments/exp-0054-packed-simd-q8-gemv.md) - vectorized activation and int8 weight loads across all decode epilogues.
+* [Packed SIMD Q8 measurement](experiments/exp-0055-packed-simd-q8-gemv-measurement.md) - bounded 350M token, radix, latency, and ERS evidence.
+* [Vector-staged Q8 prefill](experiments/exp-0056-vector-staged-q8-prefill.md) - 64-wide vector staging inside the tiled Q8 prefill kernel.
+* [Vector-prefill measurement](experiments/exp-0057-vector-prefill-measurement.md) - bounded 350M evidence for vector-staged prefill.
+* [Native FP16 logit export](experiments/exp-0058-native-logit-export.md) - raw binary vocabulary-row comparison with eager Q8.
+* [Fixed-output native needle](experiments/exp-0059-fixed12-native-needle.md) - 2,048/4,096-token retrieval and complete eager-token parity.
+* [Last-token vocabulary projection](experiments/exp-0060-last-token-vocab-projection.md) - serving prefill projects only the final vocabulary row.
+* [Last-token projection measurement](experiments/exp-0061-last-token-projection-measurement.md) - bounded 350M latency, parity, radix, and ERS evidence.
+* [Q8-default LM head](experiments/exp-0062-q8-lm-head-compiler.md) - all linear modules, including the vocabulary projection, default to Q8.
+* [Full-Q8 LM-head measurement](experiments/exp-0063-q8-lm-head-measurement.md) - recaptured 350M native trace and long-context evidence.
+* [Paired SIMD-group Q8 GEMV](experiments/exp-0064-paired-simd-q8-gemv.md) - adjacent output channels share each packed activation load.
+* [Paired SIMD measurement](experiments/exp-0065-paired-simd-measurement.md) - bounded 350M trace and needle matrix for paired decode.
+* [Selectable FP16 KV execution](experiments/exp-0066-fp16-kv-model-execution.md) - model-scale FP16 cache execution while Q8 remains default.
+* [SIMD-group Q8 cache packing](experiments/exp-0067-simd-q8-cache-pack.md) - attention and recurrent quantization use one SIMD group per Q8 group.

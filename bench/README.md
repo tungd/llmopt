@@ -304,6 +304,14 @@ observation records ERS `0.4297032150753201` and median TTFT/TPOT
 `69.16322899633087/6.698208337184042 ms`; Q8-group-64 remains the default. See
 [`results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt`](results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt).
 
+Q8 cache packing now maps one attention or recurrent quantization group to one
+32-lane SIMD group, with eight groups per threadgroup and scalar fallback for
+older packages. The full-Q8 350M replan emits 70/68-entry zero-opaque packages;
+both stages compile, and one preflighted synthetic Metal invocation selects
+both SIMD pack entries with exact Q8/FP16 attention and recurrent data. This
+compiler-only record has no model latency or ERS observation. See
+[`results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt`](results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh
