@@ -110,6 +110,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test` passes with zero numerical drift.
   - `DONE WHEN`: Out-projection, residual addition, and post-norm across layers execute as single fused kernels.
   - `ESCALATE IF`: Intermediate residual has multiple active consumer nodes.
+  - `ATTEMPT-1`: `ninja -f ninja.build test` passed; the generated Metal source, OCaml runtime dispatch, native fixture, and FX executable compile. The fixture verifies the typed rewrite, epsilon and operand preservation, schedule round-trip, threadgroup RMS reduction source, and registered Q8 ABI entry.
+  - `NEEDS INTEGRATION`: `Passes.optimize` does not yet invoke `fuse_linear_residual_norm`, and no current full LFM2.5 package has been regenerated through this new op. The repository therefore has no full-layer numerical or command-count evidence; carry that proof to ITEM-06 pipeline integration.
 
 - [ ] **ITEM-05**: Implement Fused Final RMSNorm + LM_Head + On-GPU Tree-Reduction Argmax
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
