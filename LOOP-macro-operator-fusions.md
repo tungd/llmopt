@@ -33,7 +33,7 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
 
 ### Execution Items
 
-- [ ] **ITEM-01**: Implement Fused SwiGLU Dual-Linear Projection ($W_1 + W_3$)
+- [x] **ITEM-01**: Implement Fused SwiGLU Dual-Linear Projection ($W_1 + W_3$)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: FFN Gate and Up projection fusion in compiler passes and MSL emitter.
   - `IMPORTANT FILES`:
@@ -50,6 +50,7 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build metal` compiles and passes all unit tests.
   - `DONE WHEN`: FFN Gate and Up projections in all 16 layers collapse into 16 dual-linear operations with verified FP16 output.
   - `ESCALATE IF`: Shared input activation tensor has external consumers outside the FFN block.
+  - `DONE`: `b01fed9` (feat(metal): add dual-linear q8 kernel; together with `342382f`, verified `ninja -f ninja.build test && ninja -f ninja.build metal`, dual-linear source/ABI emission, and serving-schedule round-trip preservation).
 
 - [ ] **ITEM-02**: Implement Fused 3-in-1 QKV Attention Projection ($W_q + W_k + W_v$)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
