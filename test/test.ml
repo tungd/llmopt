@@ -4313,4 +4313,13 @@ let () =
   let sched_deserialized = expect_ok (Serving_schedule.of_bytes sched_bytes) in
   expect (List.length (Serving_schedule.commands sched_deserialized) = List.length (Serving_schedule.commands sched))
     "binary schedule round-trip preserves command count";
+
+  (* End-to-end DAG co-scheduled optimization pipeline test *)
+  let opt_diamond = Passes.optimize diamond_g in
+  let opt_dag = expect_ok (Dag_analysis.analyze opt_diamond) in
+  expect (Dag_analysis.node_count opt_dag > 0) "optimized graph has nodes in DAG";
+  let opt_sched = expect_ok (Serving_schedule.of_graph opt_diamond) in
+  let opt_mem = expect_ok (Serving_memory_plan.plan_concurrent opt_sched) in
+  expect (Serving_memory_plan.workspace_bytes opt_mem > 0)
+    "optimized schedule produces valid 2D workspace memory plan";
   print_endline "llmopt tests passed"
