@@ -50,3 +50,4 @@
 * [Q8 multiplied-input down-projection fusion](exp-0048-q8-multiplied-input-fusion.md) - sixteen materialized SwiGLU products per stage move into typed Q8 down-projection loads.
 * [SIMD-group Q8 decode GEMV](exp-0049-simdgroup-q8-gemv.md) - one SIMD group reduces each Q8 output channel while old packages retain scalar dispatch.
 * [SIMD-group RMSNorm rows](exp-0050-simdgroup-rmsnorm.md) - one SIMD group reduces and writes each row while older packages retain scalar dispatch.
+* [Single-pass SIMD online-softmax attention](exp-0051-online-softmax-attention.md) - each LFM query-key score is computed once while scalar fallback remains available.

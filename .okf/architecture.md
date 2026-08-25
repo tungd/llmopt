@@ -399,6 +399,14 @@ the runtime retains scalar-name and scalar-grid fallback for older packages.
 The 350M prefill and decode templates each contain 45 such commands; this
 changed reduction order remains static-only.
 
+The width-64 attention specialization also owns one query row per SIMD group.
+It computes each query-key dot product once, updates the softmax maximum and
+denominator online, and rescales two output accumulators per lane. The prior
+scalar form recomputed a full score for the maximum, denominator, and every
+output dimension: 66 times per key at width 64. The scalar entry remains
+declared for wider heads and old packages. All six attention commands per 350M
+stage select the new entry statically; the kernel has not run on device.
+
 Physical KV and recurrent cache conversion now batches each unpack or pack
 phase into one ordered command buffer. For the six-attention, ten-recurrent
 350M model, decode changes from 45 synchronous submissions to three including

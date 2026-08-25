@@ -37,7 +37,9 @@ token vocabulary. Those values are recorded in [the OKF target concept](.okf/tar
 - Textual LLVM IR emission for inspection and a tiled Metal Shading Language
   emitter for the executable backend boundary. Multi-row Q8 uses 16 by 16
   threadgroup tiles; one-row decode maps one 32-lane SIMD group to each output
-  channel and keeps scalar GEMV names as fallback for older packages.
+  channel. RMSNorm maps one SIMD group per row, and width-64 attention computes
+  each query-key score once with online softmax. Scalar names remain available
+  for older packages and unsupported attention widths.
 - A versioned OCaml serving-package ABI. The FX compiler emits a copied graph,
   optimized plan, MSL, metallib reference, LLVM IR, typed kernel entries, and
   mandatory radix/Q8-default cache policy. A serving package references one
@@ -341,6 +343,13 @@ contain 45 RMSNorm commands each; both model metallibs compile, older package
 names retain scalar fallback, and the changed reduction order has not run on
 device. See
 [`bench/results/lfm25-350m-q8-simdgroup-rmsnorm-2026-08-25.txt`](bench/results/lfm25-350m-q8-simdgroup-rmsnorm-2026-08-25.txt).
+
+The six attention commands per stage now use one SIMD group per query row and
+an online-softmax recurrence. At head dimension 64 this computes each
+query-key dot product once instead of 66 times, while retaining the scalar
+entry for wider heads and old packages. Both 350M metallibs compile; no device
+or ERS run has exercised the new association order. See
+[`bench/results/lfm25-350m-q8-online-softmax-attention-2026-08-25.txt`](bench/results/lfm25-350m-q8-online-softmax-attention-2026-08-25.txt).
 
 Batching physical-cache submissions reduces each 350M decode from 45 waits to
 three: cache unpack, generated schedule, and cache pack. Exact Q8/FP16 cache

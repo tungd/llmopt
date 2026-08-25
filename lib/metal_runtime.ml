@@ -1233,7 +1233,7 @@ let linear_f16_grid columns =
     Error "Metal float16 linear grid dimension overflows"
   else Ok (rounded_columns * simd_width)
 
-let rms_norm_grid rows = linear_f16_grid rows
+let simd_rows_grid rows = linear_f16_grid rows
 
 let rms_norm_kernel_name = function
   | Ir.Dtype.Float32 -> Ok "llmopt_rms_norm_f32_f16_simd"
@@ -1261,6 +1261,29 @@ let select_rms_norm_kernel runtime input_dtype output_dtype =
           kernel_entry ~name:legacy runtime
             ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype ~output_dtype
           |> Result.map (fun entry -> entry, false))
+
+let select_attention_kernel runtime input_dtype output_dtype head_dimension =
+  let candidates =
+    if head_dimension <= 64 then
+      [ "llmopt_attention_f16_simd_h64", true;
+        "llmopt_attention_f16", false ]
+    else [ "llmopt_attention_f16", false ]
+  in
+  let rec select = function
+    | [] ->
+        Error
+          (Printf.sprintf "serving package has no attention kernel for %s -> %s"
+             (Ir.Dtype.to_string input_dtype)
+             (Ir.Dtype.to_string output_dtype))
+    | (name, simd) :: rest -> (
+        match
+          kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Attention
+            ~input_dtype ~output_dtype
+        with
+        | Ok entry -> Ok (entry, simd)
+        | Error _ -> select rest)
+  in
+  select candidates
 
 let validate_linear_shapes ~m ~n ~k input weight output =
   let input_elements = Tensor_shape.numel (Ir.Value.logical_shape input) in
@@ -1886,7 +1909,7 @@ let encode_schedule execution_batch ~schedule ~inputs =
             let* entry, simd =
               select_rms_norm_kernel runtime input_dtype (Ir.Value.dtype output)
             in
-            let* grid_x = if simd then rms_norm_grid rows else Ok rows in
+            let* grid_x = if simd then simd_rows_grid rows else Ok rows in
             let* output_buffer = workspace_buffer state output in
             let* kernel =
               dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
@@ -1986,11 +2009,19 @@ let encode_schedule execution_batch ~schedule ~inputs =
                 ~causal:(Ir.Attention.causal config)
                 ~scale:(Ir.Attention.scale config)
             in
-            dispatched
-              (dispatch_output runtime state output
-                 ~operation:Kernel_abi.Operation.Attention
-                 ~input_dtype:(Ir.Value.dtype query) ~buffers ~parameters
-                 ~grid:(batches * heads * query_length, 1, 1))
+            let rows = batches * heads * query_length in
+            let input_dtype = Ir.Value.dtype query in
+            let* entry, simd =
+              select_attention_kernel runtime input_dtype (Ir.Value.dtype output)
+                head_dimension
+            in
+            let* grid_x = if simd then simd_rows_grid rows else Ok rows in
+            let* output_buffer = workspace_buffer state output in
+            let* kernel =
+              dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
+                ~parameters ~grid:(grid_x, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buffer, kernel))
         | ( Ir.Op.Primitive (Ir.Primitive.Diff config),
             [ source; prepend ],
             Some output ) ->

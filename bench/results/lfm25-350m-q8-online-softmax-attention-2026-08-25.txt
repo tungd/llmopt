@@ -1,0 +1,45 @@
+LFM2.5-350M single-pass SIMD attention
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Kernel mapping
+- Previous kernel: one thread owns a query row and recomputes each full query-key dot product for the maximum pass, denominator pass, and every output dimension.
+- For head dimension 64, the previous kernel computes each query-key dot product 66 times.
+- Current kernel: one 32-lane SIMD group owns a query row and computes each query-key dot product once.
+- Lanes traverse the head dimension at stride 32 and simd_sum combines partial scores.
+- Online max/denominator updates accumulate two value dimensions per lane without materializing a score buffer.
+- One 256-thread threadgroup owns eight query rows.
+- The scalar kernel remains declared and is selected for heads wider than 64 or as fallback for older packages.
+
+Saved 350M binary-graph replan
+- attention commands: 6 prefill / 6 decode
+- captured prefill shape: [1,16,6,64] query and [1,16,6,64] key/value
+- captured decode shape: [1,16,1,64] query and [1,16,7,64] key/value
+- commands: 808 prefill / 862 decode
+- kernel entries: 61 prefill / 59 decode
+- opaque operations: 0 / 0
+- tensor bindings: 241 / 241 against one 422,137,216-byte binary tensor archive
+- workspace high-water/unreused: 1,098,496/7,692,800 prefill, 262,144/1,791,232 decode
+- prefill package: 95,066 bytes
+- decode package: 98,549 bytes
+- prefill MSL/metallib: 88,097 / 345,645 bytes
+- decode MSL/metallib: 88,592 / 339,379 bytes
+- both generated MSL programs compiled and linked with Xcode Metal
+
+Persistent artifact pair
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-simd-attention-v1-2026-08-25
+- Q8-group-64 and FP16-selectable pair validation: pass
+- prefill/decode binary tensor archive inode: 241927011 / 241927011
+- sequence-specialized workspace sizes remain unchanged from the SIMD-RMSNorm artifact
+
+Static verification
+- ninja -f ninja.build test: pass, 37 Python tests and OCaml tests
+- ninja -f ninja.build attention-smoke: pass
+- Xcode Metal compilation and package validation: pass for both model stages
+- source tests pin SIMD row mapping, one score reduction, online denominator update, entry name, and 256-thread launch metadata
+- ABI-v10 and ABI-v9 packages still parse and validate
+
+Evidence boundary
+- No Metal device execution, model request, token generation, cache replay, needle trace, latency comparison, or ERS scoring ran for this kernel.
+- Online softmax and SIMD score reduction change floating-point association.
+- Latest valid native ERS remains 0.11381808711306604 from the earlier scalar-GEMV cache-submission trace.

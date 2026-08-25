@@ -661,11 +661,27 @@ let () =
   expect (Serving_schedule.opaque_count attention_schedule = 0)
     "attention survives the binary schedule as a typed command";
   let attention_program = expect_ok (Metal.lower attention_graph) in
+  let attention_source = Metal.Program.source attention_program in
+  expect
+    (contains_substring attention_source "llmopt_attention_f16_simd_h64"
+    && contains_substring attention_source
+         "threadgroup_position.x * ATTENTION_ROWS_PER_THREADGROUP"
+    && contains_substring attention_source "simd_sum(partial_score)"
+    && contains_substring attention_source
+         "denominator = denominator * previous_scale + current_scale")
+    "attention lowering emits one-pass SIMD online softmax";
+  expect
+    (Metal.Program.kernels attention_program
+    |> List.filter (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Attention)
+    |> List.length = 2)
+    "attention graph declares SIMD and scalar Metal ABIs";
   expect
     (Metal.Program.kernels attention_program
     |> List.exists (fun entry ->
-           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Attention))
-    "attention graph declares its Metal kernel ABI";
+           Kernel_abi.Entry.name entry = "llmopt_attention_f16_simd_h64"
+           && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
+    "attention SIMD entry maps eight rows per threadgroup";
   let embedding_index_shape = Tensor_shape.of_ints_exn [ 1; 2 ] in
   let embedding_weight_shape = Tensor_shape.of_ints_exn [ 3; 2 ] in
   let embedding_output_shape =
