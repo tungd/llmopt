@@ -7,6 +7,16 @@ module Command : sig
   val output : t -> Ir.Value.t option
 end
 
+module Stage : sig
+  type t =
+    | Sequential of Command.t
+    | Concurrent of Command.t list
+    | Barrier of int
+
+  val commands : t -> Command.t list
+  val is_barrier : t -> bool
+end
+
 module Tensor_input : sig
   type t
 
@@ -18,6 +28,7 @@ type t
 
 val of_graph : Ir.Graph.t -> (t, string) result
 val commands : t -> Command.t list
+val stages : t -> Stage.t list
 val tensor_inputs : t -> Tensor_input.t list
 val runtime_inputs : t -> (string * Ir.Value.t) list
 val opaque_count : t -> int

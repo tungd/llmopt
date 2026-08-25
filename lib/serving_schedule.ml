@@ -14,6 +14,22 @@ module Command = struct
   let output command = command.output
 end
 
+module Stage = struct
+  type t =
+    | Sequential of Command.t
+    | Concurrent of Command.t list
+    | Barrier of int
+
+  let commands = function
+    | Sequential c -> [ c ]
+    | Concurrent cs -> cs
+    | Barrier _ -> []
+
+  let is_barrier = function
+    | Barrier _ -> true
+    | _ -> false
+end
+
 module Tensor_input = struct
   type t = {
     key : string;
@@ -27,6 +43,31 @@ end
 type t = { commands : Command.t list }
 
 let commands schedule = schedule.commands
+
+let stages schedule =
+  let rec group current_stage acc = function
+    | [] ->
+        let acc =
+          match current_stage with
+          | [] -> acc
+          | [ c ] -> Stage.Sequential c :: acc
+          | cs -> Stage.Concurrent (List.rev cs) :: acc
+        in
+        List.rev acc
+    | command :: rest -> (
+        match command.Command.op with
+        | Ir.Op.Barrier_wait id | Ir.Op.Barrier_arrive id ->
+            let acc =
+              match current_stage with
+              | [] -> acc
+              | [ c ] -> Stage.Sequential c :: acc
+              | cs -> Stage.Concurrent (List.rev cs) :: acc
+            in
+            group [] (Stage.Barrier id :: acc) rest
+        | _ ->
+            group (command :: current_stage) acc rest)
+  in
+  group [] [] schedule.commands
 
 module Int_set = Set.Make (Int)
 

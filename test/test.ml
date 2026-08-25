@@ -4305,4 +4305,12 @@ let () =
     "d_w1 allocation offset is 256-byte aligned";
   expect (Serving_memory_plan.Allocation.offset a_w3 mod 256 = 0)
     "d_w3 allocation offset is 256-byte aligned";
+
+  (* Serving_schedule.stages and binary round-trip tests *)
+  let stages = Serving_schedule.stages sched in
+  expect (List.length stages > 0) "schedule has extracted stages";
+  let sched_bytes = Serving_schedule.to_bytes sched in
+  let sched_deserialized = expect_ok (Serving_schedule.of_bytes sched_bytes) in
+  expect (List.length (Serving_schedule.commands sched_deserialized) = List.length (Serving_schedule.commands sched))
+    "binary schedule round-trip preserves command count";
   print_endline "llmopt tests passed"
