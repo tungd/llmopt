@@ -54,7 +54,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | OCaml Metal serving loader and dispatch | vector-prefill plus packed fused/SIMD schedules and dependent suffix batches model-executed; native logits measured | ABI-v11 packages prefer vector-staged Q8 prefill, packed SIMD-group Q8 decode, RMSNorm, and attention with scalar fallback. One bounded run completes 4/4 warmup and scored requests, preserves exact tokens and Q8 radix counts, and measures native ERS `0.3377415731686302`; a separate six-token prefill comparison preserves eager-Q8 argmax `19130` with `max_abs=0.078125` and `mean_abs=0.014548537321388721` |
 | Complete 350M operation schedule | captured templates specialize and current optimized schedule has token parity | ABI-v11 replans retain zero opaque commands and 241 bindings while removing 16 Q8/SiLU, 32 Q8/residual, and 16 multiplied-input dispatch boundaries per stage. The 808/862-command pair executes 4/4 scored requests with exact eager-Q8 tokens; offline planning covers prefill 13/128/4,096 and decode-past 1/127/4,095 |
 | native tokenization, LFM chat, generation, and HTTP/SSE | implemented for serial smoke requests | `LLMOPTTK` and typed chat feed one persistent `llmopt-serve` engine. The current 4/4 warmup and scored trace has pinned outputs, exact eager-Q8 parity, ERS `0.3377415731686302`, and 80/194 cached prompt tokens |
-| natural needle-in-a-haystack validation | native retrieval implemented; fixed-output native parity open | eager/direct-FX 2,048/4,096-token contexts retrieve `RAVEN-4271` in 6/6 while fixed 12-token outputs append text. Native stop-on-EOS requests retrieve exact text in 6/6 and match the first seven eager IDs; the runner now pins 12 tokens and records explicit per-request parity against a supplied eager sequence, but that corrected long matrix was not rerun |
+| natural needle-in-a-haystack validation | native fixed-output retrieval and token parity measured | the optimized native 2,048/4,096-token matrix retrieves `RAVEN-4271` in 6/6 and exactly matches all 12 eager-Q8 IDs in every request. Exact-only formatting is 0/6 because the fixed output decodes as `RAVEN-4271Lottery`; median TTFT/TPOT is 2,859.034/34.252 ms and 6,540.756/65.629 ms respectively |
 
 # Evidence rule
 
@@ -71,9 +71,6 @@ measurement into a release gate.
   the LFM2.5 projection dimensions beyond the initial 16x16 kernel?
 - How should generated libraries be versioned and invalidated when the FX
   graph, target device, or compiler flags change?
-- What prompt/template and response budget should the LFM2.5-350M needle probe
-  use so semantic retrieval is measured independently from explanatory output
-  formatting?
 - How much repeat/counterbalance sampling should be used when comparing MPS
   latency distributions after the isolated profile is recorded?
 - Which LFM2.5 linear subgraphs can use the generated Q8 callable without

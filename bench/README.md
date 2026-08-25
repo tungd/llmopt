@@ -274,9 +274,13 @@ By default this matches the existing fixed-output contract with
 message-end termination. `--expected-token-ids` records per-request and
 aggregate exact parity against the separately captured eager-Q8 sequence; it
 does not change the process exit status. The first long native observation
-preceded that default correction and used normal EOS stopping: it retrieved `RAVEN-4271`
-exactly in 6/6 prompts and matched the first seven eager-Q8 IDs, then stopped at
-token `7`. Median latency was `39.362` seconds at 2,048 tokens and `100.204`
-seconds at 4,096 tokens. The corrected fixed-12-token matrix was not rerun; the
+preceded that default correction and used normal EOS stopping. Its historical
 boundary is recorded in
 [`results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).
+
+The corrected optimized matrix now completes 6/6 requests with 6/6 retrieval
+and exact parity against all 12 eager-Q8 IDs. Exact-only text remains 0/6
+because the pinned sequence decodes as `RAVEN-4271Lottery`. Median TTFT/TPOT
+is `2859.034/34.252 ms` at 2,048 tokens and `6540.756/65.629 ms` at 4,096
+tokens. See
+[`results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt`](results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt).

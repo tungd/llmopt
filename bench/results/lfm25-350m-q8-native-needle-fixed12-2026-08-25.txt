@@ -1,0 +1,83 @@
+LFM2.5-350M Q8 native fixed-12-token needle matrix
+==================================================
+
+Scope
+-----
+- llmopt commit: 72e10e6
+- model: LiquidAI/LFM2.5-350M
+- runtime: native OCaml HTTP/SSE server and generated Metal
+- weights: Q8 weight-only
+- KV/recurrent format: Q8-group-64
+- package: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25
+- prefill/decode inventory: 808/862 commands, 61/59 kernels, 0/0 opaque
+- prompt lengths: 2,048 and 4,096 exact tokenizer-derived tokens
+- needle placements: 10%, 50%, and 90%
+- expected answer: RAVEN-4271
+- output policy: exactly 12 tokens, min_tokens=12, ignore_eos=true
+- eager-Q8 token reference:
+  8832,563,2880,522,31429,526,7,2,1,553,849,18149
+
+Safety and supervision
+----------------------
+- Preflight system-wide memory free: 51%.
+- No resident LFM, Torch benchmark, or native server process was present.
+- Port 18087 and the output path were unused.
+- Q8 token/checkpoint capacities: 32,768 / 512.
+- One server-and-runner attempt ran under `gtimeout --signal=TERM
+  --kill-after=5s 900s` and exited 0 in about 36 seconds.
+- A sample after five requests showed 34% free memory, server RSS 881,664 KiB,
+  and runner RSS 198,752 KiB.
+- Memory recovered to 48% after the server and runner exited; port 18087 was
+  released and no model/native process remained resident.
+
+Correctness
+-----------
+- Successful requests: 6/6.
+- Retrieval: 6/6.
+- Exact 12-token eager-Q8 parity: 6/6.
+- Exact-only response formatting: 0/6.
+- Every output text: RAVEN-4271Lottery.
+- Every output token sequence:
+  8832,563,2880,522,31429,526,7,2,1,553,849,18149
+- Every output token SHA-256:
+  386d9bc069d0b752a6b6ce2cfe9691d0eb7248f85565383f0b74b90a09e76cd8
+- Every prompt was constructed at its exact target length.
+- Cached prompt tokens: 0/24,576 across this six-distinct-prompt matrix.
+
+Median measurements
+-------------------
+Prompt length | TTFT (ms) | TPOT (ms) | Latency (ms)
+2,048         | 2859.034250024706 | 34.251700816887684 | 3259.540042025037
+4,096         | 6540.756125003099 | 65.62889018625191  | 7255.437917017844
+
+Per-request latency / TTFT / TPOT
+---------------------------------
+- 2,048 at 10%: 3508.075 / 3131.291 / 34.252 ms
+- 2,048 at 50%: 3259.540 / 2859.034 / 36.408 ms
+- 2,048 at 90%: 3109.990 / 2736.454 / 33.954 ms
+- 4,096 at 10%: 7069.108 / 6347.166 / 65.629 ms
+- 4,096 at 50%: 7263.220 / 6540.756 / 65.676 ms
+- 4,096 at 90%: 7255.438 / 6543.441 / 64.725 ms
+
+Prior-observation context
+-------------------------
+The earlier native long matrix used normal EOS stopping, emitted seven tokens,
+and ran before the current fused/SIMD/vector package. Its median TTFT/TPOT was
+15,768.789/3,932.246 ms at 2,048 tokens and 52,162.024/8,007.024 ms at 4,096
+tokens. The current medians are lower by 12,909.754/3,897.994 ms and
+45,621.267/7,941.395 ms respectively. Output policy and package contents both
+differ, so the deltas are observations and are not attributed to one pass.
+
+Artifacts
+---------
+- _artifacts/native-http-needle-fixed12-vector-prefill-2026-08-25/report.json
+- _artifacts/native-http-needle-fixed12-vector-prefill-2026-08-25/runner.log
+- _artifacts/native-http-needle-fixed12-vector-prefill-2026-08-25/runner.stderr.txt
+- _artifacts/native-http-needle-fixed12-vector-prefill-2026-08-25/server.log
+- _artifacts/native-http-needle-fixed12-vector-prefill-2026-08-25/healthz.json
+
+Boundary
+--------
+This matrix measures natural retrieval, exact fixed-output token parity, text
+formatting, and long-context latency. It is not an ERS trace and does not
+exercise shared-prefix cache reuse across conversational turns.

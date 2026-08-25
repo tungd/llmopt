@@ -365,9 +365,10 @@ inside the native process. Incremental UTF-8 decoding emits every generated
 token ID, including empty-text special tokens, so the benchmark timestamps
 tokens rather than visible text fragments. One warmed four-request scored
 smoke reused 80/194 prompt tokens, matched all eager-Q8 token sequences, and
-measured native ERS `0.06169548638841863`. A stop-on-EOS native long-context
-matrix retrieves 6/6 at 2,048/4,096 tokens and matches the first seven eager
-IDs; the corrected fixed-12-token matrix remains open.
+measured native ERS `0.06169548638841863`. The optimized fixed-12-token native
+long-context matrix retrieves 6/6 at 2,048/4,096 tokens and exactly matches all
+12 eager-Q8 IDs in every request; exact-only text is 0/6 because generation
+continues through EOS.
 
 Schedule execution now accumulates its generic and Q8 compute dispatches into
 one compute encoder and inserts ordered blit encoders for typed copies. It

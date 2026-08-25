@@ -144,7 +144,13 @@ observations. The exact record is
 The native endpoint completed the six 2,048/4,096-token natural prompts with
 6/6 retrieval and exact answer text under normal EOS stopping. Its seven IDs
 match the first seven eager-Q8 IDs in every case. The existing benchmark forces
-12 outputs through EOS; the native runner now does the same by default, but the
-long matrix was not rerun after that correction. The observation and timing
-are recorded in
+12 outputs through EOS; the native runner now does the same by default. The
+historical normal-EOS observation is recorded in
 [`/bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt`](/bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt).
+
+The corrected optimized matrix completes 6/6 requests, retrieves the code in
+6/6, and matches all 12 eager-Q8 IDs in every case. Exact-only text is 0/6
+because the fixed continuation is `RAVEN-4271Lottery`. Median TTFT/TPOT is
+`2859.034/34.252 ms` for 2,048-token prompts and `6540.756/65.629 ms` for
+4,096-token prompts. The observation is recorded in
+[`/bench/results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt`](/bench/results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt).

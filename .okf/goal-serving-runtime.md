@@ -48,6 +48,9 @@ sources:
   - id: native-needle-result
     resource: /bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt
     title: Native long-context retrieval observation
+  - id: native-fixed-needle-result
+    resource: /bench/results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt
+    title: Native fixed-output long-context parity observation
   - id: batched-command-result
     resource: /bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt
     title: Native command-buffer batching result
@@ -122,7 +125,7 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `llmopt-serve` accepts the OpenAI-compatible chat contract, incrementally decodes UTF-8, streams every generated token ID plus visible text, and reports usage. The warmed scored smoke completed 4/4 requests with pinned output counts | implemented for the HTTP smoke contract |
 | Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Scored second turns reuse 42/61 and 38/59 prompt tokens; total reuse is 80/194 while all four output sequences match eager Q8 exactly. The dependent suffix plan reserves and inserts one checkpoint per suffix token and now completes the measured path | implemented for serial multi-turn smoke requests |
 | Configurable KV quantization | FP16 and Q8 runs bind physical Metal KV/checkpoint buffers and execute matching quantize/dequantize paths | Small exact probes cover FP16 and Q8-group-64. The full fixed model run used Q8 by default; the ABI-v8 pair validates FP16 but has not executed it at model scale | partial |
-| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by one reproducible command | The current vector-prefill trace records 4/4 exact eager-Q8 warmup and scored sequences, native/eager ERS `0.3377415731686302/0.36872784102635947`, median native TTFT/TPOT `93.156/7.948 ms`, and 80/194 cached prompt tokens. A fixed six-token native/eager prefill comparison has argmax parity with `max_abs=0.078125`; a stop-on-EOS long matrix retrieves 6/6 and matches the first seven eager IDs. The corrected fixed-12-token optimized matrix remains open | partial |
+| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by one reproducible command | The current vector-prefill trace records 4/4 exact eager-Q8 warmup and scored sequences, native/eager ERS `0.3377415731686302/0.36872784102635947`, median native TTFT/TPOT `93.156/7.948 ms`, and 80/194 cached prompt tokens. A fixed six-token native/eager prefill comparison has argmax parity with `max_abs=0.078125`. The corrected long matrix retrieves 6/6 and matches all 12 eager-Q8 IDs in every request, while exact-only text is 0/6 | partial |
 
 # Completion condition
 

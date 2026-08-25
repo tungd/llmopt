@@ -58,3 +58,4 @@
 * [Vector-staged Q8 prefill kernel](exp-0056-vector-staged-q8-prefill.md) - 64-wide activation4/weight4 staging with fourfold fewer reduction barriers.
 * [Vector-staged Q8 prefill model measurement](exp-0057-vector-prefill-measurement.md) - one bounded 350M run with exact tokens, unchanged radix reuse, and ERS 0.337742.
 * [Native FP16 logit comparison](exp-0058-native-logit-export.md) - raw OCaml Metal vocabulary-row export and one bounded eager-Q8 numeric comparison without JSON tensor transport.
+* [Native fixed-12-token long-context needle parity](exp-0059-fixed12-native-needle.md) - 6/6 retrieval and complete eager-Q8 token parity through the optimized OCaml Metal server.

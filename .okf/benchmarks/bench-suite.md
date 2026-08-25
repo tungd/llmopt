@@ -45,6 +45,9 @@ sources:
   - id: result-native-needle
     resource: /bench/results/lfm25-350m-q8-native-needle-stop-eos-2026-08-24.txt
     title: native long-context retrieval observation
+  - id: result-native-needle-fixed12
+    resource: /bench/results/lfm25-350m-q8-native-needle-fixed12-2026-08-25.txt
+    title: native fixed-output retrieval and parity observation
   - id: result-native-batched
     resource: /bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt
     title: native command-buffer optimization result
@@ -85,10 +88,10 @@ The same HTTP runner now drives the persistent native OCaml server. Native SSE
 events carry exact token IDs in addition to decoded text so special tokens and
 split UTF-8 scalars retain token-level timing. The first warmed serial smoke
 records 4/4 eager-Q8 token parity, 80/194 cached prompt tokens, native ERS
-`0.06169548638841863`, and eager ERS `0.36872784102635947`. A native
-stop-on-EOS long matrix retrieves 6/6 and matches the first seven eager-Q8 IDs;
-the corrected fixed-12-token matrix and semantic 5x3 profile remain separate
-open measurements.
+`0.06169548638841863`, and eager ERS `0.36872784102635947`. The current native
+fixed-12-token long matrix retrieves 6/6 and matches all 12 eager-Q8 IDs in
+every request; exact-only text is 0/6. The native semantic 5x3 profile remains
+a separate measurement.
 
 Schedule-wide command-buffer batching preserves those four eager-Q8 sequences
 and 80/194 cached tokens. On the identical warmed serial trace, native ERS
