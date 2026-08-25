@@ -52,3 +52,4 @@
 * [SIMD-group RMSNorm rows](exp-0050-simdgroup-rmsnorm.md) - one SIMD group reduces and writes each row while older packages retain scalar dispatch.
 * [Single-pass SIMD online-softmax attention](exp-0051-online-softmax-attention.md) - each LFM query-key score is computed once while scalar fallback remains available.
 * [Optimized native stack measurement](exp-0052-optimized-native-stack.md) - corrected suffix replay and the combined fused/SIMD stack retain exact tokens and measure native ERS 0.236555.
+* [Effective LFM feed-forward shape correction](exp-0053-effective-ff-shape.md) - distinguishes declared 6656 from the auto-adjusted 4608-wide executable projections.

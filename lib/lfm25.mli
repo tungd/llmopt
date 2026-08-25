@@ -3,6 +3,7 @@ module Config : sig
   type t = {
     hidden_size : int;
     intermediate_size : int;
+    feed_forward_size : int;
     num_hidden_layers : int;
     num_attention_heads : int;
     num_key_value_heads : int;

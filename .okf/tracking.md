@@ -27,6 +27,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | OCaml FX importer and effect planner | implemented for captured prefill/decode templates | typed operations survive schedule-v11 round trips; the LFM specialization pass rewrites sequence-dependent dimensions and scalars, then re-infers SSA shapes while preserving static archive tensors |
 | LLVM textual emitter | implemented | `clang -x ir` accepts the linear smoke |
 | Metal source emitter | implemented | Xcode `metal` accepts the linear smoke |
+| Executable LFM feed-forward shape | corrected and covered | the checkpoint declaration remains 6656 while `block_auto_adjust_ff_dim` produces 4608; all captured projections and OCaml model-shaped fixtures now agree on 4608 |
 | Fused LFM RMSNorm pass and Metal kernel | implemented and model-executed in aggregate | synthetic LFM chain fuses from 10 commands to four; preserved prefill/decode templates each contain 45 fused commands. Both dtype variants assign one SIMD group per row and retain scalar fallback; the combined optimized run preserves exact model tokens without isolating RMSNorm |
 | Direct FX GraphModule MPS callable returned to PyTorch | implemented | fixed direct-forward logits match eager MPS exactly; generation routing is now explicit |
 | LFM2.5 short-convolution lowering | typed, compiled, and native-dispatched | all ten saved prefill `conv1d` nodes lower to ShortConv commands; the shared native probe executes the same kernel ABI and matches the 12-element fixture output exactly |

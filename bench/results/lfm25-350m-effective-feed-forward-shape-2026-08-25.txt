@@ -1,0 +1,30 @@
+LFM2.5-350M effective feed-forward shape correction
+Date: 2026-08-25
+
+Checkpoint declaration
+- intermediate_size: 6656
+- block_auto_adjust_ff_dim: true
+- block_ffn_dim_multiplier: 1.0
+- block_multiple_of: 256
+
+Transformers construction
+- first applies int(2 * 6656 / 3): 4437
+- then rounds upward to a multiple of 256: 4608
+- w1 / w3 shapes: [4608,1024]
+- w2 shape: [1024,4608]
+
+Captured binary-graph evidence
+- every feed-forward up/gate projection uses q8-linear [rows x 4608 x 1024]
+- every feed-forward down projection uses q8-linear [rows x 1024 x 4608]
+- the preserved model archive contains the matching Q8 tensor shapes
+
+OCaml target correction
+- Config.intermediate_size retains the declared 6656 value
+- Config.feed_forward_size records the executable 4608 value
+- model-shaped linear fixtures now use feed_forward_size
+- the generated demo changes from [1x6656] to [1x4608], matching the capture
+
+Verification
+- ninja -f ninja.build test: pass, 37 Python tests and OCaml tests
+- ninja -f ninja.build q8-smoke rms-norm-smoke: pass
+- no model, Metal device, HTTP request, or benchmark ran

@@ -6,8 +6,9 @@ boundary for planning, capture, optimization, and code generation.
 
 The first concrete target is Liquid AI's **LFM2.5-350M**. The model is a hybrid
 16-layer network: 10 short-convolution blocks and 6 GQA blocks, with hidden size
-1024, intermediate size 6656, 16 attention heads, 8 KV heads, and a 65536
-token vocabulary. Those values are recorded in [the OKF target concept](.okf/target-lfm25.md).
+1024, checkpoint-declared intermediate size 6656, auto-adjusted SwiGLU width
+4608, 16 attention heads, 8 KV heads, and a 65536-token vocabulary. Those
+values are recorded in [the OKF target concept](.okf/target-lfm25.md).
 
 ## Current slice
 

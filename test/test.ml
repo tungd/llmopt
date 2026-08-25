@@ -2944,6 +2944,10 @@ let () =
   expect
     (Lfm25.Config.default.quantization = Ir.Quantization.Q8_weight_only)
     "LFM2.5 default quantization";
+  expect
+    (Lfm25.Config.default.intermediate_size = 6_656
+    && Lfm25.Config.default.feed_forward_size = 4_608)
+    "LFM2.5 separates declared and auto-adjusted feed-forward sizes";
   let q8_kv = expect_ok (Kv_cache.Format.q8 ~group_size:64) in
   let f16_serving =
     expect_ok

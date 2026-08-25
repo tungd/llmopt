@@ -22,7 +22,8 @@ The checked-in target descriptor mirrors the supplied model configuration:
 | Field | Value |
 |---|---:|
 | hidden size | 1024 |
-| intermediate size | 6656 |
+| declared intermediate size | 6656 |
+| effective SwiGLU feed-forward size | 4608 |
 | hidden layers | 16 |
 | convolution blocks | 10 |
 | full-attention/GQA blocks | 6 |
@@ -33,11 +34,12 @@ The checked-in target descriptor mirrors the supplied model configuration:
 | convolution cache length | 3 |
 | checkpoint dtype | bfloat16 |
 
-The first model-shaped compiler probe is the projection family with matrix
-shapes `(rows, 1024) x (1024, 6656)` and bias `(1, 6656)`. The target
-descriptor is in [lib/lfm25.ml](../lib/lfm25.ml). The complete forward probe
-uses the Transformers checkpoint and PyTorch MPS; custom model-specific OCaml
-lowering remains separate from that runtime path.[^lfm25-config]
+The configuration enables `block_auto_adjust_ff_dim`. Transformers applies
+integer `2/3` scaling and rounds upward to `block_multiple_of=256`, so the
+declared 6656 becomes an executable width of 4608. Captured `w1`/`w3`
+projections therefore use `[4608,1024]` weights and `w2` uses `[1024,4608]`.
+The target descriptor in [lib/lfm25.ml](../lib/lfm25.ml) records both values;
+compiler fixtures consume the effective width.[^lfm25-config]
 
 # Provenance
 

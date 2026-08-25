@@ -4,6 +4,7 @@ module Config = struct
   type t = {
     hidden_size : int;
     intermediate_size : int;
+    feed_forward_size : int;
     num_hidden_layers : int;
     num_attention_heads : int;
     num_key_value_heads : int;
@@ -19,6 +20,7 @@ module Config = struct
     {
       hidden_size = 1024;
       intermediate_size = 6656;
+      feed_forward_size = 4608;
       num_hidden_layers = 16;
       num_attention_heads = 16;
       num_key_value_heads = 8;
@@ -41,6 +43,8 @@ module Config = struct
     let checks =
       [ (config.num_hidden_layers = List.length config.layer_types,
          "layer_types length does not match num_hidden_layers")
+      ; (config.intermediate_size > 0, "intermediate_size must be positive")
+      ; (config.feed_forward_size > 0, "feed_forward_size must be positive")
       ; (count_layers Conv config = 10, "expected 10 convolution layers")
       ; (count_layers Full_attention config = 6, "expected 6 attention layers")
       ; (config.num_attention_heads mod config.num_key_value_heads = 0,
@@ -59,7 +63,9 @@ end
 
 let linear_kernel ~config ~rows () =
   let input_shape = Shape.of_ints_exn ~rows ~cols:config.Config.hidden_size in
-  let bias_shape = Shape.of_ints_exn ~rows:1 ~cols:config.Config.intermediate_size in
+  let bias_shape =
+    Shape.of_ints_exn ~rows:1 ~cols:config.Config.feed_forward_size
+  in
   let input =
     Tile.input ~dtype:config.Config.dtype ~name:"hidden_states" ~shape:input_shape ()
   in
@@ -70,7 +76,7 @@ let linear_kernel ~config ~rows () =
   | Ir.Quantization.Fp16 ->
       let weight_shape =
         Shape.of_ints_exn ~rows:config.Config.hidden_size
-          ~cols:config.Config.intermediate_size
+          ~cols:config.Config.feed_forward_size
       in
       let weight =
         Tile.input ~dtype:config.Config.dtype ~name:"linear_weight" ~shape:weight_shape ()
@@ -79,7 +85,7 @@ let linear_kernel ~config ~rows () =
       Tile.output ~name:"linear_output" output
   | Ir.Quantization.Q8_weight_only ->
       let weight_shape =
-        Shape.of_ints_exn ~rows:config.Config.intermediate_size
+        Shape.of_ints_exn ~rows:config.Config.feed_forward_size
           ~cols:config.Config.hidden_size
       in
       let scale =
