@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T07:07:41Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:22:49Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -431,6 +431,14 @@ eager-Q8 tokens and unchanged 80/194 reuse. Together with the current fusion
 and SIMD kernels, one aggregate run measures ERS `0.23655514122115978`, median
 TTFT `136.7437920125667 ms`, and median TPOT `14.803701342316344 ms`; this
 observation cannot attribute the delta to one component.
+
+The following packed Q8 decode package keeps that schedule and cache behavior
+but processes four activation/weight elements per SIMD-lane iteration. One
+bounded 350M observation preserves all four eager-Q8 token sequences and
+80/194 radix reuse while measuring ERS `0.3253700872862615`, median TTFT
+`95.60127052827738 ms`, and median TPOT `7.93296533326308 ms`. The previous
+and packed reports are non-interleaved single observations, so their delta is
+not assigned wholly to the packed loop.
 
 The first epilogue optimizer replaces a Q8 projection and its sole SiLU
 consumer with `Q8_linear_silu`; any second consumer prevents the rewrite.

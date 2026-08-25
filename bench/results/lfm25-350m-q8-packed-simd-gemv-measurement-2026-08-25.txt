@@ -1,0 +1,76 @@
+LFM2.5-350M packed SIMD-group Q8 GEMV measurement
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+Compiler commit: 38e022c0e184359eeafd0ea6d0a91844afde1721
+
+Validated package
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-packed-gemv-v1-2026-08-25
+- prefill/decode commands: 808 / 862
+- prefill/decode kernel entries: 61 / 59
+- opaque commands: 0 / 0
+- static tensor bindings: 241 / 241
+- weights / KV: Q8 / Q8-group-64
+- decode Q8 boundary: half4/float4 activation loads, char4 weight loads, float4 dot reduction, scalar tail cleanup
+
+Safety and supervision
+- preflight memory: 52% system-wide free
+- resident LFM/Torch/native-server processes: none
+- port 18085: unused before launch and released afterward
+- supervisor: one gtimeout 240-second attempt with TERM and five-second KILL escalation
+- token/checkpoint capacities: 512 / 128
+- completion tokens: pinned to 4 per request
+- post-run memory: 52% system-wide free
+- resident llmopt-serve processes after exit: none
+
+Workload
+- warmup trace: bench/traces/lfm25-mps-warmup.json, 4 serial requests
+- scored trace: bench/traces/lfm25-mps-smoke.json, 4 serial requests
+- warmup: 4/4 successful, 0 token mismatches, ERS 0.2473780175469737
+- scored: 4/4 successful, 0 token mismatches
+- exact scored token parity against eager Q8: 4/4
+- scored cached prompt tokens: 80/194
+
+Packed native scored observation
+- ERS: 0.3253700872862615
+- median TTFT: 95.60127052827738 ms
+- median TPOT: 7.93296533326308 ms
+- mean TTFT: 98.92035400844179 ms
+- mean TPOT: 8.200388915914422 ms
+- scored TPOT range: 7.271249991996835 to 9.664375005134692 ms
+
+Previous native optimized-stack observation
+- ERS: 0.23655514122115978
+- median TTFT: 136.7437920125667 ms
+- median TPOT: 14.803701342316344 ms
+- cached prompt tokens: 80/194
+
+Packed-minus-previous observed deltas
+- ERS: +0.08881494606510171
+- median TTFT: -41.14252148428932 ms
+- median TPOT: -6.870736009053265 ms
+
+Separate eager-Q8 observation
+- ERS: 0.36872784102635947
+- median TTFT: 62.557083496358246 ms
+- median TPOT: 44.406860998909295 ms
+- packed-native-minus-eager ERS: -0.04335775374009798
+- packed native median TTFT minus eager: +33.04418703191914 ms
+- packed native median TPOT minus eager: -36.47389566564622 ms
+
+Per-request scored evidence
+- c0000-t000: score 0.35215682553149724; TTFT 73.0220410041511 ms; TPOT 9.664375005134692 ms; cached 0/39; IDs 1098,5706,803,4481
+- c0000-t001: score 0.3070490063557657; TTFT 118.18050005240366 ms; TPOT 7.271249991996835 ms; cached 42/61; IDs 41677,7,2,1
+- c0001-t000: score 0.38112552748333095; TTFT 70.67683397326618 ms; TPOT 8.003527667218199 ms; cached 0/35; IDs 1098,5410,4100,856
+- c0001-t001: score 0.2611489897744521; TTFT 133.80204100394621 ms; TPOT 7.86240299930796 ms; cached 38/59; IDs 31466,7,2,1
+
+Raw external-edge reports
+- current warmup: _artifacts/native-http-packed-gemv-smoke-2026-08-25/warmup.json
+- current scored: _artifacts/native-http-packed-gemv-smoke-2026-08-25/scored.json
+- current server log: _artifacts/native-http-packed-gemv-smoke-2026-08-25/server.log
+- previous native: _artifacts/native-http-simd-attention-smoke-2026-08-25/scored.json
+- eager: _artifacts/eager-http-parity-2026-08-24/eager/report.json
+
+Evidence boundary
+- This is one bounded, serial observation; the previous-native and eager reports are separate earlier runs rather than interleaved repetitions.
+- The current and previous packages retain the same graph schedule, entries, tensor archive, cache policy, and workload. The generated packed Q8 GEMV loop is the changed Metal boundary, but this single observation does not prove that all latency delta is causal.
+- This attempt did not run the long-context needle matrix or an exact-logit comparison.

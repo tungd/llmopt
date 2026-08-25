@@ -4,7 +4,7 @@ title: 'Packed SIMD-group Q8 GEMV'
 description: 'Load four activations and four int8 weights per SIMD lane iteration across every fused decode family while retaining scalar tail cleanup.'
 tags: [experiment, compiler, ocaml, metal, q8, gemv, simdgroup, vectorization, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T07:32:19Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:22:49Z' }
 sources:
   - id: emitter
     resource: /lib/metal.ml
@@ -41,7 +41,7 @@ formats validate.
 
 # Evidence boundary
 
-Only source, package, and Xcode Metal compilation ran. Packed dot accumulation
-changes floating-point association, so no new model token, cache, needle,
-latency, or ERS claim is available. The latest valid native ERS remains
-`0.23655514122115978` from the preceding optimized-stack package.
+This compiler experiment itself covered source, package, and Xcode Metal
+compilation. A [subsequent bounded model experiment](exp-0055-packed-simd-q8-gemv-measurement.md)
+exercises the package with exact eager-Q8 tokens, unchanged radix reuse, and
+ERS `0.3253700872862615`; it remains a separate single-run observation.

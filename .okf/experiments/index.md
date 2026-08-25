@@ -54,3 +54,4 @@
 * [Optimized native stack measurement](exp-0052-optimized-native-stack.md) - corrected suffix replay and the combined fused/SIMD stack retain exact tokens and measure native ERS 0.236555.
 * [Effective LFM feed-forward shape correction](exp-0053-effective-ff-shape.md) - distinguishes declared 6656 from the auto-adjusted 4608-wide executable projections.
 * [Packed SIMD-group Q8 GEMV](exp-0054-packed-simd-q8-gemv.md) - four activations and int8 weights per lane iteration across all fused decode families.
+* [Packed SIMD Q8 GEMV model measurement](exp-0055-packed-simd-q8-gemv-measurement.md) - one bounded 350M run with exact tokens, unchanged radix reuse, and ERS 0.325370.

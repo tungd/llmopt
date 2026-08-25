@@ -369,12 +369,19 @@ to the prior native observation, the aggregate deltas are
 passes. See
 [`bench/results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt`](bench/results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt).
 
-The next decode package packs four activations and four int8 weights into each
+The packed decode package processes four activations and four int8 weights in each
 SIMD-lane iteration across all eight Q8 variants, moving the lane stride from
-32 scalars to 128 elements while retaining scalar cleanup. Both model
-metallibs compile, but this packed association order has not run on device and
-does not replace the measured ERS above. See
+32 scalars to 128 elements while retaining scalar cleanup. One bounded 350M
+run completes 4/4 warmup and 4/4 scored requests with exact eager-Q8 tokens
+and unchanged 80/194 radix reuse. Native ERS is `0.3253700872862615`, median
+TTFT is `95.60127052827738 ms`, and median TPOT is `7.93296533326308 ms`;
+every scored TPOT is below 10 ms. Against the preceding native observation,
+ERS changes by `+0.08881494606510171`, median TTFT by
+`-41.14252148428932 ms`, and median TPOT by `-6.870736009053265 ms`. These
+are separate single-run observations. See
 [`bench/results/lfm25-350m-q8-packed-simd-gemv-2026-08-25.txt`](bench/results/lfm25-350m-q8-packed-simd-gemv-2026-08-25.txt).
+The bounded measurement is recorded separately in
+[`bench/results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt).
 
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048

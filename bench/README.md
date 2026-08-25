@@ -204,6 +204,16 @@ median TPOT `14.803701342316344 ms`; this is one aggregate observation rather
 than an isolated per-pass comparison. See
 [`results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt`](results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt).
 
+The packed SIMD Q8 package also completes 4/4 warmup and 4/4 scored requests
+with the same exact token IDs and 80/194 reuse. It observes ERS
+`0.3253700872862615`, median TTFT `95.60127052827738 ms`, and median TPOT
+`7.93296533326308 ms`; all four scored TPOT values are below 10 ms. Relative
+to the preceding native observation, the measured changes are
+`+0.08881494606510171` ERS, `-41.14252148428932 ms` median TTFT, and
+`-6.870736009053265 ms` median TPOT. The reports are separate non-interleaved
+single observations. See
+[`results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt`](results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh
