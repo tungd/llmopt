@@ -138,9 +138,9 @@ let content_length headers =
   match List.assoc_opt "content-length" headers with
   | None -> Error "Content-Length is required"
   | Some value ->
-      (match int_of_string_opt value with
-      | Some length when length >= 0 -> Ok length
-      | _ -> Error "Content-Length is invalid")
+    (match int_of_string_opt value with
+    | Some length when length >= 0 -> Ok length
+    | _ -> Error "Content-Length is invalid")
 
 let write_response output ~status ~content_type body =
   Printf.fprintf output "HTTP/1.1 %s\r\n" status;
@@ -161,84 +161,49 @@ let write_stream_headers output =
   output_string output "Connection: close\r\n\r\n";
   flush output
 
-exception Stream_error of string
+type active_request = {
+  id : Serving_queue.Request_id.t;
+  id_str : string;
+  model : string;
+  created : int;
+  prompt_tokens : int array;
+  cached_prompt_tokens : int;
+  decoder : Tokenizer.Decoder.t;
+  out : out_channel;
+  in_ch : in_channel;
+  mutable driver_state : Generation.Driver.State.t option;
+  mutable allocated_tokens : int;
+}
 
-let stream service output request =
-  service.request_number <- service.request_number + 1;
-  let id = Printf.sprintf "chatcmpl-llmopt-%d" service.request_number in
-  let model = Openai_protocol.Request.model request in
-  let created = int_of_float (Unix.time ()) in
-  let decoder = Tokenizer.Decoder.create service.tokenizer in
-  let emit token =
-    match Tokenizer.Decoder.push decoder token with
-    | Error message -> raise (Stream_error message)
-    | Ok text ->
-        output_string output
-          (Openai_protocol.Sse.content ~id ~model ~created ~token_id:token text);
-        flush output
-  in
-  let* config =
-    Generation_core.Config.create
-      ~max_new_tokens:(Openai_protocol.Request.max_tokens request)
-  in
-  write_stream_headers output;
-  let* result =
-    Generation.generate ~emit
-      ~ignore_eos:(Openai_protocol.Request.ignore_eos request)
-      service.generation ~config
-      ~messages:(Openai_protocol.Request.messages request)
-  in
-  let* () = Tokenizer.Decoder.finish decoder in
-  let prompt_tokens = Generation.Result.prompt_tokens result |> Array.length in
-  let completion_tokens =
-    Generation.Result.completion_tokens result |> Array.length
-  in
-  let reason =
-    Generation.Result.finish_reason result
-    |> Generation_core.Finish_reason.to_string
-  in
-  output_string output
-    (Openai_protocol.Sse.finish ~id ~model ~created ~reason);
-  output_string output
-    (Openai_protocol.Sse.usage ~id ~model ~created ~prompt_tokens
-       ~cached_prompt_tokens:(Generation.Result.cached_prompt_tokens result)
-       ~completion_tokens);
-  output_string output Openai_protocol.Sse.done_;
-  flush output;
-  Ok ()
+let emit_token active_req token =
+  match Tokenizer.Decoder.push active_req.decoder token with
+  | Error message -> Error message
+  | Ok text ->
+      output_string active_req.out
+        (Openai_protocol.Sse.content ~id:active_req.id_str ~model:active_req.model
+           ~created:active_req.created ~token_id:token text);
+      flush active_req.out;
+      Ok ()
 
-let handle service options input output =
-  let request_line = try Some (input_line input |> trim_cr) with End_of_file -> None in
-  match request_line with
-  | None -> ()
-  | Some request_line ->
-      (match String.split_on_char ' ' request_line with
-      | [ "GET"; ("/health" | "/healthz"); _ ] ->
-          ignore (read_headers input);
-          write_response output ~status:"200 OK" ~content_type:"text/plain"
-            "ok\n"
-      | [ "POST"; "/v1/chat/completions"; _ ] ->
-          (match read_headers input with
-          | Error message -> write_error output ~status:"400 Bad Request" message
-          | Ok headers ->
-              (match content_length headers with
-              | Error message ->
-                  write_error output ~status:"411 Length Required" message
-              | Ok length when length > options.max_body_bytes ->
-                  write_error output ~status:"413 Content Too Large"
-                    "request body exceeds max-body-bytes"
-              | Ok length ->
-                  let body = really_input_string input length in
-                  (match Openai_protocol.Request.of_string body with
-                  | Error message ->
-                      write_error output ~status:"400 Bad Request" message
-                  | Ok request ->
-                      (match stream service output request with
-                      | Ok () -> ()
-                      | Error message -> raise (Stream_error message)))))
-      | _ ->
-          ignore (read_headers input);
-          write_error output ~status:"404 Not Found" "endpoint not found")
+let emit_finish active_req ~finish_reason ~completion_count =
+  let prompt_tokens = Array.length active_req.prompt_tokens in
+  let reason = Generation_core.Finish_reason.to_string finish_reason in
+  output_string active_req.out
+    (Openai_protocol.Sse.finish ~id:active_req.id_str ~model:active_req.model
+       ~created:active_req.created ~reason);
+  output_string active_req.out
+    (Openai_protocol.Sse.usage ~id:active_req.id_str ~model:active_req.model
+       ~created:active_req.created ~prompt_tokens
+       ~cached_prompt_tokens:active_req.cached_prompt_tokens
+       ~completion_tokens:completion_count);
+  output_string active_req.out Openai_protocol.Sse.done_;
+  flush active_req.out;
+  close_out_noerr active_req.out;
+  close_in_noerr active_req.in_ch
+
+let close_active_request active_req =
+  close_out_noerr active_req.out;
+  close_in_noerr active_req.in_ch
 
 let serve service options =
   let address =
@@ -250,24 +215,283 @@ let serve service options =
   Unix.setsockopt socket Unix.SO_REUSEADDR true;
   Unix.bind socket (Unix.ADDR_INET (address, options.port));
   Unix.listen socket 128;
+  Unix.set_nonblock socket;
   Printf.eprintf "ready: http://%s:%d\n%!" options.host options.port;
-  let rec accept () =
-    let client, _ = Unix.accept socket in
-    let output_descriptor = Unix.dup client in
-    let input = Unix.in_channel_of_descr client in
-    let output = Unix.out_channel_of_descr output_descriptor in
-    (try handle service options input output with
-    | End_of_file -> ()
-    | Sys_error _ -> ()
-    | Unix.Unix_error _ -> ()
-    | Stream_error message ->
-        Printf.eprintf "stream error: %s\n%!" message);
-    (try flush output with _ -> ());
-    close_in_noerr input;
-    close_out_noerr output;
-    accept ()
+
+  let queue =
+    Serving_queue.create ~token_capacity:options.token_capacity
+      ~high_watermark_ratio:0.90 ~low_watermark_ratio:0.75 ()
   in
-  Fun.protect ~finally:(fun () -> Unix.close socket) accept
+  let active_requests : (Serving_queue.Request_id.t, active_request) Hashtbl.t =
+    Hashtbl.create 32
+  in
+
+  let accept_new_connections () =
+    let rec accept_loop () =
+      match Unix.accept socket with
+      | client, _ ->
+          Unix.clear_nonblock client;
+          let output_descriptor = Unix.dup client in
+          let in_ch = Unix.in_channel_of_descr client in
+          let out_ch = Unix.out_channel_of_descr output_descriptor in
+          let request_line =
+            try Some (input_line in_ch |> trim_cr) with _ -> None
+          in
+          (match request_line with
+          | None ->
+              close_in_noerr in_ch;
+              close_out_noerr out_ch
+          | Some line ->
+              (match String.split_on_char ' ' line with
+              | [ "GET"; ("/health" | "/healthz"); _ ] ->
+                  ignore (read_headers in_ch);
+                  write_response out_ch ~status:"200 OK" ~content_type:"text/plain" "ok\n";
+                  close_in_noerr in_ch;
+                  close_out_noerr out_ch
+              | [ "POST"; "/v1/chat/completions"; _ ] ->
+                  (match read_headers in_ch with
+                  | Error msg ->
+                      write_error out_ch ~status:"400 Bad Request" msg;
+                      close_in_noerr in_ch;
+                      close_out_noerr out_ch
+                  | Ok headers ->
+                      (match content_length headers with
+                      | Error msg ->
+                          write_error out_ch ~status:"411 Length Required" msg;
+                          close_in_noerr in_ch;
+                          close_out_noerr out_ch
+                      | Ok len when len > options.max_body_bytes ->
+                          write_error out_ch ~status:"413 Content Too Large"
+                            "request body exceeds max-body-bytes";
+                          close_in_noerr in_ch;
+                          close_out_noerr out_ch
+                      | Ok len ->
+                          let body = really_input_string in_ch len in
+                          (match Openai_protocol.Request.of_string body with
+                          | Error msg ->
+                              write_error out_ch ~status:"400 Bad Request" msg;
+                              close_in_noerr in_ch;
+                              close_out_noerr out_ch
+                          | Ok req ->
+                              service.request_number <- service.request_number + 1;
+                              let id_str =
+                                Printf.sprintf "chatcmpl-llmopt-%d" service.request_number
+                              in
+                              let req_id = Serving_queue.Request_id.create () in
+                              let model = Openai_protocol.Request.model req in
+                              let created = int_of_float (Unix.time ()) in
+                              let decoder = Tokenizer.Decoder.create service.tokenizer in
+                              let max_new_tokens = Openai_protocol.Request.max_tokens req in
+                              let ignore_eos = Openai_protocol.Request.ignore_eos req in
+                              (match Lfm_chat.encode (Generation.chat service.generation)
+                                       (Openai_protocol.Request.messages req) with
+                              | Error err ->
+                                  write_error out_ch ~status:"400 Bad Request" err;
+                                  close_in_noerr in_ch;
+                                  close_out_noerr out_ch
+                              | Ok prompt_tokens ->
+                                  write_stream_headers out_ch;
+                                  let initial_state =
+                                    Serving_queue.Pending_prefill {
+                                      prompt_tokens;
+                                      cached_tokens = 0;
+                                      remaining_prefill = Array.length prompt_tokens;
+                                      max_new_tokens;
+                                      ignore_eos;
+                                    }
+                                  in
+                                  let now = Unix.gettimeofday () in
+                                  let initial_score =
+                                    Serving_queue.Score.compute ~prefill_rate:100.0
+                                      ~decode_rate:10.0 ~current_time:now
+                                      ~arrival_time:now initial_state
+                                  in
+                                  let queue_req : Serving_queue.request = {
+                                    id = req_id;
+                                    arrival_time = now;
+                                    state = initial_state;
+                                    priority_score = initial_score;
+                                  } in
+                                  let active_req : active_request = {
+                                    id = req_id;
+                                    id_str;
+                                    model;
+                                    created;
+                                    prompt_tokens;
+                                    cached_prompt_tokens = 0;
+                                    decoder;
+                                    out = out_ch;
+                                    in_ch;
+                                    driver_state = None;
+                                    allocated_tokens = 0;
+                                  } in
+                                  Hashtbl.add active_requests req_id active_req;
+                                  Serving_queue.enqueue queue queue_req))));
+              | _ ->
+                  ignore (read_headers in_ch);
+                  write_error out_ch ~status:"404 Not Found" "endpoint not found";
+                  close_in_noerr in_ch;
+                  close_out_noerr out_ch));
+          accept_loop ()
+      | exception Unix.Unix_error ((Unix.EWOULDBLOCK | Unix.EAGAIN), _, _) -> ()
+      | exception _ -> ()
+    in
+    accept_loop ()
+  in
+
+  let rec step_server_loop () =
+    let is_idle = Serving_queue.is_empty queue in
+    let timeout = if is_idle then 0.005 else 0.0 in
+    (try
+       let r_fds, _, _ = Unix.select [ socket ] [] [] timeout in
+       if List.mem socket r_fds then accept_new_connections ()
+     with _ -> ());
+
+    if not (Serving_queue.is_empty queue) then (
+      let now = Unix.gettimeofday () in
+      Serving_queue.update_scores queue ~current_time:now;
+      let (batch_decodes, prefill_candidate_opt) =
+        Serving_queue.pop_next_batch queue ~max_batch_size:8 ~prefill_chunk_budget:512
+      in
+
+      (* Execute prefill candidate if any *)
+      (match prefill_candidate_opt with
+      | None -> ()
+      | Some (req, _slice_budget) ->
+          (match Hashtbl.find_opt active_requests req.id with
+          | None -> ()
+          | Some active_req ->
+              (match req.state with
+              | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; _ } ->
+                  let is_stop =
+                    if ignore_eos then Fun.const false
+                    else Lfm_chat.is_end_token (Generation.chat service.generation)
+                  in
+                  let config_res = Generation_core.Config.create ~max_new_tokens in
+                  (match config_res with
+                  | Error err ->
+                      Printf.eprintf "stream error: %s\n%!" err;
+                      close_active_request active_req;
+                      Hashtbl.remove active_requests req.id
+                  | Ok config ->
+                      let init_res =
+                        Generation.Driver.State.init
+                          (Generation.engine service.generation)
+                          ~config ~is_stop ~prompt:prompt_tokens
+                      in
+                      (match init_res with
+                      | Error err ->
+                          Printf.eprintf "stream error: %s\n%!" err;
+                          close_active_request active_req;
+                          Hashtbl.remove active_requests req.id
+                      | Ok (driver_state, first_token) ->
+                          active_req.driver_state <- Some driver_state;
+                          let cached_count =
+                            match Generation.Driver.State.result driver_state with
+                            | Some r -> Generation_core.Result.cached_prompt_tokens r
+                            | None -> 0
+                          in
+                          let active_req = { active_req with cached_prompt_tokens = cached_count } in
+                          Hashtbl.replace active_requests req.id active_req;
+                          let alloc_count = Array.length prompt_tokens + 1 in
+                          ignore (Serving_queue.reserve_tokens queue alloc_count);
+                          active_req.allocated_tokens <- alloc_count;
+                          (match emit_token active_req first_token with
+                          | Error err ->
+                              Printf.eprintf "stream emit error: %s\n%!" err;
+                              Serving_queue.release_tokens queue active_req.allocated_tokens;
+                              close_active_request active_req;
+                              Hashtbl.remove active_requests req.id
+                          | Ok () ->
+                              if Generation.Driver.State.is_finished driver_state then (
+                                (match Generation.Driver.State.result driver_state with
+                                | Some r ->
+                                    let reason = Generation_core.Result.finish_reason r in
+                                    let comp_count = Array.length (Generation_core.Result.completion_tokens r) in
+                                    emit_finish active_req ~finish_reason:reason ~completion_count:comp_count
+                                | None -> ());
+                                Serving_queue.release_tokens queue active_req.allocated_tokens;
+                                Hashtbl.remove active_requests req.id
+                              ) else (
+                                req.state <- Serving_queue.Active_decode {
+                                  prompt_length = Array.length prompt_tokens;
+                                  generated_tokens = [ first_token ];
+                                  max_new_tokens;
+                                  ignore_eos;
+                                };
+                                Serving_queue.enqueue queue req
+                              ))))
+              | _ -> ())));
+
+      (* Execute decode batch *)
+      List.iter
+        (fun (req : Serving_queue.request) ->
+          match Hashtbl.find_opt active_requests req.id with
+          | None -> ()
+          | Some active_req ->
+              match active_req.driver_state with
+              | None -> ()
+              | Some driver_state ->
+                  let step_res =
+                    Generation.Driver.State.step
+                      (Generation.engine service.generation)
+                      driver_state
+                  in
+                  (match step_res with
+                  | Error err ->
+                      Printf.eprintf "stream step error: %s\n%!" err;
+                      Serving_queue.release_tokens queue active_req.allocated_tokens;
+                      close_active_request active_req;
+                      Hashtbl.remove active_requests req.id
+                  | Ok (Some token, finish_opt) ->
+                      ignore (Serving_queue.reserve_tokens queue 1);
+                      active_req.allocated_tokens <- active_req.allocated_tokens + 1;
+                      (match emit_token active_req token with
+                      | Error err ->
+                          Printf.eprintf "stream emit error: %s\n%!" err;
+                          Serving_queue.release_tokens queue active_req.allocated_tokens;
+                          close_active_request active_req;
+                          Hashtbl.remove active_requests req.id
+                      | Ok () ->
+                          (match finish_opt with
+                          | Some finish_reason ->
+                              let comp_tokens =
+                                Generation.Driver.State.completion_tokens driver_state
+                              in
+                              emit_finish active_req ~finish_reason
+                                ~completion_count:(List.length comp_tokens);
+                              Serving_queue.release_tokens queue active_req.allocated_tokens;
+                              Hashtbl.remove active_requests req.id
+                          | None ->
+                              req.state <- Serving_queue.Active_decode {
+                                prompt_length = Array.length active_req.prompt_tokens;
+                                generated_tokens =
+                                  Generation.Driver.State.completion_tokens driver_state;
+                                max_new_tokens =
+                                  (match req.state with
+                                  | Serving_queue.Active_decode d -> d.max_new_tokens
+                                  | _ -> 16);
+                                ignore_eos =
+                                  (match req.state with
+                                  | Serving_queue.Active_decode d -> d.ignore_eos
+                                  | _ -> false);
+                              };
+                              Serving_queue.enqueue queue req))
+                  | Ok (None, Some finish_reason) ->
+                      let comp_tokens =
+                        Generation.Driver.State.completion_tokens driver_state
+                      in
+                      emit_finish active_req ~finish_reason
+                        ~completion_count:(List.length comp_tokens);
+                      Serving_queue.release_tokens queue active_req.allocated_tokens;
+                      Hashtbl.remove active_requests req.id
+                  | Ok (None, None) -> ()))
+        batch_decodes
+    );
+
+    step_server_loop ()
+  in
+  Fun.protect ~finally:(fun () -> Unix.close socket) step_server_loop
 
 let run () =
   let* options, positional = arguments () in

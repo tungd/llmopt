@@ -51,6 +51,7 @@ type t = {
   chat : Lfm_chat.t;
   engine : Serving_engine.t;
 }
+type generation = t
 
 let create ~tokenizer ~engine =
   let* chat = Lfm_chat.create tokenizer in
@@ -67,7 +68,7 @@ module Session = struct
   }
   type t = session
 
-  let init ~generation_instance:parent ~config ?(ignore_eos = false) ~messages =
+  let init ~generation:parent ~config ?(ignore_eos = false) ~messages () =
     let* prompt = Lfm_chat.encode parent.chat messages in
     let is_stop =
       if ignore_eos then Fun.const false

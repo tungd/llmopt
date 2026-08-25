@@ -12,6 +12,7 @@ module Result : sig
 end
 
 type t
+type generation = t
 
 val create :
   tokenizer:Tokenizer.t -> engine:Serving_engine.t -> (t, string) result
@@ -20,15 +21,28 @@ val tokenizer : t -> Tokenizer.t
 val engine : t -> Serving_engine.t
 val chat : t -> Lfm_chat.t
 
+module Native_engine : sig
+  type t = Serving_engine.t
+  type step = Serving_engine.Step.t
+
+  val prompt : t -> tokens:int array -> (step * int, string) result
+  val decode : t -> prefix:int array -> token:int -> (step, string) result
+  val tokens : step -> int array
+  val next_token : step -> (int, string) result
+end
+
+module Driver : module type of Generation_core.Make (Native_engine)
+
 module Session : sig
   type session
   type t = session
 
   val init :
-    generation_instance:t ->
+    generation:generation ->
     config:Generation_core.Config.t ->
     ?ignore_eos:bool ->
     messages:Lfm_chat.Message.t list ->
+    unit ->
     (session * int, string) result
 
   val step :
