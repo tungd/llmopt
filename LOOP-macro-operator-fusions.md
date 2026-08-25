@@ -33,7 +33,7 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
 
 ### Execution Items
 
-- [x] **ITEM-01**: Implement Fused SwiGLU Dual-Linear Projection ($W_1 + W_3$)
+- [ ] **ITEM-01**: Implement Fused SwiGLU Dual-Linear Projection ($W_1 + W_3$)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: FFN Gate and Up projection fusion in compiler passes and MSL emitter.
   - `IMPORTANT FILES`:
@@ -50,7 +50,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test && ninja -f ninja.build metal` compiles and passes all unit tests.
   - `DONE WHEN`: FFN Gate and Up projections in all 16 layers collapse into 16 dual-linear operations with verified FP16 output.
   - `ESCALATE IF`: Shared input activation tensor has external consumers outside the FFN block.
-  - `DONE`: `b01fed9` (feat(metal): add dual-linear q8 kernel; together with `342382f`, verified `ninja -f ninja.build test && ninja -f ninja.build metal`, dual-linear source/ABI emission, and serving-schedule round-trip preservation).
+  - `ATTEMPT-1`: `ninja -f ninja.build test && ninja -f ninja.build metal` passed after `b01fed9`, covering the typed rewrite, dual-linear source/ABI emission, and schedule round-trip.
+  - `NEEDS PLAN`: The current single-output `Ir.node` contract retains only the W1 output when replacing W1/W3; W3 consumers are not rewritten, and `Passes.optimize` does not run this pass. Choose a packed-output/split rewrite or a multi-output IR contract before claiming the 16-layer collapse and FP16 parity.
 
 - [ ] **ITEM-02**: Implement Fused 3-in-1 QKV Attention Projection ($W_q + W_k + W_v$)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
@@ -69,6 +70,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `VERIFY`: `ninja -f ninja.build test` passes with 100% success on attention fixtures.
   - `DONE WHEN`: All 6 attention blocks emit a single QKV projection kernel instead of 3 separate linear operations.
   - `ESCALATE IF`: GQA head configuration differs between attention layers.
+  - `ATTEMPT-1`: `ninja -f ninja.build test && ninja -f ninja.build metal` passed after `27751c0`, covering the typed rewrite, QKV source/ABI emission, and schedule round-trip.
+  - `NEEDS PLAN`: The same single-output IR contract retains only Q output and drops K/V outputs; no six-block lowering or parity claim is valid until the output representation is selected.
 
 - [ ] **ITEM-03**: Implement Fused ShortConv Recurrent Step
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
