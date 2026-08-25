@@ -4,7 +4,7 @@ title: 'LFM2.5-350M PyTorch MPS comparison protocol'
 description: 'Record compiler and runtime measurements separately when comparing llmopt with eager PyTorch MPS on the same host.'
 tags: [benchmark, lfm2.5, pytorch, mps, apple-silicon]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-20T11:24:21Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:40:41Z' }
 sources:
   - id: local-protocol
     resource: /bench/README.md
@@ -18,6 +18,9 @@ sources:
   - id: racebench-runner
     resource: /bench/racebench/http.py
     title: reference-style concurrent HTTP runner
+  - id: current-native-result
+    resource: /bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt
+    title: Current native OCaml vector-prefill observation
 ---
 
 # Scope
@@ -123,6 +126,18 @@ changes by `+7.4727915052790195 ms`, median TPOT by
 `-5.181236173181503 ms`, and ERS by `+0.005214671349993788`. The exact record
 is
 [`/bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt`](/bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt).
+
+# Current native vector-prefill observation
+
+The current bounded native trace completes 4/4 warmup and 4/4 scored requests,
+matches all eager-Q8 token IDs, and reuses 80/194 prompt tokens. ERS is
+`0.3377415731686302`, median TTFT is `93.155520997243 ms`, and median TPOT is
+`7.948180340463296 ms`. Relative to the preceding packed-decode native
+observation, ERS changes by `+0.012371485882368694`, median TTFT by
+`-2.44574953103438 ms`, and median TPOT by `+0.015215007200215958 ms`.
+Per-request deltas are mixed, and both reports are single non-interleaved
+observations. The exact record is
+[`/bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](/bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
 # Native long-context retrieval
 

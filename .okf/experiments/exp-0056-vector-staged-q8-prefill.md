@@ -4,7 +4,7 @@ title: 'Vector-staged Q8 prefill kernel'
 description: 'Stage 64 reduction elements as activation4 and dequantized-weight4 vectors inside each 16 by 16 Q8 prefill output tile.'
 tags: [experiment, compiler, ocaml, metal, q8, gemm, prefill, vectorization, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T08:35:45Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:40:41Z' }
 sources:
   - id: emitter
     resource: /lib/metal.ml
@@ -45,7 +45,7 @@ round trips. It does not load LFM model weights.
 
 # Evidence boundary
 
-The vector dot changes accumulation association. No LFM2.5-350M request,
-token, radix, needle, latency, or ERS run used this package. The latest measured
-native ERS remains `0.3253700872862615` from the preceding packed-decode
-package.
+The vector dot changes accumulation association. A
+[subsequent bounded model experiment](exp-0057-vector-prefill-measurement.md)
+executes the package with exact eager-Q8 tokens, unchanged radix reuse, and ERS
+`0.3377415731686302`; it remains a separate single-run observation.

@@ -214,12 +214,20 @@ to the preceding native observation, the measured changes are
 single observations. See
 [`results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt`](results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt).
 
-The next static package vectorizes the Q8 prefill reduction stage. Its 64-wide
+The vector-prefill package changes the Q8 prefill reduction stage. Its 64-wide
 tile emits one quarter of the prior threadgroup barriers for model k=1024/4608,
 while preserving the 16 by 16 output ownership. Both model metallibs compile,
 both selectable KV policies validate, and a partial-k 2x4 Metal fixture is bit
-exact. No 350M model or ERS request ran; see
+exact. The bounded model run preserves 4/4 exact eager-Q8 sequences and 80/194
+reuse while observing ERS `0.3377415731686302`, median TTFT
+`93.155520997243 ms`, and median TPOT `7.948180340463296 ms`. Against the
+preceding native observation, ERS changes by `+0.012371485882368694`, median
+TTFT by `-2.44574953103438 ms`, and median TPOT by
+`+0.015215007200215958 ms`; per-request deltas are mixed. Compiler evidence is
+in
 [`results/lfm25-350m-q8-vector-prefill-2026-08-25.txt`](results/lfm25-350m-q8-vector-prefill-2026-08-25.txt).
+The measurement is in
+[`results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
 Run the natural needle matrix through the same endpoint with:
 

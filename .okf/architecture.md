@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T08:35:45Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:40:41Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -393,12 +393,13 @@ All four Q8 operation families compile in float16 and float32. The combined
 optimized model run exercises them with exact token parity, without isolating
 their individual latency contribution.
 
-The subsequent decode package vectorizes work within each SIMD lane. Every lane loads
-four activations and a `char4` weight, applies the per-channel scale to the four
-weight elements, accumulates one float4 dot, and advances by 128 reduction
-elements. Scalar stride-32 cleanup remains for alignment and tails. The model's
-1024/4608 decode reductions use the packed path throughout. One bounded model
-run preserves all four eager-Q8 sequences and 80/194 reuse while observing ERS
+The subsequent decode package vectorizes work within each SIMD lane. Every
+lane loads four activations and a `char4` weight, applies the per-channel scale
+to the four weight elements, accumulates one float4 dot, and advances by 128
+reduction elements. Scalar stride-32 cleanup remains for alignment and tails.
+The model's 1024/4608 decode reductions use the packed path throughout. One
+bounded model run preserves all four eager-Q8 sequences and 80/194 reuse while
+observing ERS
 `0.3253700872862615`, median TTFT `95.60127052827738 ms`, and median TPOT
 `7.93296533326308 ms`.
 
@@ -406,8 +407,13 @@ The vector-staged prefill package reduces synchronization without changing the
 16 by 16 output ownership. For k=1024/4608, 64/288 scalar reduction tiles
 become 16/72 vector tiles and emitted barrier counts change from 128/576 to
 32/144. The partial-k 2x4 Metal fixture remains bit exact; both model
-metallibs compile and both selectable KV formats validate. This package has no
-350M token, latency, or ERS observation yet.
+metallibs compile and both selectable KV formats validate. One bounded 350M
+run preserves all four eager-Q8 sequences and 80/194 reuse while observing ERS
+`0.3377415731686302`, median TTFT `93.155520997243 ms`, and median TPOT
+`7.948180340463296 ms`. Against the preceding native observation, those
+aggregate changes are `+0.012371485882368694`, `-2.44574953103438 ms`, and
+`+0.015215007200215958 ms`; per-request deltas are mixed and the reports are
+not interleaved.
 
 RMSNorm uses the same launch geometry at the row level. One SIMD group owns a
 row, lanes traverse its final dimension at stride 32, `simd_sum` combines the

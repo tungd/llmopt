@@ -1,0 +1,82 @@
+LFM2.5-350M vector-staged Q8 prefill measurement
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+Compiler commit: 97e8f47b2625c7b9f49a9705576eafff0e42f41b
+
+Validated package
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25
+- prefill/decode commands: 808 / 862
+- prefill/decode kernel entries: 61 / 59
+- opaque commands: 0 / 0
+- static tensor bindings: 241 / 241
+- weights / KV: Q8 / Q8-group-64
+- changed Metal boundary: 16x16 Q8 prefill output tile with 64-wide activation4/dequantized-weight4 reduction staging
+
+Safety and supervision
+- preflight memory: 47% system-wide free
+- resident LFM/Torch/native-server processes: none
+- port 18086: unused before launch and released afterward
+- supervisor: one gtimeout 240-second attempt with TERM and five-second KILL escalation
+- token/checkpoint capacities: 512 / 128
+- completion tokens: pinned to 4 per request
+- post-run memory: 49% system-wide free
+- resident llmopt-serve processes after exit: none
+
+Workload
+- warmup trace: bench/traces/lfm25-mps-warmup.json, 4 serial requests
+- scored trace: bench/traces/lfm25-mps-smoke.json, 4 serial requests
+- warmup: 4/4 successful, 0 token mismatches, ERS 0.25225790222985145
+- scored: 4/4 successful, 0 token mismatches
+- exact scored token parity against eager Q8: 4/4
+- scored cached prompt tokens: 80/194
+
+Vector-prefill native scored observation
+- ERS: 0.3377415731686302
+- median TTFT: 93.155520997243 ms
+- median TPOT: 7.948180340463296 ms
+- mean TTFT: 94.54122926399577 ms
+- mean TPOT: 7.975399169178369 ms
+- scored TPOT range: 7.3890276641274495 to 8.616208331659436 ms
+
+Previous packed-decode native observation
+- ERS: 0.3253700872862615
+- median TTFT: 95.60127052827738 ms
+- median TPOT: 7.93296533326308 ms
+- cached prompt tokens: 80/194
+
+Vector-prefill-minus-previous observed deltas
+- ERS: +0.012371485882368694
+- median TTFT: -2.44574953103438 ms
+- median TPOT: +0.015215007200215958 ms
+
+Separate eager-Q8 observation
+- ERS: 0.36872784102635947
+- median TTFT: 62.557083496358246 ms
+- median TPOT: 44.406860998909295 ms
+- vector-prefill-native-minus-eager ERS: -0.03098626785772929
+- vector-prefill native median TTFT minus eager: +30.598437500884756 ms
+- vector-prefill native median TPOT minus eager: -36.458680658446 ms
+
+Per-request scored evidence
+- c0000-t000: score 0.39209059738818236; TTFT 59.88495802739635 ms; TPOT 8.616208331659436 ms; cached 0/39; IDs 1098,5706,803,4481
+- c0000-t001: score 0.26848324105309407; TTFT 126.42608396708965 ms; TPOT 8.092847012449056 ms; cached 42/61; IDs 41677,7,2,1
+- c0001-t000: score 0.4194607073885868; TTFT 55.702875019051135 ms; TPOT 7.803513668477535 ms; cached 0/35; IDs 1098,5410,4100,856
+- c0001-t001: score 0.27093174684465737; TTFT 136.15100004244596 ms; TPOT 7.3890276641274495 ms; cached 38/59; IDs 31466,7,2,1
+
+Per-request deltas from the previous native observation
+- c0000-t000: score +0.03993377185668512; TTFT -13.137082976754755 ms; TPOT -1.0481666734752562 ms
+- c0000-t001: score -0.03856576530267164; TTFT +8.245583914685994 ms; TPOT +0.8215970204522209 ms
+- c0001-t000: score +0.03833517990525587; TTFT -14.97395895421505 ms; TPOT -0.20001399874066372 ms
+- c0001-t001: score +0.009782757070205261; TTFT +2.3489590384997427 ms; TPOT -0.4733753351805108 ms
+
+Raw external-edge reports
+- current warmup: _artifacts/native-http-vector-prefill-smoke-2026-08-25/warmup.json
+- current scored: _artifacts/native-http-vector-prefill-smoke-2026-08-25/scored.json
+- current server log: _artifacts/native-http-vector-prefill-smoke-2026-08-25/server.log
+- previous native: _artifacts/native-http-packed-gemv-smoke-2026-08-25/scored.json
+- eager: _artifacts/eager-http-parity-2026-08-24/eager/report.json
+
+Evidence boundary
+- This is one bounded, serial observation; the previous-native and eager reports are separate earlier runs rather than interleaved repetitions.
+- The package schedule, entries, tensor archive, cache policy, and workload are unchanged; the vector-staged prefill emitter is the changed Metal boundary. Mixed per-request deltas mean the aggregate difference is not assigned wholly to that code change.
+- This attempt did not run the long-context needle matrix or an exact-logit comparison.

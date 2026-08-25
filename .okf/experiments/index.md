@@ -56,3 +56,4 @@
 * [Packed SIMD-group Q8 GEMV](exp-0054-packed-simd-q8-gemv.md) - four activations and int8 weights per lane iteration across all fused decode families.
 * [Packed SIMD Q8 GEMV model measurement](exp-0055-packed-simd-q8-gemv-measurement.md) - one bounded 350M run with exact tokens, unchanged radix reuse, and ERS 0.325370.
 * [Vector-staged Q8 prefill kernel](exp-0056-vector-staged-q8-prefill.md) - 64-wide activation4/weight4 staging with fourfold fewer reduction barriers.
+* [Vector-staged Q8 prefill model measurement](exp-0057-vector-prefill-measurement.md) - one bounded 350M run with exact tokens, unchanged radix reuse, and ERS 0.337742.

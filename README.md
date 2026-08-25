@@ -389,9 +389,16 @@ stages 64 reduction elements as activation4 and dequantized-weight4 vectors.
 For model k dimensions 1024/4608, emitted barrier counts per output tile change
 from 128/576 to 32/144. Both model metallibs compile, Q8 and selectable FP16
 serving pairs validate, and one supervised partial-k 2x4 Metal fixture is bit
-exact. No 350M model request or ERS run used this package; the measured ERS
-above remains current. See
+exact. One bounded 350M run also retains 4/4 exact eager-Q8 sequences and
+80/194 radix reuse while observing ERS `0.3377415731686302`, median TTFT
+`93.155520997243 ms`, and median TPOT `7.948180340463296 ms`. Relative to the
+preceding native observation, the aggregate deltas are
+`+0.012371485882368694` ERS, `-2.44574953103438 ms` median TTFT, and
+`+0.015215007200215958 ms` median TPOT. Per-request deltas are mixed and the
+reports are not interleaved. Compiler evidence is in
 [`bench/results/lfm25-350m-q8-vector-prefill-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-prefill-2026-08-25.txt).
+The model measurement is in
+[`bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-prefill-measurement-2026-08-25.txt).
 
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048
