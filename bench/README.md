@@ -175,9 +175,10 @@ python3 bench/bench_kernel_sweep.py \
 
 Pass comma-separated shape values such as `--m 1,13,128,4096` and
 semicolon-separated tile values such as `--tiles 16x16x64;32x8x64` when
-profiling generated tile variants. The native bridge currently dispatches the
-fixed `llmopt_q8_linear` entry point; additional tile entry points are added by
-the parameterized MSL work.
+profiling generated tile variants. The native bridge resolves the fixed
+`llmopt_q8_linear` entry point and the generated parameterized names such as
+`llmopt_q8_linear_tm32_tn8_tk64`; float32 inputs use the corresponding `_f32`
+entry-point family.
 
 The protocol is JSON only at the OpenAI-compatible HTTP/SSE edge. FX graphs,
 compiled packages, weights, tokenizer state, schedules, KV state, and Metal

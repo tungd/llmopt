@@ -38,6 +38,12 @@ CURRENT_TILE = (16, 16, 64)
 SCHEMA_VERSION = 1
 
 
+def _kernel_name(tile: TileGeometry) -> str:
+    if tile.as_tuple == CURRENT_TILE:
+        return "llmopt_q8_linear"
+    return f"llmopt_q8_linear_tm{tile.tile_m}_tn{tile.tile_n}_tk{tile.tile_k}"
+
+
 @dataclass(frozen=True)
 class TileGeometry:
     """One output/reduction tile configuration."""
@@ -245,12 +251,6 @@ def _device_latencies(
     library: Path,
     seed: int,
 ) -> list[float]:
-    if variant.tile.as_tuple != CURRENT_TILE:
-        raise RuntimeError(
-            "the current native bridge exposes only llmopt_q8_linear at "
-            "tile 16x16x64; generate additional kernel entry points before "
-            f"profiling tile {variant.tile.tile_m}x{variant.tile.tile_n}x{variant.tile.tile_k}"
-        )
     if not library.exists():
         raise FileNotFoundError(f"missing generated Metal library: {library}")
 
@@ -286,7 +286,12 @@ def _device_latencies(
     with metal_runtime.activate(library):
         for _ in range(warmup):
             output = metal_runtime.dispatch_q8_linear(
-                input_tensor, qweight, scale, bias
+                input_tensor,
+                qweight,
+                scale,
+                bias,
+                kernel_name=_kernel_name(variant.tile),
+                tile=variant.tile.as_tuple,
             )
             if output is None:
                 raise RuntimeError("generated Metal runtime did not dispatch Q8 linear")
@@ -296,7 +301,12 @@ def _device_latencies(
             synchronize()
             started_ns = time.perf_counter_ns()
             output = metal_runtime.dispatch_q8_linear(
-                input_tensor, qweight, scale, bias
+                input_tensor,
+                qweight,
+                scale,
+                bias,
+                kernel_name=_kernel_name(variant.tile),
+                tile=variant.tile.as_tuple,
             )
             if output is None:
                 raise RuntimeError("generated Metal runtime did not dispatch Q8 linear")
@@ -350,7 +360,7 @@ def profile_kernel_variant(
             latency_us=round(latency_us, 6),
             median_latency_us=median_latency_us,
             mode=mode,
-            kernel="llmopt_q8_linear",
+            kernel=_kernel_name(variant.tile),
             hardware=hardware,
         )
         for sample_index, latency_us in enumerate(latencies)

@@ -27,6 +27,12 @@ struct KernelEntry {
   std::shared_ptr<at::native::mps::MetalKernelFunction> float_kernel;
   std::shared_ptr<at::native::mps::MetalKernelFunction> half_dequant_kernel;
   std::shared_ptr<at::native::mps::MetalKernelFunction> float_dequant_kernel;
+  std::unordered_map<
+      std::string,
+      std::shared_ptr<at::native::mps::MetalKernelFunction>> half_q8_kernels;
+  std::unordered_map<
+      std::string,
+      std::shared_ptr<at::native::mps::MetalKernelFunction>> float_q8_kernels;
 };
 
 std::mutex cache_mutex;
@@ -52,16 +58,33 @@ std::shared_ptr<KernelEntry> load_kernel(const std::string& library_path) {
       entry->library->getKernelFunction("llmopt_q8_dequantize");
   entry->float_dequant_kernel =
       entry->library->getKernelFunction("llmopt_q8_dequantize_f32");
+  entry->half_q8_kernels.emplace("llmopt_q8_linear", entry->half_kernel);
+  entry->float_q8_kernels.emplace("llmopt_q8_linear_f32", entry->float_kernel);
   kernel_cache.emplace(library_path, entry);
   return entry;
+}
+
+std::shared_ptr<at::native::mps::MetalKernelFunction> q8_kernel(
+    const std::shared_ptr<KernelEntry>& entry,
+    bool input_is_half,
+    const std::string& name) {
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto& kernels = input_is_half ? entry->half_q8_kernels : entry->float_q8_kernels;
+  const auto cached = kernels.find(name);
+  if (cached != kernels.end()) {
+    return cached->second;
+  }
+  auto kernel = entry->library->getKernelFunction(name);
+  TORCH_CHECK(kernel, "generated Metal library has no ", name, " function");
+  kernels.emplace(name, kernel);
+  return kernel;
 }
 
 bool is_mps(const at::Tensor& tensor) {
   return tensor.device().type() == c10::DeviceType::MPS;
 }
 
-uint64_t round_up_to_tile(int64_t value) {
-  const uint64_t tile = kTile;
+uint64_t round_up_to_tile(int64_t value, uint64_t tile) {
   return (static_cast<uint64_t>(value) + tile - 1) / tile * tile;
 }
 
@@ -73,7 +96,11 @@ at::Tensor q8_linear(
     const at::Tensor& scale,
     pybind11::object bias_object,
     const std::string& library_path,
-    bool exact) {
+    bool exact,
+    const std::string& kernel_name,
+    int64_t tile_m,
+    int64_t tile_n,
+    int64_t tile_k) {
   TORCH_CHECK(is_mps(input), "llmopt Metal runtime expects an MPS input");
   TORCH_CHECK(is_mps(weight), "llmopt Metal runtime expects an MPS weight");
   TORCH_CHECK(is_mps(scale), "llmopt Metal runtime expects an MPS scale");
@@ -101,6 +128,9 @@ at::Tensor q8_linear(
   const int64_t n = weight.size(0);
   TORCH_CHECK(weight.size(1) == k, "Q8 input and weight K dimensions must match");
   TORCH_CHECK(k > 0 && n > 0, "Q8 dimensions must be positive");
+  TORCH_CHECK(
+      tile_m > 0 && tile_n > 0 && tile_k > 0 && tile_k % 4 == 0,
+      "Q8 tile dimensions must be positive and tile_k must be a multiple of four");
 
   at::Tensor input_2d = input.contiguous().reshape({-1, k});
   at::Tensor weight_2d = weight.contiguous();
@@ -129,7 +159,7 @@ at::Tensor q8_linear(
         static_cast<uint32_t>(k),
         0u};
     const std::array<uint64_t, 2> dequant_grid = {
-        round_up_to_tile(k), round_up_to_tile(n)};
+        round_up_to_tile(k, kTile), round_up_to_tile(n, kTile)};
     const std::array<uint64_t, 2> dequant_group = {kTile, kTile};
 
     dequant_kernel->runCommandBlock([&] {
@@ -148,7 +178,7 @@ at::Tensor q8_linear(
   }
 
   at::Tensor output_2d = at::empty({m, n}, input.options());
-  const auto& kernel = input_is_half ? entry->half_kernel : entry->float_kernel;
+  const auto kernel = q8_kernel(entry, input_is_half, kernel_name);
   TORCH_CHECK(
       kernel,
       "generated Metal library has no float32 Q8 kernel: ",
@@ -161,10 +191,12 @@ at::Tensor q8_linear(
   // dispatchThreads can create a partial final threadgroup when the grid is
   // not tile-aligned. The kernel's cooperative loads need every 16x16 lane
   // to participate, so round the launch grid up and let the kernel bounds
-  // checks suppress out-of-range stores.
+  // checks suppress out-of-range stores for the selected tile geometry.
   const std::array<uint64_t, 2> grid = {
-      round_up_to_tile(n), round_up_to_tile(m)};
-  const std::array<uint64_t, 2> group = {kTile, kTile};
+      round_up_to_tile(n, static_cast<uint64_t>(tile_n)),
+      round_up_to_tile(m, static_cast<uint64_t>(tile_m))};
+  const std::array<uint64_t, 2> group = {
+      static_cast<uint64_t>(tile_n), static_cast<uint64_t>(tile_m)};
 
   kernel->runCommandBlock([&] {
     kernel->startEncoding();
@@ -189,5 +221,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
       pybind11::arg("scale"),
       pybind11::arg("bias"),
       pybind11::arg("library_path"),
-      pybind11::arg("exact") = false);
+      pybind11::arg("exact") = false,
+      pybind11::arg("kernel_name") = "llmopt_q8_linear",
+      pybind11::arg("tile_m") = 16,
+      pybind11::arg("tile_n") = 16,
+      pybind11::arg("tile_k") = 64);
 }

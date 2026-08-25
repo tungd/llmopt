@@ -30,6 +30,10 @@ class MetalRuntimeTest(unittest.TestCase):
             bias,
             "/tmp/generated.metallib",
             False,
+            "llmopt_q8_linear_f32",
+            16,
+            16,
+            64,
         )
 
     def test_exact_mode_selects_generated_mps_reference_path(self):
@@ -56,6 +60,44 @@ class MetalRuntimeTest(unittest.TestCase):
             bias,
             "/tmp/generated.metallib",
             True,
+            "llmopt_q8_linear_f32",
+            16,
+            16,
+            64,
+        )
+
+    def test_parameterized_tile_reaches_native_bridge(self):
+        tensor = SimpleNamespace(device=SimpleNamespace(type="mps"))
+        input = SimpleNamespace(device=tensor.device, dtype="torch.float16")
+        weight = SimpleNamespace(device=tensor.device, dtype="torch.int8")
+        scale = SimpleNamespace(device=tensor.device, dtype="torch.float16")
+        bias = SimpleNamespace(device=tensor.device, dtype="torch.float16")
+        native = mock.Mock()
+        native.q8_linear.return_value = "generated-output"
+
+        with mock.patch.object(metal_runtime, "_native", return_value=native):
+            with metal_runtime.activate(Path("/tmp/generated.metallib")):
+                result = metal_runtime.dispatch_q8_linear(
+                    input,
+                    weight,
+                    scale,
+                    bias,
+                    kernel_name="llmopt_q8_linear_tm32_tn8_tk64",
+                    tile=(32, 8, 64),
+                )
+
+        self.assertEqual(result, "generated-output")
+        native.q8_linear.assert_called_once_with(
+            input,
+            weight,
+            scale,
+            bias,
+            "/tmp/generated.metallib",
+            False,
+            "llmopt_q8_linear_tm32_tn8_tk64",
+            32,
+            8,
+            64,
         )
 
     def test_cpu_inputs_leave_generated_runtime_untouched(self):

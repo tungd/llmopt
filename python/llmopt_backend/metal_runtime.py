@@ -126,11 +126,26 @@ def activate(library: Path | None) -> Iterator[None]:
         _active_library.reset(token)
 
 
+def _kernel_name_for_input(kernel_name: str, input: Any) -> str:
+    """Select the generated entry-point family for the input precision."""
+
+    if str(getattr(input, "dtype", "")) != "torch.float32":
+        return kernel_name
+    if kernel_name == "llmopt_q8_linear":
+        return "llmopt_q8_linear_f32"
+    if not kernel_name.endswith("_f32"):
+        return f"{kernel_name}_f32"
+    return kernel_name
+
+
 def dispatch_q8_linear(
     input: Any,
     weight: Any,
     scale: Any,
     bias: Any | None,
+    *,
+    kernel_name: str = "llmopt_q8_linear",
+    tile: tuple[int, int, int] = (16, 16, 64),
 ) -> Any | None:
     library = _active_library.get()
     if library is None or _mode() == "off":
@@ -156,6 +171,8 @@ def dispatch_q8_linear(
     module = _native()
     if module is None:
         return None
+    tile_m, tile_n, tile_k = tile
+    native_kernel_name = _kernel_name_for_input(kernel_name, input)
     global _dispatches
     output = module.q8_linear(
         input,
@@ -164,6 +181,10 @@ def dispatch_q8_linear(
         bias,
         str(library),
         _mode() == "exact",
+        native_kernel_name,
+        tile_m,
+        tile_n,
+        tile_k,
     )
     _dispatches += 1
     return output

@@ -76,3 +76,4 @@
 * [Fused RMSNorm-RoPE model measurement](exp-0074-rmsnorm-rope-measurement.md) - exact bounded 350M tokens with improved short-trace ERS (0.412260) and lower TPOT.
 * [Macro-operator fusion compiler boundary](exp-0076-macro-operator-fusions-compiler.md) - fresh full-Q8 prefill/decode package compilation with dual-linear, QKV, and decode ShortConv-step matches.
 * [XGBoost cost-model differential evidence](exp-0077-xgboost-cost-model-differential-2026-08-26.md) - fresh Q8 differential, exact four-request token parity, and isolated raw timing observations with the runner's comparison boundary retained.
+* [XGBoost kernel cost-model device sweep](exp-0078-xgboost-kernel-cost-model-device-sweep-2026-08-26.md) - parameterized native Q8 tile dispatch, broad device measurements, transpilation validation, and the recorded learned-selection boundary.
