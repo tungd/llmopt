@@ -53,6 +53,7 @@ module Resource_class = struct
     | Ir.Op.Q8_linear_silu _
     | Ir.Op.Q8_linear_add _
     | Ir.Op.Q8_linear_mul_add _
+    | Ir.Op.Q8_dual_linear _
     | Ir.Op.Matmul _
     | Ir.Op.Fused_matmul_bias _
     | Ir.Op.Linear _ ->
