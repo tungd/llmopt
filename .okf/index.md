@@ -66,3 +66,4 @@ okf_version: '0.2'
 * [Native cache-submission batching](experiments/exp-0044-cache-submission-batching.md) - physical KV and recurrent cache phases use ordered submissions with exact byte and token evidence.
 * [Cached-suffix command-buffer batching attempt](experiments/exp-0045-cached-suffix-batching-attempt.md) - one dependent replay batch preserves per-token checkpoint structure; the first model attempt failed and the correction remains unmeasured.
 * [Q8 linear-SiLU epilogue fusion](experiments/exp-0046-q8-linear-silu-fusion.md) - the first real-model epilogue pass removes sixteen workspace round trips and dispatches from each stage.
+* [Q8 linear-residual epilogue fusion](experiments/exp-0047-q8-linear-add-fusion.md) - the second epilogue pass removes 32 residual workspace round trips and dispatches from each stage.

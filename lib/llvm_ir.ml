@@ -1,8 +1,10 @@
+type q8_epilogue = Identity | Silu | Add
+
 type kernel =
   | Matmul of int * int * int
   | Fused of int * int * int
   | Linear of int * int * int * bool
-  | Q8 of int * int * int * bool * bool
+  | Q8 of int * int * int * bool * q8_epilogue
 
 let kernel_shape graph =
   Ir.Graph.nodes graph
@@ -11,22 +13,31 @@ let kernel_shape graph =
          | Ir.Op.Matmul { m; n; k } -> Some (Matmul (m, n, k))
          | Ir.Op.Fused_matmul_bias { m; n; k } -> Some (Fused (m, n, k))
          | Ir.Op.Q8_linear { m; n; k; bias } ->
-             Some (Q8 (m, n, k, bias, false))
+             Some (Q8 (m, n, k, bias, Identity))
          | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
-             Some (Q8 (m, n, k, bias, true))
+             Some (Q8 (m, n, k, bias, Silu))
+         | Ir.Op.Q8_linear_add { m; n; k; bias } ->
+             Some (Q8 (m, n, k, bias, Add))
          | Ir.Op.Linear { m; n; k; bias } -> Some (Linear (m, n, k, bias))
          | _ -> None)
 
-let emit_q8 ~m ~n ~k ~has_bias ~silu =
+let emit_q8 ~m ~n ~k ~has_bias ~epilogue =
   let header =
-    let name = if silu then "llmopt_q8_linear_silu" else "llmopt_q8_linear" in
+    let name =
+      match epilogue with
+      | Identity -> "llmopt_q8_linear"
+      | Silu -> "llmopt_q8_linear_silu"
+      | Add -> "llmopt_q8_linear_add"
+    in
+    let residual = match epilogue with Add -> ", ptr %residual" | _ -> "" in
     if has_bias then
       Printf.sprintf
-        "define void @%s(ptr %%a, ptr %%b, ptr %%scale, ptr %%bias, ptr %%c) {"
-        name
+        "define void @%s(ptr %%a, ptr %%b, ptr %%scale, ptr %%bias%s, ptr %%c) {"
+        name residual
     else
-      Printf.sprintf "define void @%s(ptr %%a, ptr %%b, ptr %%scale, ptr %%c) {"
-        name
+      Printf.sprintf
+        "define void @%s(ptr %%a, ptr %%b, ptr %%scale%s, ptr %%c) {" name
+        residual
   in
   let bias_lines =
     if has_bias then
@@ -37,13 +48,21 @@ let emit_q8 ~m ~n ~k ~has_bias ~silu =
     else [ "  %with.bias = fadd float %acc.next, 0.000000e+00" ]
   in
   let activation_lines =
-    if silu then
+    match epilogue with
+    | Silu ->
       [ "  %neg = fneg float %with.bias"
       ; "  %exp = call float @llvm.exp.f32(float %neg)"
       ; "  %denominator = fadd float %exp, 1.000000e+00"
       ; "  %stored = fdiv float %with.bias, %denominator"
       ]
-    else [ "  %stored = fadd float %with.bias, 0.000000e+00" ]
+    | Add ->
+        [ Printf.sprintf "  %%residual.row = mul i64 %%i, %d" n
+        ; "  %residual.index = add i64 %residual.row, %j"
+        ; "  %residual.ptr = getelementptr float, ptr %residual, i64 %residual.index"
+        ; "  %residual.value = load float, ptr %residual.ptr, align 4"
+        ; "  %stored = fadd float %with.bias, %residual.value"
+        ]
+    | Identity -> [ "  %stored = fadd float %with.bias, 0.000000e+00" ]
   in
   let source_lines =
     [ "; ModuleID = 'llmopt-q8'"
@@ -101,7 +120,10 @@ let emit_q8 ~m ~n ~k ~has_bias ~silu =
       ; "  ret void"
       ; "}"
       ]
-    @ if silu then [ ""; "declare float @llvm.exp.f32(float)" ] else []
+    @
+    match epilogue with
+    | Silu -> [ ""; "declare float @llvm.exp.f32(float)" ]
+    | Identity | Add -> []
   in
   Ok (String.concat "\n" source_lines ^ "\n")
 
@@ -111,13 +133,16 @@ let emit graph =
     |> List.find_map (fun node ->
            match Ir.node_op node with
            | Ir.Op.Q8_linear { m; n; k; bias } ->
-               Some (m, n, k, bias, false)
+               Some (m, n, k, bias, Identity)
            | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
-               Some (m, n, k, bias, true)
+               Some (m, n, k, bias, Silu)
+           | Ir.Op.Q8_linear_add { m; n; k; bias } ->
+               Some (m, n, k, bias, Add)
            | _ -> None)
   in
   match q8_kernel with
-  | Some (m, n, k, bias, silu) -> emit_q8 ~m ~n ~k ~has_bias:bias ~silu
+  | Some (m, n, k, bias, epilogue) ->
+      emit_q8 ~m ~n ~k ~has_bias:bias ~epilogue
   | None ->
   match kernel_shape graph with
   | None -> Error "LLVM emitter expects one supported kernel node"

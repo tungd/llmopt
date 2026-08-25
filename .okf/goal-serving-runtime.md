@@ -4,7 +4,7 @@ title: 'Complete OCaml Metal serving stack for LFM2.5'
 description: 'The requirement-by-requirement completion map from torch.compile capture through OCaml cached serving and ERS measurement.'
 tags: [goal, compiler, ocaml, metal, serving, radix-cache, kv-cache, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T06:22:00Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T06:38:20Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -60,6 +60,9 @@ sources:
   - id: q8-silu-fusion-result
     resource: /bench/results/lfm25-350m-q8-linear-silu-fusion-2026-08-25.txt
     title: Q8 linear-SiLU compiler fusion result
+  - id: q8-add-fusion-result
+    resource: /bench/results/lfm25-350m-q8-linear-add-fusion-2026-08-25.txt
+    title: Q8 linear-residual compiler fusion result
   - id: build
     resource: /ninja.build
     title: Ninja build graph
@@ -83,9 +86,9 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 |---|---|---|---|
 | Dynamo/FX graph capture | PyTorch invokes `backend=llmopt` and the captured graph reaches OCaml | One memory-bounded use-cache attempt preserved a 1,155-node prefill graph and a 1,195-node decode graph, with one and 23 runtime inputs respectively, while sharing all 241 static tensors through one binary archive | implemented as captured prefill/decode templates |
 | Binary compiler transport | Dynamo graph metadata reaches OCaml through a versioned binary format; JSON is optional diagnostics only | Default capture now writes `LLMOPTFX` ABI-v1 `graph.llmopt`; Python and OCaml round trips cover every typed argument form, malformed input is rejected, and preserved prefill/decode graphs round-trip exactly. `LLMOPT_FX_DIAGNOSTICS=1` is required for JSON output | implemented |
-| Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Replanning fuses 16 Q8-linear/SiLU pairs per stage and produces 856 prefill and 910 decode commands with zero opaque operations. Typed specialization re-infers real schedules at prefill 13/128/4,096 and decode-past 1/127/4,095; every observed kernel family remains emitted | implemented for captured templates and observed LFM shapes |
-| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v9 retains ABI-v2 through ABI-v8 reads and adds the typed Q8-linear/SiLU kernel family. Offline package checks validate 856-command/52-entry prefill and 910-command/50-entry decode schedules against the shared 422,137,216-byte tensor archive | implemented for the captured template pair |
-| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Binary-input ABI-v9 replanning compiles 52 prefill and 50 decode entries, including tiled and one-row Q8+SiLU epilogues plus FP16/Q8 cache conversion. Both generated MSL programs compile; a bounded 41-output primitive probe selected fused GEMV and passed exactly before the final explicit half-rounding fixture was added | implemented for captured templates |
+| Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Replanning fuses 16 Q8-linear/SiLU and 32 Q8-linear/residual pairs per stage, producing 824 prefill and 878 decode commands with zero opaque operations. Typed specialization re-infers real schedules at prefill 13/128/4,096 and decode-past 1/127/4,095; every observed kernel family remains emitted | implemented for captured templates and observed LFM shapes |
+| Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v10 retains ABI-v2 through ABI-v9 reads and adds the typed Q8-linear/residual family. Offline package checks validate 824-command/56-entry prefill and 878-command/54-entry decode schedules against the shared 422,137,216-byte tensor archive | implemented for the captured template pair |
+| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Binary-input ABI-v10 replanning compiles 56 prefill and 54 decode entries, including tiled and one-row Q8+SiLU and Q8+residual epilogues plus FP16/Q8 cache conversion. Both generated MSL programs compile; the fused-SiLU family has bounded device evidence while the fused-residual reference remains static-only | implemented for captured templates |
 | Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | One persistent `llmopt-serve` process loads both stages and the inode-keyed archive. The latest successful trace uses one unpack, one generated-schedule, and one pack command buffer per decode; `m = 1` Q8 commands select GEMV. Fused Q8-GEMV+SiLU has small-fixture device evidence; dependent suffix batching now compiles with per-token cache writes, but its first model attempt failed before scoring and the correction has not run on device. Exact model logits remain absent | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | The repeated Q8 run mapped the shared 241-tensor archive, grew to nine attention slots and four recurrent checkpoints, and passed cache validation. FP16 remains package-validated and small-fixture-executed rather than model-executed | implemented for Q8 prefill plus repeated decode |
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `llmopt-serve` accepts the OpenAI-compatible chat contract, incrementally decodes UTF-8, streams every generated token ID plus visible text, and reports usage. The warmed scored smoke completed 4/4 requests with pinned output counts | implemented for the HTTP smoke contract |

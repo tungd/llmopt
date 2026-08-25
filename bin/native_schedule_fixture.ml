@@ -331,6 +331,22 @@ let graph () =
     [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias ] [ 1; 3 ]
     Ir.Dtype.Float16
   |> output graph "q8_gemv_silu";
+  let q8_add_residual =
+    input graph "q8_add_residual" [ 1; 3 ] Ir.Dtype.Float16
+  in
+  primitive graph
+    (Ir.Primitive.Pointwise
+       (Ir.Pointwise.Binary
+          ( Ir.Pointwise.Add,
+            Ir.Pointwise.Tensor q8_gemv,
+            Ir.Pointwise.Tensor q8_add_residual )))
+    [ q8_gemv; q8_add_residual ] [ 1; 3 ] Ir.Dtype.Float16
+  |> output graph "q8_gemv_add_reference";
+  command graph (Ir.Op.Q8_linear_add { m = 1; n = 3; k = 4; bias = true })
+    [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias;
+      q8_add_residual ]
+    [ 1; 3 ] Ir.Dtype.Float16
+  |> output graph "q8_gemv_add";
 
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in

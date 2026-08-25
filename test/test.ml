@@ -1320,6 +1320,135 @@ let () =
     |> List.for_all (fun node ->
            match Ir.node_op node with Ir.Op.Q8_linear_silu _ -> false | _ -> true))
     "Q8 SiLU fusion preserves a multiply-consumed linear result";
+  let q8_add_graph = Ir.Graph.create () in
+  let q8_add_input =
+    Ir.Graph.tensor_input q8_add_graph ~name:"q8_add_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_add_weight =
+    Ir.Graph.tensor_input q8_add_graph ~name:"q8_add_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let q8_add_scale =
+    Ir.Graph.tensor_input q8_add_graph ~name:"q8_add_scale"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_add_residual =
+    Ir.Graph.tensor_input q8_add_graph ~name:"q8_add_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_add_linear =
+    Ir.Graph.fresh_tensor_value q8_add_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_add_graph
+    ~op:(Ir.Op.Q8_linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ q8_add_input; q8_add_weight; q8_add_scale ]
+    ~output:(Some q8_add_linear);
+  let q8_add_output =
+    Ir.Graph.fresh_tensor_value q8_add_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_add_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor q8_add_linear,
+                 Ir.Pointwise.Tensor q8_add_residual ))))
+    ~inputs:[ q8_add_linear; q8_add_residual ] ~output:(Some q8_add_output);
+  Ir.Graph.add_output q8_add_graph ~name:"q8_add_output" q8_add_output;
+  let q8_add_optimized = Passes.fuse_q8_add q8_add_graph in
+  expect (List.length (Ir.Graph.nodes q8_add_optimized) = 6)
+    "Q8 linear and same-shape residual add fuse into one node";
+  expect
+    (Ir.Graph.nodes q8_add_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Q8_linear_add { m = 2; n = 3; k = 4; bias = false } -> true
+           | _ -> false))
+    "Q8 residual fusion produces its typed IR operation";
+  let q8_add_schedule =
+    q8_add_optimized |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands q8_add_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_linear_add { m = 2; n = 3; k = 4; bias = false } -> true
+           | _ -> false))
+    "binary schedule preserves fused Q8 residual add";
+  let q8_add_program = expect_ok (Metal.lower q8_add_optimized) in
+  expect
+    (contains_substring (Metal.Program.source q8_add_program)
+       "kernel void llmopt_q8_linear_add")
+    "Metal lowering emits fused Q8 residual add";
+  expect
+    (Metal.Program.kernels q8_add_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_linear_add))
+    "Metal lowering declares the fused Q8 residual ABI";
+  (match Llvm_ir.emit q8_add_optimized with
+  | Error message -> fail message
+  | Ok source ->
+      expect (contains_substring source "%residual")
+        "LLVM inspection IR preserves the fused residual input");
+  let q8_broadcast_graph = Ir.Graph.create () in
+  let broadcast_input =
+    Ir.Graph.tensor_input q8_broadcast_graph ~name:"broadcast_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let broadcast_weight =
+    Ir.Graph.tensor_input q8_broadcast_graph ~name:"broadcast_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let broadcast_scale =
+    Ir.Graph.tensor_input q8_broadcast_graph ~name:"broadcast_scale"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let broadcast_residual =
+    Ir.Graph.tensor_input q8_broadcast_graph ~name:"broadcast_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let broadcast_linear =
+    Ir.Graph.fresh_tensor_value q8_broadcast_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_broadcast_graph
+    ~op:(Ir.Op.Q8_linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ broadcast_input; broadcast_weight; broadcast_scale ]
+    ~output:(Some broadcast_linear);
+  let broadcast_output =
+    Ir.Graph.fresh_tensor_value q8_broadcast_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_broadcast_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor broadcast_linear,
+                 Ir.Pointwise.Tensor broadcast_residual ))))
+    ~inputs:[ broadcast_linear; broadcast_residual ]
+    ~output:(Some broadcast_output);
+  Ir.Graph.add_output q8_broadcast_graph ~name:"broadcast" broadcast_output;
+  let q8_broadcast_graph = Passes.fuse_q8_add q8_broadcast_graph in
+  expect
+    (Ir.Graph.nodes q8_broadcast_graph
+    |> List.for_all (fun node ->
+           match Ir.node_op node with Ir.Op.Q8_linear_add _ -> false | _ -> true))
+    "Q8 residual fusion does not absorb a broadcast add";
   (match Metal.emit q8_graph with
   | Error message -> fail message
   | Ok source ->
@@ -1900,8 +2029,8 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 9)
-    "serving package uses binary ABI version 9";
+    (Bytes.get_uint16_le serving_bytes 8 = 10)
+    "serving package uses binary ABI version 10";
   let package_v7 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v7 8 7;
   ignore (Serving_package.of_bytes package_v7 |> expect_ok);

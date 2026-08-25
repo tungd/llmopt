@@ -260,16 +260,27 @@ let q8_kernel ?name runtime ~operation dtype =
       | Some expected -> Kernel_abi.Entry.name entry = expected)
     entries
 
-let q8_kernel_name dtype ~m ~silu =
-  match dtype, m, silu with
-  | Ir.Dtype.Float16, 1, false -> Ok "llmopt_q8_gemv"
-  | Ir.Dtype.Float32, 1, false -> Ok "llmopt_q8_gemv_f32"
-  | Ir.Dtype.Float16, _, false -> Ok "llmopt_q8_linear"
-  | Ir.Dtype.Float32, _, false -> Ok "llmopt_q8_linear_f32"
-  | Ir.Dtype.Float16, 1, true -> Ok "llmopt_q8_gemv_silu"
-  | Ir.Dtype.Float32, 1, true -> Ok "llmopt_q8_gemv_silu_f32"
-  | Ir.Dtype.Float16, _, true -> Ok "llmopt_q8_linear_silu"
-  | Ir.Dtype.Float32, _, true -> Ok "llmopt_q8_linear_silu_f32"
+type q8_epilogue = Identity | Silu | Add
+
+let q8_operation = function
+  | Identity -> Kernel_abi.Operation.Q8_linear
+  | Silu -> Kernel_abi.Operation.Q8_linear_silu
+  | Add -> Kernel_abi.Operation.Q8_linear_add
+
+let q8_kernel_name dtype ~m ~epilogue =
+  match dtype, m, epilogue with
+  | Ir.Dtype.Float16, 1, Identity -> Ok "llmopt_q8_gemv"
+  | Ir.Dtype.Float32, 1, Identity -> Ok "llmopt_q8_gemv_f32"
+  | Ir.Dtype.Float16, _, Identity -> Ok "llmopt_q8_linear"
+  | Ir.Dtype.Float32, _, Identity -> Ok "llmopt_q8_linear_f32"
+  | Ir.Dtype.Float16, 1, Silu -> Ok "llmopt_q8_gemv_silu"
+  | Ir.Dtype.Float32, 1, Silu -> Ok "llmopt_q8_gemv_silu_f32"
+  | Ir.Dtype.Float16, _, Silu -> Ok "llmopt_q8_linear_silu"
+  | Ir.Dtype.Float32, _, Silu -> Ok "llmopt_q8_linear_silu_f32"
+  | Ir.Dtype.Float16, 1, Add -> Ok "llmopt_q8_gemv_add"
+  | Ir.Dtype.Float32, 1, Add -> Ok "llmopt_q8_gemv_add_f32"
+  | Ir.Dtype.Float16, _, Add -> Ok "llmopt_q8_linear_add"
+  | Ir.Dtype.Float32, _, Add -> Ok "llmopt_q8_linear_add_f32"
   | dtype, _, _ ->
       Error
         ("Q8 Metal dispatch requires f16 or f32 activations, got "
@@ -1209,14 +1220,12 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
-let dispatch_q8_linear_batched batch runtime ~silu ~dtype ~input_value
-    ~weight_value ~input ~weight ~scale ~bias ~output_value ~output ~m ~n ~k =
+let dispatch_q8_linear_batched batch runtime ~epilogue ~dtype ~input_value
+    ~weight_value ~input ~weight ~scale ~bias ~residual ~output_value ~output ~m
+    ~n ~k =
   let* () = validate_linear_shapes ~m ~n ~k input_value weight_value output_value in
-  let operation =
-    if silu then Kernel_abi.Operation.Q8_linear_silu
-    else Kernel_abi.Operation.Q8_linear
-  in
-  let* name = q8_kernel_name dtype ~m ~silu in
+  let operation = q8_operation epilogue in
+  let* name = q8_kernel_name dtype ~m ~epilogue in
   let* entry =
     match q8_kernel ~name runtime ~operation dtype with
     | Some entry -> Ok entry
@@ -1231,12 +1240,27 @@ let dispatch_q8_linear_batched batch runtime ~silu ~dtype ~input_value
   let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
   let* grid_x = if m = 1 then round_up n 256 else round_up n 16 in
   let* grid_y = if m = 1 then Ok 1 else round_up m 16 in
+  let* extra_buffers =
+    match epilogue, residual with
+    | (Identity | Silu), None -> Ok []
+    | Add, Some buffer -> Ok [ buffer ]
+    | Add, None -> Error "Q8 residual epilogue has no residual buffer"
+    | (Identity | Silu), Some _ ->
+        Error "Q8 non-residual epilogue received a residual buffer"
+  in
   dispatch ~batch runtime entry
-    ~buffers:[ input; weight; scale; bias_buffer; output ] ~parameters
+    ~buffers:([ input; weight; scale; bias_buffer ] @ extra_buffers @ [ output ])
+    ~parameters
     ~grid:(grid_x, grid_y, 1)
 
-let dispatch_q8_command batch runtime state ~silu ~m ~n ~k ~has_bias values
-    output =
+let dispatch_q8_command batch runtime state ~epilogue ~m ~n ~k ~has_bias
+    values output =
+  let* values, residual_value =
+    match epilogue, List.rev values with
+    | Add, residual :: reversed -> Ok (List.rev reversed, Some residual)
+    | Add, [] -> Error "Q8 residual schedule command has no residual input"
+    | (Identity | Silu), _ -> Ok (values, None)
+  in
   let* input_value, weight_value, input, weight, scale, bias =
     match values, has_bias with
     | [ input_value; weight_value; scale_value ], false ->
@@ -1252,11 +1276,24 @@ let dispatch_q8_command batch runtime state ~silu ~m ~n ~k ~has_bias values
         Ok (input_value, weight_value, input, weight, scale, Some bias)
     | _ -> Error "Q8 schedule command has inconsistent bias inputs"
   in
+  let* residual =
+    match residual_value with
+    | None -> Ok None
+    | Some value ->
+        if
+          Ir.Value.dtype value <> Ir.Value.dtype output
+          || not
+               (Tensor_shape.equal
+                  (Ir.Value.logical_shape value)
+                  (Ir.Value.logical_shape output))
+        then Error "Q8 residual input metadata differs from its output"
+        else find_value state value |> Result.map Option.some
+  in
   let* output_buffer = workspace_buffer state output in
   let* kernel =
-    dispatch_q8_linear_batched batch runtime ~silu
+    dispatch_q8_linear_batched batch runtime ~epilogue
       ~dtype:(Ir.Value.dtype output) ~input_value ~weight_value ~input ~weight
-      ~scale ~bias ~output_value:output ~output:output_buffer ~m ~n ~k
+      ~scale ~bias ~residual ~output_value:output ~output:output_buffer ~m ~n ~k
   in
   Ok (bind_value state output output_buffer, kernel)
 
@@ -1869,13 +1906,19 @@ let encode_schedule execution_batch ~schedule ~inputs =
                  ~grid:(Tensor_shape.numel (Ir.Value.logical_shape output), 1, 1))
         | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, values, Some output ->
             dispatched
-              (dispatch_q8_command batch runtime state ~silu:false ~m ~n ~k
+              (dispatch_q8_command batch runtime state ~epilogue:Identity ~m ~n ~k
                  ~has_bias values output)
         | ( Ir.Op.Q8_linear_silu { m; n; k; bias = has_bias },
             values,
             Some output ) ->
             dispatched
-              (dispatch_q8_command batch runtime state ~silu:true ~m ~n ~k
+              (dispatch_q8_command batch runtime state ~epilogue:Silu ~m ~n ~k
+                 ~has_bias values output)
+        | ( Ir.Op.Q8_linear_add { m; n; k; bias = has_bias },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_command batch runtime state ~epilogue:Add ~m ~n ~k
                  ~has_bias values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in

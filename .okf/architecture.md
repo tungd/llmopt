@@ -169,9 +169,9 @@ graph, pretty-printed `plan.txt`, MSL, and LLVM IR are compiler artifacts and
 are not referenced by the serving runtime; JSON diagnostics are opt-in. Kernel entry points carry an operation,
 input/output dtype, and threadgroup shape. A compiled-graph package has no
 tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v9 names weight-archive ABI v1,
-adds typed Q8-linear/SiLU epilogues on top of sliced cache operations, and reads
-ABI-v2 through ABI-v8 packages.
+exactly one binary tensor archive. Package ABI v10 names weight-archive ABI v1,
+adds typed Q8-linear/SiLU and Q8-linear/residual epilogues on top of sliced
+cache operations, and reads ABI-v2 through ABI-v9 packages.
 Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
 archive rather than being split into per-tensor files.
 
@@ -398,6 +398,15 @@ reducing prefill from 872 to 856 commands and decode from 926 to 910 while
 retaining zero opaque operations and all 241 tensor bindings. Both metallibs
 compile. One small device fixture executed the fused GEMV exactly; no fused
 model latency, token, cache, needle, or ERS observation exists yet.
+
+The second epilogue optimizer recognizes same-shape residual addition after a
+sole-consumer Q8 projection. It rejects broadcast residuals and preserves the
+materialized half-rounding point before addition. Schedule/package ABI v10 and
+the runtime bind the residual as one extra typed Metal buffer. All 32 expected
+pairs fuse in each stage, reducing prefill from 856 to 824 commands and decode
+from 910 to 878. The generated metallibs and Q8/FP16-selectable package pair
+validate against the same archive inode. The fused-versus-materialized fixture
+is static-only; the model has not executed this pass.
 
 The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
 the planner now holds chunk partitions as compile-time descriptors and

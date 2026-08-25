@@ -201,5 +201,49 @@ let fuse_q8_silu graph =
   in
   Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph))
 
+let same_value_metadata left right =
+  Ir.Value.dtype left = Ir.Value.dtype right
+  && Tensor_shape.equal
+       (Ir.Value.logical_shape left)
+       (Ir.Value.logical_shape right)
+
+let residual_add_info node q8_output =
+  match pointwise_binary node with
+  | Some (Ir.Pointwise.Add, left, right, output) ->
+      (match tensor_operand left, tensor_operand right with
+      | Some left, Some right when value_is left q8_output -> Some (right, output)
+      | Some left, Some right when value_is right q8_output -> Some (left, output)
+      | _ -> None)
+  | _ ->
+      (match add_info node with
+      | Some (Shape.Same, output, left, right) when value_is left q8_output ->
+          Some (right, output)
+      | Some (Shape.Same, output, left, right) when value_is right q8_output ->
+          Some (left, output)
+      | _ -> None)
+
+let fuse_q8_add graph =
+  let rec rewrite prefix = function
+    | q8_node :: add_node :: rest ->
+        (match q8_linear_info q8_node with
+        | Some (m, n, k, bias, inputs, q8_output) ->
+            (match residual_add_info add_node q8_output with
+            | Some (residual, add_output)
+              when not (value_is residual q8_output)
+                   && same_value_metadata q8_output residual
+                   && same_value_metadata q8_output add_output
+                   && not (used_in rest q8_output) ->
+                let fused =
+                  Ir.node_replace add_node
+                    ~op:(Ir.Op.Q8_linear_add { m; n; k; bias })
+                    ~inputs:(inputs @ [ residual ])
+                in
+                rewrite prefix (fused :: rest)
+            | _ -> rewrite (q8_node :: prefix) (add_node :: rest))
+        | None -> rewrite (q8_node :: prefix) (add_node :: rest))
+    | remaining -> List.rev_append prefix remaining
+  in
+  Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph))
+
 let optimize graph =
-  graph |> fuse_linear_bias |> fuse_rms_norm |> fuse_q8_silu
+  graph |> fuse_linear_bias |> fuse_rms_norm |> fuse_q8_silu |> fuse_q8_add

@@ -38,15 +38,19 @@ let input_name graph value =
   | None ->
       Printf.sprintf "value-%d" (Ir.Value_id.to_int (Ir.Value.id value))
 
-let q8_kernel ~name ~value_type ~vector_type ~alignment ~weight_value_type
-    ~weight_cast ~scale_type ~scale_zero ~zero_value ~store_value =
+let q8_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name ~value_type
+    ~vector_type ~alignment ~weight_value_type ~weight_cast ~scale_type
+    ~scale_zero ~zero_value ~store_value =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
   ^ "    device const char* weight [[buffer(1)]],\n"
   ^ "    device const half* scale [[buffer(2)]],\n"
   ^ "    device const half* bias_or_scale [[buffer(3)]],\n"
-  ^ "    device " ^ value_type ^ "* output [[buffer(4)]],\n"
-  ^ "    constant Q8Params& params [[buffer(5)]],\n"
+  ^ extra_argument
+  ^ "    device " ^ value_type ^ "* output [[buffer("
+  ^ string_of_int output_buffer ^ ")]],\n"
+  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
+  ^ ")]],\n"
   ^ "    uint2 gid [[thread_position_in_grid]],\n"
   ^ "    uint2 tid [[thread_position_in_threadgroup]]) {\n"
   ^ "  const uint row = gid.y;\n"
@@ -108,15 +112,18 @@ let q8_kernel ~name ~value_type ~vector_type ~alignment ~weight_value_type
   ^ "  }\n"
   ^ "}\n"
 
-let q8_gemv_kernel ~name ~value_type ~vector_type ~weight_cast ~scale_type
-    ~store_value =
+let q8_gemv_kernel ~extra_argument ~output_buffer ~parameter_buffer ~name
+    ~value_type ~vector_type ~weight_cast ~scale_type ~store_value =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
   ^ "    device const char* weight [[buffer(1)]],\n"
   ^ "    device const half* scale [[buffer(2)]],\n"
   ^ "    device const half* bias_or_scale [[buffer(3)]],\n"
-  ^ "    device " ^ value_type ^ "* output [[buffer(4)]],\n"
-  ^ "    constant Q8Params& params [[buffer(5)]],\n"
+  ^ extra_argument
+  ^ "    device " ^ value_type ^ "* output [[buffer("
+  ^ string_of_int output_buffer ^ ")]],\n"
+  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
+  ^ ")]],\n"
   ^ "    uint col [[thread_position_in_grid]]) {\n"
   ^ "  if (params.m != 1 || col >= params.n) return;\n"
   ^ "  const " ^ scale_type ^ " channel_scale = scale[col];\n"
@@ -168,6 +175,7 @@ let q8_source =
   "\nconstant uint Q8_TILE = 16;\n\n"
   ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
   ^ q8_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_linear"
       ~value_type:"half"
       ~vector_type:"half4"
@@ -179,6 +187,7 @@ let q8_source =
       ~zero_value:"half(0.0h)"
       ~store_value:"half(acc)"
   ^ q8_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_linear_f32"
       ~value_type:"float"
       ~vector_type:"float4"
@@ -190,6 +199,7 @@ let q8_source =
       ~zero_value:"0.0f"
       ~store_value:"acc"
   ^ q8_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_linear_silu"
       ~value_type:"half"
       ~vector_type:"half4"
@@ -202,6 +212,7 @@ let q8_source =
       ~store_value:
         "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
   ^ q8_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_linear_silu_f32"
       ~value_type:"float"
       ~vector_type:"float4"
@@ -212,7 +223,34 @@ let q8_source =
       ~scale_zero:"0.0f"
       ~zero_value:"0.0f"
       ~store_value:"acc / (1.0f + exp(-acc))"
+  ^ q8_kernel
+      ~extra_argument:"    device const half* residual [[buffer(4)]],\n"
+      ~output_buffer:5 ~parameter_buffer:6
+      ~name:"llmopt_q8_linear_add"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~alignment:"8"
+      ~weight_value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~scale_zero:"half(0.0h)"
+      ~zero_value:"half(0.0h)"
+      ~store_value:"half(half(acc) + residual[row * params.n + col])"
+  ^ q8_kernel
+      ~extra_argument:"    device const float* residual [[buffer(4)]],\n"
+      ~output_buffer:5 ~parameter_buffer:6
+      ~name:"llmopt_q8_linear_add_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~alignment:"16"
+      ~weight_value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~scale_zero:"0.0f"
+      ~zero_value:"0.0f"
+      ~store_value:"acc + residual[row * params.n + col]"
   ^ q8_gemv_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv"
       ~value_type:"half"
       ~vector_type:"half4"
@@ -220,6 +258,7 @@ let q8_source =
       ~scale_type:"half"
       ~store_value:"half(acc)"
   ^ q8_gemv_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv_f32"
       ~value_type:"float"
       ~vector_type:"float4"
@@ -227,6 +266,7 @@ let q8_source =
       ~scale_type:"float"
       ~store_value:"acc"
   ^ q8_gemv_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv_silu"
       ~value_type:"half"
       ~vector_type:"half4"
@@ -235,12 +275,31 @@ let q8_source =
       ~store_value:
         "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
   ^ q8_gemv_kernel
+      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
       ~name:"llmopt_q8_gemv_silu_f32"
       ~value_type:"float"
       ~vector_type:"float4"
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc / (1.0f + exp(-acc))"
+  ^ q8_gemv_kernel
+      ~extra_argument:"    device const half* residual [[buffer(4)]],\n"
+      ~output_buffer:5 ~parameter_buffer:6
+      ~name:"llmopt_q8_gemv_add"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:"half(half(acc) + residual[col])"
+  ^ q8_gemv_kernel
+      ~extra_argument:"    device const float* residual [[buffer(4)]],\n"
+      ~output_buffer:5 ~parameter_buffer:6
+      ~name:"llmopt_q8_gemv_add_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc + residual[col]"
   ^ q8_dequant_kernel
       ~name:"llmopt_q8_dequantize"
       ~value_type:"half"
@@ -282,6 +341,22 @@ let q8_all_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_gemv_silu_f32"
       ~operation:Kernel_abi.Operation.Q8_linear_silu
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry ~name:"llmopt_q8_linear_add"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry ~name:"llmopt_q8_linear_add_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float32
+      ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv_add"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv_add_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_dequantize"
       ~operation:Kernel_abi.Operation.Q8_dequantize
@@ -1353,7 +1428,15 @@ let has_q8_linear_silu graph =
          | Ir.Op.Q8_linear_silu _ -> true
          | _ -> false)
 
-let has_q8 graph = has_q8_linear graph || has_q8_linear_silu graph
+let has_q8_linear_add graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_linear_add _ -> true
+         | _ -> false)
+
+let has_q8 graph =
+  has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
 
 let q8_entries graph =
   q8_all_entries
@@ -1361,6 +1444,7 @@ let q8_entries graph =
          match Kernel_abi.Entry.operation entry with
          | Kernel_abi.Operation.Q8_linear -> has_q8_linear graph
          | Kernel_abi.Operation.Q8_linear_silu -> has_q8_linear_silu graph
+         | Kernel_abi.Operation.Q8_linear_add -> has_q8_linear_add graph
          | Kernel_abi.Operation.Q8_dequantize -> has_q8 graph
          | _ -> false)
 
