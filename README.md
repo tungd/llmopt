@@ -473,6 +473,14 @@ kernels with exact Q8/FP16 attention and recurrent round trips. No model or ERS
 request is included in that compiler result. See
 [`bench/results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt`](bench/results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt).
 
+The bounded LFM2.5-350M Q8 trace through that package preserves all four eager
+token sequences and 80/194 radix reuse. It observes ERS
+`0.4021550914067862`, median TTFT `73.13212499138899 ms`, and median TPOT
+`7.307645835680887 ms`. Against the preceding paired Q8-cache report, those
+values change by `-0.004860666959368376`, `-2.092812501359731 ms`, and
+`+0.37099299758362303 ms`; request-level changes are mixed. See
+[`bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt).
+
 The preceding single-channel full-Q8 native HTTP needle runner also completed
 all six 2,048/4,096-token prompts with exact `RAVEN-4271` retrieval and all 12
 eager-Q8 token IDs. Exact-only text is 0/6 because the pinned continuation

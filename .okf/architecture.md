@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T10:13:00Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T10:18:13Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -87,6 +87,9 @@ sources:
   - id: simd-cache-pack-result
     resource: /bench/results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt
     title: SIMD-group Q8 cache-pack compiler evidence
+  - id: simd-cache-pack-measurement
+    resource: /bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt
+    title: SIMD-group Q8 cache-pack model measurement
 ---
 
 # Overview
@@ -186,6 +189,13 @@ selectable FP16 cache policy. A bounded `--kv fp16` trace completes 4/4 warmup
 and scored requests, retains all eager/Q8-cache IDs and 80/194 reuse, and
 observes median TTFT/TPOT `69.163/6.698 ms`. This verifies both physical
 formats through the native owner while retaining Q8-group-64 as the default.
+
+The subsequent Q8 package uses SIMD-group pack kernels and completes the same
+4/4 warmup and scored trace with exact IDs and 80/194 reuse. It observes ERS
+`0.4021550914067862` and median TTFT/TPOT `73.132/7.308 ms`. Relative to the
+preceding paired Q8-cache observation, those values change by `-0.004861`,
+`-2.093 ms`, and `+0.371 ms`; the separate FP16-cache median TPOT remains
+`0.609 ms` lower than this Q8 observation.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed

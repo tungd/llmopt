@@ -1,0 +1,76 @@
+LFM2.5-350M SIMD-group Q8 cache-pack native measurement
+Date: 2026-08-25
+Compiler commit: c55592d
+
+Package
+- root: _artifacts/lfm25-350m-q8-simd-cache-pack-replan-2026-08-25
+- model: LiquidAI/LFM2.5-350M
+- weights: all 93 linear modules Q8, including lm_head
+- commands: 810 prefill / 864 decode
+- kernels: 70 / 68
+- opaque commands: 0 / 0
+- static tensor bindings: 243 / 243
+- shared binary tensor archive: 489,377,152 bytes
+- runtime KV/recurrent format: Q8-group-64
+- Q8 cache packing: one quantization group per SIMD group
+
+Native ERS attempt
+- preflight memory: 52% system-wide free
+- resident model/native processes: none
+- port 18094 and output path: unused before launch and released afterward
+- supervisor: one 240-second server-and-runner attempt
+- token/checkpoint capacities: 512 / 128
+- warmup/scored requests: 4/4 and 4/4 successful
+- scored output mismatches: 0
+- exact scored token parity against the preceding paired package and established full-Q8 eager run: 4/4
+- scored cached prompt tokens: 80/194
+- memory after warmup: 45% free
+- sampled server RSS: 112,256 KiB
+- post-run memory: 45% free; no resident server
+- server exit: 143 after intentional TERM; supervising attempt exited 0
+
+Current SIMD-cache-pack scored observation
+- ERS: 0.4021550914067862
+- median TTFT: 73.13212499138899 ms
+- median TPOT: 7.307645835680887 ms
+- mean TTFT: 72.55135422747117 ms
+- mean TPOT: 7.319506999920122 ms
+- TPOT range: 6.941555669376005 to 7.72118065894271 ms
+
+Previous paired Q8-cache observation
+- ERS: 0.40701575836615456
+- median TTFT: 75.22493749274872 ms
+- median TPOT: 6.936652838097264 ms
+- mean TTFT: 73.31890625937376 ms
+- mean TPOT: 7.178989583432364 ms
+
+Current-minus-previous Q8-cache deltas
+- ERS: -0.004860666959368376
+- median TTFT: -2.092812501359731 ms
+- median TPOT: +0.37099299758362303 ms
+- mean TTFT: -0.7675520319025964 ms
+- mean TPOT: +0.14051741648775806 ms
+
+Current Q8-cache minus previous FP16-cache observation
+- ERS: -0.02754812366853393
+- median TTFT: +3.9688959950581193 ms
+- median TPOT: +0.6094374984968454 ms
+- mean TTFT: +3.3412289776606485 ms
+- mean TPOT: +0.5693854958129423 ms
+
+Per-request current evidence and paired-Q8 deltas
+- c0000-t000: score 0.47477238789043286; TTFT 43.14412496751174 ms; TPOT 6.9840973398337765 ms; cached 0/39; IDs 1098,5706,803,4481; delta score/TTFT/TPOT +0.00021483686763956733/+1.0232499917037785/-0.07118067393700223
+- c0000-t001: score 0.32179156212858795; TTFT 103.12012501526624 ms; TPOT 7.72118065894271 ms; cached 42/61; IDs 41677,7,2,1; delta -0.020366145006019187/-5.20887499442324/+0.9031529965189602
+- c0001-t000: score 0.48748115874475795; TTFT 28.84624997386709 ms; TPOT 7.631194331527998 ms; cached 0/35; IDs 1098,5410,4100,856; delta -0.03732357363098471/+2.0387089462019503/+0.9250553363623712
+- c0001-t001: score 0.3245752568633659; TTFT 115.09491695323959 ms; TPOT 6.941555669376005 ms; cached 38/59; IDs 31466,7,2,1; delta +0.03803221393189077/-0.9232920710928738/-1.194957992993296
+
+Raw artifacts
+- current native trace: _artifacts/native-http-simd-cache-pack-smoke-2026-08-25
+- previous paired Q8-cache trace: _artifacts/native-http-paired-simd-smoke-2026-08-25/scored.json
+- previous paired FP16-cache trace: _artifacts/native-http-paired-simd-fp16-kv-smoke-2026-08-25/scored.json
+
+Evidence boundary
+- Current and previous reports are separate non-interleaved single observations.
+- The package changes Q8 attention/checkpoint pack kernels and their launch geometry while retaining graph commands, weights, cache format, capacities, request traces, and radix policy.
+- Exact tokens and radix accounting are unchanged; request-level latency deltas are mixed, median TPOT is 0.37099299758362303 ms higher, and ERS is 0.004860666959368376 lower than the preceding paired-Q8 observation.
+- No eager process or long-context needle matrix ran in this attempt; eager parity uses the established full-Q8 references.

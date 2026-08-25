@@ -312,6 +312,15 @@ both SIMD pack entries with exact Q8/FP16 attention and recurrent data. This
 compiler-only record has no model latency or ERS observation. See
 [`results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt`](results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt).
 
+The bounded 350M Q8 trace through that package preserves 4/4 established eager
+token sequences and 80/194 radix reuse while observing ERS
+`0.4021550914067862` and median TTFT/TPOT
+`73.13212499138899/7.307645835680887 ms`. Relative to the preceding paired-Q8
+observation, those values change by `-0.004860666959368376`,
+`-2.092812501359731 ms`, and `+0.37099299758362303 ms`. No new eager process or
+needle matrix ran. See
+[`results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt`](results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

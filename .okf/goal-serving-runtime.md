@@ -4,7 +4,7 @@ title: 'Complete OCaml Metal serving stack for LFM2.5'
 description: 'The requirement-by-requirement completion map from torch.compile capture through OCaml cached serving and ERS measurement.'
 tags: [goal, compiler, ocaml, metal, serving, radix-cache, kv-cache, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T10:13:00Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T10:18:13Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -117,6 +117,9 @@ sources:
   - id: simd-cache-pack-result
     resource: /bench/results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt
     title: SIMD-group Q8 cache-pack compiler evidence
+  - id: simd-cache-pack-measurement
+    resource: /bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt
+    title: Current SIMD-group Q8 cache-pack model evidence
   - id: build
     resource: /ninja.build
     title: Ninja build graph
@@ -144,12 +147,12 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | The full-Q8 capture produces 810 prefill and 864 decode commands with zero opaque operations and all 93 linears quantized. Typed specialization re-infers prefill 13/128/4,096 and decode-past 1/127/4,095, projecting only the final `[1,1,65536]` Q8 vocabulary row | implemented for captured full-Q8 templates and observed LFM shapes |
 | Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v11 retains ABI-v2 through ABI-v10 reads. Package checks validate 810-command/70-entry prefill and 864-command/68-entry decode schedules against one 489,377,152-byte, 243-tensor binary archive; both Q8 and selectable FP16 cache policies validate | implemented for the captured full-Q8 pair |
 | Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | The current full-Q8 replan compiles 70 prefill and 68 decode entries, adding SIMD-group attention/recurrent Q8 packing to paired decode, vector-staged Q8 prefill, SIMD RMSNorm/attention, and cache conversion. Synthetic Metal evidence selects all paired epilogues plus both SIMD Q8 pack kernels with exact outputs; the preceding paired package executes the 4+4 model trace with exact eager IDs | implemented for captured full-Q8 templates |
-| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | One persistent `llmopt-serve` process loads both paired full-Q8 stages and the inode-keyed archive. One bounded run completes 4/4 warmup and scored requests with exact eager tokens, 80/194 reuse, ERS `0.40701575836615456`, and median TTFT/TPOT `75.225/6.937 ms` | partial |
+| Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | One persistent `llmopt-serve` process loads the current SIMD-cache-pack full-Q8 stages and inode-keyed archive. One bounded run completes 4/4 warmup and scored requests with exact eager tokens, 80/194 reuse, ERS `0.4021550914067862`, and median TTFT/TPOT `73.132/7.308 ms` | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | The full-Q8 run maps one 243-tensor archive containing FP16 embedding plus Q8 head weight/scale. Separate bounded traces execute Q8 and FP16 physical KV/recurrent pools across repeated decode with exact matching token IDs and identical 80/194 reuse | implemented for both cache formats on the serial trace |
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `llmopt-serve` accepts the OpenAI-compatible chat contract, incrementally decodes UTF-8, streams every generated token ID plus visible text, and reports usage. The warmed scored smoke completed 4/4 requests with pinned output counts | implemented for the HTTP smoke contract |
 | Mandatory radix-prefix reuse | Multi-turn requests produce non-zero cached-prefix accounting and reuse the matched KV/recurrent checkpoint while preserving output parity | Scored second turns reuse 42/61 and 38/59 prompt tokens; total reuse is 80/194 while all four output sequences match eager Q8 exactly. The dependent suffix plan reserves and inserts one checkpoint per suffix token and now completes the measured path | implemented for serial multi-turn smoke requests |
 | Configurable KV quantization | FP16 and Q8 runs bind physical Metal KV/checkpoint buffers and execute matching quantize/dequantize paths | Q8-group-64 remains the default. Separate bounded paired-package model runs execute Q8 and selectable FP16 attention KV/recurrent storage, preserve the same four eager token sequences and 80/194 reuse, and record both latency reports | implemented for the serial 4+4 trace |
-| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by reproducible commands | The current paired full-Q8 trace records 4/4 exact native/eager scored sequences, native/established-eager ERS `0.40701575836615456/0.3663754874502978`, median native TTFT/TPOT `75.225/6.937 ms`, and 80/194 cached prompt tokens. The paired long matrix retrieves 6/6 and matches all 12 established eager-Q8 IDs, while exact-only text is 0/6 | partial |
+| Benchmark correctness and measurement | Exact logits/token parity, retrieval and response-format results, request counts, raw TTFT/TPOT, ERS, and cache-hit accounting are written by reproducible commands | The current SIMD-cache-pack full-Q8 trace records 4/4 exact native/eager scored sequences, native ERS `0.4021550914067862`, median native TTFT/TPOT `73.132/7.308 ms`, and 80/194 cached prompt tokens. The preceding paired long matrix retrieves 6/6 and matches all 12 established eager-Q8 IDs, while exact-only text is 0/6 | partial |
 
 # Completion condition
 

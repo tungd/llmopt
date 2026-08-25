@@ -87,3 +87,4 @@ okf_version: '0.2'
 * [Paired SIMD measurement](experiments/exp-0065-paired-simd-measurement.md) - bounded 350M trace and needle matrix for paired decode.
 * [Selectable FP16 KV execution](experiments/exp-0066-fp16-kv-model-execution.md) - model-scale FP16 cache execution while Q8 remains default.
 * [SIMD-group Q8 cache packing](experiments/exp-0067-simd-q8-cache-pack.md) - attention and recurrent quantization use one SIMD group per Q8 group.
+* [SIMD Q8 cache-pack measurement](experiments/exp-0068-simd-q8-cache-pack-measurement.md) - bounded 350M token, radix, latency, and ERS evidence.
