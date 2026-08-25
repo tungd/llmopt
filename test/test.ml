@@ -4236,4 +4236,33 @@ let () =
     "parallel branches w1 and w3 form a valid antichain";
   let cp = Dag_analysis.critical_path diamond_dag in
   expect (cp.length = 4) "critical path length is 4";
+
+  (* Resource_class and complementary pairing tests *)
+  let norm_node =
+    Ir.node_create ~id:10
+      ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
+      ~inputs:[ d_in ] ~output:(Some d_w1)
+  in
+  let linear_node =
+    Ir.node_create ~id:11
+      ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+      ~inputs:[ d_in ] ~output:(Some d_w3)
+  in
+  expect (Dag_analysis.classify_node norm_node = Dag_analysis.Resource_class.Memory_bound)
+    "rms_norm is classified as Memory_bound";
+  expect (Dag_analysis.classify_node linear_node = Dag_analysis.Resource_class.Compute_bound)
+    "q8_linear is classified as Compute_bound";
+  let mixed_antichain : Dag_analysis.antichain = {
+    level = 1;
+    nodes = [ norm_node; linear_node ];
+  } in
+  let paired_stages =
+    Dag_analysis.pair_complementary_nodes diamond_dag mixed_antichain
+  in
+  expect (List.length paired_stages = 1) "1 paired stage formed";
+  expect (match List.hd paired_stages with
+    | Dag_analysis.Paired { compute_node; memory_node } ->
+        Ir.node_id compute_node = 11 && Ir.node_id memory_node = 10
+    | _ -> false)
+    "complementary pairing pairs Q8_linear with RMSNorm";
   print_endline "llmopt tests passed"

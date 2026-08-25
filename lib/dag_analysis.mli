@@ -1,6 +1,17 @@
 module Node_set : Set.S with type elt = int
 module Node_map : Map.S with type key = int
 
+module Resource_class : sig
+  type t =
+    | Memory_bound
+    | Compute_bound
+    | DMA_control
+
+  val of_op : Ir.Op.t -> t
+  val to_string : t -> string
+  val arithmetic_intensity_estimate : Ir.Op.t -> float
+end
+
 type t = {
   graph : Ir.Graph.t;
   nodes : Ir.node list;
@@ -24,6 +35,16 @@ type antichain = {
   nodes : Ir.node list;
 }
 
+type complementary_pair = {
+  compute_node : Ir.node;
+  memory_node : Ir.node;
+}
+
+type scheduled_stage =
+  | Paired of complementary_pair
+  | Single of Ir.node
+  | Concurrent_group of Ir.node list
+
 val analyze : Ir.Graph.t -> (t, string) result
 
 val node_count : t -> int
@@ -35,3 +56,6 @@ val critical_path : t -> critical_path
 val critical_path_slack : t -> int -> int
 val is_antichain : t -> int list -> bool
 val extract_antichains : t -> antichain list
+
+val classify_node : Ir.node -> Resource_class.t
+val pair_complementary_nodes : t -> antichain -> scheduled_stage list

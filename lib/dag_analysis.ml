@@ -8,6 +8,75 @@ module Value_id_map = Map.Make (struct
   let compare = Ir.Value_id.compare
 end)
 
+module Resource_class = struct
+  type t =
+    | Memory_bound
+    | Compute_bound
+    | DMA_control
+
+  let to_string = function
+    | Memory_bound -> "memory_bound"
+    | Compute_bound -> "compute_bound"
+    | DMA_control -> "dma_control"
+
+  let arithmetic_intensity_estimate (op : Ir.Op.t) =
+    match op with
+    | Ir.Op.Q8_linear { m; n; k; _ }
+    | Ir.Op.Q8_linear_silu { m; n; k; _ }
+    | Ir.Op.Q8_linear_add { m; n; k; _ }
+    | Ir.Op.Q8_linear_mul_add { m; n; k; _ } ->
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 2.0)
+          +. Float.of_int (n * k)
+          +. (Float.of_int (m * n) *. 2.0)
+        in
+        flops /. max 1.0 bytes
+    | Ir.Op.Matmul { m; n; k; _ }
+    | Ir.Op.Fused_matmul_bias { m; n; k; _ } ->
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 4.0)
+          +. (Float.of_int (n * k) *. 4.0)
+          +. (Float.of_int (m * n) *. 4.0)
+        in
+        flops /. max 1.0 bytes
+    | Ir.Op.Short_conv_prefill _ -> 4.0
+    | Ir.Op.Rms_norm _ | Ir.Op.Rms_rope _ | Ir.Op.Primitive _ -> 0.5
+    | Ir.Op.Short_conv_step _ | Ir.Op.Add _ | Ir.Op.Gelu | Ir.Op.Relu -> 0.8
+    | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _ | Ir.Op.Barrier_create _ -> 0.0
+    | _ -> 1.0
+
+  let of_op (op : Ir.Op.t) =
+    match op with
+    | Ir.Op.Q8_linear _
+    | Ir.Op.Q8_linear_silu _
+    | Ir.Op.Q8_linear_add _
+    | Ir.Op.Q8_linear_mul_add _
+    | Ir.Op.Matmul _
+    | Ir.Op.Fused_matmul_bias _
+    | Ir.Op.Linear _ ->
+        Compute_bound
+    | Ir.Op.Rms_norm _
+    | Ir.Op.Rms_rope _
+    | Ir.Op.Short_conv_step _
+    | Ir.Op.Short_conv_prefill _
+    | Ir.Op.Add _
+    | Ir.Op.Gelu
+    | Ir.Op.Relu
+    | Ir.Op.Primitive _
+    | Ir.Op.Copy _ ->
+        Memory_bound
+    | Ir.Op.Barrier_wait _
+    | Ir.Op.Barrier_arrive _
+    | Ir.Op.Barrier_create _
+    | Ir.Op.Alloc _
+    | Ir.Op.Input _
+    | Ir.Op.Output _
+    | Ir.Op.Opaque _ ->
+        DMA_control
+end
+
 type t = {
   graph : Ir.Graph.t;
   nodes : Ir.node list;
@@ -30,6 +99,16 @@ type antichain = {
   level : int;
   nodes : Ir.node list;
 }
+
+type complementary_pair = {
+  compute_node : Ir.node;
+  memory_node : Ir.node;
+}
+
+type scheduled_stage =
+  | Paired of complementary_pair
+  | Single of Ir.node
+  | Concurrent_group of Ir.node list
 
 let analyze graph =
   let original_nodes = Ir.Graph.nodes graph in
@@ -299,3 +378,36 @@ let is_antichain (a : t) nids =
 
 let extract_antichains (a : t) =
   topological_levels a
+
+let classify_node (node : Ir.node) =
+  Resource_class.of_op (Ir.node_op node)
+
+let pair_complementary_nodes (_a : t) (ac : antichain) =
+  let compute_nodes = ref [] in
+  let memory_nodes = ref [] in
+  let other_nodes = ref [] in
+  List.iter
+    (fun node ->
+      match classify_node node with
+      | Resource_class.Compute_bound -> compute_nodes := node :: !compute_nodes
+      | Resource_class.Memory_bound -> memory_nodes := node :: !memory_nodes
+      | Resource_class.DMA_control -> other_nodes := node :: !other_nodes)
+    ac.nodes;
+
+  let stages = ref [] in
+  let rec pair_loop computes memories =
+    match computes, memories with
+    | c :: c_rest, m :: m_rest ->
+        stages := Paired { compute_node = c; memory_node = m } :: !stages;
+        pair_loop c_rest m_rest
+    | c :: c_rest, [] ->
+        stages := Single c :: !stages;
+        pair_loop c_rest []
+    | [], m :: m_rest ->
+        stages := Single m :: !stages;
+        pair_loop [] m_rest
+    | [], [] -> ()
+  in
+  pair_loop (List.rev !compute_nodes) (List.rev !memory_nodes);
+  List.iter (fun n -> stages := Single n :: !stages) (List.rev !other_nodes);
+  List.rev !stages
