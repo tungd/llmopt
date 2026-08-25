@@ -24,6 +24,19 @@ let kernel_entry ~name ~operation ~input_dtype ~output_dtype =
   kernel_entry_with_threadgroup ~threadgroup:(16, 16, 1) ~name ~operation
     ~input_dtype ~output_dtype
 
+let kernel_entry_with_threadgroup_and_tile ~tile ~threadgroup ~name ~operation
+    ~input_dtype ~output_dtype =
+  match
+    Kernel_abi.Entry.create_with_tile ~tile ~name ~operation ~input_dtype
+      ~output_dtype ~threadgroup
+  with
+  | Ok entry -> entry
+  | Error message -> invalid_arg ("invalid parameterized Metal kernel: " ^ message)
+
+let kernel_entry_with_tile ~tile ~name ~operation ~input_dtype ~output_dtype =
+  kernel_entry_with_threadgroup_and_tile ~tile ~threadgroup:(16, 16, 1) ~name
+    ~operation ~input_dtype ~output_dtype
+
 let find_input_name graph value =
   Ir.Graph.nodes graph
   |> List.find_map (fun node ->
@@ -150,6 +163,134 @@ let q8_kernel_with_input ~input_mode ~extra_argument ~output_buffer
   ^ "}\n"
 
 let q8_kernel = q8_kernel_with_input ~input_mode:Direct
+
+let validate_q8_tile ~tile_m ~tile_n ~tile_k =
+  if tile_m <= 0 || tile_n <= 0 then
+    invalid_arg "Q8 tile output dimensions must be positive"
+  else if tile_k <= 0 || tile_k mod 4 <> 0 then
+    invalid_arg "Q8 tile reduction dimension must be a positive multiple of four"
+
+let q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k ~input_mode
+    ~extra_argument ~output_buffer ~parameter_buffer ~name ~value_type
+    ~vector_type ~alignment ~weight_cast ~scale_type ~scale_zero ~zero_value
+    ~store_value =
+  validate_q8_tile ~tile_m ~tile_n ~tile_k;
+  let tile_k_vectors = tile_k / 4 in
+  let thread_count = tile_m * tile_n in
+  let input_vector_load =
+    q8_input_vector_load ~value_type ~vector_type ~offset:"input_offset"
+      ~values_name:"input_values" input_mode
+  in
+  let input_scalar =
+    q8_input_scalar ~value_type "input_offset + lane" input_mode
+  in
+  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
+  "kernel void " ^ name ^ "(\n"
+  ^ input_signature
+  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
+  ^ ")]],\n"
+  ^ "    device const half* bias_or_scale [[buffer("
+  ^ string_of_int (3 + input_shift) ^ ")]],\n"
+  ^ extra_argument
+  ^ "    device " ^ value_type ^ "* output [[buffer(" ^ string_of_int output_buffer
+  ^ ")]],\n"
+  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
+  ^ ")]],\n"
+  ^ "    uint2 gid [[thread_position_in_grid]],\n"
+  ^ "    uint2 tid [[thread_position_in_threadgroup]],\n"
+  ^ "    uint2 group_position [[threadgroup_position_in_grid]]) {\n"
+  ^ "  const uint row = gid.y;\n"
+  ^ "  const uint col = gid.x;\n"
+  ^ "  const uint group_row = group_position.y * " ^ string_of_int tile_m ^ ";\n"
+  ^ "  const uint group_col = group_position.x * " ^ string_of_int tile_n ^ ";\n"
+  ^ "  const uint local_thread = tid.y * " ^ string_of_int tile_n ^ " + tid.x;\n"
+  ^ "  const uint thread_count = " ^ string_of_int thread_count ^ ";\n"
+  ^ "  threadgroup " ^ vector_type ^ " input_tile[" ^ string_of_int tile_m
+  ^ "][" ^ string_of_int tile_k_vectors ^ "];\n"
+  ^ "  threadgroup " ^ vector_type ^ " weight_tile[" ^ string_of_int tile_k_vectors
+  ^ "][" ^ string_of_int tile_n ^ "];\n"
+  ^ "  float acc = 0.0f;\n"
+  ^ "  for (uint base = 0; base < params.k; base += "
+  ^ string_of_int tile_k ^ ") {\n"
+  ^ "    for (uint load = local_thread; load < "
+  ^ string_of_int (tile_m * tile_k_vectors)
+  ^ "; load += thread_count) {\n"
+  ^ "      const uint local_row = load / " ^ string_of_int tile_k_vectors ^ ";\n"
+  ^ "      const uint vector_index = load % " ^ string_of_int tile_k_vectors ^ ";\n"
+  ^ "      const uint input_row = group_row + local_row;\n"
+  ^ "      const uint input_offset = input_row * params.k + base + vector_index * 4;\n"
+  ^ "      if (input_row < params.m && base + vector_index * 4 + 3 < params.k &&\n"
+  ^ "          input_offset % " ^ alignment ^ " == 0) {\n"
+  ^ input_vector_load
+  ^ "        input_tile[local_row][vector_index] = input_values;\n"
+  ^ "      } else {\n"
+  ^ "        " ^ vector_type ^ " input_values = " ^ vector_type ^ "(" ^ zero_value
+  ^ ");\n"
+  ^ "        for (uint lane = 0; lane < 4; ++lane)\n"
+  ^ "          if (input_row < params.m && base + vector_index * 4 + lane < params.k)\n"
+  ^ "            input_values[lane] = " ^ input_scalar ^ ";\n"
+  ^ "        input_tile[local_row][vector_index] = input_values;\n"
+  ^ "      }\n"
+  ^ "    }\n"
+  ^ "    for (uint load = local_thread; load < "
+  ^ string_of_int (tile_k_vectors * tile_n)
+  ^ "; load += thread_count) {\n"
+  ^ "      const uint inner = load / " ^ string_of_int tile_n ^ ";\n"
+  ^ "      const uint local_col = load % " ^ string_of_int tile_n ^ ";\n"
+  ^ "      const uint weight_col = group_col + local_col;\n"
+  ^ "      const uint weight_offset = weight_col * params.k + base + inner * 4;\n"
+  ^ "      const " ^ scale_type ^ " weight_scale =\n"
+  ^ "          (weight_col < params.n) ? scale[weight_col] : " ^ scale_zero ^ ";\n"
+  ^ "      if (weight_col < params.n && base + inner * 4 + 3 < params.k &&\n"
+  ^ "          weight_offset % 4 == 0) {\n"
+  ^ "        device const char4* weight_vector =\n"
+  ^ "            reinterpret_cast<device const char4*>(weight + weight_offset);\n"
+  ^ "        const char4 weight_values = *weight_vector;\n"
+  ^ "        weight_tile[inner][local_col] = " ^ vector_type
+  ^ "(weight_values) * weight_scale;\n"
+  ^ "      } else {\n"
+  ^ "        " ^ vector_type ^ " dequantized_weights = " ^ vector_type ^ "("
+  ^ weight_cast ^ "(0));\n"
+  ^ "        for (uint lane = 0; lane < 4; ++lane)\n"
+  ^ "          if (weight_col < params.n && base + inner * 4 + lane < params.k)\n"
+  ^ "            dequantized_weights[lane] = " ^ weight_cast
+  ^ "(weight[weight_offset + lane]) * weight_scale;\n"
+  ^ "        weight_tile[inner][local_col] = dequantized_weights;\n"
+  ^ "      }\n"
+  ^ "    }\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "    #pragma clang loop unroll(full)\n"
+  ^ "    for (uint inner = 0; inner < " ^ string_of_int tile_k_vectors ^ "; ++inner)\n"
+  ^ "      acc += dot(float4(input_tile[tid.y][inner]),\n"
+  ^ "                 float4(weight_tile[inner][tid.x]));\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  }\n"
+  ^ "  if (row < params.m && col < params.n) {\n"
+  ^ "    if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
+  ^ "    output[row * params.n + col] = " ^ store_value ^ ";\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let q8_parameterized_name ~tile_m ~tile_n ~tile_k =
+  Printf.sprintf "llmopt_q8_linear_tm%d_tn%d_tk%d" tile_m tile_n tile_k
+
+let q8_kernel_parameterized ~tile_m ~tile_n ~tile_k =
+  q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k
+    ~input_mode:Direct ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
+    ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k) ~value_type:"half"
+    ~vector_type:"half4" ~alignment:"8" ~weight_cast:"half"
+    ~scale_type:"half" ~scale_zero:"half(0.0h)" ~zero_value:"half(0.0h)"
+    ~store_value:"half(acc)"
+
+let q8_kernel_parameterized_f32 ~tile_m ~tile_n ~tile_k =
+  q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k
+    ~input_mode:Direct ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
+    ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k ^ "_f32")
+    ~value_type:"float" ~vector_type:"float4" ~alignment:"16"
+    ~weight_cast:"float" ~scale_type:"float" ~scale_zero:"0.0f"
+    ~zero_value:"0.0f" ~store_value:"acc"
 
 let q8_gemv_kernel_with_input ~input_mode ~extra_argument ~output_buffer
     ~parameter_buffer ~name ~value_type ~vector_type ~weight_cast ~scale_type
@@ -684,12 +825,42 @@ let q8_source =
       ~weight_cast:"float"
       ~scale_cast:"float"
 
+let q8_parameterized_tiles =
+  [ (32, 8, 64); (8, 32, 64); (32, 32, 64); (16, 16, 128);
+    (32, 8, 128); (8, 32, 128); (32, 32, 128) ]
+
+let q8_parameterized_source =
+  q8_parameterized_tiles
+  |> List.map (fun (tile_m, tile_n, tile_k) ->
+         q8_kernel_parameterized ~tile_m ~tile_n ~tile_k
+         ^ q8_kernel_parameterized_f32 ~tile_m ~tile_n ~tile_k)
+  |> String.concat "\n"
+
+let q8_source = q8_source ^ "\n" ^ q8_parameterized_source
+
+let q8_parameterized_entries =
+  q8_parameterized_tiles
+  |> List.map (fun (tile_m, tile_n, tile_k) ->
+         [ kernel_entry_with_threadgroup_and_tile
+             ~tile:(tile_m, tile_n, tile_k)
+             ~threadgroup:(tile_n, tile_m, 1)
+             ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k)
+             ~operation:Kernel_abi.Operation.Q8_linear
+             ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+           kernel_entry_with_threadgroup_and_tile
+             ~tile:(tile_m, tile_n, tile_k)
+             ~threadgroup:(tile_n, tile_m, 1)
+             ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k ^ "_f32")
+             ~operation:Kernel_abi.Operation.Q8_linear
+             ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ])
+  |> List.flatten
+
 let q8_all_entries =
-  [ kernel_entry ~name:"llmopt_q8_linear"
+  [ kernel_entry_with_tile ~tile:(16, 16, 64) ~name:"llmopt_q8_linear"
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float16
       ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry ~name:"llmopt_q8_linear_f32"
+    kernel_entry_with_tile ~tile:(16, 16, 64) ~name:"llmopt_q8_linear_f32"
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float32
       ~output_dtype:Ir.Dtype.Float32;
@@ -787,6 +958,7 @@ let q8_all_entries =
       ~operation:Kernel_abi.Operation.Q8_dequantize
       ~input_dtype:Ir.Dtype.Int8
       ~output_dtype:Ir.Dtype.Float32 ]
+  @ q8_parameterized_entries
 
 let cache_source =
   {|

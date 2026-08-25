@@ -1656,7 +1656,36 @@ let () =
   let q8_program = expect_ok (Metal.lower q8_graph) in
   let q8_entries = Metal.Program.kernels q8_program in
   let q8_schedule = expect_ok (Serving_schedule.of_graph q8_graph) in
-  expect (List.length q8_entries = 8) "Q8 Metal kernel ABI entries";
+  expect (List.length q8_entries = 22) "Q8 Metal kernel ABI entries";
+  List.iter
+    (fun (tile_m, tile_n, tile_k) ->
+      let name =
+        Printf.sprintf "llmopt_q8_linear_tm%d_tn%d_tk%d" tile_m tile_n tile_k
+      in
+      let source = Metal.Program.source q8_program in
+      expect (contains_substring source ("kernel void " ^ name))
+        ("parameterized Q8 source contains " ^ name);
+      expect
+        (List.exists
+           (fun entry ->
+             Kernel_abi.Entry.name entry = name
+             && Kernel_abi.Entry.tile entry = Some (tile_m, tile_n, tile_k)
+             && Kernel_abi.Entry.threadgroup entry = (tile_n, tile_m, 1))
+           q8_entries)
+        ("parameterized Q8 ABI describes " ^ name))
+    [ (32, 8, 64); (8, 32, 64); (32, 32, 64); (16, 16, 128);
+      (32, 8, 128); (8, 32, 128); (32, 32, 128) ];
+  let parameterized_kernel =
+    Metal.q8_kernel_parameterized ~tile_m:32 ~tile_n:8 ~tile_k:128
+  in
+  expect
+    (contains_substring parameterized_kernel
+       "threadgroup half4 input_tile[32][32]"
+    && contains_substring parameterized_kernel
+         "threadgroup half4 weight_tile[32][8]"
+    && contains_substring parameterized_kernel
+         "for (uint inner = 0; inner < 32; ++inner)")
+    "parameterized Q8 kernel uses the requested output and reduction tiles";
   expect
     (List.exists
        (fun entry ->

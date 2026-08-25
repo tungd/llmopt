@@ -32,9 +32,19 @@ module Operation : sig
 end
 
 module Entry : sig
+  type tile = int * int * int
   type t
 
   val create :
+    name:string ->
+    operation:Operation.t ->
+    input_dtype:Ir.Dtype.t ->
+    output_dtype:Ir.Dtype.t ->
+    threadgroup:int * int * int ->
+    (t, string) result
+
+  val create_with_tile :
+    tile:tile ->
     name:string ->
     operation:Operation.t ->
     input_dtype:Ir.Dtype.t ->
@@ -47,4 +57,5 @@ module Entry : sig
   val input_dtype : t -> Ir.Dtype.t
   val output_dtype : t -> Ir.Dtype.t
   val threadgroup : t -> int * int * int
+  val tile : t -> tile option
 end
