@@ -1587,6 +1587,16 @@ let () =
       List.iter
         (fun fragment ->
           expect (contains_substring source fragment)
+            ("Q8 vector-staged GEMM contains " ^ fragment))
+        [ "constant uint Q8_TILE = 64";
+          "threadgroup half4 input_tile[16][16]";
+          "threadgroup half4 weight_tile[16][16]";
+          "input_tile[tid.y][tid.x] = input_values";
+          "weight_tile[tid.y][tid.x] = dequantized_weights";
+          "dot(float4(input_tile[tid.y][inner])" ];
+      List.iter
+        (fun fragment ->
+          expect (contains_substring source fragment)
             ("Q8 SIMD-group GEMV contains " ^ fragment))
         [ "kernel void llmopt_q8_gemv_simd";
           "thread_index_in_simdgroup";

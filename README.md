@@ -37,10 +37,11 @@ values are recorded in [the OKF target concept](.okf/target-lfm25.md).
   FP16 activations by default; FP16 weights remain an explicit fallback.
 - Textual LLVM IR emission for inspection and a tiled Metal Shading Language
   emitter for the executable backend boundary. Multi-row Q8 uses 16 by 16
-  threadgroup tiles; one-row decode maps one 32-lane SIMD group to each output
-  channel. RMSNorm maps one SIMD group per row, and width-64 attention computes
-  each query-key score once with online softmax. Scalar names remain available
-  for older packages and unsupported attention widths.
+  output tiles with a 64-wide activation4/weight4 reduction stage; one-row
+  decode maps one 32-lane SIMD group to each output channel. RMSNorm maps one
+  SIMD group per row, and width-64 attention computes each query-key score once
+  with online softmax. Scalar names remain available for older packages and
+  unsupported attention widths.
 - A versioned OCaml serving-package ABI. The FX compiler emits a copied graph,
   optimized plan, MSL, metallib reference, LLVM IR, typed kernel entries, and
   mandatory radix/Q8-default cache policy. A serving package references one
@@ -66,8 +67,8 @@ values are recorded in [the OKF target concept](.okf/target-lfm25.md).
   buffer per intermediate. One schedule now encodes all generated kernels and
   typed copies into one ordered Metal command buffer instead of synchronously
   waiting after every kernel. Q8 commands with one input row select a
-  vectorized GEMV entry while multi-row prefill retains the 16 by 16 tiled
-  kernel. Serving packages additionally declare native FP16
+  vectorized GEMV entry while multi-row prefill uses the vector-staged 16 by 16
+  output tile. Serving packages additionally declare native FP16
   and grouped-Q8 pack/unpack kernels for attention KV and recurrent
   checkpoints; the OCaml runtime owns their physical Metal pools. Each prefill
   or decode cache phase uses one ordered command buffer instead of waiting
@@ -382,6 +383,15 @@ are separate single-run observations. See
 [`bench/results/lfm25-350m-q8-packed-simd-gemv-2026-08-25.txt`](bench/results/lfm25-350m-q8-packed-simd-gemv-2026-08-25.txt).
 The bounded measurement is recorded separately in
 [`bench/results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt`](bench/results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt).
+
+The subsequent Q8 prefill compiler slice retains the 16 by 16 output tile but
+stages 64 reduction elements as activation4 and dequantized-weight4 vectors.
+For model k dimensions 1024/4608, emitted barrier counts per output tile change
+from 128/576 to 32/144. Both model metallibs compile, Q8 and selectable FP16
+serving pairs validate, and one supervised partial-k 2x4 Metal fixture is bit
+exact. No 350M model request or ERS run used this package; the measured ERS
+above remains current. See
+[`bench/results/lfm25-350m-q8-vector-prefill-2026-08-25.txt`](bench/results/lfm25-350m-q8-vector-prefill-2026-08-25.txt).
 
 The native HTTP needle runner also completed all six 2,048/4,096-token prompts
 with exact `RAVEN-4271` retrieval. Median latency was `39.362` seconds at 2,048

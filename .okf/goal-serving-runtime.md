@@ -4,7 +4,7 @@ title: 'Complete OCaml Metal serving stack for LFM2.5'
 description: 'The requirement-by-requirement completion map from torch.compile capture through OCaml cached serving and ERS measurement.'
 tags: [goal, compiler, ocaml, metal, serving, radix-cache, kv-cache, lfm25]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T08:22:49Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:35:45Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -77,10 +77,16 @@ sources:
     title: Single-pass SIMD attention compiler result
   - id: optimized-stack-result
     resource: /bench/results/lfm25-350m-q8-native-optimized-stack-2026-08-25.txt
-    title: Current native parity and ERS result
+    title: Previous native optimized-stack parity and ERS result
   - id: packed-gemv-result
     resource: /bench/results/lfm25-350m-q8-packed-simd-gemv-2026-08-25.txt
     title: Packed SIMD Q8 compiler result
+  - id: packed-gemv-measurement
+    resource: /bench/results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt
+    title: Current native parity and ERS result
+  - id: vector-prefill-result
+    resource: /bench/results/lfm25-350m-q8-vector-prefill-2026-08-25.txt
+    title: Vector-staged Q8 prefill compiler result
   - id: build
     resource: /ninja.build
     title: Ninja build graph
@@ -107,7 +113,7 @@ Ninja remains the only build orchestrator. Dune is not part of this goal.
 | Binary compiler transport | Dynamo graph metadata reaches OCaml through a versioned binary format; JSON is optional diagnostics only | Default capture now writes `LLMOPTFX` ABI-v1 `graph.llmopt`; Python and OCaml round trips cover every typed argument form, malformed input is rejected, and preserved prefill/decode graphs round-trip exactly. `LLMOPT_FX_DIAGNOSTICS=1` is required for JSON output | implemented |
 | Complete LFM2.5 compiler coverage | One captured model package has no opaque or PyTorch-fallback operations needed by prefill/decode | Replanning fuses 16 Q8-linear/SiLU, 32 Q8-linear/residual, and 16 multiplied-input down-projection boundaries per stage, producing 808 prefill and 862 decode commands with zero opaque operations. Typed specialization re-infers real schedules at prefill 13/128/4,096 and decode-past 1/127/4,095; every observed kernel family remains emitted | implemented for captured templates and observed LFM shapes |
 | Generated serving-package ABI | Versioned package contains graph schedule, kernel entry points, one memory-mappable tensor archive, and cache layout; OCaml validates it | Package ABI v11 retains ABI-v2 through ABI-v10 reads and adds the typed Q8 multiplied-input/residual family. Offline package checks validate 808-command/61-entry prefill and 862-command/59-entry decode schedules against the shared 422,137,216-byte binary tensor archive; the extra entry retains scalar attention fallback | implemented for the captured template pair |
-| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Binary-input ABI-v11 replanning compiles 61 prefill and 59 decode entries, including tiled Q8 prefill, packed SIMD-group Q8 decode, 45 SIMD-group RMSNorm commands, six single-pass SIMD attention commands per stage, and FP16/Q8 cache conversion. Both generated MSL programs compile, and the packed package executes 4/4 warmup and scored requests with exact token IDs | implemented for captured templates |
+| Metal compilation artifacts | Package build emits loadable metallib kernels for every scheduled model operation | Binary-input ABI-v11 replanning compiles 61 prefill and 59 decode entries, including 64-wide vector-staged Q8 prefill, packed SIMD-group Q8 decode, 45 SIMD-group RMSNorm commands, six single-pass SIMD attention commands per stage, and FP16/Q8 cache conversion. Both generated MSL programs compile; the new prefill kernel is exact on a partial-k small fixture, while the preceding packed package executes 4/4 warmup and scored model requests with exact token IDs | implemented for captured templates |
 | Native OCaml Metal runtime | Ninja-built OCaml executable selects a device, loads metallib functions, maps tensor storage, binds tensor views, and submits commands without Python or PyTorch in the serving hot path | One persistent `llmopt-serve` process loads both stages and the inode-keyed archive. ABI-v11 packages prefer packed SIMD-group Q8, RMSNorm, and width-64 attention with scalar fallback. One bounded run executes the corrected dependent-suffix batch across 4/4 warmup and scored requests with exact tokens, 80/194 reuse, and ERS `0.3253700872862615`. Exact model logits remain absent | partial |
 | Model data ownership | OCaml loads package weights and persistent activations in the declared Q8/FP16 layouts | The repeated Q8 run mapped the shared 241-tensor archive, grew to nine attention slots and four recurrent checkpoints, and passed cache validation. FP16 remains package-validated and small-fixture-executed rather than model-executed | implemented for Q8 prefill plus repeated decode |
 | Tokenization, sampling, and serving protocol | OCaml accepts the benchmark request contract, applies the LFM chat template/tokenizer, streams generated tokens, and reports cache usage | `llmopt-serve` accepts the OpenAI-compatible chat contract, incrementally decodes UTF-8, streams every generated token ID plus visible text, and reports usage. The warmed scored smoke completed 4/4 requests with pinned output counts | implemented for the HTTP smoke contract |

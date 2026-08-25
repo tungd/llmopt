@@ -4,7 +4,7 @@ title: 'llmopt research register'
 description: 'The ordered compiler slices, evidence state, and unresolved integration questions.'
 tags: [tracking, research, roadmap, evidence]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T08:22:49Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:35:45Z' }
 sources:
   - id: repository-build
     resource: /ninja.build
@@ -44,6 +44,7 @@ The authoritative end state and requirement-level evidence are tracked in the
 | Q8 multiplied-input down-projection fusion | implemented and model-executed in aggregate | the alias-safe pass absorbs all 16 sole-consumer SwiGLU products per stage, reducing prefill/decode to 808/862 commands and captured-template workspace to 1,098,496/262,144 bytes. ABI v11 and static buffer-order/reference checks pass; the combined optimized model run preserves exact tokens without isolating this fusion |
 | SIMD-group Q8 decode GEMV | implemented and model-executed in aggregate | each 32-lane SIMD group reduces one output channel, with eight channels per 256-thread group across all four Q8 families and both dtypes. The combined optimized run retains 4/4 exact scored tokens; scalar fallback remains available, and the aggregate measurement does not isolate GEMV |
 | Packed SIMD Q8 lane loads | implemented, compiled, and model-executed | all eight decode variants load activation4/char4 vectors and use one float4 dot per lane iteration, reducing loop iterations by four for k=1024/4608. One bounded 350M run preserves 4/4 scored eager-Q8 token sequences and 80/194 reuse while observing ERS `0.3253700872862615`, median TTFT `95.601 ms`, and median TPOT `7.933 ms` |
+| Vector-staged Q8 prefill | implemented, compiled, and exact small-device executed; model measurement open | the 16 by 16 output tile stages 64 reduction elements as activation4 and dequantized-weight4 vectors. Emitted barriers per k=1024/4608 tile change from 128/576 to 32/144; both model metallibs compile, Q8/FP16 pairs validate, and the partial-k small fixture is exact |
 | SIMD-group RMSNorm | implemented and model-executed in aggregate | one 32-lane SIMD group reduces and writes each row, with eight rows per 256-thread group for both dtype variants. The 45 commands in each 350M stage execute in the combined 4/4 exact scored run; scalar fallback remains available, and the aggregate measurement does not isolate RMSNorm |
 | Single-pass SIMD attention | implemented and model-executed in aggregate | one 32-lane SIMD group computes each width-64 query row, reducing each query-key score once and accumulating softmax-weighted values online. All six commands per stage select it; the combined optimized run retains exact scored tokens, and scalar fallback remains declared |
 | generated Q8 Metal runtime loading and dispatch | implemented; exact model path verified; native numerical parity remains open | Ninja builds the PyTorch MPS C++ bridge, links the generated `.metallib`, and the Python FX backend selects generated exact dequantization or Phase 2 native Q8 entry points. The combined 350M differential probe records 92 exact-mode generated dispatches with `max_abs=0`, `mean_abs=0`, and 92 native Phase 2 dispatches with `max_abs=0.078125`, `mean_abs=0.00713115930557251`; no ERS result was written |

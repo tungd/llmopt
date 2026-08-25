@@ -36,9 +36,9 @@ scales. The Python boundary rewrites eligible linear modules to
 `LLMOPT_METAL_RUNTIME=exact`, which dispatches the generated dequantization
 kernel and then uses PyTorch MPS linear; `LLMOPT_METAL_RUNTIME=native` selects
 the generated Q8 path for explicit performance experiments. Native OCaml
-serving uses tiled Q8 GEMM for multi-row prefill and vectorized Q8 GEMV for
-one-row decode. `--quantization fp16` selects the explicit weight-format
-fallback.
+serving uses a 16 by 16 Q8 output tile with 64-wide vector staging for
+multi-row prefill and vectorized Q8 GEMV for one-row decode. `--quantization
+fp16` selects the explicit weight-format fallback.
 The compiler target is validated by `ninja -f ninja.build q8-smoke`.
 
 Run the model-level probe with:
@@ -213,6 +213,13 @@ to the preceding native observation, the measured changes are
 `-6.870736009053265 ms` median TPOT. The reports are separate non-interleaved
 single observations. See
 [`results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt`](results/lfm25-350m-q8-packed-simd-gemv-measurement-2026-08-25.txt).
+
+The next static package vectorizes the Q8 prefill reduction stage. Its 64-wide
+tile emits one quarter of the prior threadgroup barriers for model k=1024/4608,
+while preserving the 16 by 16 output ownership. Both model metallibs compile,
+both selectable KV policies validate, and a partial-k 2x4 Metal fixture is bit
+exact. No 350M model or ERS request ran; see
+[`results/lfm25-350m-q8-vector-prefill-2026-08-25.txt`](results/lfm25-350m-q8-vector-prefill-2026-08-25.txt).
 
 Run the natural needle matrix through the same endpoint with:
 

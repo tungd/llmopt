@@ -4,7 +4,7 @@ title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
 description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T08:22:49Z' }
+generated: { by: codex/gpt-5, at: '2026-08-25T08:35:45Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -376,9 +376,10 @@ fixed 39-output device probe remains exact, and the matched warmed HTTP smoke
 raises native ERS from `0.06169548638841863` to `0.11058587181748172` while
 preserving all token IDs and cached-prefix counts.
 
-Decode schedules now select a vectorized one-row Q8 GEMV entry when `m = 1`;
-multi-row prefill retains the 16 by 16 tiled kernel. A 40-output device probe
-selects `llmopt_q8_gemv` and remains exact. On the one matched warmed HTTP
+Decode schedules now select a vectorized one-row Q8 GEMV entry when `m = 1`.
+Multi-row prefill retains the 16 by 16 output tile but stages 64 reduction
+elements as sixteen activation4/dequantized-weight4 vectors. A 40-output
+device probe selects `llmopt_q8_gemv` and remains exact. On the one matched warmed HTTP
 trace, all four request TPOT values fall by 9.12 to 10.71 ms, median TTFT falls
 by 87.971 ms, and ERS changes from `0.11058587181748172` to
 `0.10860341576307225`; token IDs and 80/194 cache reuse remain unchanged.
@@ -392,12 +393,21 @@ All four Q8 operation families compile in float16 and float32. The combined
 optimized model run exercises them with exact token parity, without isolating
 their individual latency contribution.
 
-The subsequent package vectorizes work within each SIMD lane. Every lane loads
+The subsequent decode package vectorizes work within each SIMD lane. Every lane loads
 four activations and a `char4` weight, applies the per-channel scale to the four
 weight elements, accumulates one float4 dot, and advances by 128 reduction
 elements. Scalar stride-32 cleanup remains for alignment and tails. The model's
-1024/4608 decode reductions use the packed path throughout; this package is
-compiled but not yet model-executed.
+1024/4608 decode reductions use the packed path throughout. One bounded model
+run preserves all four eager-Q8 sequences and 80/194 reuse while observing ERS
+`0.3253700872862615`, median TTFT `95.60127052827738 ms`, and median TPOT
+`7.93296533326308 ms`.
+
+The vector-staged prefill package reduces synchronization without changing the
+16 by 16 output ownership. For k=1024/4608, 64/288 scalar reduction tiles
+become 16/72 vector tiles and emitted barrier counts change from 128/576 to
+32/144. The partial-k 2x4 Metal fixture remains bit exact; both model
+metallibs compile and both selectable KV formats validate. This package has no
+350M token, latency, or ERS observation yet.
 
 RMSNorm uses the same launch geometry at the row level. One SIMD group owns a
 row, lanes traverse its final dimension at stride 32, `simd_sum` combines the

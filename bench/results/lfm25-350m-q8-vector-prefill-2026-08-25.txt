@@ -1,0 +1,54 @@
+LFM2.5-350M vector-staged Q8 prefill kernel
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Kernel mapping
+- output tile remains 16 rows by 16 output channels with 256 threads
+- reduction tile increases from 16 to 64 elements
+- every thread stages one half4/float4 activation vector and one char4 weight vector
+- threadgroup input and dequantized-weight tiles are half4/float4 [16][16]
+- every output accumulates 16 float4 dot operations per reduction tile
+- partial final tiles retain scalar lane cleanup before vector staging
+- identity, SiLU, residual, and multiplied-input/residual families use the vector stage in float16 and float32
+
+Structural reduction for executable LFM dimensions
+- k=1024: 64 old reduction tiles / 16 current tiles; 128 / 32 threadgroup barriers
+- k=4608: 288 old reduction tiles / 72 current tiles; 576 / 144 threadgroup barriers
+- scalar inner iterations become one vector dot per four reduction elements
+- these are compiler-structure counts, not device-time measurements
+
+Saved 350M binary-graph replan
+- root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25
+- commands: 808 prefill / 862 decode
+- kernel entries: 61 prefill / 59 decode
+- opaque operations: 0 / 0
+- tensor bindings: 241 / 241 against one 422,137,216-byte binary tensor archive
+- workspace high-water/unreused: 1,098,496/7,692,800 prefill, 262,144/1,791,232 decode
+- prefill package: 95,066 bytes
+- decode package: 98,549 bytes
+- prefill MSL/AIR/metallib: 91,532 / 73,728 / 348,397 bytes
+- decode MSL/AIR/metallib: 92,027 / 73,600 / 342,131 bytes
+- each generated stage contains 8 vector-staged Q8 GEMM kernels and retains 8 packed SIMD Q8 GEMV kernels
+- prefill/decode binary tensor archive inode: 241927011 / 241927011
+- Q8-group-64 and selectable FP16 serving-pair validation: pass
+
+Exact small Metal execution
+- preflight memory: 55% system-wide free
+- resident LFM/Torch/native-server processes: none
+- supervisor: one 60-second gtimeout attempt
+- fixture input/output shape: 2x4 / 2x3, exercising the partial k=4 vector stage
+- selected kernel: llmopt_q8_linear
+- two schedule dispatches in one command-buffer submission: exact float16 outputs
+- Q8-group-64 and FP16 cache round trips: exact across 12 kernels in two submissions
+- no LFM model weights were loaded
+
+Static verification
+- ninja -f ninja.build all test q8-smoke q8-serving-smoke native-schedule-smoke: pass
+- OCaml tests and 37 Python tests: pass
+- both 350M MSL programs compile and link with Xcode Metal
+- both 350M packages and both selectable KV formats validate
+
+Evidence boundary
+- No LFM2.5-350M model request, token generation, radix replay, needle trace, latency comparison, or ERS scoring ran for the vector-staged prefill kernel.
+- Vector dot accumulation changes floating-point association relative to the prior scalar inner loop.
+- Latest measured native ERS remains 0.3253700872862615 from the preceding packed-decode package.
