@@ -1805,6 +1805,98 @@ let () =
          dynamic_prefill_commands)
     "LFM prefill specialization rewrites operation parameters";
   let _ = expect_ok (Serving_memory_plan.create dynamic_prefill) in
+  let logits_template = Ir.Graph.create () in
+  let logits_hidden =
+    Ir.Graph.tensor_input logits_template ~name:"logits_hidden"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 6; 2 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let logits_weight =
+    Ir.Graph.tensor_input logits_template ~name:"logits_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "logits_weight" })
+      ~shape:(Tensor_shape.of_ints_exn [ 4; 2 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let full_slice =
+    Tensor_shape.Index.Spec.Slice
+      { start = None; stop = None; step = None }
+  in
+  let logits_index, logits_index_shape =
+    expect_ok
+      (Tensor_shape.index (Ir.Value.logical_shape logits_hidden)
+         [ full_slice; full_slice; full_slice ]
+      |> Result.map_error Tensor_shape.error_to_string)
+  in
+  let indexed_hidden =
+    Ir.Graph.fresh_tensor_value logits_template ~shape:logits_index_shape
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append logits_template
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index logits_index)))
+    ~inputs:[ logits_hidden ] ~output:(Some indexed_hidden);
+  let full_logits =
+    Ir.Graph.fresh_tensor_value logits_template
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 6; 4 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append logits_template
+    ~op:(Ir.Op.Linear { m = 6; n = 4; k = 2; bias = false })
+    ~inputs:[ indexed_hidden; logits_weight ] ~output:(Some full_logits);
+  Ir.Graph.add_output logits_template ~name:"logits" full_logits;
+  let last_token_prefill =
+    logits_template |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.Lfm25.specialize_prefill ~captured_tokens:6 ~tokens:13
+    |> expect_ok
+  in
+  let last_token_commands = Serving_schedule.commands last_token_prefill in
+  expect
+    (List.exists
+       (fun command ->
+         match
+           ( Serving_schedule.Command.op command,
+             Serving_schedule.Command.output command )
+         with
+         | ( Ir.Op.Primitive
+               (Ir.Primitive.Movement (Ir.Movement.Index index)),
+             Some output ) ->
+             Tensor_shape.Index.selectors index
+             = [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+                 Tensor_shape.Index.Slice { start = 12; step = 1; length = 1 };
+                 Tensor_shape.Index.Slice { start = 0; step = 1; length = 2 } ]
+             && Tensor_shape.dimensions (Ir.Value.logical_shape output)
+                = [ 1; 1; 2 ]
+         | _ -> false)
+       last_token_commands)
+    "LFM prefill specialization selects only the final hidden row";
+  expect
+    (List.exists
+       (fun command ->
+         match
+           ( Serving_schedule.Command.op command,
+             Serving_schedule.Command.output command )
+         with
+         | Ir.Op.Linear { m = 1; n = 4; k = 2; _ }, Some output ->
+             Tensor_shape.dimensions (Ir.Value.logical_shape output)
+             = [ 1; 1; 4 ]
+         | _ -> false)
+       last_token_commands)
+    "LFM prefill specialization projects one vocabulary row";
+  expect
+    (List.exists
+       (fun command ->
+         match
+           Serving_schedule.Command.op command,
+           Serving_schedule.Command.inputs command
+         with
+         | Ir.Op.Output { name = "logits" }, [ logits ] ->
+             Tensor_shape.dimensions (Ir.Value.logical_shape logits)
+             = [ 1; 1; 4 ]
+         | _ -> false)
+       last_token_commands)
+    "LFM prefill logits output exposes the final vocabulary row";
+  let _ = expect_ok (Serving_memory_plan.create last_token_prefill) in
   (match
      prefill_template |> Serving_schedule.of_graph |> expect_ok
      |> Serving_schedule.Lfm25.specialize_prefill ~captured_tokens:6 ~tokens:2

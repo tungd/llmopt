@@ -677,7 +677,143 @@ module Lfm25 = struct
            ~shape ~dtype:(Ir.Value.dtype original))
     with Invalid_argument message -> Error message
 
-  let specialize substitutions schedule =
+  type last_token_projection = {
+    index_node : int;
+    linear_node : int;
+  }
+
+  let same_value = Ir.Value.equal
+
+  let producer commands value =
+    List.find_opt
+      (fun command ->
+        Option.exists (fun output -> same_value output value) command.Command.output)
+      commands
+
+  let use_count commands value =
+    commands
+    |> List.fold_left
+         (fun count command ->
+           count
+           + List.fold_left
+               (fun count input ->
+                 if same_value input value then count + 1 else count)
+               0 command.Command.inputs)
+         0
+
+  let is_identity_index source index =
+    let dimensions =
+      Ir.Value.logical_shape source |> Tensor_shape.dimensions
+    in
+    let selectors = Tensor_shape.Index.selectors index in
+    List.length dimensions = List.length selectors
+    && List.for_all2
+         (fun dimension selector ->
+           match selector with
+           | Tensor_shape.Index.Slice { start = 0; step = 1; length } ->
+               length = dimension
+           | ( Tensor_shape.Index.Slice _ | Tensor_shape.Index.At _
+             | Tensor_shape.Index.New_axis ) ->
+               false)
+         dimensions selectors
+
+  let last_token_projection schedule =
+    let commands = schedule.commands in
+    match
+      List.find_map
+        (fun command ->
+          match command.Command.op, command.Command.inputs with
+          | Ir.Op.Output { name = "logits" }, [ logits ] -> Some logits
+          | _ -> None)
+        commands
+    with
+    | None -> Ok None
+    | Some logits ->
+        (match producer commands logits with
+        | Some
+            {
+              Command.node_id = linear_node;
+              op = Ir.Op.Linear { m; n; k; _ };
+              inputs = indexed :: _;
+              output = Some _;
+            } ->
+            (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
+            | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
+            | [ 1; tokens; output_width ]
+              when tokens = m && output_width = n && use_count commands logits = 1 ->
+                (match producer commands indexed with
+                | Some
+                    {
+                      Command.node_id = index_node;
+                      op =
+                        Ir.Op.Primitive
+                          (Ir.Primitive.Movement (Ir.Movement.Index index));
+                      inputs = [ source ];
+                      output = Some _;
+                    }
+                  when use_count commands indexed = 1
+                       && is_identity_index source index ->
+                    (match
+                       Tensor_shape.dimensions (Ir.Value.logical_shape source)
+                     with
+                    | [ 1; source_tokens; width ]
+                      when source_tokens = tokens && width = k ->
+                        Ok (Some { index_node; linear_node })
+                    | _ ->
+                        Error
+                          "LFM prefill logits index has an unexpected source shape")
+                | _ ->
+                    Error
+                      "LFM prefill logits projection is not fed by a sole-consumer identity index")
+            | _ -> Error "LFM prefill logits has an unexpected projection shape")
+        | _ -> Error "LFM prefill logits is not produced by a linear command")
+
+  let last_token_index = function
+    | [ input ] ->
+        (match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
+        | [ batch; tokens; width ] when batch > 0 && tokens > 0 && width > 0 ->
+            let full =
+              Tensor_shape.Index.Spec.Slice
+                { start = None; stop = None; step = None }
+            in
+            let tail =
+              Tensor_shape.Index.Spec.Slice
+                {
+                  start = Some (tokens - 1);
+                  stop = Some tokens;
+                  step = None;
+                }
+            in
+            let* index, _ =
+              Tensor_shape.index (Ir.Value.logical_shape input)
+                [ full; tail; full ]
+              |> shape_error
+            in
+            Ok
+              (Ir.Op.Primitive
+                 (Ir.Primitive.Movement (Ir.Movement.Index index)))
+        | _ -> Error "LFM final-token index expects a rank-three tensor")
+    | _ -> Error "LFM final-token index expects one input"
+
+  let last_token_linear_output operation inputs original =
+    match operation, inputs with
+    | Ir.Op.Linear { m = 1; n; k; _ }, input :: _ ->
+        (match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
+        | [ batch; 1; width ] when batch > 0 && width = k ->
+            let* shape =
+              Tensor_shape.create [ batch; 1; n ]
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            (try
+               Ok
+                 (Ir.Value.make_tensor
+                    ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
+                    ~shape ~dtype:(Ir.Value.dtype original))
+             with Invalid_argument message -> Error message)
+        | _ -> Error "LFM final-token linear input has an unexpected shape")
+    | _ -> Error "LFM final-token projection expects a one-row linear command"
+
+  let specialize ?projection substitutions schedule =
     let commands = schedule.commands in
     let rec map_commands values output = function
       | [] -> create (List.rev output)
@@ -691,12 +827,34 @@ module Lfm25 = struct
             in
             map [] command.Command.inputs
           in
-          let* op = map_operation substitutions values command.Command.op in
+          let* op =
+            match projection with
+            | Some projection
+              when command.Command.node_id = projection.index_node ->
+                last_token_index inputs
+            | Some projection
+              when command.Command.node_id = projection.linear_node ->
+                (match command.Command.op with
+                | Ir.Op.Linear { n; k; bias; _ } ->
+                    Ok (Ir.Op.Linear { m = 1; n; k; bias })
+                | _ ->
+                    Error
+                      "LFM final-token projection node is no longer linear")
+            | Some _ | None ->
+                map_operation substitutions values command.Command.op
+          in
           let* result, values =
             match command.Command.output with
             | None -> Ok (None, values)
             | Some original ->
-                let* value = output_value substitutions op inputs original in
+                let* value =
+                  match projection with
+                  | Some projection
+                    when command.Command.node_id = projection.linear_node ->
+                      last_token_linear_output op inputs original
+                  | Some _ | None ->
+                      output_value substitutions op inputs original
+                in
                 Ok
                   ( Some value,
                     Value_map.add (Ir.Value.id original) value values )
@@ -715,7 +873,9 @@ module Lfm25 = struct
         (Printf.sprintf
            "LFM prefill length must cover the %d-token recurrent window"
            recurrent_window)
-    else specialize [ captured_tokens, tokens ] schedule
+    else
+      let* projection = last_token_projection schedule in
+      specialize ?projection [ captured_tokens, tokens ] schedule
 
   let specialize_decode ~captured_past ~past_tokens schedule =
     if captured_past <= 0 then Error "captured decode past length must be positive"

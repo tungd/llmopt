@@ -57,6 +57,26 @@ let workspace schedule =
   let* plan = Serving_memory_plan.create schedule in
   Ok (Serving_memory_plan.workspace_bytes plan)
 
+let output_shape ~name schedule =
+  schedule |> Serving_schedule.commands
+  |> List.find_map (fun command ->
+         match
+           ( Serving_schedule.Command.op command,
+             Serving_schedule.Command.inputs command )
+         with
+         | Ir.Op.Output output, [ value ] when output.name = name ->
+             Some (dimensions value)
+         | _ -> None)
+  |> function
+  | Some shape -> Ok shape
+  | None -> Error ("specialized schedule has no " ^ name ^ " output")
+
+let logits_rows schedule =
+  let* shape = output_shape ~name:"logits" schedule in
+  match shape with
+  | [ 1; rows; vocabulary ] when rows > 0 && vocabulary > 0 -> Ok rows
+  | _ -> Error "specialized logits output has an invalid shape"
+
 let specialize prefill decode =
   let prefill_schedule = Serving_package.schedule prefill in
   let decode_schedule = Serving_package.schedule decode in
@@ -85,6 +105,9 @@ let specialize prefill decode =
     Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens:4095
       decode_schedule
   in
+  let* prefill_13_rows = logits_rows prefill_13 in
+  let* prefill_128_rows = logits_rows prefill_128 in
+  let* prefill_4096_rows = logits_rows prefill_4096 in
   let* prefill_13 = workspace prefill_13 in
   let* prefill_128 = workspace prefill_128 in
   let* prefill_4096 = workspace prefill_4096 in
@@ -94,6 +117,9 @@ let specialize prefill decode =
   Ok
     ( captured_prefill,
       captured_past,
+      prefill_13_rows,
+      prefill_128_rows,
+      prefill_4096_rows,
       prefill_13,
       prefill_128,
       prefill_4096,
@@ -123,8 +149,9 @@ let run () =
         ~token_capacity:1 ~checkpoint_capacity:1 ~page_size:prefill_page ()
     in
     let* () = Serving_engine.validate_packages ~config ~prefill ~decode in
-    let* captured_prefill, captured_past, prefill_13, prefill_128, prefill_4096,
-         decode_one, decode_127, decode_4095 =
+    let* captured_prefill, captured_past, prefill_13_rows, prefill_128_rows,
+         prefill_4096_rows, prefill_13, prefill_128, prefill_4096, decode_one,
+         decode_127, decode_4095 =
       specialize prefill decode
     in
     Printf.printf
@@ -132,6 +159,8 @@ let run () =
       (Serving_package.abi_version prefill)
       (Serving_package.abi_version decode)
       (Kv_cache.Format.to_string kv_format) prefill_page;
+    Printf.printf "prefill logits rows: 13=%d, 128=%d, 4096=%d\n"
+      prefill_13_rows prefill_128_rows prefill_4096_rows;
     Printf.printf
       "sequence templates: prefill=%d, decode-past=%d; workspaces: prefill-13=%d, prefill-128=%d, prefill-4096=%d, decode-1=%d, decode-127=%d, decode-4095=%d\n"
       captured_prefill captured_past prefill_13 prefill_128 prefill_4096

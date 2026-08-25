@@ -1,0 +1,33 @@
+LFM2.5-350M serving-only last-token vocabulary projection
+Date: 2026-08-25
+
+Target package:
+  _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25
+
+Command:
+  _build/bin/llmopt-lfm-serving-check \
+    _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25/prefill \
+    _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-vector-prefill-v1-2026-08-25/decode
+
+Output:
+  valid LFM2.5 serving pair: prefill ABI=11, decode ABI=11, KV=q8-group-64, page=1
+  prefill logits rows: 13=1, 128=1, 4096=1
+  sequence templates: prefill=6, decode-past=6; workspaces: prefill-13=676864, prefill-128=5525504, prefill-4096=184680448, decode-1=189440, decode-127=2260736, decode-4095=71371520
+
+Static interpretation:
+  The captured six-token prefill graph still declares full-sequence logits.
+  Runtime specialization rewrites its sole-consumer identity index to the final
+  hidden row, changes the FP16 LM-head linear m dimension to 1, and exposes a
+  [1,1,65536] logits output for all checked request lengths. At 4096 tokens,
+  this changes the vocabulary output allocation from 536870912 bytes for
+  [1,4096,65536] FP16 to 131072 bytes for [1,1,65536] FP16.
+
+Verification:
+  ninja -f ninja.build all test q8-smoke q8-serving-smoke native-schedule-smoke
+  OCaml tests passed.
+  Python tests: 41 passed.
+  Package, generated Metal, and generated LLVM validation passed.
+
+Execution boundary:
+  No model was loaded and no Metal model schedule was launched for this static
+  compiler measurement. A memory-bounded LFM2.5-350M comparison is separate.
