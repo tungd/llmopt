@@ -66,3 +66,8 @@
 * [Paired SIMD-group Q8 decode GEMV](exp-0064-paired-simd-q8-gemv.md) - two output channels share each activation vector load, halving one-token threadgroup scheduling with exact synthetic Metal outputs.
 * [Paired SIMD-group Q8 model measurement](exp-0065-paired-simd-measurement.md) - exact short and needle tokens with observed ERS 0.407016 and mixed latency deltas.
 * [Model-scale selectable FP16 KV execution](exp-0066-fp16-kv-model-execution.md) - the paired 350M package executes FP16 KV/recurrent storage with exact tokens and unchanged radix reuse while Q8 remains default.
+* [SIMD-group Q8 cache packing](exp-0067-simd-q8-cache-pack.md) - attention and recurrent quantization use one SIMD group per Q8 group.
+* [SIMD Q8 cache-pack measurement](exp-0068-simd-q8-cache-pack-measurement.md) - bounded 350M token, radix, latency, and ERS evidence.
+* [Vectorized Q8 cache unpack](exp-0069-vector-q8-cache-unpack.md) - vec4 attention and recurrent restoration with scalar fallback.
+* [Vector Q8 cache-unpack measurement](exp-0070-vector-q8-cache-unpack-measurement.md) - bounded 350M trace and long-context evidence.
+* [Direct paged-Q8 decode attention](exp-0071-paged-q8-attention.md) - the decode schedule and Metal kernel consume radix-owned Q8 K/V slots directly.

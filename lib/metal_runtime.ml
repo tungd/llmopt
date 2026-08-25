@@ -481,6 +481,24 @@ module Parameters = struct
     Bytes.set_int32_le bytes 32 (Int32.bits_of_float scale);
     Ok bytes
 
+  let paged_attention_q8 ~batches ~query_heads ~kv_heads ~past_length
+      ~head_dimension ~mask_batches ~mask_heads ~cache_layer ~attention_layers
+      ~group_size ~token_stride ~scale =
+    let bytes = Bytes.make 48 '\000' in
+    let values =
+      [ batches; query_heads; kv_heads; past_length; head_dimension; mask_batches;
+        mask_heads; cache_layer; attention_layers; group_size; token_stride ]
+    in
+    let rec write offset = function
+      | [] -> Ok ()
+      | value :: rest ->
+          let* () = set_u32 bytes offset value in
+          write (offset + 4) rest
+    in
+    let* () = write 0 values in
+    Bytes.set_int32_le bytes 44 (Int32.bits_of_float scale);
+    Ok bytes
+
   let scalar_i64 = function
     | Ir.Scalar.Bool value -> if value then 1L else 0L
     | Ir.Scalar.Int value -> Int64.of_int value
@@ -1172,6 +1190,16 @@ module Cache = struct
   let batch_unpack_checkpoint batch ~layer ~checkpoint ~destination =
     transfer_checkpoint ~batch batch.cache ~pack:false ~layer ~checkpoint
       destination
+
+  let q8_attention_inputs cache ~slots =
+    match format cache with
+    | Kv_cache.Format.F16 ->
+        Error "direct paged attention requires a grouped-Q8 physical cache"
+    | Kv_cache.Format.Q8 _ ->
+        let* slots = slots_buffer cache slots in
+        Ok
+          [ Serving_schedule.Lfm25.q8_attention_pool_input, cache.token_pool;
+            Serving_schedule.Lfm25.q8_attention_slots_input, slots ]
 end
 
 module Value_map = Map.Make (struct
@@ -2146,6 +2174,60 @@ let encode_schedule execution_batch ~schedule ~inputs =
             let* kernel =
               dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
                 ~parameters ~grid:(grid_x, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buffer, kernel))
+        | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config),
+            [ query; current_key; current_value; pool; slots; mask ],
+            Some output ) ->
+            let* batches, query_heads, head_dimension =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
+              | [ batches; query_heads; 1; head_dimension ] ->
+                  Ok (batches, query_heads, head_dimension)
+              | _ -> Error "paged Q8 attention query must have shape [b,h,1,d]"
+            in
+            let* kv_heads =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape current_key) with
+              | [ _batches; kv_heads; 1; _head_dimension ] -> Ok kv_heads
+              | _ ->
+                  Error "paged Q8 attention current key must have shape [b,h,1,d]"
+            in
+            let* past_length =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape slots) with
+              | [ past_length ] -> Ok past_length
+              | _ -> Error "paged Q8 attention slots must have rank one"
+            in
+            let* mask_batches, mask_heads =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape mask) with
+              | [ mask_batches; mask_heads; 1; _key_length ] ->
+                  Ok (mask_batches, mask_heads)
+              | _ -> Error "paged Q8 attention mask must have rank four"
+            in
+            let* buffers =
+              find_values state
+                [ query; current_key; current_value; pool; slots; mask ]
+            in
+            let* parameters =
+              Parameters.paged_attention_q8 ~batches ~query_heads ~kv_heads
+                ~past_length ~head_dimension ~mask_batches ~mask_heads
+                ~cache_layer:(Ir.Paged_attention_q8.cache_layer config)
+                ~attention_layers:
+                  (Ir.Paged_attention_q8.attention_layers config)
+                ~group_size:(Ir.Paged_attention_q8.group_size config)
+                ~token_stride:(Ir.Paged_attention_q8.token_stride config)
+                ~scale:(Ir.Paged_attention_q8.scale config)
+            in
+            let* entry =
+              kernel_entry ~name:"llmopt_attention_q8_paged_simd_h64" runtime
+                ~operation:Kernel_abi.Operation.Attention
+                ~input_dtype:Ir.Dtype.Float16
+                ~output_dtype:(Ir.Value.dtype output)
+            in
+            let* grid_x = simd_rows_grid (batches * query_heads) in
+            let* output_buffer = workspace_buffer state output in
+            let* kernel =
+              dispatch ~batch runtime entry
+                ~buffers:(buffers @ [ output_buffer ]) ~parameters
+                ~grid:(grid_x, 1, 1)
             in
             dispatched (Ok (bind_value state output output_buffer, kernel))
         | ( Ir.Op.Primitive (Ir.Primitive.Diff config),

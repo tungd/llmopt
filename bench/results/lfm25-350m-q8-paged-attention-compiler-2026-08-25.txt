@@ -1,0 +1,69 @@
+LFM2.5-350M direct paged-Q8 attention compiler result
+Date: 2026-08-25
+
+Scope
+-----
+- primary model: LiquidAI/LFM2.5-350M
+- deferred model: LiquidAI/LFM2.5-2.6B; not loaded or executed
+- input: the saved full-Q8 prefill/decode LLMOPTFX graphs
+- Q8-group-64 remains the default KV format; FP16 remains selectable
+
+Compiler and runtime rewrite
+----------------------------
+- Added typed Paged_attention_q8 IR and schedule serialization.
+- Decode specialization recognizes each six-layer GQA concat/expand/attention
+  chain and replaces materialized past-K/V tensors with one physical Q8 token
+  pool plus an int32 slot map.
+- The generated llmopt_attention_q8_paged_simd_h64 Metal kernel reads prior
+  K/V values directly from radix-owned cache slots, consumes the current FP16
+  row directly, and performs width-64 online softmax in one SIMD group.
+- Q8 serving packs only the current K/V row after each decode step. FP16 serving
+  retains the prior materialized-cache schedule and conversion path.
+
+Full-Q8 offline package evidence
+--------------------------------
+- package root: _artifacts/lfm25-350m-q8-paged-attention-replan-2026-08-25
+- graph commands: 810 prefill / 864 decode
+- package kernels: 73 prefill / 71 decode
+- opaque commands: 0 / 0
+- tensor bindings: 243 / 243
+- shared binary tensor archive: one inode, 489,377,152 bytes
+- package bytes: 95,927 / 99,410
+- MSL bytes: 124,803 / 125,298
+- AIR bytes: 88,624 / 88,480
+- metallib bytes: 417,770 / 411,504
+
+Specialized decode evidence
+---------------------------
+- Q8: 804 commands, 13 runtime inputs, 6 paged-Q8 attention commands
+- FP16: 864 commands, 23 runtime inputs, 0 paged-Q8 attention commands
+- Q8 workspace at past lengths 1 / 127 / 4,095:
+  171,008 / 172,800 / 199,424 bytes
+- FP16 materialized workspace at the same lengths:
+  189,440 / 2,260,736 / 71,371,520 bytes
+- The Q8 rewrite removes 60 decode commands and ten net runtime inputs. Twelve
+  layer-specific past-K/V inputs are replaced by the physical pool and slot map.
+
+Exact Metal probe
+-----------------
+- preflight: 56% system-wide free memory, no resident model/native process
+- supervisor: one 60-second attempt on Apple M4 Pro; exit 0
+- fixture: one Q8 cached value row of 2 and one current FP16 value row of 4,
+  with zero query/key scores; expected and observed output is 3 in all 64 lanes
+- commands: 161
+- dispatched kernels: 48
+- outputs: 47 exact
+- selected entry: llmopt_attention_q8_paged_simd_h64
+- raw artifact: _artifacts/q8-paged-attention-device-2026-08-25.txt
+
+Static validation
+-----------------
+- ninja -f ninja.build all test q8-smoke q8-serving-smoke native-schedule-smoke
+- 42 Python tests and the OCaml suite pass
+- both full-Q8 MSL stages compile and both package checks pass
+- Q8 and FP16 LFM serving-pair checks pass
+
+Boundary
+--------
+This compiler record does not contain model latency, ERS, or needle results.
+The model validation target for those measurements is LFM2.5-350M, not 2.6B.

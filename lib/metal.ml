@@ -1120,6 +1120,127 @@ kernel void llmopt_cache_unpack_checkpoint_q8_vec4(
   *reinterpret_cast<device half4*>(destination + local) =
       half4(float4(quantized) * scale);
 }
+
+constant uint Q8_PAGED_ATTENTION_SIMD_WIDTH = 32;
+constant uint Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP = 8;
+
+struct Q8PagedAttentionParams {
+  uint batches;
+  uint query_heads;
+  uint kv_heads;
+  uint past_length;
+  uint head_dim;
+  uint mask_batches;
+  uint mask_heads;
+  uint cache_layer;
+  uint attention_layers;
+  uint group_size;
+  uint token_stride;
+  float scale;
+};
+
+inline float llmopt_q8_paged_value(
+    device const uchar* pool,
+    device const uint* slots,
+    constant Q8PagedAttentionParams& params,
+    uint key_position,
+    uint segment,
+    uint kv_head,
+    uint dimension) {
+  const uint token_elements =
+      2 * params.attention_layers * params.kv_heads * params.head_dim;
+  const uint groups_per_head = params.head_dim / params.group_size;
+  const uint segment_groups = params.kv_heads * groups_per_head;
+  const uint slot_base = slots[key_position] * params.token_stride;
+  device const char* values =
+      reinterpret_cast<device const char*>(pool + slot_base);
+  device const half* scales = reinterpret_cast<device const half*>(
+      pool + slot_base + token_elements);
+  const uint value_index = segment * params.kv_heads * params.head_dim
+      + kv_head * params.head_dim + dimension;
+  const uint scale_index = segment * segment_groups
+      + kv_head * groups_per_head + dimension / params.group_size;
+  return float(half(float(values[value_index]) * float(scales[scale_index])));
+}
+
+kernel void llmopt_attention_q8_paged_simd_h64(
+    device const half* query [[buffer(0)]],
+    device const half* current_key [[buffer(1)]],
+    device const half* current_value [[buffer(2)]],
+    device const uchar* pool [[buffer(3)]],
+    device const uint* slots [[buffer(4)]],
+    device const uchar* mask [[buffer(5)]],
+    device half* output [[buffer(6)]],
+    constant Q8PagedAttentionParams& params [[buffer(7)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x
+      * Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP + simdgroup;
+  const uint rows = params.batches * params.query_heads;
+  if (row >= rows) return;
+  const uint head = row % params.query_heads;
+  const uint batch = row / params.query_heads;
+  const uint heads_per_kv = params.query_heads / params.kv_heads;
+  const uint kv_head = head / heads_per_kv;
+  const uint query_base =
+      (batch * params.query_heads + head) * params.head_dim;
+  const uint current_base =
+      (batch * params.kv_heads + kv_head) * params.head_dim;
+  const uint key_length = params.past_length + 1;
+  const uint key_segment = params.cache_layer * 2;
+  const uint value_segment = key_segment + 1;
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+  float result_low = 0.0f;
+  float result_high = 0.0f;
+  for (uint key_position = 0; key_position < key_length; ++key_position) {
+    const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
+    const uint mask_head = params.mask_heads == 1 ? 0 : head;
+    const uint mask_index =
+        (mask_batch * params.mask_heads + mask_head) * key_length + key_position;
+    if (mask[mask_index] == 0) continue;
+    float partial_score = 0.0f;
+    for (uint dimension = lane; dimension < params.head_dim;
+         dimension += Q8_PAGED_ATTENTION_SIMD_WIDTH) {
+      const float key_value = key_position < params.past_length
+          ? llmopt_q8_paged_value(pool, slots, params, key_position,
+                key_segment, kv_head, dimension)
+          : float(current_key[current_base + dimension]);
+      partial_score += float(query[query_base + dimension]) * key_value;
+    }
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_maximum = max(maximum, score);
+    const float previous_scale = denominator == 0.0f ? 0.0f
+        : exp(maximum - next_maximum);
+    const float current_scale = exp(score - next_maximum);
+    if (lane < params.head_dim) {
+      const float value = key_position < params.past_length
+          ? llmopt_q8_paged_value(pool, slots, params, key_position,
+                value_segment, kv_head, lane)
+          : float(current_value[current_base + lane]);
+      result_low = result_low * previous_scale + current_scale * value;
+    }
+    const uint high_dimension = lane + Q8_PAGED_ATTENTION_SIMD_WIDTH;
+    if (high_dimension < params.head_dim) {
+      const float value = key_position < params.past_length
+          ? llmopt_q8_paged_value(pool, slots, params, key_position,
+                value_segment, kv_head, high_dimension)
+          : float(current_value[current_base + high_dimension]);
+      result_high = result_high * previous_scale + current_scale * value;
+    }
+    denominator = denominator * previous_scale + current_scale;
+    maximum = next_maximum;
+  }
+  const uint output_base = row * params.head_dim;
+  if (lane < params.head_dim)
+    output[output_base + lane] = half(
+        denominator == 0.0f ? 0.0f : result_low / denominator);
+  const uint high_dimension = lane + Q8_PAGED_ATTENTION_SIMD_WIDTH;
+  if (high_dimension < params.head_dim)
+    output[output_base + high_dimension] = half(
+        denominator == 0.0f ? 0.0f : result_high / denominator);
+}
 |}
 
 let cache_entry name input_dtype output_dtype =
@@ -1152,7 +1273,11 @@ let cache_q8_entries =
     cache_entry "llmopt_cache_unpack_checkpoint_q8" Ir.Dtype.Int8
       Ir.Dtype.Float16;
     cache_entry "llmopt_cache_unpack_checkpoint_q8_vec4" Ir.Dtype.Int8
-      Ir.Dtype.Float16 ]
+      Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_attention_q8_paged_simd_h64"
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
 let add_cache_kernels ~formats program =
   let has_f16 = List.mem Kv_cache.Format.f16 formats in

@@ -196,6 +196,53 @@ module Attention = struct
     Printf.sprintf "attention(scale=%.9g,causal=%b)" config.scale config.causal
 end
 
+module Paged_attention_q8 = struct
+  type t = {
+    scale : float;
+    cache_layer : int;
+    attention_layers : int;
+    kv_heads : int;
+    group_size : int;
+    token_stride : int;
+  }
+
+  let create ~scale ~cache_layer ~attention_layers ~kv_heads ~group_size
+      ~token_stride =
+    if not (Float.is_finite scale) then Error "paged Q8 attention scale must be finite"
+    else if attention_layers <= 0 then
+      Error "paged Q8 attention requires at least one attention layer"
+    else if cache_layer < 0 || cache_layer >= attention_layers then
+      Error "paged Q8 attention cache layer is outside the attention layout"
+    else if kv_heads <= 0 then Error "paged Q8 attention requires positive KV heads"
+    else if group_size <= 0 then
+      Error "paged Q8 attention requires a positive group size"
+    else if token_stride <= 0 then
+      Error "paged Q8 attention requires a positive token stride"
+    else
+      Ok
+        {
+          scale;
+          cache_layer;
+          attention_layers;
+          kv_heads;
+          group_size;
+          token_stride;
+        }
+
+  let scale config = config.scale
+  let cache_layer config = config.cache_layer
+  let attention_layers config = config.attention_layers
+  let kv_heads config = config.kv_heads
+  let group_size config = config.group_size
+  let token_stride config = config.token_stride
+
+  let to_string config =
+    Printf.sprintf
+      "paged-attention-q8(scale=%.9g,layer=%d/%d,kv-heads=%d,group=%d,stride=%d)"
+      config.scale config.cache_layer config.attention_layers config.kv_heads
+      config.group_size config.token_stride
+end
+
 module Arange = struct
   type t = { start : int; stop : int; step : int }
 
@@ -242,6 +289,7 @@ module Primitive = struct
     | Movement of Movement.t
     | Short_conv of Short_conv.t
     | Attention of Attention.t
+    | Paged_attention_q8 of Paged_attention_q8.t
     | Embedding
     | Arange of Arange.t
     | Diff of Diff.t
@@ -252,8 +300,9 @@ module Primitive = struct
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
-    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _ | Embedding
-    | Arange _ | Diff _ | Cumsum _ | Fill _ | Gather2 | Update_slice _ -> []
+    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _
+    | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _ | Fill _
+    | Gather2 | Update_slice _ -> []
 
   let to_string = function
     | Pointwise operation -> Pointwise.to_string operation
@@ -262,6 +311,7 @@ module Primitive = struct
     | Movement movement -> Movement.to_string movement
     | Short_conv config -> Short_conv.to_string config
     | Attention config -> Attention.to_string config
+    | Paged_attention_q8 config -> Paged_attention_q8.to_string config
     | Embedding -> "embedding"
     | Arange config -> Arange.to_string config
     | Diff config -> Diff.to_string config

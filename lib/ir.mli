@@ -103,6 +103,27 @@ module Attention : sig
   val to_string : t -> string
 end
 
+module Paged_attention_q8 : sig
+  type t
+
+  val create :
+    scale:float ->
+    cache_layer:int ->
+    attention_layers:int ->
+    kv_heads:int ->
+    group_size:int ->
+    token_stride:int ->
+    (t, string) result
+
+  val scale : t -> float
+  val cache_layer : t -> int
+  val attention_layers : t -> int
+  val kv_heads : t -> int
+  val group_size : t -> int
+  val token_stride : t -> int
+  val to_string : t -> string
+end
+
 module Arange : sig
   type t
 
@@ -137,6 +158,7 @@ module Primitive : sig
     | Movement of Movement.t
     | Short_conv of Short_conv.t
     | Attention of Attention.t
+    | Paged_attention_q8 of Paged_attention_q8.t
     | Embedding
     | Arange of Arange.t
     | Diff of Diff.t

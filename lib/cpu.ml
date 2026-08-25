@@ -757,6 +757,8 @@ let primitive state operation inputs output_value output =
       short_conv state config input weight output_value output
   | Ir.Primitive.Attention config, [ query; key; value; mask ] ->
       attention state config query key value mask output_value output
+  | Ir.Primitive.Paged_attention_q8 _, _ ->
+      failf "paged Q8 attention is a serving-runtime primitive"
   | Ir.Primitive.Embedding, [ indices; weight ] ->
       embedding state indices weight output_value output
   | Ir.Primitive.Arange config, [] -> arange config output_value output

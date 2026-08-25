@@ -237,8 +237,8 @@ build _build/ocaml/generation_core.cmx: ocaml_module lib/generation_core.ml | _b
 build _build/ocaml/binary.cmi: ocaml_interface lib/binary.mli
 build _build/ocaml/binary.cmx: ocaml_module lib/binary.ml | _build/ocaml/binary.cmi
 
-build _build/ocaml/serving_schedule.cmi: ocaml_interface lib/serving_schedule.mli | _build/ocaml/ir.cmi
-build _build/ocaml/serving_schedule.cmx: ocaml_module lib/serving_schedule.ml | _build/ocaml/serving_schedule.cmi _build/ocaml/binary.cmx _build/ocaml/ir.cmx _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx
+build _build/ocaml/serving_schedule.cmi: ocaml_interface lib/serving_schedule.mli | _build/ocaml/ir.cmi _build/ocaml/kv_cache.cmi
+build _build/ocaml/serving_schedule.cmx: ocaml_module lib/serving_schedule.ml | _build/ocaml/serving_schedule.cmi _build/ocaml/binary.cmx _build/ocaml/ir.cmx _build/ocaml/kv_cache.cmx _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx
 
 build _build/ocaml/serving_memory_plan.cmi: ocaml_interface lib/serving_memory_plan.mli | _build/ocaml/ir.cmi _build/ocaml/serving_schedule.cmi
 build _build/ocaml/serving_memory_plan.cmx: ocaml_module lib/serving_memory_plan.ml | _build/ocaml/serving_memory_plan.cmi _build/ocaml/ir.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/tensor_shape.cmx

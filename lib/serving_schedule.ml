@@ -210,6 +210,72 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d attention metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config),
+            [ query; current_key; current_value; pool; slots; mask ],
+            Some output ) ->
+            let query_shape =
+              Tensor_shape.dimensions (Ir.Value.logical_shape query)
+            in
+            let key_shape =
+              Tensor_shape.dimensions (Ir.Value.logical_shape current_key)
+            in
+            let value_shape =
+              Tensor_shape.dimensions (Ir.Value.logical_shape current_value)
+            in
+            let pool_shape = Tensor_shape.dimensions (Ir.Value.logical_shape pool) in
+            let slots_shape =
+              Tensor_shape.dimensions (Ir.Value.logical_shape slots)
+            in
+            let mask_shape = Tensor_shape.dimensions (Ir.Value.logical_shape mask) in
+            let metadata_matches =
+              match query_shape, key_shape, value_shape, pool_shape, slots_shape,
+                    mask_shape with
+              | ( [ batches; query_heads; 1; head_dim ],
+                  [ key_batches; kv_heads; 1; key_dim ],
+                  [ value_batches; value_heads; 1; value_dim ],
+                  [ pool_bytes ],
+                  [ past_tokens ],
+                  [ mask_batches; mask_heads; 1; key_length ] ) ->
+                  let group_size = Ir.Paged_attention_q8.group_size config in
+                  let attention_layers =
+                    Ir.Paged_attention_q8.attention_layers config
+                  in
+                  let token_elements =
+                    2 * attention_layers * kv_heads * head_dim
+                  in
+                  let token_groups = token_elements / group_size in
+                  batches = key_batches && batches = value_batches
+                  && kv_heads = value_heads
+                  && kv_heads = Ir.Paged_attention_q8.kv_heads config
+                  && query_heads mod kv_heads = 0
+                  && head_dim = key_dim && head_dim = value_dim
+                  && head_dim mod group_size = 0
+                  && past_tokens > 0 && key_length = past_tokens + 1
+                  && (mask_batches = 1 || mask_batches = batches)
+                  && (mask_heads = 1 || mask_heads = query_heads)
+                  && pool_bytes mod Ir.Paged_attention_q8.token_stride config = 0
+                  && Ir.Paged_attention_q8.token_stride config
+                     = token_elements + (2 * token_groups)
+              | _ -> false
+            in
+            if
+              metadata_matches
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape query)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype query = Ir.Dtype.Float16
+              && Ir.Value.dtype current_key = Ir.Dtype.Float16
+              && Ir.Value.dtype current_value = Ir.Dtype.Float16
+              && Ir.Value.dtype pool = Ir.Dtype.Int8
+              && Ir.Value.dtype slots = Ir.Dtype.Int32
+              && Ir.Value.dtype mask = Ir.Dtype.Bool
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d paged Q8 attention metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive Ir.Primitive.Embedding,
             [ indices; weight ],
             Some output ) ->
@@ -335,7 +401,8 @@ let validate_command seen_values command =
         | ( Ir.Op.Primitive
               (Ir.Primitive.Arange _ | Ir.Primitive.Diff _
               | Ir.Primitive.Cumsum _ | Ir.Primitive.Fill _
-              | Ir.Primitive.Gather2 | Ir.Primitive.Update_slice _),
+              | Ir.Primitive.Gather2 | Ir.Primitive.Update_slice _
+              | Ir.Primitive.Paged_attention_q8 _),
             _,
             _ ) ->
             Error
@@ -620,6 +687,8 @@ module Lfm25 = struct
           (Ir.Value.logical_shape query) (Ir.Value.logical_shape key)
           (Ir.Value.logical_shape value) (Ir.Value.logical_shape mask)
         |> shape_error
+    | Ir.Primitive.Paged_attention_q8 _, query :: _ ->
+        Ok (Ir.Value.logical_shape query)
     | Ir.Primitive.Embedding, [ indices; weight ] ->
         Tensor_shape.embedding (Ir.Value.logical_shape indices)
           (Ir.Value.logical_shape weight)
@@ -902,6 +971,213 @@ module Lfm25 = struct
       specialize
         [ captured_past, past_tokens; captured_past + 1, past_tokens + 1 ]
         schedule
+
+  let q8_attention_pool_input = "__llmopt_q8_attention_pool"
+  let q8_attention_slots_input = "__llmopt_q8_attention_slots"
+
+  type cache_chain = {
+    materialized : Ir.Value.t;
+    current : Ir.Value.t;
+  }
+
+  let producer_map commands =
+    List.fold_left
+      (fun producers command ->
+        match command.Command.output with
+        | None -> producers
+        | Some output -> Value_map.add (Ir.Value.id output) command producers)
+      Value_map.empty commands
+
+  let runtime_input producers value =
+    match Value_map.find_opt (Ir.Value.id value) producers with
+    | Some
+        {
+          Command.op =
+            Ir.Op.Input { source = Ir.Input_source.Runtime; name = _ };
+          inputs = [];
+          output = Some _;
+          _;
+        } ->
+        true
+    | _ -> false
+
+  let cache_chain producers value =
+    let rec find value =
+      match Value_map.find_opt (Ir.Value.id value) producers with
+      | Some
+          {
+            Command.op =
+              Ir.Op.Primitive
+                (Ir.Primitive.Movement
+                  (Ir.Movement.Reshape | Ir.Movement.Expand
+                  | Ir.Movement.Contiguous | Ir.Movement.View
+                  | Ir.Movement.Index _));
+            inputs = [ input ];
+            _;
+          } ->
+          find input
+      | Some
+          {
+            Command.op =
+              Ir.Op.Primitive
+                (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 2 }));
+            inputs = [ left; right ];
+            output = Some materialized;
+            _;
+          } ->
+          if runtime_input producers left && not (runtime_input producers right)
+          then Ok { materialized; current = right }
+          else if
+            runtime_input producers right && not (runtime_input producers left)
+          then Ok { materialized; current = left }
+          else Error "paged Q8 attention concat has no unique runtime cache input"
+      | _ -> Error "paged Q8 attention does not have the expected GQA cache chain"
+    in
+    find value
+
+  let max_value_id commands =
+    List.fold_left
+      (fun maximum command ->
+        let maximum =
+          List.fold_left
+            (fun maximum value -> max maximum (value_id value))
+            maximum command.Command.inputs
+        in
+        match command.Command.output with
+        | None -> maximum
+        | Some output -> max maximum (value_id output))
+      (-1) commands
+
+  let add_needed producers needed value =
+    let rec add needed value =
+      let id = Ir.Value.id value in
+      if Value_map.mem id needed then needed
+      else
+        let needed = Value_map.add id value needed in
+        match Value_map.find_opt id producers with
+        | None -> needed
+        | Some command -> List.fold_left add needed command.Command.inputs
+    in
+    add needed value
+
+  let prune commands =
+    let producers = producer_map commands in
+    let needed =
+      List.fold_left
+        (fun needed command ->
+          match command.Command.output with
+          | Some _ -> needed
+          | None -> List.fold_left (add_needed producers) needed command.inputs)
+        Value_map.empty commands
+    in
+    commands
+    |> List.filter (fun command ->
+           match command.Command.output with
+           | None -> true
+           | Some output -> Value_map.mem (Ir.Value.id output) needed)
+    |> List.mapi (fun node_id command -> { command with Command.node_id })
+
+  let direct_q8_attention ~past_tokens ~cache schedule =
+    let layout = Kv_cache.Config.layout cache in
+    let* group_size =
+      match Kv_cache.Layout.format layout with
+      | Kv_cache.Format.Q8 { group_size } -> Ok group_size
+      | Kv_cache.Format.F16 ->
+          Error "paged Q8 attention requires a grouped-Q8 physical cache"
+    in
+    let commands = schedule.commands in
+    let maximum = max_value_id commands in
+    if maximum > max_int - 2 then Error "paged Q8 attention value ids overflow"
+    else
+      let* pool_shape =
+        Tensor_shape.create [ Kv_cache.Config.token_pool_bytes cache ]
+        |> Result.map_error Tensor_shape.error_to_string
+      in
+      let* slots_shape =
+        Tensor_shape.create [ past_tokens ]
+        |> Result.map_error Tensor_shape.error_to_string
+      in
+      let pool =
+        Ir.Value.make_tensor ~id:(maximum + 1) ~shape:pool_shape
+          ~dtype:Ir.Dtype.Int8
+      in
+      let slots =
+        Ir.Value.make_tensor ~id:(maximum + 2) ~shape:slots_shape
+          ~dtype:Ir.Dtype.Int32
+      in
+      let producers = producer_map commands in
+      let rec rewrite layer aliases output = function
+        | [] ->
+            if layer <> Kv_cache.Layout.attention_layers layout then
+              Error
+                (Printf.sprintf
+                   "paged Q8 attention rewrote %d layers; cache layout declares %d"
+                   layer (Kv_cache.Layout.attention_layers layout))
+            else Ok (List.rev output, aliases)
+        | command :: rest ->
+            (match command.Command.op, command.inputs, command.output with
+            | ( Ir.Op.Primitive (Ir.Primitive.Attention attention),
+                [ query; key; value; mask ],
+                Some _ ) ->
+                let* key = cache_chain producers key in
+                let* value = cache_chain producers value in
+                let* config =
+                  Ir.Paged_attention_q8.create
+                    ~scale:(Ir.Attention.scale attention) ~cache_layer:layer
+                    ~attention_layers:(Kv_cache.Layout.attention_layers layout)
+                    ~kv_heads:(Kv_cache.Layout.kv_heads layout) ~group_size
+                    ~token_stride:(Kv_cache.Layout.bytes_per_token layout)
+                in
+                let command =
+                  {
+                    command with
+                    Command.op =
+                      Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config);
+                    inputs =
+                      [ query; key.current; value.current; pool; slots; mask ];
+                  }
+                in
+                let aliases =
+                  aliases
+                  |> Value_map.add (Ir.Value.id key.materialized) key.current
+                  |> Value_map.add (Ir.Value.id value.materialized) value.current
+                in
+                rewrite (layer + 1) aliases (command :: output) rest
+            | _ -> rewrite layer aliases (command :: output) rest)
+      in
+      let* commands, aliases = rewrite 0 Value_map.empty [] commands in
+      let commands =
+        List.map
+          (fun command ->
+            match command.Command.op, command.inputs with
+            | Ir.Op.Output _, [ value ] ->
+                let value =
+                  Value_map.find_opt (Ir.Value.id value) aliases
+                  |> Option.value ~default:value
+                in
+                { command with Command.inputs = [ value ] }
+            | _ -> command)
+          commands
+      in
+      let inputs =
+        [ { Command.node_id = 0;
+            op =
+              Ir.Op.Input
+                { name = q8_attention_pool_input; source = Ir.Input_source.Runtime };
+            inputs = [];
+            output = Some pool };
+          { Command.node_id = 1;
+            op =
+              Ir.Op.Input
+                { name = q8_attention_slots_input; source = Ir.Input_source.Runtime };
+            inputs = [];
+            output = Some slots } ]
+      in
+      create (prune (inputs @ commands))
+
+  let specialize_decode_paged_q8 ~captured_past ~past_tokens ~cache schedule =
+    let* schedule = specialize_decode ~captured_past ~past_tokens schedule in
+    direct_q8_attention ~past_tokens ~cache schedule
 end
 
 let dtype_tag = function
@@ -1311,6 +1587,15 @@ let write_primitive writer = function
       Binary.Writer.u8 writer 5;
       Binary.Writer.float64 writer (Ir.Attention.scale config);
       Binary.Writer.bool writer (Ir.Attention.causal config)
+  | Ir.Primitive.Paged_attention_q8 config ->
+      Binary.Writer.u8 writer 14;
+      Binary.Writer.float64 writer (Ir.Paged_attention_q8.scale config);
+      List.iter (Binary.Writer.u32 writer)
+        [ Ir.Paged_attention_q8.cache_layer config;
+          Ir.Paged_attention_q8.attention_layers config;
+          Ir.Paged_attention_q8.kv_heads config;
+          Ir.Paged_attention_q8.group_size config;
+          Ir.Paged_attention_q8.token_stride config ]
   | Ir.Primitive.Embedding -> Binary.Writer.u8 writer 6
   | Ir.Primitive.Arange config ->
       Binary.Writer.u8 writer 7;
@@ -1422,6 +1707,16 @@ let read_primitive values reader =
            { Ir.Reduction.operator = Sum; axes; keepdim })
   | 13 ->
       read_index reader |> Result.map (fun index -> Ir.Primitive.Update_slice index)
+  | 14 ->
+      let* scale = Binary.Reader.float64 reader in
+      let* cache_layer = Binary.Reader.u32 reader in
+      let* attention_layers = Binary.Reader.u32 reader in
+      let* kv_heads = Binary.Reader.u32 reader in
+      let* group_size = Binary.Reader.u32 reader in
+      let* token_stride = Binary.Reader.u32 reader in
+      Ir.Paged_attention_q8.create ~scale ~cache_layer ~attention_layers
+        ~kv_heads ~group_size ~token_stride
+      |> Result.map (fun config -> Ir.Primitive.Paged_attention_q8 config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function

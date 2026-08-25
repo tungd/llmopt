@@ -25,6 +25,18 @@ type contract = {
   recurrents : recurrent_binding list;
 }
 
+module Attention_cache = struct
+  type t = Materialized_f16 | Paged_q8
+
+  let of_config config =
+    match
+      config |> Serving_cache.Config.kv |> Kv_cache.Config.layout
+      |> Kv_cache.Layout.format
+    with
+    | Kv_cache.Format.F16 -> Materialized_f16
+    | Kv_cache.Format.Q8 _ -> Paged_q8
+end
+
 module Step = struct
   type t = {
     logits : Metal_runtime.Buffer.t;
@@ -55,6 +67,7 @@ type t = {
   decode : Metal_runtime.t;
   logical_cache : Serving_cache.t;
   physical_cache : Metal_runtime.Cache.t;
+  attention_cache : Attention_cache.t;
   contract : contract;
 }
 
@@ -344,6 +357,7 @@ let create ~config ~prefill ~decode =
         decode;
         logical_cache = Serving_cache.create config;
         physical_cache;
+        attention_cache = Attention_cache.of_config config;
         contract;
       }
 
@@ -356,9 +370,17 @@ let prefill_schedule engine tokens =
     (engine.prefill |> Metal_runtime.package |> Serving_package.schedule)
 
 let decode_schedule engine past_tokens =
-  Serving_schedule.Lfm25.specialize_decode
-    ~captured_past:engine.contract.past_tokens ~past_tokens
-    (engine.decode |> Metal_runtime.package |> Serving_package.schedule)
+  let schedule =
+    engine.decode |> Metal_runtime.package |> Serving_package.schedule
+  in
+  match engine.attention_cache with
+  | Attention_cache.Materialized_f16 ->
+      Serving_schedule.Lfm25.specialize_decode
+        ~captured_past:engine.contract.past_tokens ~past_tokens schedule
+  | Attention_cache.Paged_q8 ->
+      Serving_schedule.Lfm25.specialize_decode_paged_q8
+        ~captured_past:engine.contract.past_tokens ~past_tokens
+        ~cache:(Serving_cache.Config.kv engine.config) schedule
 
 let validate_tokens engine tokens =
   let vocabulary = (Serving_cache.Config.model engine.config).vocab_size in
@@ -551,7 +573,12 @@ let prepare_decode_buffers engine slots checkpoint =
           rest
   in
   Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
-      let* attention = attention batch [] engine.contract.attentions in
+      let* attention =
+        match engine.attention_cache with
+        | Attention_cache.Materialized_f16 ->
+            attention batch [] engine.contract.attentions
+        | Attention_cache.Paged_q8 -> Ok []
+      in
       let* recurrent = recurrent batch [] engine.contract.recurrents in
       Ok (Serving_replay.Decode_buffers.create ~attention ~recurrent))
 
@@ -560,6 +587,22 @@ let decode_buffers_from_execution execution buffers =
       let* key = output execution binding.key_output in
       let* value = output execution binding.value_output in
       Ok (key, value))
+
+let decode_inputs engine ~slots ~token_input buffers =
+  let* attention_inputs =
+    match engine.attention_cache with
+    | Attention_cache.Materialized_f16 -> Ok []
+    | Attention_cache.Paged_q8 ->
+        Metal_runtime.Cache.q8_attention_inputs engine.physical_cache ~slots
+  in
+  Ok
+    ((engine.contract.input_ids, token_input)
+    :: (attention_inputs @ Serving_replay.Decode_buffers.inputs buffers))
+
+let attention_pack_slice engine ~past_tokens =
+  match engine.attention_cache with
+  | Attention_cache.Materialized_f16 -> past_tokens + 1, past_tokens
+  | Attention_cache.Paged_q8 -> 1, 0
 
 let rec pack_decode_attention batch execution slots ~source_items
     ~source_offset (bindings : attention_binding list) =
@@ -651,18 +694,20 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
             prepare_decode_buffers engine matched_slots source_checkpoint
           in
           let* token_input = token_buffer engine.decode [| token |] in
-          let inputs =
-            (engine.contract.input_ids, token_input)
-            :: Serving_replay.Decode_buffers.inputs buffers
+          let* inputs =
+            decode_inputs engine ~slots:matched_slots ~token_input buffers
           in
           let* execution =
             Metal_runtime.execute_schedule engine.decode ~schedule ~inputs
+          in
+          let source_items, source_offset =
+            attention_pack_slice engine ~past_tokens
           in
           let* () =
             Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
                 let* () =
                   pack_decode_attention batch execution reservation.slots
-                    ~source_items:(past_tokens + 1) ~source_offset:past_tokens
+                    ~source_items ~source_offset
                     engine.contract.attentions
                 in
                 pack_decode_recurrent batch reservation.checkpoint
@@ -818,19 +863,27 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
                 let rec replay buffers offset =
                   let* schedule = decode_schedule engine offset in
                   let* token_input = token_buffer engine.decode [| tokens.(offset) |] in
-                  let inputs =
-                    (engine.contract.input_ids, token_input)
-                    :: Serving_replay.Decode_buffers.inputs buffers
+                  let suffix_index = offset - cached_tokens in
+                  let prior_slots =
+                    if suffix_index = 0 then matched_slots
+                    else
+                      Array.append matched_slots
+                        (Array.sub reservation.slots 0 suffix_index)
+                  in
+                  let* inputs =
+                    decode_inputs engine ~slots:prior_slots ~token_input buffers
                   in
                   let* execution =
                     Metal_runtime.encode_schedule batch ~schedule ~inputs
                   in
                   let* buffers = decode_buffers_from_execution execution buffers in
-                  let suffix_index = offset - cached_tokens in
+                  let source_items, source_offset =
+                    attention_pack_slice engine ~past_tokens:offset
+                  in
                   let* () =
                     encode_decode_attention batch engine.physical_cache execution
                       reservation.slots.(suffix_index)
-                      ~source_items:(offset + 1) ~source_offset:offset
+                      ~source_items ~source_offset
                       engine.contract.attentions
                   in
                   let* () =

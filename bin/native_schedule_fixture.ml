@@ -109,6 +109,28 @@ let graph () =
     [ 1; 1; 2; 2 ] Ir.Dtype.Float16
   |> output graph "attention";
 
+  let paged_query =
+    input graph "paged_query" [ 1; 1; 1; 64 ] Ir.Dtype.Float16
+  in
+  let paged_key =
+    input graph "paged_current_key" [ 1; 1; 1; 64 ] Ir.Dtype.Float16
+  in
+  let paged_value =
+    input graph "paged_current_value" [ 1; 1; 1; 64 ] Ir.Dtype.Float16
+  in
+  let paged_pool = input graph "paged_pool" [ 132 ] Ir.Dtype.Int8 in
+  let paged_slots = input graph "paged_slots" [ 1 ] Ir.Dtype.Int32 in
+  let paged_mask = input graph "paged_mask" [ 1; 1; 1; 2 ] Ir.Dtype.Bool in
+  let paged_attention =
+    expect_ok
+      (Ir.Paged_attention_q8.create ~scale:1.0 ~cache_layer:0
+         ~attention_layers:1 ~kv_heads:1 ~group_size:64 ~token_stride:132)
+  in
+  primitive graph (Ir.Primitive.Paged_attention_q8 paged_attention)
+    [ paged_query; paged_key; paged_value; paged_pool; paged_slots; paged_mask ]
+    [ 1; 1; 1; 64 ] Ir.Dtype.Float16
+  |> output graph "paged_attention";
+
   let cast_f16 = input graph "cast_f16_input" [ 3 ] Ir.Dtype.Float16 in
   primitive graph (Ir.Primitive.Cast Ir.Dtype.Float32) [ cast_f16 ] [ 3 ]
     Ir.Dtype.Float32
@@ -398,7 +420,10 @@ let () =
   ensure_directory root;
   let graph = graph () in
   let schedule = Serving_schedule.of_graph graph |> expect_ok in
-  let program = Metal.lower graph |> expect_ok in
+  let program =
+    Metal.lower graph |> expect_ok
+    |> Metal.add_cache_kernels ~formats:[ Kv_cache.Format.default ]
+  in
   let files =
     Serving_package.Files.create ~metal_library:(artifact "kernel.metallib")
   in

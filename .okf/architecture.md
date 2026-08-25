@@ -60,6 +60,9 @@ sources:
   - id: local-kv-cache
     resource: /lib/kv_cache.ml
     title: OCaml KV format, accounting, and slot allocator
+  - id: paged-q8-attention-result
+    resource: /bench/results/lfm25-350m-q8-paged-attention-compiler-2026-08-25.txt
+    title: Direct paged-Q8 attention compiler evidence
   - id: local-radix-cache
     resource: /lib/radix_cache.ml
     title: OCaml compressed radix prefix cache
@@ -502,6 +505,17 @@ phase into one ordered command buffer. For the six-attention, ten-recurrent
 the generated schedule. The exact Q8/FP16 cache probe retains all bytes. The
 matched HTTP trace retains token parity and 80/194 reuse, lowers all four TPOT
 values by 2.82 to 5.45 ms, and measures ERS `0.11381808711306604`.
+
+Q8 decode attention now bypasses context-sized cache restoration. A typed LFM
+specialization recognizes each six-layer GQA concat/expand chain and replaces
+its materialized past-K/V tensors with one physical Q8 token pool plus an int32
+radix slot map. The generated width-64 Metal kernel dequantizes cached K/V at
+the point of use, consumes the current FP16 row directly, and applies online
+softmax in one SIMD group. Runtime Q8 decode specialization changes from 864
+commands and 23 inputs to 804 commands and 13 inputs; the selectable FP16 path
+retains the materialized schedule. Q8 workspace is 199,424 bytes at past 4,095
+instead of the FP16 materialized path's 71,371,520 bytes. One exact synthetic
+Metal attempt selects the new kernel and returns all 47 outputs exactly.
 
 Dependent cached-suffix replay now goes further: it unpacks the matched prefix
 once, then encodes each dependent decode schedule and its per-token cache

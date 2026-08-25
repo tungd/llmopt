@@ -1726,6 +1726,8 @@ let () =
          "kernel void llmopt_cache_unpack_attention_q8_vec4"
     && contains_substring (Metal.Program.source cache_program)
          "kernel void llmopt_cache_unpack_checkpoint_q8_vec4"
+    && contains_substring (Metal.Program.source cache_program)
+         "kernel void llmopt_attention_q8_paged_simd_h64"
     && contains_substring (Metal.Program.source cache_program) "simd_max"
     && contains_substring (Metal.Program.source cache_program)
          "llmopt_cache_unpack_checkpoint_f16")
@@ -1737,11 +1739,12 @@ let () =
            (fun entry ->
              Kernel_abi.Entry.name entry = name
              && Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
-           cache_entries)
+           (Metal.Program.kernels cache_program))
        [ "llmopt_cache_pack_attention_q8_simd";
          "llmopt_cache_pack_checkpoint_q8_simd";
          "llmopt_cache_unpack_attention_q8_vec4";
-         "llmopt_cache_unpack_checkpoint_q8_vec4" ])
+         "llmopt_cache_unpack_checkpoint_q8_vec4";
+         "llmopt_attention_q8_paged_simd_h64" ])
     "vector Q8 cache kernels declare the 256-thread ABI";
   let prefill_template = Ir.Graph.create () in
   let prefill_input =
@@ -2094,6 +2097,112 @@ let () =
    with
   | Error _ -> ()
   | Ok _ -> fail "LFM decode specialization accepted an empty past");
+  let paged_decode = Ir.Graph.create () in
+  let paged_input name shape dtype =
+    Ir.Graph.tensor_input paged_decode ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+  in
+  let past_key = paged_input "past_key" [ 1; 2; 3; 2 ] Ir.Dtype.Float16 in
+  let past_value = paged_input "past_value" [ 1; 2; 3; 2 ] Ir.Dtype.Float16 in
+  let query = paged_input "query" [ 1; 2; 1; 2 ] Ir.Dtype.Float16 in
+  let current_value name =
+    let source = paged_input name [ 1; 2; 1; 2 ] Ir.Dtype.Float16 in
+    let value =
+      Ir.Graph.fresh_tensor_value paged_decode
+        ~shape:(Tensor_shape.of_ints_exn [ 1; 2; 1; 2 ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append paged_decode
+      ~op:(Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float16))
+      ~inputs:[ source ] ~output:(Some value);
+    value
+  in
+  let current_key = current_value "current_key" in
+  let current_value = current_value "current_value" in
+  let mask = paged_input "mask" [ 1; 1; 1; 4 ] Ir.Dtype.Bool in
+  let append_paged operation inputs shape =
+    let output =
+      Ir.Graph.fresh_tensor_value paged_decode
+        ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append paged_decode ~op:(Ir.Op.Primitive operation) ~inputs
+      ~output:(Some output);
+    output
+  in
+  let materialized_key =
+    append_paged (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 2 }))
+      [ past_key; current_key ] [ 1; 2; 4; 2 ]
+  in
+  let materialized_value =
+    append_paged (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 2 }))
+      [ past_value; current_value ] [ 1; 2; 4; 2 ]
+  in
+  let paged_output =
+    append_paged
+      (Ir.Primitive.Attention
+         (expect_ok (Ir.Attention.create ~scale:0.5 ~causal:false)))
+      [ query; materialized_key; materialized_value; mask ] [ 1; 2; 1; 2 ]
+  in
+  Ir.Graph.add_output paged_decode ~name:"keys" materialized_key;
+  Ir.Graph.add_output paged_decode ~name:"values" materialized_value;
+  Ir.Graph.add_output paged_decode ~name:"attention" paged_output;
+  let paged_format = expect_ok (Kv_cache.Format.q8 ~group_size:2) in
+  let paged_layout =
+    expect_ok
+      (Kv_cache.Layout.create ~format:paged_format ~attention_layers:1
+         ~kv_heads:2 ~head_dim:2 ~recurrent_layers:0 ~recurrent_width:0
+         ~recurrent_window:0)
+  in
+  let paged_cache =
+    expect_ok
+      (Kv_cache.Config.create ~layout:paged_layout ~token_capacity:8
+         ~checkpoint_capacity:1)
+  in
+  let paged_schedule =
+    paged_decode |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.Lfm25.specialize_decode_paged_q8 ~captured_past:3
+         ~past_tokens:5 ~cache:paged_cache
+    |> expect_ok |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes
+    |> expect_ok
+  in
+  let paged_runtime_inputs = Serving_schedule.runtime_inputs paged_schedule in
+  expect
+    (not (List.mem_assoc "past_key" paged_runtime_inputs)
+    && not (List.mem_assoc "past_value" paged_runtime_inputs)
+    && Tensor_shape.dimensions
+         (List.assoc Serving_schedule.Lfm25.q8_attention_slots_input
+            paged_runtime_inputs
+         |> Ir.Value.logical_shape)
+       = [ 5 ]
+    && Tensor_shape.dimensions
+         (List.assoc Serving_schedule.Lfm25.q8_attention_pool_input
+            paged_runtime_inputs
+         |> Ir.Value.logical_shape)
+       = [ Kv_cache.Config.token_pool_bytes paged_cache ])
+    "paged Q8 decode removes materialized past attention inputs";
+  expect
+    (Serving_schedule.commands paged_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config) ->
+               Ir.Paged_attention_q8.cache_layer config = 0
+               && Ir.Paged_attention_q8.group_size config = 2
+               && List.length (Serving_schedule.Command.inputs command) = 6
+           | _ -> false))
+    "paged Q8 decode reifies one direct physical-cache attention command";
+  expect
+    (Serving_schedule.commands paged_schedule
+    |> List.filter_map (fun command ->
+           match
+             Serving_schedule.Command.op command,
+             Serving_schedule.Command.inputs command
+           with
+           | Ir.Op.Output { name = ("keys" | "values") }, [ value ] ->
+               Some (Tensor_shape.dimensions (Ir.Value.logical_shape value))
+           | _ -> None)
+    = [ [ 1; 2; 1; 2 ]; [ 1; 2; 1; 2 ] ])
+    "paged Q8 decode exports only the current key/value row";
+  let _ = expect_ok (Serving_memory_plan.create paged_schedule) in
   let workspace_graph = Ir.Graph.create () in
   let workspace_shape = Tensor_shape.of_ints_exn [ 128 ] in
   let workspace_input name =

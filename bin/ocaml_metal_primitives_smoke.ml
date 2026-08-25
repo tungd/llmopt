@@ -29,6 +29,22 @@ let bytes_of_i8 values =
   |> List.map (fun value -> Char.chr (value land 0xff))
   |> List.to_seq |> Bytes.of_seq
 
+let bytes_of_i32 values =
+  let bytes = Bytes.create (4 * List.length values) in
+  List.iteri
+    (fun index value -> Bytes.set_int32_le bytes (4 * index) (Int32.of_int value))
+    values;
+  bytes
+
+let paged_pool () =
+  let bytes = Bytes.make 132 '\000' in
+  for index = 64 to 127 do
+    Bytes.set_uint8 bytes index 2
+  done;
+  Bytes.set_uint16_le bytes 128 0x3c00;
+  Bytes.set_uint16_le bytes 130 0x3c00;
+  bytes
+
 let bytes_of_bool values =
   values |> List.map (fun value -> if value then '\001' else '\000')
   |> List.to_seq |> Bytes.of_seq
@@ -95,6 +111,14 @@ let () =
             (bytes_of_u16 [ 0x4900; 0x0000; 0x0000; 0x4d00 ]);
           input runtime "attention_mask"
             (bytes_of_bool [ true; false; false; true ]);
+          input runtime "paged_query" (bytes_of_u16 (List.init 64 (Fun.const 0)));
+          input runtime "paged_current_key"
+            (bytes_of_u16 (List.init 64 (Fun.const 0)));
+          input runtime "paged_current_value"
+            (bytes_of_u16 (List.init 64 (Fun.const 0x4400)));
+          input runtime "paged_pool" (paged_pool ());
+          input runtime "paged_slots" (bytes_of_i32 [ 0 ]);
+          input runtime "paged_mask" (bytes_of_bool [ true; true ]);
           input runtime "cast_f16_input"
             (bytes_of_u16 [ 0x3c00; 0xc000; 0x3800 ]);
           input runtime "cast_f32_input" (bytes_of_f32 [ 1.; -2.; 0.5 ]);
@@ -184,6 +208,8 @@ let () =
          0x4a00; 0x4b00; 0x49c0; 0x4400 ]);
   expect_bytes execution "attention"
     (bytes_of_u16 [ 0x4900; 0; 0; 0x4d00 ]);
+  expect_bytes execution "paged_attention"
+    (bytes_of_u16 (List.init 64 (Fun.const 0x4200)));
   expect_bytes execution "cast_f16_f32" (bytes_of_f32 [ 1.; -2.; 0.5 ]);
   expect_bytes execution "cast_f32_f16"
     (bytes_of_u16 [ 0x3c00; 0xc000; 0x3800 ]);
@@ -254,17 +280,17 @@ let () =
       "fused Q8 multiplied input differs from materialized multiply and residual";
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 47 then
+  if List.length kernels <> 48 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 47"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 48"
          (List.length kernels));
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
-  if workspace_bytes <> 11_520 then
+  if workspace_bytes <> 11_776 then
     fail
-      (Printf.sprintf "native fixture workspace is %d bytes instead of 11520"
+      (Printf.sprintf "native fixture workspace is %d bytes instead of 11776"
          workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 46 exact\nq8-decode-kernel: llmopt_q8_gemv_pair_simd\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu_pair_simd\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add_pair_simd\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add_pair_simd\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 47 exact\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\nq8-decode-kernel: llmopt_q8_gemv_pair_simd\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu_pair_simd\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add_pair_simd\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add_pair_simd\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

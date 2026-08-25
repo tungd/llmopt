@@ -34,6 +34,20 @@ module Lfm25 : sig
       [past_tokens] prefix. *)
   val specialize_decode :
     captured_past:int -> past_tokens:int -> t -> (t, string) result
+
+  val q8_attention_pool_input : string
+  val q8_attention_slots_input : string
+
+  (** Specialize one-token decode and replace each materialized GQA cache
+      expansion with direct reads from the grouped-Q8 token pool. The rewritten
+      key/value outputs contain only the current token because prior tokens
+      already remain in the physical cache. *)
+  val specialize_decode_paged_q8 :
+    captured_past:int ->
+    past_tokens:int ->
+    cache:Kv_cache.Config.t ->
+    t ->
+    (t, string) result
 end
 
 val to_bytes : t -> bytes

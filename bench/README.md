@@ -337,6 +337,16 @@ change by `+0.014504803224463791`, `-4.54179200460203 ms`, and
 12-token parity but observes TTFT/TPOT increases at both lengths. See
 [`results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt`](results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt).
 
+The next Q8 decode specialization removes context-sized attention restoration.
+Six generated width-64 attention kernels read prior K/V values directly from
+radix-owned Q8 token slots while current K/V stays FP16; the selectable FP16
+path remains materialized. Specialized Q8 decode has 804 commands, 13 runtime
+inputs, and workspace 171,008/172,800/199,424 bytes at past lengths
+1/127/4,095. One synthetic Apple M4 Pro attempt selects the new entry with
+47/47 exact outputs. This compiler record has no model latency or ERS result.
+See
+[`results/lfm25-350m-q8-paged-attention-compiler-2026-08-25.txt`](results/lfm25-350m-q8-paged-attention-compiler-2026-08-25.txt).
+
 Run the natural needle matrix through the same endpoint with:
 
 ```sh

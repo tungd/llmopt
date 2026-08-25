@@ -77,7 +77,7 @@ let logits_rows schedule =
   | [ 1; rows; vocabulary ] when rows > 0 && vocabulary > 0 -> Ok rows
   | _ -> Error "specialized logits output has an invalid shape"
 
-let specialize prefill decode =
+let specialize ~cache prefill decode =
   let prefill_schedule = Serving_package.schedule prefill in
   let decode_schedule = Serving_package.schedule decode in
   let* captured_prefill, captured_past = template_lengths prefill decode in
@@ -93,24 +93,35 @@ let specialize prefill decode =
     Serving_schedule.Lfm25.specialize_prefill
       ~captured_tokens:captured_prefill ~tokens:4096 prefill_schedule
   in
-  let* decode_one =
-    Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens:1
-      decode_schedule
+  let specialize_decode past_tokens =
+    match Kv_cache.Layout.format (Kv_cache.Config.layout cache) with
+    | Kv_cache.Format.F16 ->
+        Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens
+          decode_schedule
+    | Kv_cache.Format.Q8 _ ->
+        Serving_schedule.Lfm25.specialize_decode_paged_q8 ~captured_past
+          ~past_tokens ~cache decode_schedule
   in
-  let* decode_127 =
-    Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens:127
-      decode_schedule
-  in
-  let* decode_4095 =
-    Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens:4095
-      decode_schedule
-  in
+  let* decode_one = specialize_decode 1 in
+  let* decode_127 = specialize_decode 127 in
+  let* decode_4095 = specialize_decode 4095 in
   let* prefill_13_rows = logits_rows prefill_13 in
   let* prefill_128_rows = logits_rows prefill_128 in
   let* prefill_4096_rows = logits_rows prefill_4096 in
   let* prefill_13 = workspace prefill_13 in
   let* prefill_128 = workspace prefill_128 in
   let* prefill_4096 = workspace prefill_4096 in
+  let decode_commands = List.length (Serving_schedule.commands decode_127) in
+  let decode_inputs = List.length (Serving_schedule.runtime_inputs decode_127) in
+  let paged_attention =
+    Serving_schedule.commands decode_127
+    |> List.fold_left
+         (fun count command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 _) -> count + 1
+           | _ -> count)
+         0
+  in
   let* decode_one = workspace decode_one in
   let* decode_127 = workspace decode_127 in
   let* decode_4095 = workspace decode_4095 in
@@ -125,7 +136,10 @@ let specialize prefill decode =
       prefill_4096,
       decode_one,
       decode_127,
-      decode_4095 )
+      decode_4095,
+      decode_commands,
+      decode_inputs,
+      paged_attention )
 
 let run () =
   let* kv_format, prefill_root, decode_root = arguments () in
@@ -151,8 +165,9 @@ let run () =
     let* () = Serving_engine.validate_packages ~config ~prefill ~decode in
     let* captured_prefill, captured_past, prefill_13_rows, prefill_128_rows,
          prefill_4096_rows, prefill_13, prefill_128, prefill_4096, decode_one,
-         decode_127, decode_4095 =
-      specialize prefill decode
+         decode_127, decode_4095, decode_commands, decode_inputs,
+         paged_attention =
+      specialize ~cache:(Serving_cache.Config.kv config) prefill decode
     in
     Printf.printf
       "valid LFM2.5 serving pair: prefill ABI=%d, decode ABI=%d, KV=%s, page=%d\n"
@@ -165,6 +180,9 @@ let run () =
       "sequence templates: prefill=%d, decode-past=%d; workspaces: prefill-13=%d, prefill-128=%d, prefill-4096=%d, decode-1=%d, decode-127=%d, decode-4095=%d\n"
       captured_prefill captured_past prefill_13 prefill_128 prefill_4096
       decode_one decode_127 decode_4095;
+    Printf.printf
+      "specialized decode: commands=%d, runtime-inputs=%d, paged-q8-attention=%d\n"
+      decode_commands decode_inputs paged_attention;
     Ok ()
 
 let () =

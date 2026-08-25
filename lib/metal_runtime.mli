@@ -116,6 +116,11 @@ module Cache : sig
     checkpoint:Kv_cache.Checkpoint.t ->
     destination:Buffer.t ->
     (string, string) result
+
+  val q8_attention_inputs :
+    t ->
+    slots:Kv_cache.Slot.t array ->
+    ((string * Buffer.t) list, string) result
 end
 
 module Execution : sig
