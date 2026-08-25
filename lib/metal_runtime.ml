@@ -247,11 +247,11 @@ let tensor runtime ~name =
                   (Weight_archive.Tensor.byte_length tensor),
                 tensor )))
 
-let q8_kernel ?name runtime dtype =
+let q8_kernel ?name runtime ~operation dtype =
   let entries = Serving_package.kernels runtime.package in
   List.find_opt
     (fun entry ->
-      Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_linear
+      Kernel_abi.Entry.operation entry = operation
       && Kernel_abi.Entry.input_dtype entry = dtype
       && Kernel_abi.Entry.output_dtype entry = dtype
       &&
@@ -260,13 +260,17 @@ let q8_kernel ?name runtime dtype =
       | Some expected -> Kernel_abi.Entry.name entry = expected)
     entries
 
-let q8_kernel_name dtype ~m =
-  match dtype, m with
-  | Ir.Dtype.Float16, 1 -> Ok "llmopt_q8_gemv"
-  | Ir.Dtype.Float32, 1 -> Ok "llmopt_q8_gemv_f32"
-  | Ir.Dtype.Float16, _ -> Ok "llmopt_q8_linear"
-  | Ir.Dtype.Float32, _ -> Ok "llmopt_q8_linear_f32"
-  | dtype, _ ->
+let q8_kernel_name dtype ~m ~silu =
+  match dtype, m, silu with
+  | Ir.Dtype.Float16, 1, false -> Ok "llmopt_q8_gemv"
+  | Ir.Dtype.Float32, 1, false -> Ok "llmopt_q8_gemv_f32"
+  | Ir.Dtype.Float16, _, false -> Ok "llmopt_q8_linear"
+  | Ir.Dtype.Float32, _, false -> Ok "llmopt_q8_linear_f32"
+  | Ir.Dtype.Float16, 1, true -> Ok "llmopt_q8_gemv_silu"
+  | Ir.Dtype.Float32, 1, true -> Ok "llmopt_q8_gemv_silu_f32"
+  | Ir.Dtype.Float16, _, true -> Ok "llmopt_q8_linear_silu"
+  | Ir.Dtype.Float32, _, true -> Ok "llmopt_q8_linear_silu_f32"
+  | dtype, _, _ ->
       Error
         ("Q8 Metal dispatch requires f16 or f32 activations, got "
         ^ Ir.Dtype.to_string dtype)
@@ -275,7 +279,9 @@ let dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n
     ~k =
   match dtype with
   | Ir.Dtype.Float16 | Ir.Dtype.Float32 ->
-      (match q8_kernel runtime dtype with
+      (match
+         q8_kernel runtime ~operation:Kernel_abi.Operation.Q8_linear dtype
+       with
       | None ->
           Error
             ("serving package has no Q8 linear kernel for "
@@ -1203,12 +1209,16 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
-let dispatch_q8_linear_batched batch runtime ~dtype ~input_value ~weight_value
-    ~input ~weight ~scale ~bias ~output_value ~output ~m ~n ~k =
+let dispatch_q8_linear_batched batch runtime ~silu ~dtype ~input_value
+    ~weight_value ~input ~weight ~scale ~bias ~output_value ~output ~m ~n ~k =
   let* () = validate_linear_shapes ~m ~n ~k input_value weight_value output_value in
-  let* name = q8_kernel_name dtype ~m in
+  let operation =
+    if silu then Kernel_abi.Operation.Q8_linear_silu
+    else Kernel_abi.Operation.Q8_linear
+  in
+  let* name = q8_kernel_name dtype ~m ~silu in
   let* entry =
-    match q8_kernel ~name runtime dtype with
+    match q8_kernel ~name runtime ~operation dtype with
     | Some entry -> Ok entry
     | None ->
         Error
@@ -1224,6 +1234,31 @@ let dispatch_q8_linear_batched batch runtime ~dtype ~input_value ~weight_value
   dispatch ~batch runtime entry
     ~buffers:[ input; weight; scale; bias_buffer; output ] ~parameters
     ~grid:(grid_x, grid_y, 1)
+
+let dispatch_q8_command batch runtime state ~silu ~m ~n ~k ~has_bias values
+    output =
+  let* input_value, weight_value, input, weight, scale, bias =
+    match values, has_bias with
+    | [ input_value; weight_value; scale_value ], false ->
+        let* input = find_value state input_value in
+        let* weight = find_value state weight_value in
+        let* scale = find_value state scale_value in
+        Ok (input_value, weight_value, input, weight, scale, None)
+    | [ input_value; weight_value; scale_value; bias_value ], true ->
+        let* input = find_value state input_value in
+        let* weight = find_value state weight_value in
+        let* scale = find_value state scale_value in
+        let* bias = find_value state bias_value in
+        Ok (input_value, weight_value, input, weight, scale, Some bias)
+    | _ -> Error "Q8 schedule command has inconsistent bias inputs"
+  in
+  let* output_buffer = workspace_buffer state output in
+  let* kernel =
+    dispatch_q8_linear_batched batch runtime ~silu
+      ~dtype:(Ir.Value.dtype output) ~input_value ~weight_value ~input ~weight
+      ~scale ~bias ~output_value:output ~output:output_buffer ~m ~n ~k
+  in
+  Ok (bind_value state output output_buffer, kernel)
 
 let split_axis shape axis =
   let rec loop outer remaining = function
@@ -1833,42 +1868,15 @@ let encode_schedule execution_batch ~schedule ~inputs =
                  ~input_dtype:(Ir.Value.dtype source) ~buffers ~parameters
                  ~grid:(Tensor_shape.numel (Ir.Value.logical_shape output), 1, 1))
         | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, values, Some output ->
-            let* input_value, weight_value, input, weight, scale, bias =
-              match values, has_bias with
-              | [ input_value; weight_value; scale_value ], false ->
-                  let* input = find_value state input_value in
-                  let* weight = find_value state weight_value in
-                  let* scale = find_value state scale_value in
-                  Ok
-                    ( input_value,
-                      weight_value,
-                      input,
-                      weight,
-                      scale,
-                      None )
-              | [ input_value; weight_value; scale_value; bias_value ], true ->
-                  let* input = find_value state input_value in
-                  let* weight = find_value state weight_value in
-                  let* scale = find_value state scale_value in
-                  let* bias = find_value state bias_value in
-                  Ok
-                    ( input_value,
-                      weight_value,
-                      input,
-                      weight,
-                      scale,
-                      Some bias )
-              | _ -> Error "Q8 schedule command has inconsistent bias inputs"
-            in
-            let* output_buffer = workspace_buffer state output in
-            let* kernel =
-              dispatch_q8_linear_batched batch runtime
-                ~dtype:(Ir.Value.dtype output) ~input_value ~weight_value
-                ~input ~weight ~scale ~bias ~output_value:output
-                ~output:output_buffer ~m ~n ~k
-            in
-            let state = bind_value state output output_buffer in
-            continue { state with kernels_rev = kernel :: state.kernels_rev }
+            dispatched
+              (dispatch_q8_command batch runtime state ~silu:false ~m ~n ~k
+                 ~has_bias values output)
+        | ( Ir.Op.Q8_linear_silu { m; n; k; bias = has_bias },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_command batch runtime state ~silu:true ~m ~n ~k
+                 ~has_bias values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue

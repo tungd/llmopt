@@ -1,0 +1,56 @@
+LFM2.5-350M Q8 linear-SiLU compiler fusion
+Date: 2026-08-25
+Host: Apple M4 Pro, 25,769,803,776 bytes unified memory
+
+Optimization
+- Detect an adjacent Q8_linear -> SiLU pair when the Q8 result has no other consumer.
+- Replace both commands with typed Q8_linear_silu while retaining the SiLU output identity.
+- Select tiled Q8 GEMM+SiLU for multi-row prefill and Q8 GEMV+SiLU for m=1 decode.
+- Apply bias before SiLU and preserve the float16 materialization rounding point inside the fused epilogue.
+- Schedule ABI v9 and package ABI v9 retain reads for schedule v1-v8 and package v2-v8.
+
+Saved 350M binary-graph replan
+- input graphs: 1,155-node prefill and 1,195-node decode
+- prefill before/after commands: 872 / 856
+- decode before/after commands: 926 / 910
+- fused Q8-SiLU operations: 16 prefill / 16 decode
+- remaining standalone SiLU operations: 0 prefill / 0 decode
+- opaque operations: 0 / 0
+- tensor bindings: 241 / 241 against one 422,137,216-byte binary tensor archive
+- package ABI: 9
+- prefill package: 52 kernel entries, 97,320 bytes
+- decode package: 50 kernel entries, 100,803 bytes
+- prefill workspace high-water/unreused: 1,153,792 / 8,970,752 bytes
+- decode workspace high-water/unreused: 271,360 / 2,004,224 bytes
+- both generated MSL programs compiled and linked with Xcode Metal
+- persistent artifact root: _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi9-silu-v1-2026-08-25
+- Q8-group-64 and FP16-selectable pair validation: pass
+- source/prefill/decode binary tensor archive inode: 241927011 / 241927011 / 241927011
+- prefill-13/128/4096 workspace bytes: 2,500,608 / 23,482,368 / 759,300,096
+- decode-past-1/127/4095 workspace bytes: 198,656 / 2,269,952 / 71,371,520
+
+Small device observation
+- preflight memory: 47% free
+- resident model/Torch/native-server processes: none
+- supervisor: 30 seconds with TERM and five-second KILL escalation
+- device: Apple M4 Pro
+- commands: 137
+- dispatched kernels: 40
+- workspace: 10,240 bytes
+- outputs: 41/41 exact, including llmopt_q8_gemv_silu
+- observed fused output bits: 0x3f0c, 0x47ff, 0xb461
+
+Final static parity fixture
+- The final emitter explicitly rounds the accumulated float value to float16 before SiLU, matching materialized Q8_linear -> standalone SiLU semantics.
+- The current 139-command fixture contains both paths and asserts their output bytes are identical.
+- Xcode Metal compilation and package validation pass with 49 entries, 0 opaque commands, 10,496 workspace bytes, and 41 allocations.
+- The final strengthened 42-output fixture was not launched after the one recorded device attempt.
+
+Verification
+- ninja -f ninja.build all ocaml-test native-schedule-smoke: pass
+- OCaml optimizer tests cover fusion, binary round trip, Metal/LLVM lowering, and rejection when the Q8 result has a second consumer.
+- git diff --check: pass
+
+Evidence boundary
+- No model request, token generation, cache replay, needle trace, latency comparison, or ERS scoring ran for this compiler pass.
+- Latest valid native ERS remains 0.11381808711306604 from cache-submission batching.

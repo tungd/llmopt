@@ -178,5 +178,28 @@ let fuse_rms_norm graph =
   in
   Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph))
 
+let q8_linear_info node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | Ir.Op.Q8_linear { m; n; k; bias }, inputs, Some output ->
+      Some (m, n, k, bias, inputs, output)
+  | _ -> None
+
+let fuse_q8_silu graph =
+  let rec rewrite prefix = function
+    | q8_node :: silu_node :: rest ->
+        (match q8_linear_info q8_node, pointwise_unary silu_node with
+        | Some (m, n, k, bias, inputs, q8_output),
+          Some (Ir.Pointwise.Silu, silu_input, _silu_output)
+          when value_is q8_output silu_input && not (used_in rest q8_output) ->
+            let fused =
+              Ir.node_replace silu_node
+                ~op:(Ir.Op.Q8_linear_silu { m; n; k; bias }) ~inputs
+            in
+            rewrite prefix (fused :: rest)
+        | _ -> rewrite (q8_node :: prefix) (silu_node :: rest))
+    | remaining -> List.rev_append prefix remaining
+  in
+  Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph))
+
 let optimize graph =
-  graph |> fuse_linear_bias |> fuse_rms_norm
+  graph |> fuse_linear_bias |> fuse_rms_norm |> fuse_q8_silu

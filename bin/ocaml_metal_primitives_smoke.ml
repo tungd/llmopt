@@ -220,19 +220,27 @@ let () =
     (bytes_of_u16 [ 0x4200; 0x4700; 0x4000; 0x3c00; 0x4200; 0x4200 ]);
   expect_bytes execution "q8_gemv"
     (bytes_of_u16 [ 0x4000; 0x4800; 0xbe00 ]);
+  expect_bytes execution "q8_gemv_silu"
+    (bytes_of_u16 [ 0x3f0c; 0x47ff; 0xb461 ]);
+  expect_bytes execution "q8_gemv_silu_reference"
+    (bytes_of_u16 [ 0x3f0c; 0x47ff; 0xb461 ]);
+  let q8_fused = output execution "q8_gemv_silu" in
+  let q8_reference = output execution "q8_gemv_silu_reference" in
+  if not (Bytes.equal q8_fused q8_reference) then
+    fail "fused Q8 SiLU differs from materialized Q8 plus standalone SiLU";
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 39 then
+  if List.length kernels <> 41 then
     fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 39"
+      (Printf.sprintf "native fixture dispatched %d kernels instead of 41"
          (List.length kernels));
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
-  if workspace_bytes <> 9_984 then
+  if workspace_bytes <> 10_496 then
     fail
-      (Printf.sprintf "native fixture workspace is %d bytes instead of 9984"
+      (Printf.sprintf "native fixture workspace is %d bytes instead of 10496"
          workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 40 exact\nq8-decode-kernel: llmopt_q8_gemv\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 42 exact\nq8-decode-kernel: llmopt_q8_gemv\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

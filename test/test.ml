@@ -1206,6 +1206,120 @@ let () =
          | _ -> false)
        (Ir.Graph.nodes q8_graph))
     "Q8 linear op missing";
+  let q8_silu_graph = Ir.Graph.create () in
+  let q8_silu_input =
+    Ir.Graph.tensor_input q8_silu_graph ~name:"q8_silu_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_silu_weight =
+    Ir.Graph.tensor_input q8_silu_graph ~name:"q8_silu_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let q8_silu_scale =
+    Ir.Graph.tensor_input q8_silu_graph ~name:"q8_silu_scale"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_silu_linear =
+    Ir.Graph.fresh_tensor_value q8_silu_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_silu_graph
+    ~op:(Ir.Op.Q8_linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ q8_silu_input; q8_silu_weight; q8_silu_scale ]
+    ~output:(Some q8_silu_linear);
+  let q8_silu_output =
+    Ir.Graph.fresh_tensor_value q8_silu_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_silu_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, q8_silu_linear))))
+    ~inputs:[ q8_silu_linear ] ~output:(Some q8_silu_output);
+  Ir.Graph.add_output q8_silu_graph ~name:"q8_silu_output" q8_silu_output;
+  let q8_silu_optimized = Passes.fuse_q8_silu q8_silu_graph in
+  expect (List.length (Ir.Graph.nodes q8_silu_optimized) = 5)
+    "Q8 linear and SiLU fuse into one node";
+  expect
+    (Ir.Graph.nodes q8_silu_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Q8_linear_silu { m = 2; n = 3; k = 4; bias = false } -> true
+           | _ -> false))
+    "Q8 SiLU fusion produces its typed IR operation";
+  let q8_silu_schedule =
+    q8_silu_optimized |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands q8_silu_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_linear_silu { m = 2; n = 3; k = 4; bias = false } -> true
+           | _ -> false))
+    "binary schedule preserves fused Q8 SiLU";
+  let q8_silu_program = expect_ok (Metal.lower q8_silu_optimized) in
+  expect
+    (contains_substring (Metal.Program.source q8_silu_program)
+       "kernel void llmopt_q8_linear_silu")
+    "Metal lowering emits fused Q8 SiLU";
+  expect
+    (Metal.Program.kernels q8_silu_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.operation entry
+           = Kernel_abi.Operation.Q8_linear_silu))
+    "Metal lowering declares the fused Q8 SiLU ABI";
+  (match Llvm_ir.emit q8_silu_optimized with
+  | Error message -> fail message
+  | Ok source ->
+      expect (contains_substring source "llvm.exp.f32")
+        "LLVM inspection IR preserves fused SiLU");
+  let q8_silu_shared = Ir.Graph.create () in
+  let shared_input =
+    Ir.Graph.tensor_input q8_silu_shared ~name:"shared_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let shared_weight =
+    Ir.Graph.tensor_input q8_silu_shared ~name:"shared_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let shared_scale =
+    Ir.Graph.tensor_input q8_silu_shared ~name:"shared_scale"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let shared_linear =
+    Ir.Graph.fresh_tensor_value q8_silu_shared
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_silu_shared
+    ~op:(Ir.Op.Q8_linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ shared_input; shared_weight; shared_scale ]
+    ~output:(Some shared_linear);
+  let shared_silu =
+    Ir.Graph.fresh_tensor_value q8_silu_shared
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_silu_shared
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, shared_linear))))
+    ~inputs:[ shared_linear ] ~output:(Some shared_silu);
+  Ir.Graph.add_output q8_silu_shared ~name:"raw" shared_linear;
+  Ir.Graph.add_output q8_silu_shared ~name:"activated" shared_silu;
+  let q8_silu_shared = Passes.fuse_q8_silu q8_silu_shared in
+  expect
+    (Ir.Graph.nodes q8_silu_shared
+    |> List.for_all (fun node ->
+           match Ir.node_op node with Ir.Op.Q8_linear_silu _ -> false | _ -> true))
+    "Q8 SiLU fusion preserves a multiply-consumed linear result";
   (match Metal.emit q8_graph with
   | Error message -> fail message
   | Ok source ->
@@ -1786,8 +1900,8 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 8)
-    "serving package uses binary ABI version 8";
+    (Bytes.get_uint16_le serving_bytes 8 = 9)
+    "serving package uses binary ABI version 9";
   let package_v7 = Bytes.copy serving_bytes in
   Bytes.set_uint16_le package_v7 8 7;
   ignore (Serving_package.of_bytes package_v7 |> expect_ok);

@@ -318,6 +318,7 @@ module Op = struct
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
     | Q8_linear of { m : int; n : int; k : int; bias : bool }
+    | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
 
   let to_string = function
     | Input { name; source } ->
@@ -353,6 +354,10 @@ module Op = struct
         Printf.sprintf "q8-linear[%dx%dx%d]" m n k
     | Q8_linear { m; n; k; bias = true } ->
         Printf.sprintf "q8-linear+bias[%dx%dx%d]" m n k
+    | Q8_linear_silu { m; n; k; bias = false } ->
+        Printf.sprintf "q8-linear+silu[%dx%dx%d]" m n k
+    | Q8_linear_silu { m; n; k; bias = true } ->
+        Printf.sprintf "q8-linear+bias+silu[%dx%dx%d]" m n k
 end
 
 type node = {

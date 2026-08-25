@@ -2,7 +2,7 @@ type kernel =
   | Matmul of int * int * int
   | Fused of int * int * int
   | Linear of int * int * int * bool
-  | Q8 of int * int * int * bool
+  | Q8 of int * int * int * bool * bool
 
 let kernel_shape graph =
   Ir.Graph.nodes graph
@@ -10,15 +10,23 @@ let kernel_shape graph =
          match Ir.node_op node with
          | Ir.Op.Matmul { m; n; k } -> Some (Matmul (m, n, k))
          | Ir.Op.Fused_matmul_bias { m; n; k } -> Some (Fused (m, n, k))
-         | Ir.Op.Q8_linear { m; n; k; bias } -> Some (Q8 (m, n, k, bias))
+         | Ir.Op.Q8_linear { m; n; k; bias } ->
+             Some (Q8 (m, n, k, bias, false))
+         | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
+             Some (Q8 (m, n, k, bias, true))
          | Ir.Op.Linear { m; n; k; bias } -> Some (Linear (m, n, k, bias))
          | _ -> None)
 
-let emit_q8 ~m ~n ~k ~has_bias =
+let emit_q8 ~m ~n ~k ~has_bias ~silu =
   let header =
+    let name = if silu then "llmopt_q8_linear_silu" else "llmopt_q8_linear" in
     if has_bias then
-      "define void @llmopt_q8_linear(ptr %a, ptr %b, ptr %scale, ptr %bias, ptr %c) {"
-    else "define void @llmopt_q8_linear(ptr %a, ptr %b, ptr %scale, ptr %c) {"
+      Printf.sprintf
+        "define void @%s(ptr %%a, ptr %%b, ptr %%scale, ptr %%bias, ptr %%c) {"
+        name
+    else
+      Printf.sprintf "define void @%s(ptr %%a, ptr %%b, ptr %%scale, ptr %%c) {"
+        name
   in
   let bias_lines =
     if has_bias then
@@ -27,6 +35,15 @@ let emit_q8 ~m ~n ~k ~has_bias =
       ; "  %with.bias = fadd float %acc.next, %bias.value"
       ]
     else [ "  %with.bias = fadd float %acc.next, 0.000000e+00" ]
+  in
+  let activation_lines =
+    if silu then
+      [ "  %neg = fneg float %with.bias"
+      ; "  %exp = call float @llvm.exp.f32(float %neg)"
+      ; "  %denominator = fadd float %exp, 1.000000e+00"
+      ; "  %stored = fdiv float %with.bias, %denominator"
+      ]
+    else [ "  %stored = fadd float %with.bias, 0.000000e+00" ]
   in
   let source_lines =
     [ "; ModuleID = 'llmopt-q8'"
@@ -66,11 +83,11 @@ let emit_q8 ~m ~n ~k ~has_bias =
     ; "  br label %inner"
     ; "store:"
     ]
-    @ bias_lines
+    @ bias_lines @ activation_lines
     @ [ Printf.sprintf "  %%c.row = mul i64 %%i, %d" n
       ; "  %c.index = add i64 %c.row, %j"
       ; "  %c.ptr = getelementptr float, ptr %c, i64 %c.index"
-      ; "  store float %with.bias, ptr %c.ptr, align 4"
+      ; "  store float %stored, ptr %c.ptr, align 4"
       ; "  br label %col.inc"
       ; "col.inc:"
       ; "  %j.next = add i64 %j, 1"
@@ -84,6 +101,7 @@ let emit_q8 ~m ~n ~k ~has_bias =
       ; "  ret void"
       ; "}"
       ]
+    @ if silu then [ ""; "declare float @llvm.exp.f32(float)" ] else []
   in
   Ok (String.concat "\n" source_lines ^ "\n")
 
@@ -92,11 +110,14 @@ let emit graph =
     Ir.Graph.nodes graph
     |> List.find_map (fun node ->
            match Ir.node_op node with
-           | Ir.Op.Q8_linear { m; n; k; bias } -> Some (m, n, k, bias)
+           | Ir.Op.Q8_linear { m; n; k; bias } ->
+               Some (m, n, k, bias, false)
+           | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
+               Some (m, n, k, bias, true)
            | _ -> None)
   in
   match q8_kernel with
-  | Some (m, n, k, bias) -> emit_q8 ~m ~n ~k ~has_bias:bias
+  | Some (m, n, k, bias, silu) -> emit_q8 ~m ~n ~k ~has_bias:bias ~silu
   | None ->
   match kernel_shape graph with
   | None -> Error "LLVM emitter expects one supported kernel node"

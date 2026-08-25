@@ -64,3 +64,5 @@ okf_version: '0.2'
 * [Batched native Metal schedule submission](experiments/exp-0042-batched-metal-command.md) - schedule-wide compute/blit encoding preserves parity while reducing TTFT and TPOT.
 * [Q8 decode-specialized Metal GEMV](experiments/exp-0043-q8-decode-gemv.md) - one-row vectorized Q8 execution preserves parity and records its matched TTFT, TPOT, and ERS deltas.
 * [Native cache-submission batching](experiments/exp-0044-cache-submission-batching.md) - physical KV and recurrent cache phases use ordered submissions with exact byte and token evidence.
+* [Cached-suffix command-buffer batching attempt](experiments/exp-0045-cached-suffix-batching-attempt.md) - one dependent replay batch preserves per-token checkpoint structure; the first model attempt failed and the correction remains unmeasured.
+* [Q8 linear-SiLU epilogue fusion](experiments/exp-0046-q8-linear-silu-fusion.md) - the first real-model epilogue pass removes sixteen workspace round trips and dispatches from each stage.

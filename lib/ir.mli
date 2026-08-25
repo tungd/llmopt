@@ -193,6 +193,7 @@ module Op : sig
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
     | Q8_linear of { m : int; n : int; k : int; bias : bool }
+    | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
 
   val to_string : t -> string
 end

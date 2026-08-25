@@ -316,10 +316,21 @@ let graph () =
   let q8_gemv_bias =
     input graph "q8_gemv_bias" [ 1; 3 ] Ir.Dtype.Float16
   in
-  command graph (Ir.Op.Q8_linear { m = 1; n = 3; k = 4; bias = true })
+  let q8_gemv =
+    command graph (Ir.Op.Q8_linear { m = 1; n = 3; k = 4; bias = true })
+      [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias ] [ 1; 3 ]
+      Ir.Dtype.Float16
+  in
+  output graph "q8_gemv" q8_gemv;
+  primitive graph
+    (Ir.Primitive.Pointwise
+       (Ir.Pointwise.Unary (Ir.Pointwise.Silu, q8_gemv)))
+    [ q8_gemv ] [ 1; 3 ] Ir.Dtype.Float16
+  |> output graph "q8_gemv_silu_reference";
+  command graph (Ir.Op.Q8_linear_silu { m = 1; n = 3; k = 4; bias = true })
     [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias ] [ 1; 3 ]
     Ir.Dtype.Float16
-  |> output graph "q8_gemv";
+  |> output graph "q8_gemv_silu";
 
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in

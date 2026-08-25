@@ -85,7 +85,7 @@ type t = {
   cache : Cache.t;
 }
 
-let current_abi_version = 8
+let current_abi_version = 9
 
 let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
@@ -174,6 +174,7 @@ let operation_tag = function
   | Kernel_abi.Operation.Reduction -> 17
   | Kernel_abi.Operation.Update_slice -> 18
   | Kernel_abi.Operation.Cache -> 19
+  | Kernel_abi.Operation.Q8_linear_silu -> 20
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -196,6 +197,7 @@ let operation_of_tag = function
   | 17 -> Ok Kernel_abi.Operation.Reduction
   | 18 -> Ok Kernel_abi.Operation.Update_slice
   | 19 -> Ok Kernel_abi.Operation.Cache
+  | 20 -> Ok Kernel_abi.Operation.Q8_linear_silu
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function
@@ -312,7 +314,7 @@ let of_bytes bytes =
     let* version = Binary.Reader.u16 reader in
     if
       version <> 2 && version <> 3 && version <> 4 && version <> 5
-      && version <> 6 && version <> 7 && version <> 8
+      && version <> 6 && version <> 7 && version <> 8 && version <> 9
     then
       Error (Printf.sprintf "unsupported serving-package version: %d" version)
     else

@@ -189,6 +189,29 @@ let q8_source =
       ~scale_zero:"0.0f"
       ~zero_value:"0.0f"
       ~store_value:"acc"
+  ^ q8_kernel
+      ~name:"llmopt_q8_linear_silu"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~alignment:"8"
+      ~weight_value_type:"half"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~scale_zero:"half(0.0h)"
+      ~zero_value:"half(0.0h)"
+      ~store_value:
+        "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
+  ^ q8_kernel
+      ~name:"llmopt_q8_linear_silu_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~alignment:"16"
+      ~weight_value_type:"float"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~scale_zero:"0.0f"
+      ~zero_value:"0.0f"
+      ~store_value:"acc / (1.0f + exp(-acc))"
   ^ q8_gemv_kernel
       ~name:"llmopt_q8_gemv"
       ~value_type:"half"
@@ -203,6 +226,21 @@ let q8_source =
       ~weight_cast:"float"
       ~scale_type:"float"
       ~store_value:"acc"
+  ^ q8_gemv_kernel
+      ~name:"llmopt_q8_gemv_silu"
+      ~value_type:"half"
+      ~vector_type:"half4"
+      ~weight_cast:"half"
+      ~scale_type:"half"
+      ~store_value:
+        "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
+  ^ q8_gemv_kernel
+      ~name:"llmopt_q8_gemv_silu_f32"
+      ~value_type:"float"
+      ~vector_type:"float4"
+      ~weight_cast:"float"
+      ~scale_type:"float"
+      ~store_value:"acc / (1.0f + exp(-acc))"
   ^ q8_dequant_kernel
       ~name:"llmopt_q8_dequantize"
       ~value_type:"half"
@@ -214,7 +252,7 @@ let q8_source =
       ~weight_cast:"float"
       ~scale_cast:"float"
 
-let q8_entries =
+let q8_all_entries =
   [ kernel_entry ~name:"llmopt_q8_linear"
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float16
@@ -228,6 +266,22 @@ let q8_entries =
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_gemv_f32" ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry ~name:"llmopt_q8_linear_silu"
+      ~operation:Kernel_abi.Operation.Q8_linear_silu
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry ~name:"llmopt_q8_linear_silu_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_silu
+      ~input_dtype:Ir.Dtype.Float32
+      ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv_silu"
+      ~operation:Kernel_abi.Operation.Q8_linear_silu
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_gemv_silu_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_silu
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry ~name:"llmopt_q8_dequantize"
       ~operation:Kernel_abi.Operation.Q8_dequantize
@@ -1285,11 +1339,29 @@ let has_materialized_movement graph =
         | Ir.Movement.Contiguous -> false)
     | _ -> false)
 
-let has_q8 graph =
+let has_q8_linear graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
          match Ir.node_op node with
          | Ir.Op.Q8_linear _ -> true
+         | _ -> false)
+
+let has_q8_linear_silu graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_linear_silu _ -> true
+         | _ -> false)
+
+let has_q8 graph = has_q8_linear graph || has_q8_linear_silu graph
+
+let q8_entries graph =
+  q8_all_entries
+  |> List.filter (fun entry ->
+         match Kernel_abi.Entry.operation entry with
+         | Kernel_abi.Operation.Q8_linear -> has_q8_linear graph
+         | Kernel_abi.Operation.Q8_linear_silu -> has_q8_linear_silu graph
+         | Kernel_abi.Operation.Q8_dequantize -> has_q8 graph
          | _ -> false)
 
 let has_f16_linear graph =
@@ -1480,7 +1552,7 @@ let lower graph =
     has_primitive graph (function Ir.Primitive.Update_slice _ -> true | _ -> false)
   in
   let components =
-    [ has_q8 graph, q8_source, q8_entries;
+    [ has_q8 graph, q8_source, q8_entries graph;
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_short_conv graph, short_conv_source, short_conv_entries;

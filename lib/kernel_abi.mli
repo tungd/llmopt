@@ -4,6 +4,7 @@ module Operation : sig
     | Fused_linear
     | Linear
     | Q8_linear
+    | Q8_linear_silu
     | Q8_dequantize
     | Rms_norm
     | Short_conv

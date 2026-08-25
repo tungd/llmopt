@@ -533,6 +533,15 @@ module Lfm25 = struct
                k = substitute substitutions k;
                bias;
              })
+    | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
+        Ok
+          (Ir.Op.Q8_linear_silu
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               bias;
+             })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
         Ok (Ir.Op.Primitive primitive)
@@ -632,7 +641,7 @@ module Lfm25 = struct
           (Ir.Value.logical_shape right)
         |> shape_error
     | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
-      | Ir.Op.Q8_linear _ ),
+      | Ir.Op.Q8_linear _ | Ir.Op.Q8_linear_silu _ ),
       _ ->
         map_shape substitutions original
     | _ -> map_shape substitutions original
@@ -1281,6 +1290,10 @@ let write_op writer = function
       Binary.Writer.u8 writer 14;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
+  | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
+      Binary.Writer.u8 writer 17;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
+      Binary.Writer.bool writer bias
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -1352,6 +1365,10 @@ let read_op values reader =
       let* epsilon = Binary.Reader.float64 reader in
       if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm { epsilon })
       else Error "schedule contains a non-finite RMSNorm epsilon"
+  | 17 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* bias = Binary.Reader.bool reader in
+      Ok (Ir.Op.Q8_linear_silu { m; n; k; bias })
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"
@@ -1359,7 +1376,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 8;
+  Binary.Writer.u16 writer 9;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -1382,6 +1399,7 @@ let of_bytes bytes =
     if
       version <> 1 && version <> 2 && version <> 3 && version <> 4
       && version <> 5 && version <> 6 && version <> 7 && version <> 8
+      && version <> 9
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else
