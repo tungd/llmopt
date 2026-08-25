@@ -625,6 +625,69 @@ let q8_qkv_linear_source =
       ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
       ~has_bias:true
 
+let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast =
+  let value_name = name ^ "_value" in
+  let weight_value =
+    "float(" ^ weight_cast ^ "(weight[col * params.k + inner]) * "
+    ^ weight_cast ^ "(scale[col]))"
+  in
+  "inline float " ^ value_name ^ "(\n"
+  ^ "    uint row, uint col, device const " ^ value_type ^ "* input,\n"
+  ^ "    device const char* weight, device const half* scale,\n"
+  ^ "    device const " ^ value_type ^ "* residual,\n"
+  ^ "    constant Q8LinearAddNormParams& params) {\n"
+  ^ "  float accumulator = 0.0f;\n"
+  ^ "  for (uint inner = 0; inner < params.k; ++inner)\n"
+  ^ "    accumulator += float(input[row * params.k + inner]) * "
+  ^ weight_value ^ ";\n"
+  ^ "  return accumulator + float(residual[row * params.n + col]);\n"
+  ^ "}\n\n"
+  ^ "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const char* weight [[buffer(1)]],\n"
+  ^ "    device const half* scale [[buffer(2)]],\n"
+  ^ "    device const " ^ value_type ^ "* residual [[buffer(3)]],\n"
+  ^ "    device const half* norm_weight [[buffer(4)]],\n"
+  ^ "    device half* output [[buffer(5)]],\n"
+  ^ "    constant Q8LinearAddNormParams& params [[buffer(6)]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
+  ^ "  const uint row = group_position.x;\n"
+  ^ "  if (row >= params.m) return;\n"
+  ^ "  const uint thread = simdgroup * 32 + lane;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = thread; col < params.n; col += 256) {\n"
+  ^ "    const float value = " ^ value_name
+  ^ "(row, col, input, weight, scale, residual, params);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  threadgroup float inverse;\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (simdgroup == 0 && lane == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint group = 0; group < 8; ++group)\n"
+  ^ "      total += partial_sums[group];\n"
+  ^ "    inverse = rsqrt(total / float(params.n) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint col = thread; col < params.n; col += 256) {\n"
+  ^ "    const float value = " ^ value_name
+  ^ "(row, col, input, weight, scale, residual, params);\n"
+  ^ "    output[row * params.n + col] = half(value * inverse * float(norm_weight[col]));\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let q8_linear_add_norm_source =
+  "\nstruct Q8LinearAddNormParams { uint m; uint n; uint k; float epsilon; };\n\n"
+  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f16"
+      ~value_type:"half" ~weight_cast:"half"
+  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f32"
+      ~value_type:"float" ~weight_cast:"float"
+
 let q8_source =
   "\nconstant uint Q8_TILE = 64;\n\n"
   ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
@@ -960,6 +1023,7 @@ let q8_parameterized_source =
 
 let q8_source = q8_source ^ "\n" ^ q8_dual_linear_source ^ "\n"
   ^ q8_qkv_linear_source ^ "\n"
+  ^ q8_linear_add_norm_source ^ "\n"
   ^ q8_parameterized_source
 
 let q8_parameterized_entries =
@@ -1119,6 +1183,16 @@ let q8_qkv_entries =
       ~name:"llmopt_q8_qkv_linear_f32_bias"
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
+let q8_linear_add_norm_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_linear_add_norm_f16"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_linear_add_norm_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16 ]
 
 let cache_source =
   {|
@@ -2761,6 +2835,13 @@ let has_q8_linear_mul_add graph =
          | Ir.Op.Q8_linear_mul_add _ -> true
          | _ -> false)
 
+let has_q8_linear_add_norm graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_linear_add_norm _ -> true
+         | _ -> false)
+
 let has_q8_dual_linear graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -2777,8 +2858,8 @@ let has_q8_qkv_linear graph =
 
 let has_q8 graph =
   has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
-  || has_q8_linear_mul_add graph || has_q8_dual_linear graph
-  || has_q8_qkv_linear graph
+  || has_q8_linear_mul_add graph || has_q8_linear_add_norm graph
+  || has_q8_dual_linear graph || has_q8_qkv_linear graph
 
 let q8_entries graph =
   q8_all_entries
@@ -2795,7 +2876,12 @@ let q8_entries graph =
   let entries =
     if has_q8_dual_linear graph then entries @ q8_dual_entries else entries
   in
-  if has_q8_qkv_linear graph then entries @ q8_qkv_entries else entries
+  let entries =
+    if has_q8_qkv_linear graph then entries @ q8_qkv_entries else entries
+  in
+  if has_q8_linear_add_norm graph then
+    entries @ q8_linear_add_norm_entries
+  else entries
 
 let has_f16_linear graph =
   Ir.Graph.nodes graph

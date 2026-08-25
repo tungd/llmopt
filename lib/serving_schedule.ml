@@ -581,7 +581,8 @@ let q8_selection_for_command device command =
   | Ir.Op.Q8_linear { m; n; k; _ }
   | Ir.Op.Q8_linear_silu { m; n; k; _ }
   | Ir.Op.Q8_linear_add { m; n; k; _ }
-  | Ir.Op.Q8_linear_mul_add { m; n; k; _ } ->
+  | Ir.Op.Q8_linear_mul_add { m; n; k; _ }
+  | Ir.Op.Q8_linear_add_norm { m; n; k; _ } ->
       let selection =
         match Kernel_cost_model.select_optimal_tile ~m ~n ~k ~device with
         | Ok selection -> selection
@@ -812,6 +813,15 @@ module Lfm25 = struct
                k = substitute substitutions k;
                bias;
              })
+    | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon } ->
+        Ok
+          (Ir.Op.Q8_linear_add_norm
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               epsilon;
+             })
     | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias } ->
         Ok
           (Ir.Op.Q8_qkv_linear
@@ -936,7 +946,8 @@ module Lfm25 = struct
         |> shape_error
     | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
       | Ir.Op.Q8_linear _ | Ir.Op.Q8_linear_silu _ | Ir.Op.Q8_linear_add _
-      | Ir.Op.Q8_linear_mul_add _ | Ir.Op.Q8_dual_linear _
+      | Ir.Op.Q8_linear_mul_add _ | Ir.Op.Q8_linear_add_norm _
+      | Ir.Op.Q8_dual_linear _
       | Ir.Op.Q8_qkv_linear _ ),
       _ ->
         map_shape substitutions original
@@ -2000,6 +2011,10 @@ let write_op writer = function
       Binary.Writer.u8 writer 19;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
+  | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon } ->
+      Binary.Writer.u8 writer 26;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
+      Binary.Writer.float64 writer epsilon
   | Ir.Op.Rms_rope config ->
       Binary.Writer.u8 writer 20;
       Binary.Writer.float64 writer (Ir.Rms_rope.epsilon config);
@@ -2116,6 +2131,12 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Q8_linear_mul_add { m; n; k; bias })
+  | 26 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon && epsilon > 0.0 then
+        Ok (Ir.Op.Q8_linear_add_norm { m; n; k; epsilon })
+      else Error "schedule contains a non-finite linear-add-norm epsilon"
   | 20 ->
       let* epsilon = Binary.Reader.float64 reader in
       let* half_dimension = Binary.Reader.u64 reader in

@@ -452,6 +452,13 @@ module Parameters = struct
     Bytes.set_int32_le bytes 8 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let q8_linear_add_norm ~m ~n ~k ~epsilon =
+    let bytes = Bytes.make 16 '\000' in
+    let* encoded = u32s [ m; n; k ] in
+    Bytes.blit encoded 0 bytes 0 12;
+    Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
+    Ok bytes
+
   let rms_rope ~batches ~tokens ~heads ~width ~half_dimension ~trig_batches
       ~epsilon =
     let bytes = Bytes.make 28 '\000' in
@@ -1678,6 +1685,54 @@ let dispatch_q8_command batch runtime state ~selection ~epilogue ~m ~n ~k ~has_b
   in
   Ok (bind_value state output output_buffer, kernel)
 
+let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
+    values output =
+  let* input_value, weight_value, scale_value, residual_value, norm_weight_value =
+    match values with
+    | [ input; weight; scale; residual; norm_weight ] ->
+        Ok (input, weight, scale, residual, norm_weight)
+    | _ ->
+        Error "Q8 linear-add-norm schedule command has inconsistent inputs"
+  in
+  let* input = find_value state input_value in
+  let* weight = find_value state weight_value in
+  let* scale = find_value state scale_value in
+  let* residual = find_value state residual_value in
+  let* norm_weight = find_value state norm_weight_value in
+  let* output_buffer = workspace_buffer state output in
+  let* kernel_name =
+    match Ir.Value.dtype input_value with
+    | Ir.Dtype.Float16 -> Ok "llmopt_q8_linear_add_norm_f16"
+    | Ir.Dtype.Float32 -> Ok "llmopt_q8_linear_add_norm_f32"
+    | dtype ->
+        Error
+          (Printf.sprintf "unsupported Q8 linear-add-norm input dtype: %s"
+             (Ir.Dtype.to_string dtype))
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:(Ir.Value.dtype input_value)
+      ~output_dtype:(Ir.Value.dtype output)
+  in
+  let* parameters = Parameters.q8_linear_add_norm ~m ~n ~k ~epsilon in
+  let* () =
+    if
+      Ir.Value.dtype residual_value = Ir.Value.dtype input_value
+      && Tensor_shape.equal
+           (Ir.Value.logical_shape residual_value)
+           (Ir.Value.logical_shape output)
+      && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_value) = [ n ]
+    then Ok ()
+    else Error "Q8 linear-add-norm input metadata is inconsistent"
+  in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers:[ input; weight; scale; residual; norm_weight; output_buffer ]
+      ~parameters ~grid:(m, 1, 1)
+  in
+  Ok (bind_value state output output_buffer, kernel)
+
 let split_axis shape axis =
   let rec loop outer remaining = function
     | [] -> Error "Metal axis is outside the tensor rank"
@@ -2493,6 +2548,12 @@ let encode_schedule execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_q8_command batch runtime state ~selection
                  ~epilogue:Mul_add ~m ~n ~k ~has_bias values output)
+        | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k
+                 ~epsilon values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue

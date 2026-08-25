@@ -1450,6 +1450,112 @@ let () =
   | Ok source ->
       expect (contains_substring source "%residual")
         "LLVM inspection IR preserves the fused residual input");
+
+  let q8_add_norm_graph = Ir.Graph.create () in
+  let q8_add_norm_input =
+    Ir.Graph.tensor_input q8_add_norm_graph ~name:"q8_add_norm_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_add_norm_weight =
+    Ir.Graph.tensor_input q8_add_norm_graph ~name:"q8_add_norm_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let q8_add_norm_scale =
+    Ir.Graph.tensor_input q8_add_norm_graph ~name:"q8_add_norm_scale"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_add_norm_residual =
+    Ir.Graph.tensor_input q8_add_norm_graph ~name:"q8_add_norm_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_add_norm_rms_weight =
+    Ir.Graph.tensor_input q8_add_norm_graph ~name:"q8_add_norm_rms_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_add_norm_linear_output =
+    Ir.Graph.fresh_tensor_value q8_add_norm_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_add_norm_graph
+    ~op:(Ir.Op.Q8_linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ q8_add_norm_input; q8_add_norm_weight; q8_add_norm_scale ]
+    ~output:(Some q8_add_norm_linear_output);
+  let q8_add_norm_add_output =
+    Ir.Graph.fresh_tensor_value q8_add_norm_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_add_norm_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor q8_add_norm_linear_output,
+                 Ir.Pointwise.Tensor q8_add_norm_residual ))))
+    ~inputs:[ q8_add_norm_linear_output; q8_add_norm_residual ]
+    ~output:(Some q8_add_norm_add_output);
+  let q8_add_norm_output =
+    Ir.Graph.fresh_tensor_value q8_add_norm_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_add_norm_graph
+    ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
+    ~inputs:[ q8_add_norm_add_output; q8_add_norm_rms_weight ]
+    ~output:(Some q8_add_norm_output);
+  Ir.Graph.add_output q8_add_norm_graph ~name:"q8_add_norm_output"
+    q8_add_norm_output;
+  let q8_add_norm_optimized =
+    Passes.fuse_linear_residual_norm q8_add_norm_graph
+  in
+  expect (List.length (Ir.Graph.nodes q8_add_norm_optimized) = 7)
+    "Q8 out-projection, residual add, and RMSNorm collapse into one node";
+  expect
+    (Ir.Graph.nodes q8_add_norm_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Q8_linear_add_norm { m = 2; n = 3; k = 4; epsilon },
+             [ input; weight; scale; residual; norm_weight ] ->
+               Float.abs (epsilon -. 1e-5) < 1e-12
+               && Ir.Value.equal input q8_add_norm_input
+               && Ir.Value.equal weight q8_add_norm_weight
+               && Ir.Value.equal scale q8_add_norm_scale
+               && Ir.Value.equal residual q8_add_norm_residual
+               && Ir.Value.equal norm_weight q8_add_norm_rms_weight
+           | _ -> false))
+    "linear-residual-norm fusion preserves typed operands and epsilon";
+  let q8_add_norm_schedule =
+    q8_add_norm_optimized |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands q8_add_norm_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_linear_add_norm { m = 2; n = 3; k = 4; epsilon } ->
+               Float.abs (epsilon -. 1e-5) < 1e-12
+           | _ -> false))
+    "binary schedule preserves fused linear-residual-norm";
+  let q8_add_norm_program = Metal.lower q8_add_norm_optimized |> expect_ok in
+  let q8_add_norm_source = Metal.Program.source q8_add_norm_program in
+  expect
+    (contains_substring q8_add_norm_source
+       "kernel void llmopt_q8_linear_add_norm_f16")
+    "Metal lowering emits fused linear-residual-norm";
+  expect
+    (contains_substring q8_add_norm_source "threadgroup float partial_sums[8]")
+    "fused linear-residual-norm emits a threadgroup RMS reduction";
+  expect
+    (Metal.Program.kernels q8_add_norm_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q8_linear_add_norm_f16"
+           && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_linear_add))
+    "fused linear-residual-norm retains a registered Q8 runtime ABI";
+
   let q8_broadcast_graph = Ir.Graph.create () in
   let broadcast_input =
     Ir.Graph.tensor_input q8_broadcast_graph ~name:"broadcast_input"

@@ -24,7 +24,8 @@ module Resource_class = struct
     | Ir.Op.Q8_linear { m; n; k; _ }
     | Ir.Op.Q8_linear_silu { m; n; k; _ }
     | Ir.Op.Q8_linear_add { m; n; k; _ }
-    | Ir.Op.Q8_linear_mul_add { m; n; k; _ } ->
+    | Ir.Op.Q8_linear_mul_add { m; n; k; _ }
+    | Ir.Op.Q8_linear_add_norm { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
         let bytes =
           (Float.of_int (m * k) *. 2.0)
@@ -72,6 +73,7 @@ module Resource_class = struct
     | Ir.Op.Q8_linear_silu _
     | Ir.Op.Q8_linear_add _
     | Ir.Op.Q8_linear_mul_add _
+    | Ir.Op.Q8_linear_add_norm _
     | Ir.Op.Q8_dual_linear _
     | Ir.Op.Q8_qkv_linear _
     | Ir.Op.Matmul _
