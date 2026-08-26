@@ -79,6 +79,7 @@ type t = {
   contract : contract;
   decode_workspace : Metal_runtime.Buffer.t option;
   decode_token_buffer : Metal_runtime.Buffer.t option;
+  decode_schedules : (int, Serving_schedule.t) Hashtbl.t;
 }
 
 let indexed_name base index =
@@ -412,6 +413,7 @@ let create ~config ~prefill ~decode =
         contract;
         decode_workspace;
         decode_token_buffer;
+        decode_schedules = Hashtbl.create 64;
       }
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -423,17 +425,24 @@ let prefill_schedule engine tokens =
     (engine.prefill |> Metal_runtime.package |> Serving_package.schedule)
 
 let decode_schedule engine past_tokens =
-  let schedule =
-    engine.decode |> Metal_runtime.package |> Serving_package.schedule
-  in
-  match engine.attention_cache with
-  | Attention_cache.Materialized_f16 ->
-      Serving_schedule.Lfm25.specialize_decode
-        ~captured_past:engine.contract.past_tokens ~past_tokens schedule
-  | Attention_cache.Paged_q8 ->
-      Serving_schedule.Lfm25.specialize_decode_paged_q8
-        ~captured_past:engine.contract.past_tokens ~past_tokens
-        ~cache:(Serving_cache.Config.kv engine.config) schedule
+  match Hashtbl.find_opt engine.decode_schedules past_tokens with
+  | Some schedule -> Ok schedule
+  | None ->
+      let base_schedule =
+        engine.decode |> Metal_runtime.package |> Serving_package.schedule
+      in
+      let* schedule =
+        match engine.attention_cache with
+        | Attention_cache.Materialized_f16 ->
+            Serving_schedule.Lfm25.specialize_decode
+              ~captured_past:engine.contract.past_tokens ~past_tokens base_schedule
+        | Attention_cache.Paged_q8 ->
+            Serving_schedule.Lfm25.specialize_decode_paged_q8
+              ~captured_past:engine.contract.past_tokens ~past_tokens
+              ~cache:(Serving_cache.Config.kv engine.config) base_schedule
+      in
+      Hashtbl.add engine.decode_schedules past_tokens schedule;
+      Ok schedule
 
 let validate_tokens engine tokens =
   let vocabulary = (Serving_cache.Config.model engine.config).vocab_size in
