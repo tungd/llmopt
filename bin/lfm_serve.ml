@@ -23,8 +23,7 @@ let usage () =
   prerr_endline
     "usage: llmopt-serve [--host address] [--port number] [--kv q8] \
      [--token-capacity count] [--checkpoint-capacity count] \
-     [--max-body-bytes count] <tokenizer.llmopt> <prefill-directory> \
-     <decode-directory>";
+     [--max-body-bytes count] <engine-directory | tokenizer.llmopt prefill-dir decode-dir>";
   exit 64
 
 let positive name value =
@@ -497,6 +496,17 @@ let run () =
   let* tokenizer, prefill, decode =
     match positional with
     | [ tokenizer; prefill; decode ] -> Ok (tokenizer, prefill, decode)
+    | [ engine_directory ] ->
+        let tokenizer = Filename.concat engine_directory "tokenizer.llmopt" in
+        let prefill = Filename.concat engine_directory "prefill" in
+        let decode = Filename.concat engine_directory "decode" in
+        if not (Sys.file_exists tokenizer) then
+          Error (Printf.sprintf "engine directory missing tokenizer: %s" tokenizer)
+        else if not (Sys.file_exists prefill) then
+          Error (Printf.sprintf "engine directory missing prefill: %s" prefill)
+        else if not (Sys.file_exists decode) then
+          Error (Printf.sprintf "engine directory missing decode: %s" decode)
+        else Ok (tokenizer, prefill, decode)
     | _ -> usage ()
   in
   let* service, device = load options tokenizer prefill decode in
