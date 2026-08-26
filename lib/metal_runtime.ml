@@ -56,6 +56,12 @@ external batch_dispatch_stub :
   * int * int * int * int * int -> unit
   = "caml_llmopt_metal_batch_dispatch"
 
+external batch_dispatch_all_stub :
+  batch_handle -> library_handle ->
+  (string * buffer_handle list * bytes * int * int * int * int * int * int) array ->
+  unit
+  = "caml_llmopt_metal_batch_dispatch_all"
+
 external batch_copy_stub :
   batch_handle -> buffer_handle -> buffer_handle -> unit
   = "caml_llmopt_metal_batch_copy"
@@ -68,6 +74,31 @@ external commit_batch_stub : batch_handle -> unit
 
 external abort_batch_stub : batch_handle -> unit
   = "caml_llmopt_metal_abort_batch"
+
+type ring_handle
+
+external ring_create_stub : unit -> ring_handle = "caml_llmopt_ring_create"
+
+external ring_submit_stub :
+  ring_handle -> int -> int -> int -> int -> bool
+  = "caml_llmopt_ring_submit"
+
+external ring_wait_completion_stub : ring_handle -> int * int * int
+  = "caml_llmopt_ring_wait_completion"
+
+external ring_poll_completion_stub : ring_handle -> (int * int * int) option
+  = "caml_llmopt_ring_poll_completion"
+
+external ring_start_worker_stub :
+  ring_handle ->
+  library_handle ->
+  (string * buffer_handle list * bytes * int * int * int * int * int * int)
+  array ->
+  buffer_handle ->
+  buffer_handle ->
+  unit = "caml_llmopt_ring_start_worker"
+
+external ring_destroy_stub : ring_handle -> unit = "caml_llmopt_ring_destroy"
 
 let protect operation =
   try Ok (operation ()) with
@@ -84,9 +115,22 @@ type t = {
 type runtime = t
 
 module Batch = struct
+  type dispatch_item = {
+    name : string;
+    buffers : buffer_handle list;
+    parameters : bytes;
+    grid_x : int;
+    grid_y : int;
+    grid_z : int;
+    group_x : int;
+    group_y : int;
+    group_z : int;
+  }
+
   type t = {
     handle : batch_handle;
     context : context_handle;
+    mutable pending : (library_handle * dispatch_item) list;
   }
 
   let create (runtime : runtime) =
@@ -94,7 +138,43 @@ module Batch = struct
         {
           handle = begin_batch_stub runtime.library;
           context = runtime.context;
+          pending = [];
         })
+
+  let flush batch =
+    match batch.pending with
+    | [] -> Ok ()
+    | items ->
+        batch.pending <- [];
+        let items_rev = List.rev items in
+        let rec flush_groups = function
+          | [] -> Ok ()
+          | (cur_lib, _) :: _ as rest ->
+              let group, remainder =
+                List.partition (fun (l, _) -> l == cur_lib) rest
+              in
+              let arr =
+                Array.of_list
+                  (List.map
+                     (fun (_, it) ->
+                       ( it.name,
+                         it.buffers,
+                         it.parameters,
+                         it.grid_x,
+                         it.grid_y,
+                         it.grid_z,
+                         it.group_x,
+                         it.group_y,
+                         it.group_z ))
+                     group)
+              in
+              let* () =
+                protect (fun () ->
+                    batch_dispatch_all_stub batch.handle cur_lib arr)
+              in
+              flush_groups remainder
+        in
+        flush_groups items_rev
 
   let dispatch batch ~(runtime : runtime) ~name ~buffers ~parameters ~grid
       ~group =
@@ -102,29 +182,39 @@ module Batch = struct
     let group_x, group_y, group_z = group in
     if batch.context != runtime.context then
       Error "Metal batch and dispatch runtime use different device contexts"
-    else
-      protect (fun () ->
-          batch_dispatch_stub
-            ( batch.handle,
-              runtime.library,
-              name,
-              buffers,
-              parameters,
-              grid_x,
-              grid_y,
-              grid_z,
-              group_x,
-              group_y,
-              group_z ))
+    else (
+      batch.pending <-
+        (runtime.library,
+         {
+           name;
+           buffers;
+           parameters;
+           grid_x;
+           grid_y;
+           grid_z;
+           group_x;
+           group_y;
+           group_z;
+         })
+        :: batch.pending;
+      Ok ()
+    )
 
   let copy batch ~source ~destination =
+    let* () = flush batch in
     protect (fun () -> batch_copy_stub batch.handle source destination)
 
   let barrier batch =
+    let* () = flush batch in
     protect (fun () -> batch_barrier_stub batch.handle)
 
-  let commit batch = protect (fun () -> commit_batch_stub batch.handle)
-  let abort batch = protect (fun () -> abort_batch_stub batch.handle)
+  let commit batch =
+    let* () = flush batch in
+    protect (fun () -> commit_batch_stub batch.handle)
+
+  let abort batch =
+    batch.pending <- [];
+    protect (fun () -> abort_batch_stub batch.handle)
 end
 
 type prepared_package = {
@@ -239,6 +329,30 @@ module Buffer = struct
 
   let copy ~source ~destination =
     protect (fun () -> buffer_copy_stub source destination)
+end
+
+module Ring_queue = struct
+  type t = ring_handle
+
+  let create () = protect ring_create_stub
+
+  let submit ring ~request_id ~token ~past_tokens ~flags =
+    protect (fun () ->
+        ring_submit_stub ring request_id token past_tokens flags)
+
+  let wait_completion ring =
+    protect (fun () -> ring_wait_completion_stub ring)
+
+  let poll_completion ring =
+    protect (fun () -> ring_poll_completion_stub ring)
+
+  let start_worker ring ~(runtime : runtime) ~dispatches ~token_buffer
+      ~output_buffer =
+    protect (fun () ->
+        ring_start_worker_stub ring runtime.library dispatches token_buffer
+          output_buffer)
+
+  let destroy ring = protect (fun () -> ring_destroy_stub ring)
 end
 
 let tensor runtime ~name =

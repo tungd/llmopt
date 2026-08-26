@@ -234,6 +234,16 @@ let () =
   in
   if List.length q8_kernels <> 6 then
     fail "physical Q8 cache did not dispatch six pack/unpack kernels";
+  let ring = expect_ok (Metal_runtime.Ring_queue.create ()) in
+  let submitted =
+    expect_ok
+      (Metal_runtime.Ring_queue.submit ring ~request_id:101 ~token:42
+         ~past_tokens:5 ~flags:0)
+  in
+  if not submitted then fail "Ring_queue.submit failed";
+  let empty_cq = expect_ok (Metal_runtime.Ring_queue.poll_completion ring) in
+  if empty_cq <> None then fail "Ring_queue.poll_completion was not None";
+  expect_ok (Metal_runtime.Ring_queue.destroy ring);
   Printf.printf
     "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\nschedule-dispatches: 2\nschedule-submissions: 1\nweight-format: w4a16-group-64\ncache-format: q8-group-64\nq8-vector-kernels: %s\ncache-dispatches: 6\ncache-submissions: 1\nq8-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
     (Metal_runtime.device_name runtime)

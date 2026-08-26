@@ -207,3 +207,32 @@ val dispatch_q8_gemm :
   n:int ->
   k:int ->
   (string, string) result
+
+module Ring_queue : sig
+  type t
+
+  val create : unit -> (t, string) result
+
+  val submit :
+    t ->
+    request_id:int ->
+    token:int ->
+    past_tokens:int ->
+    flags:int ->
+    (bool, string) result
+
+  val wait_completion : t -> (int * int * int, string) result
+  val poll_completion : t -> ((int * int * int) option, string) result
+
+  val start_worker :
+    t ->
+    runtime:runtime ->
+    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int)
+               array ->
+    token_buffer:Buffer.t ->
+    output_buffer:Buffer.t ->
+    (unit, string) result
+
+  val destroy : t -> (unit, string) result
+end
+
