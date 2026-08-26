@@ -14,7 +14,10 @@ import pytest
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "python"))
 
-from llmopt_backend.cost_model.train import load_dataset, train_cost_model  # noqa: E402
+from llmopt_backend.cost_model.train import (  # noqa: E402
+    load_dataset,
+    train_cost_model,
+)
 from llmopt_backend.cost_model.transpile_ocaml import (  # noqa: E402
     evaluate_bundle,
     load_model_bundle,
@@ -130,6 +133,29 @@ def test_missing_values_follow_xgboost_default_child(tmp_path: Path) -> None:
     model_path.write_text(json.dumps(MODEL), encoding="utf-8")
     bundle = load_model_bundle(model_path)
     assert evaluate_bundle(bundle, (float("nan"), 0.0, 0.0)) == pytest.approx(1.25 + 0.2 * (-0.75 + 0.125))
+
+
+def test_relative_delta_dataset_uses_fixed_tile_per_shape(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.jsonl"
+    rows = []
+    for m, fixed, alternate in ((2, 10.0, 12.0), (4, 20.0, 15.0)):
+        for tile_k, latency in ((64, fixed), (128, alternate)):
+            rows.append(
+                {
+                    "m": m,
+                    "n": 512,
+                    "k": 512,
+                    "tile_m": 16,
+                    "tile_n": 16,
+                    "tile_k": tile_k,
+                    "latency_us": latency,
+                    "hardware": {"gpu_core_count": 16},
+                    "mode": "metal",
+                }
+            )
+    dataset.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    values = load_dataset(dataset, target="relative_delta")
+    assert [row.target for row in values] == pytest.approx([0.0, 0.2, 0.0, -0.25])
 
 
 def test_training_writes_portable_tree_bundle(tmp_path: Path) -> None:

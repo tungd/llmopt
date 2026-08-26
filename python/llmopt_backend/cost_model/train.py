@@ -28,6 +28,8 @@ FEATURE_NAMES = (
     "threadgroup_size",
     "mode_code",
 )
+TARGET_NAMES = ("latency", "relative_delta")
+DEFAULT_FIXED_TILE = (16, 16, 64)
 
 
 @dataclass(frozen=True)
@@ -85,9 +87,80 @@ def feature_row(row: Mapping[str, Any]) -> tuple[float, ...]:
     )
 
 
-def load_dataset(path: Path | str) -> tuple[DatasetRow, ...]:
+def _shape_key(row: Mapping[str, Any]) -> tuple[int, int, int]:
+    return tuple(int(_number(row.get(name), default=float("nan"))) for name in ("m", "n", "k"))
+
+
+def _tile_key(row: Mapping[str, Any]) -> tuple[int, int, int]:
+    return tuple(
+        int(_number(row.get(name), default=float("nan")))
+        for name in ("tile_m", "tile_n", "tile_k")
+    )
+
+
+def _latency(row: Mapping[str, Any]) -> float:
+    target = row.get("median_latency_us", row.get("latency_us"))
+    if target is None:
+        raise ValueError("dataset row has no latency target")
+    value = _number(target, default=float("nan"))
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("dataset row has invalid latency target")
+    return value
+
+
+def rows_from_records(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    target: str = "latency",
+    fixed_tile: tuple[int, int, int] = DEFAULT_FIXED_TILE,
+) -> tuple[DatasetRow, ...]:
+    """Convert measurement records into the model's feature/target rows."""
+
+    if target not in TARGET_NAMES:
+        raise ValueError(f"target must be one of {TARGET_NAMES!r}")
+    if len(fixed_tile) != 3 or any(value <= 0 for value in fixed_tile):
+        raise ValueError("fixed_tile must contain three positive dimensions")
+    fixed_latencies: dict[tuple[int, int, int], float] = {}
+    if target == "relative_delta":
+        for record in records:
+            if _tile_key(record) == fixed_tile:
+                shape = _shape_key(record)
+                if shape in fixed_latencies:
+                    raise ValueError(
+                        "relative_delta target requires one row per shape/tile; "
+                        "aggregate repeated samples first"
+                    )
+                fixed_latencies[shape] = _latency(record)
+
     rows: list[DatasetRow] = []
+    for record in records:
+        latency = _latency(record)
+        if target == "latency":
+            target_value = latency
+        else:
+            shape = _shape_key(record)
+            fixed_latency = fixed_latencies.get(shape)
+            if fixed_latency is None:
+                raise ValueError(
+                    f"relative_delta target has no fixed tile row for shape {shape!r}"
+                )
+            target_value = latency / fixed_latency - 1.0
+        if not math.isfinite(target_value):
+            raise ValueError("dataset row has a non-finite model target")
+        rows.append(DatasetRow(feature_row(record), target_value))
+    if not rows:
+        raise ValueError("dataset is empty")
+    return tuple(rows)
+
+
+def load_dataset(
+    path: Path | str,
+    *,
+    target: str = "latency",
+    fixed_tile: tuple[int, int, int] = DEFAULT_FIXED_TILE,
+) -> tuple[DatasetRow, ...]:
     source = Path(path)
+    records: list[Mapping[str, Any]] = []
     with source.open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
             if not line.strip():
@@ -98,16 +171,11 @@ def load_dataset(path: Path | str) -> tuple[DatasetRow, ...]:
                 raise ValueError(f"invalid JSONL at {source}:{line_number}") from exc
             if not isinstance(row, Mapping):
                 raise ValueError(f"dataset row {line_number} is not an object")
-            target = row.get("median_latency_us", row.get("latency_us"))
-            if target is None:
-                raise ValueError(f"dataset row {line_number} has no latency target")
-            target_value = _number(target, default=float("nan"))
-            if not math.isfinite(target_value) or target_value <= 0.0:
-                raise ValueError(f"dataset row {line_number} has invalid latency target")
-            rows.append(DatasetRow(feature_row(row), target_value))
-    if not rows:
-        raise ValueError(f"dataset is empty: {source}")
-    return tuple(rows)
+            records.append(row)
+    try:
+        return rows_from_records(records, target=target, fixed_tile=fixed_tile)
+    except ValueError as exc:
+        raise ValueError(f"invalid dataset {source}: {exc}") from exc
 
 
 def _xgboost_module() -> Any:
@@ -128,6 +196,8 @@ def train_cost_model(
     max_depth: int = 4,
     learning_rate: float = 0.1,
     seed: int = 23,
+    target: str = "latency",
+    fixed_tile: tuple[int, int, int] = DEFAULT_FIXED_TILE,
 ) -> dict[str, Any]:
     """Fit an XGBoost regressor and write a portable tree-dump bundle."""
 
@@ -136,7 +206,7 @@ def train_cost_model(
     if learning_rate <= 0.0 or not math.isfinite(learning_rate):
         raise ValueError("learning_rate must be finite and positive")
 
-    rows = load_dataset(dataset_path)
+    rows = load_dataset(dataset_path, target=target, fixed_tile=fixed_tile)
     xgboost = _xgboost_module()
     try:
         import numpy as np
@@ -179,6 +249,8 @@ def train_cost_model(
             "rows": len(rows),
             "n_estimators": n_estimators,
             "max_depth": max_depth,
+            "target": target,
+            "fixed_tile": list(fixed_tile),
             "seed": seed,
         },
     }
@@ -204,6 +276,13 @@ def main() -> None:
     parser.add_argument("--max-depth", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=23)
+    parser.add_argument("--target", choices=TARGET_NAMES, default="latency")
+    parser.add_argument(
+        "--fixed-tile",
+        type=lambda value: tuple(int(part) for part in value.split("x")),
+        default=DEFAULT_FIXED_TILE,
+        metavar="TMxTNxTK",
+    )
     args = parser.parse_args()
     try:
         bundle = train_cost_model(
@@ -213,6 +292,8 @@ def main() -> None:
             max_depth=args.max_depth,
             learning_rate=args.learning_rate,
             seed=args.seed,
+            target=args.target,
+            fixed_tile=args.fixed_tile,
         )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         parser.error(str(exc))

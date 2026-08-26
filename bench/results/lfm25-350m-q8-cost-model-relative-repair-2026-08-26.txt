@@ -1,0 +1,45 @@
+LFM2.5-350M Q8 relative-target cost-model repair
+Date: 2026-08-26
+Target: LiquidAI/LFM2.5-350M Q8 weight-only tile sweep
+
+Repair:
+- `python/llmopt_backend/cost_model/train.py` now supports a
+  `relative_delta` target. For each `(M,N,K)` shape, the target is the
+  measured tile latency divided by the measured fixed `16x16x64` latency,
+  minus one. The fixed-tile row is required for every shape, and repeated
+  samples must be aggregated before training.
+- The installed artifact is
+  `_artifacts/cost-model-repair-2026-08-26/model-relative-delta-16x3.json`:
+  16 trees, depth 3, learning rate `0.05`, seed `23`. Its generated predictor
+  is composed with the existing typed OCaml selector in
+  `lib/kernel_cost_model.ml`.
+
+Grouped validation:
+- The median dataset has 1,792 rows over 224 shapes and eight candidate tiles.
+- A seed-23 holdout keeps all eight tiles for each of 45 held-out shapes and
+  trains only on the other 179 shapes. Fixed `16x16x64` measures
+  `164409.671 us`; the model-selected tiles measure `163824.794 us`, a
+  relative reduction of `0.003557436715508102` (`0.3557436715508102%`). The
+  model selects `16x16x64` for 33 shapes and `8x32x64` for 12, matching the
+  measured winner for 25/45 shapes.
+- Five grouped folds over all 224 shapes sum to fixed
+  `731266.884 us` and model-selected `728923.884 us`, a relative reduction of
+  `0.00320402858554732` (`0.320402858554732%`), with measured winners on
+  133/224 shapes. No shape's rows cross a train/test boundary.
+- Receipts: `_artifacts/cost-model-repair-2026-08-26/relative-model-validation.json`
+  and `_artifacts/cost-model-repair-2026-08-26/static-vs-relative.json`.
+
+Build and static package evidence:
+- `ninja -f ninja.build test && ninja -f ninja.build all && ninja -f ninja.build metal`
+  passes after composing the predictor with the typed selector tail.
+- A fresh static replan using the installed artifact validates the full package
+  pair at 699 prefill commands and 719 decode commands, with zero opaque
+  commands. The package probe is recorded under
+  `_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v3/`; it did not execute
+  the model on the device.
+
+Boundary:
+The relative target improves the paired static median by the values above,
+but it does not establish the LOOP's declared `>= 15%` Q8-linear speedup or
+the exact four-prompt full-model result. The existing one native token-only
+probe remains the only probe under the repository one-attempt boundary.
