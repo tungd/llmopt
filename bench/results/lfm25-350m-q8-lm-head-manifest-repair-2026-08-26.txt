@@ -1,0 +1,77 @@
+# LFM2.5-350M Q8 LM-head kernel-manifest repair and native probe
+
+Date: 2026-08-26
+Target: `LiquidAI/LFM2.5-350M`, Q8 weight-only, opt-in token-id output
+
+## Single authorized native probe
+
+- Host: Apple M4 Pro, 25,769,803,776 bytes unified memory.
+- Preflight: `memory_pressure -Q` reported 70% system-wide free memory; port
+  `18104` was unused; no model, serving, or Transformers process was resident.
+- Command: one supervised `llmopt-serve` process using
+  `_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v3/{prefill,decode}`,
+  followed by the existing four-request warmup and scored traces with one HTTP
+  worker and a 240-second outer timeout.
+- The server reached `ready: http://127.0.0.1:18104` and `/healthz` returned
+  `ok`.
+- Warmup stopped at `0/4` successful requests before a scored trace ran. The
+  exact server error was:
+  `serving package has no q8-lm-head-argmax llmopt_q8_lm_head_argmax_f32 kernel for f32 -> i32`.
+- The server process exited through the supervisor cleanup and port `18104`
+  was released; a post-run process/port inspection found no resident model
+  process and no listener. No retry was issued.
+
+Raw probe artifacts:
+
+- `_artifacts/native-http-relative-model-v3-2026-08-26/warmup.json`
+- `_artifacts/native-http-relative-model-v3-2026-08-26/server.stderr`
+- `_artifacts/native-http-relative-model-v3-2026-08-26/memory-before.txt`
+- `_artifacts/native-http-relative-model-v3-2026-08-26/port-before.txt`
+
+## Root cause and repair
+
+The v3 `kernel.metal` and `kernel.metallib` contain the four LM-head argmax
+functions, including the f32 variant, but the v3 `package.llmopt` did not
+declare those ABI entries. In `q8_entries`, the pipeline operator made the
+LM-head append conditional on the absence of residual-norm entries, so a graph
+containing both macro families omitted the LM-head manifest entries.
+
+`lib/metal.ml` now binds the residual-norm append before independently appending
+the LM-head entries. `test/test.ml` adds a mixed residual-norm plus LM-head
+graph assertion for `llmopt_q8_lm_head_argmax_f32` with `Float32 -> Int32` ABI.
+
+Offline verification passes:
+
+- `ninja -f ninja.build test`: 43 Python tests and the OCaml test suite pass.
+- `ninja -f ninja.build all metal`: pass.
+
+## Corrected static v4 pair
+
+The corrected packages are in
+`_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v4/{prefill,decode}`.
+They were generated after the single native attempt; they were not dispatched
+on the device.
+
+| Stage | Kernels | Commands | Opaque | Macro operations |
+|---|---:|---:|---:|---|
+| Prefill | 96 | 699 | 0 | 16 residual-norm, 16 dual-linear, 6 QKV, 1 LM-head argmax |
+| Decode | 93 | 719 | 0 | 16 residual-norm, 16 dual-linear, 6 QKV, 10 ShortConv steps, 1 LM-head argmax |
+
+The ABI-14 serving-pair check passes grouped-Q8 width 64, page size 1, six
+prefill templates, six decode-past templates, and specialized decode metadata
+of 659 commands, 13 runtime inputs, and 6 paged-attention operations. Against
+the 795/815 baseline, the static reduction remains 96 per stage and 192
+combined. The v4 package manifests now contain
+`llmopt_q8_lm_head_argmax_f16`, `llmopt_q8_lm_head_argmax_f32`, and both
+secondary-logit variants.
+
+## Gate boundary
+
+The native attempt produced no token IDs, no full-model TPOT, and no fresh
+four-request parity result because the v3 package failed at kernel lookup.
+The v4 static repair closes the manifest defect, but the macro ITEM-05 and
+ITEM-06 device gates and the XGBoost ITEM-06 `>= 15%` Q8-linear gate remain
+open under the one-attempt boundary. Existing cost-model grouped validation
+still measures `0.3557436715508102` on the 45-shape holdout and
+`0.320402858554732` across five grouped folds, below the LOOP's declared
+`>= 15%` condition.

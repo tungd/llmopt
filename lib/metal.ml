@@ -3051,10 +3051,11 @@ let q8_entries graph =
   let entries =
     if has_q8_qkv_linear graph then entries @ q8_qkv_entries else entries
   in
-  if has_q8_linear_add_norm graph then
-    entries @ q8_linear_add_norm_entries
-  else entries
-  |> fun entries ->
+  let entries =
+    if has_q8_linear_add_norm graph then
+      entries @ q8_linear_add_norm_entries
+    else entries
+  in
   if has_q8_lm_head_argmax graph then
     entries @ q8_lm_head_argmax_entries
   else entries

@@ -5001,6 +5001,51 @@ let () =
     "LM-head argmax registers a uint32 token-id ABI";
   let _ = expect_ok (Serving_memory_plan.create lm_schedule) in
 
+  let mixed_norm_input =
+    Ir.Graph.tensor_input lm_fused ~name:"mixed_norm_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let mixed_norm_weight =
+    Ir.Graph.tensor_input lm_fused ~name:"mixed_norm_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "mixed_norm_weight" })
+      ~shape:(Tensor_shape.of_ints_exn [ 6 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let mixed_q8_weight =
+    Ir.Graph.tensor_input lm_fused ~name:"mixed_q8_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "mixed_q8_weight" })
+      ~shape:(Tensor_shape.of_ints_exn [ 6; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let mixed_q8_scale =
+    Ir.Graph.tensor_input lm_fused ~name:"mixed_q8_scale"
+      ~source:(Ir.Input_source.Tensor_store { key = "mixed_q8_scale" })
+      ~shape:(Tensor_shape.of_ints_exn [ 6 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let mixed_residual =
+    Ir.Graph.tensor_input lm_fused ~name:"mixed_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 6 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let mixed_norm_output =
+    Ir.Graph.fresh_tensor_value lm_fused
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 6 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append lm_fused
+    ~op:(Ir.Op.Q8_linear_add_norm { m = 1; n = 6; k = 4; epsilon = 1e-5; extra_outputs = [] })
+    ~inputs:
+      [ mixed_norm_input; mixed_q8_weight; mixed_q8_scale; mixed_residual;
+        mixed_norm_weight ]
+    ~output:(Some mixed_norm_output);
+  let mixed_lm_program = Metal.lower lm_fused |> expect_ok in
+  expect
+    (Metal.Program.kernels mixed_lm_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q8_lm_head_argmax_f32"
+           && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_lm_head_argmax
+           && Kernel_abi.Entry.input_dtype entry = Ir.Dtype.Float32
+           && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Int32))
+    "LM-head argmax f32 ABI remains declared when residual-norm fusion is present";
+
   Ir.Graph.add_output lm_graph ~name:"logits" lm_logits;
   let lm_dual_fused = Passes.fuse_lm_head_argmax lm_graph in
   expect
