@@ -54,7 +54,9 @@ def _mode_code(value: object) -> float:
     return 1.0 if str(value).lower() == "metal" else 0.0
 
 
-def _feature_row(row: Mapping[str, Any]) -> tuple[float, ...]:
+def feature_row(row: Mapping[str, Any]) -> tuple[float, ...]:
+    """Return the stable feature contract shared by training and audits."""
+
     hardware = row.get("hardware")
     if not isinstance(hardware, Mapping):
         hardware = {}
@@ -102,7 +104,7 @@ def load_dataset(path: Path | str) -> tuple[DatasetRow, ...]:
             target_value = _number(target, default=float("nan"))
             if not math.isfinite(target_value) or target_value <= 0.0:
                 raise ValueError(f"dataset row {line_number} has invalid latency target")
-            rows.append(DatasetRow(_feature_row(row), target_value))
+            rows.append(DatasetRow(feature_row(row), target_value))
     if not rows:
         raise ValueError(f"dataset is empty: {source}")
     return tuple(rows)

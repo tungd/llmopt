@@ -79,3 +79,4 @@
 * [XGBoost kernel cost-model device sweep](exp-0078-xgboost-kernel-cost-model-device-sweep-2026-08-26.md) - parameterized native Q8 tile dispatch, broad device measurements, transpilation validation, and the recorded learned-selection boundary.
 * [Macro fusion model integration](exp-0079-macro-fusion-model-integration-2026-08-26.md) - validated current full-model Q8 packages with dual-linear, QKV, and ShortConv-step fusions plus exact cross-process parity.
 * [XGBoost cost-model repair audit](exp-0080-xgboost-kernel-cost-model-repair-2026-08-26.md) - independent selector holdout and measured-oracle boundary after the broad Q8 tile sweep.
+* [XGBoost static-versus-dynamic audit](exp-0081-xgboost-static-dynamic-audit-2026-08-26.md) - paired-median comparison showing the existing artifact-selected tile policy against fixed `16x16x64`.

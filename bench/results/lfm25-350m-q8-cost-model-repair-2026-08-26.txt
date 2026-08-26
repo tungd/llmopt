@@ -32,3 +32,25 @@ The independent selector result and the measured oracle do not establish the
 LOOP's declared `>= 15%` Q8 linear speedup or a valid full-model comparison.
 The next action requires a revised measurement/model-selection plan; this
 audit does not issue another device probe.
+
+Revised static-versus-dynamic audit:
+- `bench/evaluate_cost_model.py` evaluates the existing 24-tree/depth-2
+  artifact against the 1,792 five-sample median rows, using one measured
+  median for every shape and each of the eight candidate tiles.
+- The fixed `16x16x64` sum is `731266.884 us` across 224 shapes. The model
+  selects `8x32x64` for all 224 shapes, whose measured sum is `800881.744 us`,
+  a relative reduction of `-0.09519761050741068` (`-9.519761050741068%`).
+- On the independent 45-shape holdout, fixed is `164409.671 us`, model
+  selection is `180172.915 us`, and the relative reduction is
+  `-0.09587783920569963` (`-9.587783920569963%`); measured-winner selection is
+  `2/45`.
+- The reproducible JSON receipt is
+  `_artifacts/cost-model-repair-2026-08-26/static-vs-dynamic.json`. This is a
+  static offline comparison over paired medians, not a new device probe.
+
+Boundary:
+The revised comparison is valid, but the artifact-selected dynamic policy is
+slower than the fixed runtime policy on both the full set and the holdout. It
+does not establish the declared `>= 15%` speedup or the declared four-prompt
+full-model token result, so the runtime selector remains on its fixed-tile
+behavior and the LOOP item remains open for a separately planned model repair.
