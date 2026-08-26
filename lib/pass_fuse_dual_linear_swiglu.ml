@@ -30,7 +30,7 @@ let run graph =
               Ir.node_output node2
             with
             | in1 :: w1_rest, in2 :: w2_rest, Some w1_output, Some w3_output
-              when value_is in1 in2 ->
+              when value_is in1 in2 && List.length w1_rest >= 2 && List.length w2_rest >= 2 ->
                 let fused =
                   Ir.node_create ~id:(Ir.node_id node1)
                     ~op:

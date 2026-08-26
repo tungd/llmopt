@@ -1301,6 +1301,25 @@ module Lfm25 = struct
                k = substitute substitutions k;
                scale;
              })
+    | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon } ->
+        Ok
+          (Ir.Op.Q8_fused_swiglu_ffn
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               epsilon;
+             })
+    | Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon } ->
+        Ok
+          (Ir.Op.Q8_fused_short_conv
+             {
+               m = substitute substitutions m;
+               channels;
+               window;
+               k = substitute substitutions k;
+               epsilon;
+             })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
         Ok (Ir.Op.Primitive primitive)
@@ -1419,7 +1438,9 @@ module Lfm25 = struct
       | Ir.Op.Q8_dual_linear _
       | Ir.Op.Q8_qkv_linear _
       | Ir.Op.Q8_fused_qkv_rope _
-      | Ir.Op.Q8_fused_attn_out _ ),
+      | Ir.Op.Q8_fused_attn_out _
+      | Ir.Op.Q8_fused_swiglu_ffn _
+      | Ir.Op.Q8_fused_short_conv _ ),
       _ ->
         map_shape substitutions original
     | Ir.Op.Q8_lm_head_argmax { m; _ }, _ ->
