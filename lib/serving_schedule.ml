@@ -104,6 +104,28 @@ let q8_activation_dtype = function
   | Ir.Dtype.Float16 | Ir.Dtype.Float32 -> true
   | _ -> false
 
+let w4a16_linear_metadata_matches ~m ~n ~k ~bias inputs output =
+  let dimensions value =
+    Ir.Value.logical_shape value |> Tensor_shape.dimensions
+  in
+  let common input weight scale =
+    Ir.Value.dtype input = Ir.Dtype.Float16
+    && Ir.Value.dtype weight = Ir.Dtype.UInt8
+    && Ir.Value.dtype scale = Ir.Dtype.Float16
+    && k mod 64 = 0
+    && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+    && dimensions weight = [ n; k / 2 ]
+    && dimensions scale = [ n; k / 64 ]
+    && q8_output_matches ~rows:m ~columns:n ~dtype:Ir.Dtype.Float16 output
+  in
+  match inputs, bias with
+  | [ input; weight; scale ], false -> common input weight scale
+  | [ input; weight; scale; bias_value ], true ->
+      common input weight scale
+      && (dimensions bias_value = [ n ] || dimensions bias_value = [ 1; n ])
+      && Ir.Value.dtype bias_value = Ir.Dtype.Float16
+  | _ -> false
+
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
   && Tensor_shape.equal
@@ -156,6 +178,14 @@ let validate_command seen_values command =
         | Ir.Op.Output _, [ _ ], None -> Ok ()
         | Ir.Op.Output _, _, _ ->
             Error "schedule output must have one dependency and no result"
+        | Ir.Op.W4a16_linear { m; n; k; bias }, inputs, Some output ->
+            if w4a16_linear_metadata_matches ~m ~n ~k ~bias inputs output then
+              Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d W4A16 linear metadata is inconsistent"
+                   command.Command.node_id)
         | Ir.Op.Copy _, [ source; destination ], None ->
             if
               Tensor_shape.equal
@@ -1027,6 +1057,15 @@ module Lfm25 = struct
                n = substitute substitutions n;
                k = substitute substitutions k;
              })
+    | Ir.Op.W4a16_linear { m; n; k; bias } ->
+        Ok
+          (Ir.Op.W4a16_linear
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               bias;
+             })
     | Ir.Op.Q8_linear { m; n; k; bias } ->
         Ok
           (Ir.Op.Q8_linear
@@ -1325,7 +1364,9 @@ module Lfm25 = struct
          0
 
   let projection_dimensions = function
-    | Ir.Op.Linear { m; n; k; _ } | Ir.Op.Q8_linear { m; n; k; _ } ->
+    | Ir.Op.Linear { m; n; k; _ }
+    | Ir.Op.W4a16_linear { m; n; k; _ }
+    | Ir.Op.Q8_linear { m; n; k; _ } ->
         Some (m, n, k)
     | _ -> None
 
@@ -1479,6 +1520,8 @@ module Lfm25 = struct
                     Ok (Ir.Op.Linear { m = 1; n; k; bias })
                 | Ir.Op.Q8_linear { n; k; bias; _ } ->
                     Ok (Ir.Op.Q8_linear { m = 1; n; k; bias })
+                | Ir.Op.W4a16_linear { n; k; bias; _ } ->
+                    Ok (Ir.Op.W4a16_linear { m = 1; n; k; bias })
                 | _ ->
                     Error
                       "LFM final-token projection node is no longer supported")
@@ -1761,6 +1804,7 @@ let dtype_tag = function
   | Ir.Dtype.Int32 -> 4
   | Ir.Dtype.Int8 -> 5
   | Ir.Dtype.Bool -> 6
+  | Ir.Dtype.UInt8 -> 7
 
 let dtype_of_tag = function
   | 0 -> Ok Ir.Dtype.Float32
@@ -1770,6 +1814,7 @@ let dtype_of_tag = function
   | 4 -> Ok Ir.Dtype.Int32
   | 5 -> Ok Ir.Dtype.Int8
   | 6 -> Ok Ir.Dtype.Bool
+  | 7 -> Ok Ir.Dtype.UInt8
   | tag -> Error (Printf.sprintf "unknown schedule dtype tag: %d" tag)
 
 let write_shape writer shape =
@@ -2349,6 +2394,10 @@ let write_op writer = function
   | Ir.Op.Fused_matmul_bias { m; n; k } ->
       Binary.Writer.u8 writer 13;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ]
+  | Ir.Op.W4a16_linear { m; n; k; bias } ->
+      Binary.Writer.u8 writer 34;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
+      Binary.Writer.bool writer bias
   | Ir.Op.Q8_linear { m; n; k; bias } ->
       Binary.Writer.u8 writer 14;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
@@ -2422,7 +2471,6 @@ let write_op writer = function
         Binary.Writer.u8 writer (List.length extra_outputs);
         List.iter (write_value writer) extra_outputs
       end
-
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
   let* n = Binary.Reader.u64 reader in
@@ -2491,10 +2539,14 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Q8_linear { m; n; k; bias })
+  | 34 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* bias = Binary.Reader.bool reader in
+      Ok (Ir.Op.W4a16_linear { m; n; k; bias })
   | 15 -> read_primitive values reader |> Result.map (fun value -> Ir.Op.Primitive value)
   | 16 ->
       let* epsilon = Binary.Reader.float64 reader in
-      if Float.is_finite epsilon && epsilon > 0.0 then Ok (Ir.Op.Rms_norm { epsilon })
+      if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm { epsilon })
       else Error "schedule contains a non-finite RMSNorm epsilon"
   | 17 ->
       let* m, n, k = read_three_dimensions reader in
@@ -2658,32 +2710,8 @@ let magic = "LLMOSCH\000"
 
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
-  let extended =
-    List.exists
-      (fun command ->
-        match command.Command.op with
-        | Ir.Op.Q8_linear_add_norm { extra_outputs; _ } ->
-            extra_outputs <> []
-        | Ir.Op.Q8_lm_head_argmax { extra_outputs; _ } ->
-            extra_outputs <> []
-        | _ -> false)
-      schedule.commands
-  in
-  let version =
-    if
-      List.exists
-        (fun command ->
-          match command.Command.op with
-          | Ir.Op.Q8_lm_head_argmax { extra_outputs; _ } ->
-              extra_outputs <> []
-          | _ -> false)
-        schedule.commands
-    then 16
-    else if extended then 15
-    else 14
-  in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer version;
+  Binary.Writer.u16 writer 17;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2703,13 +2731,10 @@ let of_bytes ?device bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if
-      version <> 1 && version <> 2 && version <> 3 && version <> 4
-      && version <> 5 && version <> 6 && version <> 7 && version <> 8
-      && version <> 9 && version <> 10 && version <> 11 && version <> 12
-      && version <> 13 && version <> 14 && version <> 15 && version <> 16
-    then
+    if version <> 17 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
+
+
     else
       let* count = Binary.Reader.u32 reader in
       let values = Hashtbl.create count in

@@ -1,8 +1,11 @@
 module Format : sig
-  type t = F16 | Q8 of { group_size : int }
+  type t = private F16 | Q8 of { group_size : int }
 
+  (** The fixed number of KV elements represented by one Q8 scale. *)
+  val q8_group_size : int
   val default : t
   val f16 : t
+  val validate : t -> (unit, string) result
   val q8 : group_size:int -> (t, string) result
   val to_string : t -> string
   val group_size : t -> int option
@@ -13,6 +16,8 @@ end
 module Layout : sig
   type t
 
+  (** The fixed attention head dimension for the Q8 KV path. *)
+  val q8_head_dim : int
   val create :
     format:Format.t ->
     attention_layers:int ->

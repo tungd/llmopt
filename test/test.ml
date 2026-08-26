@@ -1257,6 +1257,63 @@ let () =
          | _ -> false)
        (Ir.Graph.nodes q8_graph))
     "Q8 linear op missing";
+  let w4a16_kernel () =
+    let input =
+      Tile.input ~dtype:Ir.Dtype.Float16 ~name:"w4_input"
+        ~shape:(Shape.of_ints_exn ~rows:1 ~cols:64) ()
+    in
+    let weight =
+      Tile.input ~dtype:Ir.Dtype.UInt8 ~name:"w4_weight"
+        ~shape:(Shape.of_ints_exn ~rows:2 ~cols:32) ()
+    in
+    let scale =
+      Tile.input ~dtype:Ir.Dtype.Float16 ~name:"w4_scale"
+        ~shape:(Shape.of_ints_exn ~rows:2 ~cols:1) ()
+    in
+    let bias =
+      Tile.input ~dtype:Ir.Dtype.Float16 ~name:"w4_bias"
+        ~shape:(Shape.of_ints_exn ~rows:1 ~cols:2) ()
+    in
+    Tile.output ~name:"w4_output"
+      (Tile.w4a16_linear input weight scale ~bias)
+  in
+  let w4_inputs =
+    [ "w4_input", Cpu.Tensor.of_rows [| Array.make 64 1.0 |];
+      ( "w4_weight",
+        Cpu.Tensor.of_rows
+          [| Array.make 32 17.0; Array.make 32 255.0 |] );
+      "w4_scale", Cpu.Tensor.of_rows [| [| 0.5 |]; [| 0.25 |] |];
+      "w4_bias", Cpu.Tensor.of_rows [| [| 1.0; 2.0 |] |] ]
+  in
+  (match Cpu.run ~inputs:w4_inputs w4a16_kernel with
+  | Error exception_value -> raise exception_value
+  | Ok (_, execution) ->
+      (match Cpu.output execution "w4_output" with
+      | None -> fail "W4A16 CPU output missing"
+      | Some tensor ->
+          let rows = Cpu.Tensor.to_rows tensor in
+          expect (Float.abs (rows.(0).(0) -. 33.0) < 0.001)
+            "W4A16 low-nibble result";
+          expect (Float.abs (rows.(0).(1) -. (-14.0)) < 0.001)
+            "W4A16 signed-nibble result"));
+  let w4_graph =
+    match Capture.run w4a16_kernel with
+    | Ok (_, graph) -> graph
+    | Error exception_value -> raise exception_value
+  in
+  expect
+    (List.exists
+       (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.W4a16_linear { m = 1; n = 2; k = 64; bias = true } -> true
+         | _ -> false)
+       (Ir.Graph.nodes w4_graph))
+    "W4A16 linear op missing";
+  let w4_program = Metal.lower w4_graph |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source w4_program)
+       "kernel void llmopt_w4a16_linear_f16_g64")
+    "W4A16 Metal kernel missing";
   let q8_silu_graph = Ir.Graph.create () in
   let q8_silu_input =
     Ir.Graph.tensor_input q8_silu_graph ~name:"q8_silu_input"
@@ -1649,8 +1706,8 @@ let () =
   let q8_add_norm_external_bytes =
     Serving_schedule.to_bytes q8_add_norm_external_schedule
   in
-  expect (Bytes.get_uint16_le q8_add_norm_external_bytes 8 = 15)
-    "secondary residual output uses the extended schedule version";
+  expect (Bytes.get_uint16_le q8_add_norm_external_bytes 8 = 17)
+    "secondary residual output uses the current schedule version";
   let q8_add_norm_external_round_trip =
     q8_add_norm_external_bytes |> Serving_schedule.of_bytes |> expect_ok
   in
@@ -2452,14 +2509,14 @@ let () =
     Ir.Graph.tensor_input paged_decode ~name ~source:Ir.Input_source.Runtime
       ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
   in
-  let past_key = paged_input "past_key" [ 1; 2; 3; 2 ] Ir.Dtype.Float16 in
-  let past_value = paged_input "past_value" [ 1; 2; 3; 2 ] Ir.Dtype.Float16 in
-  let query = paged_input "query" [ 1; 2; 1; 2 ] Ir.Dtype.Float16 in
+  let past_key = paged_input "past_key" [ 1; 2; 3; 64 ] Ir.Dtype.Float16 in
+  let past_value = paged_input "past_value" [ 1; 2; 3; 64 ] Ir.Dtype.Float16 in
+  let query = paged_input "query" [ 1; 2; 1; 64 ] Ir.Dtype.Float16 in
   let current_value name =
-    let source = paged_input name [ 1; 2; 1; 2 ] Ir.Dtype.Float16 in
+    let source = paged_input name [ 1; 2; 1; 64 ] Ir.Dtype.Float16 in
     let value =
       Ir.Graph.fresh_tensor_value paged_decode
-        ~shape:(Tensor_shape.of_ints_exn [ 1; 2; 1; 2 ])
+        ~shape:(Tensor_shape.of_ints_exn [ 1; 2; 1; 64 ])
         ~dtype:Ir.Dtype.Float16
     in
     Ir.Graph.append paged_decode
@@ -2481,26 +2538,26 @@ let () =
   in
   let materialized_key =
     append_paged (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 2 }))
-      [ past_key; current_key ] [ 1; 2; 4; 2 ]
+      [ past_key; current_key ] [ 1; 2; 4; 64 ]
   in
   let materialized_value =
     append_paged (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 2 }))
-      [ past_value; current_value ] [ 1; 2; 4; 2 ]
+      [ past_value; current_value ] [ 1; 2; 4; 64 ]
   in
   let paged_output =
     append_paged
       (Ir.Primitive.Attention
          (expect_ok (Ir.Attention.create ~scale:0.5 ~causal:false)))
-      [ query; materialized_key; materialized_value; mask ] [ 1; 2; 1; 2 ]
+      [ query; materialized_key; materialized_value; mask ] [ 1; 2; 1; 64 ]
   in
   Ir.Graph.add_output paged_decode ~name:"keys" materialized_key;
   Ir.Graph.add_output paged_decode ~name:"values" materialized_value;
   Ir.Graph.add_output paged_decode ~name:"attention" paged_output;
-  let paged_format = expect_ok (Kv_cache.Format.q8 ~group_size:2) in
+  let paged_format = expect_ok (Kv_cache.Format.q8 ~group_size:64) in
   let paged_layout =
     expect_ok
       (Kv_cache.Layout.create ~format:paged_format ~attention_layers:1
-         ~kv_heads:2 ~head_dim:2 ~recurrent_layers:0 ~recurrent_width:0
+         ~kv_heads:2 ~head_dim:64 ~recurrent_layers:0 ~recurrent_width:0
          ~recurrent_window:0)
   in
   let paged_cache =
@@ -2536,7 +2593,7 @@ let () =
            match Serving_schedule.Command.op command with
            | Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config) ->
                Ir.Paged_attention_q8.cache_layer config = 0
-               && Ir.Paged_attention_q8.group_size config = 2
+               && Ir.Paged_attention_q8.group_size config = 64
                && List.length (Serving_schedule.Command.inputs command) = 6
            | _ -> false))
     "paged Q8 decode reifies one direct physical-cache attention command";
@@ -2550,7 +2607,7 @@ let () =
            | Ir.Op.Output { name = ("keys" | "values") }, [ value ] ->
                Some (Tensor_shape.dimensions (Ir.Value.logical_shape value))
            | _ -> None)
-    = [ [ 1; 2; 1; 2 ]; [ 1; 2; 1; 2 ] ])
+    = [ [ 1; 2; 1; 64 ]; [ 1; 2; 1; 64 ] ])
     "paged Q8 decode exports only the current key/value row";
   let _ = expect_ok (Serving_memory_plan.create paged_schedule) in
   let workspace_graph = Ir.Graph.create () in
@@ -2767,10 +2824,10 @@ let () =
     = Kv_cache.Format.default)
     "serving package defaults to Q8 KV";
   expect
-    (List.mem Kv_cache.Format.f16
-       (Serving_package.Cache.supported_kv
-          (Serving_package.cache package_round_trip)))
-    "serving package supports F16 KV";
+    (Serving_package.Cache.supported_kv
+       (Serving_package.cache package_round_trip)
+    = [ Kv_cache.Format.default ])
+    "serving package exposes only the fixed Q8 KV path";
   (match Serving_package.Artifact.create "../weights.bin" with
   | Error _ -> ()
   | Ok _ -> fail "serving package accepted a traversal path");
@@ -2829,29 +2886,13 @@ let () =
     (String.starts_with ~prefix:"LLMOPTPK" serving_binary)
     "serving package has binary magic";
   expect
-    (Bytes.get_uint16_le serving_bytes 8 = 14)
-    "serving package uses binary ABI version 14";
-  let package_v12 = Bytes.copy serving_bytes in
-  Bytes.set_uint16_le package_v12 8 12;
-  ignore (Serving_package.of_bytes package_v12 |> expect_ok);
-  let package_v7 = Bytes.copy serving_bytes in
-  Bytes.set_uint16_le package_v7 8 7;
-  ignore (Serving_package.of_bytes package_v7 |> expect_ok);
-  let package_v6 = Bytes.copy serving_bytes in
-  Bytes.set_uint16_le package_v6 8 6;
-  ignore (Serving_package.of_bytes package_v6 |> expect_ok);
-  let package_v5 = Bytes.copy serving_bytes in
-  Bytes.set_uint16_le package_v5 8 5;
-  ignore (Serving_package.of_bytes package_v5 |> expect_ok);
-  let package_v4 = Bytes.copy serving_bytes in
-  Bytes.set_uint16_le package_v4 8 4;
-  ignore (Serving_package.of_bytes package_v4 |> expect_ok);
-  let package_v3 = Bytes.copy serving_bytes in
-  Bytes.set_uint16_le package_v3 8 3;
-  ignore (Serving_package.of_bytes package_v3 |> expect_ok);
-  let package_v2 = Bytes.copy serving_bytes in
-  Bytes.set_uint16_le package_v2 8 2;
-  ignore (Serving_package.of_bytes package_v2 |> expect_ok);
+    (Bytes.get_uint16_le serving_bytes 8 = 15)
+    "serving package uses binary ABI version 15";
+  let package_v14 = Bytes.copy serving_bytes in
+  Bytes.set_uint16_le package_v14 8 14;
+  (match Serving_package.of_bytes package_v14 with
+  | Error _ -> ()
+  | Ok _ -> fail "serving package accepted an obsolete ABI version");
   expect
     (not (contains_substring serving_binary "fx.json"))
     "binary serving package excludes FX diagnostics";
@@ -3892,6 +3933,35 @@ let () =
            | Ir.Op.Rms_norm { epsilon } -> Float.abs (epsilon -. 1e-5) < 1e-12
            | _ -> false))
     "binary schedule preserves fused RMSNorm";
+  let zero_epsilon_graph = Ir.Graph.create () in
+  let zero_input =
+    Ir.Graph.tensor_input zero_epsilon_graph ~name:"zero_rms_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4 ]) ~dtype:Ir.Dtype.Float32
+  in
+  let zero_weight =
+    Ir.Graph.tensor_input zero_epsilon_graph ~name:"zero_rms_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let zero_output =
+    Ir.Graph.fresh_tensor_value zero_epsilon_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append zero_epsilon_graph ~op:(Ir.Op.Rms_norm { epsilon = 0.0 })
+    ~inputs:[ zero_input; zero_weight ] ~output:(Some zero_output);
+  Ir.Graph.add_output zero_epsilon_graph ~name:"zero_rms" zero_output;
+  let zero_epsilon_schedule =
+    zero_epsilon_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands zero_epsilon_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Rms_norm { epsilon = 0.0 } -> true
+           | _ -> false))
+    "binary schedule accepts every finite RMSNorm epsilon represented by IR";
   let rms_package =
     expect_ok
       (Serving_package.compiled_graph ~files:package_files
@@ -4138,27 +4208,38 @@ let () =
   | Ok () -> ()
   | Error message -> fail message);
   expect
-    (Lfm25.Config.default.quantization = Ir.Quantization.Q8_weight_only)
+    (Lfm25.Config.default.quantization = Ir.Quantization.W4A16_Q8KV)
     "LFM2.5 default quantization";
   expect
     (Lfm25.Config.default.intermediate_size = 6_656
     && Lfm25.Config.default.feed_forward_size = 4_608)
     "LFM2.5 separates declared and auto-adjusted feed-forward sizes";
   let q8_kv = expect_ok (Kv_cache.Format.q8 ~group_size:64) in
-  let f16_serving =
-    expect_ok
-      (Serving_cache.Config.create ~model:Lfm25.Config.default
-         ~kv_format:Kv_cache.Format.f16 ~token_capacity:32
-         ~checkpoint_capacity:8 ~page_size:1 ())
-  in
+  (match
+     Serving_cache.Config.create ~model:Lfm25.Config.default
+       ~kv_format:Kv_cache.Format.f16 ~token_capacity:32
+       ~checkpoint_capacity:8 ~page_size:1 ()
+   with
+  | Error message when message = "serving requires the fixed Q8 KV format" -> ()
+  | Error message -> fail ("unexpected F16 serving rejection: " ^ message)
+  | Ok _ -> fail "serving accepted an F16 KV configuration");
   let q8_serving =
     expect_ok
       (Serving_cache.Config.create ~model:Lfm25.Config.default
          ~token_capacity:32 ~checkpoint_capacity:8 ~page_size:1 ())
   in
-  let f16_layout = Kv_cache.Config.layout (Serving_cache.Config.kv f16_serving) in
+  let f16_layout =
+    expect_ok
+      (Kv_cache.Layout.create ~format:Kv_cache.Format.f16
+         ~attention_layers:6 ~kv_heads:8 ~head_dim:64 ~recurrent_layers:10
+         ~recurrent_width:1_024 ~recurrent_window:3)
+  in
   let q8_layout = Kv_cache.Config.layout (Serving_cache.Config.kv q8_serving) in
-  let f16_kv_config = Serving_cache.Config.kv f16_serving in
+  let f16_kv_config =
+    expect_ok
+      (Kv_cache.Config.create ~layout:f16_layout ~token_capacity:32
+         ~checkpoint_capacity:8)
+  in
   let q8_kv_config = Serving_cache.Config.kv q8_serving in
   expect (Kv_cache.Layout.bytes_per_token f16_layout = 12_288)
     "F16 KV bytes per token";
@@ -4186,14 +4267,26 @@ let () =
     (Kv_cache.Config.token_pool_bytes q8_kv_config = 202_752
     && Kv_cache.Config.checkpoint_pool_bytes q8_kv_config = 253_440)
     "Q8 physical pool byte lengths";
-  let incompatible_q8 = expect_ok (Kv_cache.Format.q8 ~group_size:96) in
+  (match Kv_cache.Format.q8 ~group_size:96 with
+  | Error _ -> ()
+  | Ok _ -> fail "non-canonical Q8 KV group size was accepted");
+  (match
+     Serving_cache.Config.create
+       ~model:{ Lfm25.Config.default with hidden_size = 512 }
+       ~token_capacity:32 ~checkpoint_capacity:8 ~page_size:1 ()
+   with
+  | Error message when message = "serving Q8 KV requires attention head_dim=64" ->
+      ()
+  | Error message -> fail ("unexpected Q8 serving geometry error: " ^ message)
+  | Ok _ -> fail "serving Q8 accepted a non-64 attention head");
+  let incompatible_q8 = Kv_cache.Format.default in
   (match
      Kv_cache.Layout.create ~format:incompatible_q8 ~attention_layers:6
-       ~kv_heads:8 ~head_dim:64 ~recurrent_layers:10
+       ~kv_heads:8 ~head_dim:32 ~recurrent_layers:10
        ~recurrent_width:1_024 ~recurrent_window:3
    with
   | Error _ -> ()
-  | Ok _ -> fail "physical Q8 layout accepted a split attention head group");
+  | Ok _ -> fail "physical Q8 layout accepted a non-64 attention head");
   (match
      Kv_cache.Layout.create ~format:Kv_cache.Format.f16
        ~attention_layers:max_int ~kv_heads:2 ~head_dim:2 ~recurrent_layers:0
@@ -4603,6 +4696,72 @@ let () =
     "parallel branches w1 and w3 form a valid antichain";
   let cp = Dag_analysis.critical_path diamond_dag in
   expect (cp.length = 4) "critical path length is 4";
+  let diamond_plan = expect_ok (Compute_plan.of_graph diamond_g) in
+  expect (List.length (Compute_plan.requests diamond_plan) = 5)
+    "compute plan snapshots every semantic request";
+  expect (Compute_plan.critical_path_length diamond_plan = 4)
+    "compute plan preserves the semantic critical path";
+  let plan_stages = Compute_plan.stages diamond_plan in
+  expect
+    (List.mapi
+       (fun index stage -> Compute_plan.Stage.index stage = index)
+       plan_stages
+    |> List.for_all Fun.id)
+    "compute plan assigns deterministic contiguous stage indices";
+  expect
+    (match List.nth_opt plan_stages 1 with
+    | Some stage -> List.length (Compute_plan.Stage.requests stage) = 2
+    | None -> false)
+    "compute plan exposes independent diamond branches applicatively";
+  let paged_state_g = Ir.Graph.create () in
+  let paged_input name dtype =
+    Ir.Graph.tensor_input paged_state_g ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1 ]) ~dtype
+  in
+  let paged_query = paged_input "paged_query" Ir.Dtype.Float16 in
+  let paged_key = paged_input "paged_key" Ir.Dtype.Float16 in
+  let paged_value = paged_input "paged_value" Ir.Dtype.Float16 in
+  let paged_pool = paged_input "paged_pool" Ir.Dtype.Int8 in
+  let paged_slots = paged_input "paged_slots" Ir.Dtype.Int32 in
+  let paged_mask = paged_input "paged_mask" Ir.Dtype.Bool in
+  let paged_output_1 =
+    Ir.Graph.fresh_tensor_value paged_state_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let paged_output_2 =
+    Ir.Graph.fresh_tensor_value paged_state_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let paged_config =
+    expect_ok
+      (Ir.Paged_attention_q8.create ~scale:1.0 ~cache_layer:0
+         ~attention_layers:1 ~kv_heads:1 ~group_size:64 ~token_stride:132)
+  in
+  let paged_inputs =
+    [ paged_query; paged_key; paged_value; paged_pool; paged_slots;
+      paged_mask ]
+  in
+  let first_paged =
+    Ir.node_create ~id:100
+      ~op:(Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 paged_config))
+      ~inputs:paged_inputs ~output:(Some paged_output_1)
+  in
+  let second_paged =
+    Ir.node_create ~id:7
+      ~op:(Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 paged_config))
+      ~inputs:paged_inputs ~output:(Some paged_output_2)
+  in
+  let paged_state_g =
+    Ir.Graph.with_nodes paged_state_g
+      (Ir.Graph.nodes paged_state_g @ [ first_paged; second_paged ])
+  in
+  let paged_state_plan = Compute_plan.of_graph paged_state_g |> expect_ok in
+  expect
+    (match Compute_plan.request paged_state_plan 7 with
+    | Some request ->
+        List.mem 100 (Compute_plan.Request.state_dependencies request)
+    | None -> false)
+    "compute plan orders shared Q8 KV mutation by graph order, not node ID";
 
   (* Resource_class and complementary pairing tests *)
   let norm_node =
@@ -4687,6 +4846,15 @@ let () =
          | _ -> false)
        fused_nodes)
     "parallel FFN branches fuse into Q8_dual_linear";
+  let fused_ffn_plan = Compute_plan.of_graph fused_ffn_g |> expect_ok in
+  expect
+    (Compute_plan.requests fused_ffn_plan
+    |> List.exists (fun request ->
+           match Compute_plan.Request.op request with
+           | Ir.Op.Q8_dual_linear _ ->
+               List.length (Compute_plan.Request.outputs request) = 2
+           | _ -> false))
+    "compute plan exposes both ordered results of a dual projection";
   let dual_kernel_source =
     Metal.q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16"
       ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
@@ -4734,6 +4902,170 @@ let () =
            | Ir.Op.Q8_dual_linear { silu_first = true; _ } -> true
            | _ -> false))
     "SwiGLU gate activation is retained by the dual-linear fusion";
+
+  (* fuse_swiglu_ffn test *)
+  let swiglu_ffn_g = Ir.Graph.create () in
+  let swiglu_ffn_input =
+    Ir.Graph.tensor_input swiglu_ffn_g ~name:"swiglu_ffn_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let swiglu_ffn_residual =
+    Ir.Graph.tensor_input swiglu_ffn_g ~name:"swiglu_ffn_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let ffn_weight name rows columns =
+    Ir.Graph.tensor_input swiglu_ffn_g ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ rows; columns / 2 ])
+      ~dtype:Ir.Dtype.UInt8
+  in
+  let ffn_scale name rows groups =
+    Ir.Graph.tensor_input swiglu_ffn_g ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ rows; groups ]) ~dtype:Ir.Dtype.Float16
+  in
+  let ffn_w1 = ffn_weight "ffn_w1" 128 64 in
+  let ffn_s1 = ffn_scale "ffn_s1" 128 1 in
+  let ffn_w3 = ffn_weight "ffn_w3" 128 64 in
+  let ffn_s3 = ffn_scale "ffn_s3" 128 1 in
+  let ffn_w2 = ffn_weight "ffn_w2" 64 128 in
+  let ffn_s2 = ffn_scale "ffn_s2" 64 2 in
+  let ffn_norm_weight =
+    Ir.Graph.tensor_input swiglu_ffn_g ~name:"ffn_norm_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let ffn_norm_output =
+    Ir.Graph.fresh_tensor_value swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append swiglu_ffn_g
+    ~op:(Ir.Op.Rms_norm { epsilon = 2e-5 })
+    ~inputs:[ swiglu_ffn_input; ffn_norm_weight ]
+    ~output:(Some ffn_norm_output);
+  let ffn_gate_linear =
+    Ir.Graph.fresh_tensor_value swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append swiglu_ffn_g
+    ~op:(Ir.Op.W4a16_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ ffn_norm_output; ffn_w1; ffn_s1 ]
+    ~output:(Some ffn_gate_linear);
+  let ffn_gate_output =
+    Ir.Graph.fresh_tensor_value swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append swiglu_ffn_g
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, ffn_gate_linear))))
+    ~inputs:[ ffn_gate_linear ]
+    ~output:(Some ffn_gate_output);
+  let ffn_up_output =
+    Ir.Graph.fresh_tensor_value swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append swiglu_ffn_g
+    ~op:(Ir.Op.W4a16_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ ffn_norm_output; ffn_w3; ffn_s3 ]
+    ~output:(Some ffn_up_output);
+  let ffn_product =
+    Ir.Graph.fresh_tensor_value swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append swiglu_ffn_g
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor ffn_up_output,
+                 Ir.Pointwise.Tensor ffn_gate_output ))))
+    ~inputs:[ ffn_up_output; ffn_gate_output ]
+    ~output:(Some ffn_product);
+  let ffn_down =
+    Ir.Graph.fresh_tensor_value swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append swiglu_ffn_g
+    ~op:(Ir.Op.W4a16_linear { m = 1; n = 64; k = 128; bias = false })
+    ~inputs:[ ffn_product; ffn_w2; ffn_s2 ]
+    ~output:(Some ffn_down);
+  let ffn_block_output =
+    Ir.Graph.fresh_tensor_value swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append swiglu_ffn_g
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor ffn_down,
+                 Ir.Pointwise.Tensor swiglu_ffn_residual ))))
+    ~inputs:[ ffn_down; swiglu_ffn_residual ]
+    ~output:(Some ffn_block_output);
+  Ir.Graph.add_output swiglu_ffn_g ~name:"ffn_block_output" ffn_block_output;
+  let swiglu_node_count = Ir.Graph.nodes swiglu_ffn_g |> List.length in
+  let swiglu_regions = Passes.discover_swiglu_ffn swiglu_ffn_g |> expect_ok in
+  expect (List.length swiglu_regions = 1)
+    "whole-block FFN discovery emits exactly one structured region";
+  let swiglu_region = List.hd swiglu_regions in
+  expect (Kernel_ir.name swiglu_region = "w4a16_g64_swiglu_ffn")
+    "whole-block FFN region has a stable semantic name";
+  expect (List.length (Kernel_ir.member_node_ids swiglu_region) = 7)
+    "whole-block FFN region covers the decomposed W4A16 tensor DAG";
+  expect
+    (Kernel_ir.inputs swiglu_region
+    |> List.map (fun ({ Kernel_ir.value; _ } : Kernel_ir.input) -> value)
+    |> fun values ->
+       values
+       = [
+           swiglu_ffn_input;
+           swiglu_ffn_residual;
+           ffn_w1;
+           ffn_s1;
+           ffn_w3;
+           ffn_s3;
+           ffn_w2;
+           ffn_s2;
+           ffn_norm_weight;
+         ])
+    "whole-block FFN region preserves every boundary operand";
+  expect
+    (Kernel_ir.bindings swiglu_region
+    |> List.map Kernel_ir.binding_primitive
+    = [
+        Kernel_ir.Primitive.Rms_norm { epsilon = 2e-5 };
+        Kernel_ir.Primitive.W4a16_linear
+          { m = 1; n = 128; k = 64; bias = false };
+        Kernel_ir.Primitive.Unary Kernel_ir.Primitive.Silu;
+        Kernel_ir.Primitive.W4a16_linear
+          { m = 1; n = 128; k = 64; bias = false };
+        Kernel_ir.Primitive.Binary Kernel_ir.Primitive.Mul;
+        Kernel_ir.Primitive.W4a16_linear
+          { m = 1; n = 64; k = 128; bias = false };
+        Kernel_ir.Primitive.Binary Kernel_ir.Primitive.Add;
+      ])
+    "whole-block FFN region expands into target-independent tensor SSA";
+  expect
+    (match Kernel_ir.results swiglu_region with
+    | [ result ] -> Ir.Value.equal (Kernel_ir.result_value result) ffn_block_output
+    | _ -> false)
+    "whole-block FFN region preserves its ordered result";
+  expect
+    (Ir.Graph.nodes swiglu_ffn_g |> List.length = swiglu_node_count)
+    "fusion discovery leaves the executable semantic graph intact";
+  (* Extra consumers between the SwiGLU projections and the down-projection
+     must block the whole-block fusion instead of dropping values. *)
+  Ir.Graph.append swiglu_ffn_g
+    ~op:(Ir.Op.Copy { asynchronous = false; barrier = None })
+    ~inputs:[ ffn_gate_output ]
+    ~output:None;
+  let blocked_regions = Passes.discover_swiglu_ffn swiglu_ffn_g |> expect_ok in
+  expect (blocked_regions = [])
+    "FFN fusion refuses blocks whose intermediates have extra consumers";
 
   (* fuse_qkv_linear test *)
   let qkv_g = Ir.Graph.create () in
@@ -5071,7 +5403,7 @@ let () =
   in
   let lm_dual_bytes = Serving_schedule.to_bytes lm_dual_schedule in
   expect
-    (Bytes.get_uint16_le lm_dual_bytes 8 = 16)
+    (Bytes.get_uint16_le lm_dual_bytes 8 = 17)
     "LM-head dual-output schedules use the extended binary version";
   expect
     (Serving_schedule.commands lm_dual_schedule
@@ -5109,7 +5441,16 @@ let () =
     "binary schedule round-trip preserves command count";
 
   (* End-to-end DAG co-scheduled optimization pipeline test *)
-  let opt_diamond = Passes.optimize diamond_g in
+  let optimization = Passes.optimize diamond_g |> expect_ok in
+  let opt_semantic = Passes.Optimization.semantic_graph optimization in
+  let opt_plan = Passes.Optimization.plan optimization in
+  let opt_diamond = Passes.Optimization.execution_graph optimization in
+  expect
+    (Compute_plan.graph opt_plan |> Ir.Graph.nodes |> List.length
+    = (Ir.Graph.nodes opt_semantic |> List.length))
+    "optimization retains a backend-neutral plan of the semantic graph";
+  expect (Passes.Optimization.fusion_regions optimization = [])
+    "optimization keeps fusion candidates separate from an unrelated graph";
   let opt_dag = expect_ok (Dag_analysis.analyze opt_diamond) in
   expect (Dag_analysis.node_count opt_dag > 0) "optimized graph has nodes in DAG";
   let opt_sched = expect_ok (Serving_schedule.of_graph opt_diamond) in

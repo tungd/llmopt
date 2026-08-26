@@ -6,7 +6,7 @@ let alignment = 256
 let prefix_bytes = 24
 
 module Dtype = struct
-  type t = F32 | F16 | BF16 | I64 | I32 | I8 | Bool
+  type t = F32 | F16 | BF16 | I64 | I32 | I8 | Bool | U8
 
   let to_string = function
     | F32 -> "F32"
@@ -16,6 +16,7 @@ module Dtype = struct
     | I32 -> "I32"
     | I8 -> "I8"
     | Bool -> "BOOL"
+    | U8 -> "U8"
 
   let of_tag = function
     | 0 -> Ok F32
@@ -25,13 +26,14 @@ module Dtype = struct
     | 4 -> Ok I32
     | 5 -> Ok I8
     | 6 -> Ok Bool
+    | 7 -> Ok U8
     | tag -> Error (Printf.sprintf "unknown weight-archive dtype tag: %d" tag)
 
   let byte_width = function
     | F32 | I32 -> 4
     | F16 | BF16 -> 2
     | I64 -> 8
-    | I8 | Bool -> 1
+    | I8 | Bool | U8 -> 1
 end
 
 module Tensor = struct

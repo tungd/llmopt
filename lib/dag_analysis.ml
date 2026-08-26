@@ -21,6 +21,16 @@ module Resource_class = struct
 
   let arithmetic_intensity_estimate (op : Ir.Op.t) =
     match op with
+    | Ir.Op.W4a16_linear { m; n; k; bias } ->
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 2.0)
+          +. (Float.of_int (n * k) *. 0.5)
+          +. (Float.of_int (n * (k / 64)) *. 2.0)
+          +. (if bias then Float.of_int n *. 2.0 else 0.0)
+          +. (Float.of_int (m * n) *. 2.0)
+        in
+        flops /. max 1.0 bytes
     | Ir.Op.Q8_linear { m; n; k; _ }
     | Ir.Op.Q8_linear_silu { m; n; k; _ }
     | Ir.Op.Q8_linear_add { m; n; k; _ }
@@ -77,6 +87,7 @@ module Resource_class = struct
 
   let of_op (op : Ir.Op.t) =
     match op with
+    | Ir.Op.W4a16_linear _
     | Ir.Op.Q8_linear _
     | Ir.Op.Q8_linear_silu _
     | Ir.Op.Q8_linear_add _

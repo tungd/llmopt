@@ -64,7 +64,7 @@ module Cache = struct
   let default =
     match
       create ~page_size:1 ~default_kv:Kv_cache.Format.default
-        ~supported_kv:[ Kv_cache.Format.default; Kv_cache.Format.f16 ]
+        ~supported_kv:[ Kv_cache.Format.default ]
     with
     | Ok cache -> cache
     | Error message -> invalid_arg message
@@ -85,7 +85,7 @@ type t = {
   cache : Cache.t;
 }
 
-let current_abi_version = 14
+let current_abi_version = 15
 
 let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
@@ -181,6 +181,7 @@ let operation_tag = function
   | Kernel_abi.Operation.Short_conv_step -> 24
   | Kernel_abi.Operation.Short_conv_prefill -> 25
   | Kernel_abi.Operation.Q8_lm_head_argmax -> 26
+  | Kernel_abi.Operation.W4a16_linear -> 27
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -210,6 +211,7 @@ let operation_of_tag = function
   | 24 -> Ok Kernel_abi.Operation.Short_conv_step
   | 25 -> Ok Kernel_abi.Operation.Short_conv_prefill
   | 26 -> Ok Kernel_abi.Operation.Q8_lm_head_argmax
+  | 27 -> Ok Kernel_abi.Operation.W4a16_linear
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function
@@ -220,6 +222,7 @@ let dtype_tag = function
   | Ir.Dtype.Int32 -> 4
   | Ir.Dtype.Int8 -> 5
   | Ir.Dtype.Bool -> 6
+  | Ir.Dtype.UInt8 -> 7
 
 let dtype_of_tag = function
   | 0 -> Ok Ir.Dtype.Float32
@@ -229,6 +232,7 @@ let dtype_of_tag = function
   | 4 -> Ok Ir.Dtype.Int32
   | 5 -> Ok Ir.Dtype.Int8
   | 6 -> Ok Ir.Dtype.Bool
+  | 7 -> Ok Ir.Dtype.UInt8
   | tag -> Error (Printf.sprintf "unknown kernel dtype tag: %d" tag)
 
 let write_kernel writer entry =
@@ -324,13 +328,10 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving-package magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if
-      version <> 2 && version <> 3 && version <> 4 && version <> 5
-      && version <> 6 && version <> 7 && version <> 8 && version <> 9
-      && version <> 10 && version <> 11 && version <> 12 && version <> 13
-      && version <> 14
-    then
+    if version <> current_abi_version then
       Error (Printf.sprintf "unsupported serving-package version: %d" version)
+
+
     else
       let* stage_tag = Binary.Reader.u8 reader in
       let* stage =

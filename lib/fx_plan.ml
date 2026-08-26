@@ -1149,17 +1149,34 @@ let plan fx_graph =
           (match values_for env (Fx.Node.inputs node) with
           | Error message -> Error message
           | Ok inputs ->
-              if contains target "q8_linear" then
-                let lower_q8 input weight scale bias =
-                  if Ir.Value.dtype weight <> Ir.Dtype.Int8 then
+              if contains target "w4a16_linear" then
+                let lower_w4a16 input weight scale bias =
+                  let input_shape = Ir.Value.shape input in
+                  let weight_shape = Ir.Value.shape weight in
+                  let scale_shape = Ir.Value.shape scale in
+                  let k = Shape.cols input_shape in
+                  let n = Shape.rows weight_shape in
+                  if Ir.Value.dtype input <> Ir.Dtype.Float16 then
                     fail_unsupported node
-                      "q8_linear weight must have int8 storage"
+                      "w4a16_linear activation must be float16"
+                  else if Ir.Value.dtype weight <> Ir.Dtype.UInt8 then
+                    fail_unsupported node
+                      "w4a16_linear packed weight must have uint8 storage"
+                  else if Ir.Value.dtype scale <> Ir.Dtype.Float16 then
+                    fail_unsupported node
+                      "w4a16_linear scales must be float16"
+                  else if k mod 64 <> 0 then
+                    fail_unsupported node
+                      "w4a16_linear input width must be divisible by 64"
+                  else if Shape.cols weight_shape * 2 <> k then
+                    fail_unsupported node
+                      "w4a16_linear packed weight must have shape [N,K/2]"
                   else if
-                    Ir.Value.dtype scale <> Ir.Dtype.Float16
-                    && Ir.Value.dtype scale <> Ir.Dtype.Float32
+                    Shape.rows scale_shape <> n
+                    || Shape.cols scale_shape <> k / 64
                   then
                     fail_unsupported node
-                      "q8_linear scale must be float16 or float32"
+                      "w4a16_linear scales must have shape [N,K/64]"
                   else
                     let output_shapes =
                       match shapes_for node with
@@ -1174,16 +1191,17 @@ let plan fx_graph =
                     | Error error -> Error (Shape.error_to_string error)
                     | Ok (logical_shape, shape) ->
                         let value =
-                          Tile_effect.q8_linear
+                          Tile_effect.w4a16_linear
                             { input; weight; scale; bias; shape; logical_shape }
                         in
                         Hashtbl.replace env name value;
                         Ok ()
                 in
                 (match inputs with
-                | [ input; weight; scale ] -> lower_q8 input weight scale None
+                | [ input; weight; scale ] ->
+                    lower_w4a16 input weight scale None
                 | [ input; weight; scale; bias ] ->
-                    lower_q8 input weight scale (Some bias)
+                    lower_w4a16 input weight scale (Some bias)
                 | _ -> lower_opaque inputs)
               else if
                 typed_manifest

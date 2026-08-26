@@ -2815,6 +2815,33 @@ let encode_schedule execution_batch ~schedule ~inputs =
                  ~operation:Kernel_abi.Operation.Gather2
                  ~input_dtype:(Ir.Value.dtype source) ~buffers ~parameters
                  ~grid:(Tensor_shape.numel (Ir.Value.logical_shape output), 1, 1))
+        | Ir.Op.W4a16_linear { m; n; k; bias = has_bias }, values, Some output ->
+            let* input, weight, scale, bias_buffer =
+              match values, has_bias with
+              | [ input; weight; scale ], false ->
+                  let* input_buffer = find_value state input in
+                  let* weight_buffer = find_value state weight in
+                  let* scale_buffer = find_value state scale in
+                  Ok (input_buffer, weight_buffer, scale_buffer, scale_buffer)
+              | [ input; weight; scale; bias_value ], true ->
+                  let* input_buffer = find_value state input in
+                  let* weight_buffer = find_value state weight in
+                  let* scale_buffer = find_value state scale in
+                  let* bias_buffer = find_value state bias_value in
+                  Ok (input_buffer, weight_buffer, scale_buffer, bias_buffer)
+              | _ ->
+                  Error
+                    "W4A16 schedule command has inconsistent bias inputs"
+            in
+            let* parameters =
+              Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ]
+            in
+            dispatched
+              (dispatch_output ~name:"llmopt_w4a16_linear_f16_g64" runtime
+                 state output ~operation:Kernel_abi.Operation.W4a16_linear
+                 ~input_dtype:Ir.Dtype.Float16
+                 ~buffers:[ input; weight; scale; bias_buffer ] ~parameters
+                 ~grid:(m * n, 1, 1))
         | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, values, Some output ->
             dispatched
               (dispatch_q8_command batch runtime state ~selection

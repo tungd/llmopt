@@ -1,4 +1,4 @@
-"""Capture one bounded LFM2.5 Q8 prefill and one-token decode graph."""
+"""Capture one bounded LFM2.5 W4A16 plus Q8-KV prefill/decode pair."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -117,6 +118,7 @@ def graph_inventory(root: Path, checker: Path) -> list[dict[str, Any]]:
                 "observation": error.output.strip(),
             }
         metal_library = directory / "kernel.metallib"
+        plan_lines = (directory / "plan.txt").read_text(encoding="utf-8").splitlines()
         graphs.append(
             {
                 "directory": directory.name,
@@ -128,6 +130,9 @@ def graph_inventory(root: Path, checker: Path) -> list[dict[str, Any]]:
                 "nodes": len(manifest["nodes"]),
                 "outputs": manifest["outputs"],
                 "static_tensors": len(static),
+                "structured_fusion_regions": sum(
+                    line.startswith("region ") for line in plan_lines
+                ),
                 "runtime_inputs": runtime,
                 "archive_same_inode": (
                     graph_archive.stat().st_ino == shared_archive.stat().st_ino
@@ -153,11 +158,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
     parser.add_argument(
-        "--artifact-dir", default="_artifacts/lfm25-350m-q8-prefill-decode"
+        "--artifact-dir", default="_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode"
     )
     parser.add_argument(
-        "--output", default="_artifacts/lfm25-350m-q8-prefill-decode/result.json"
+        "--output",
+        default="_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json",
     )
+    parser.add_argument("--replace-artifacts", action="store_true")
     args = parser.parse_args()
 
     if not torch.backends.mps.is_available():
@@ -165,12 +172,27 @@ def main() -> None:
     binary_directory = Path(__file__).parents[1] / "_build" / "bin"
     compiler = binary_directory / "llmopt-fx"
     checker = binary_directory / "llmopt-package-check"
-    if not compiler.exists() or not checker.exists():
-        raise RuntimeError("llmopt compiler and package checker are not built")
+    pair_checker = binary_directory / "llmopt-lfm-serving-check"
+    if not compiler.exists() or not checker.exists() or not pair_checker.exists():
+        raise RuntimeError("llmopt compiler and serving checkers are not built")
 
     artifact_root = Path(args.artifact_dir)
     graph_root = artifact_root / "graphs"
     output = Path(args.output)
+    protected_roots = {
+        Path("/").resolve(),
+        Path.home().resolve(),
+        Path.cwd().resolve(),
+        Path(__file__).parents[1].resolve(),
+    }
+    if artifact_root.resolve() in protected_roots:
+        raise ValueError(f"refusing to replace protected artifact path: {artifact_root}")
+    if artifact_root.exists() and not args.replace_artifacts:
+        raise FileExistsError(
+            f"capture artifact directory already exists: {artifact_root}"
+        )
+    if artifact_root.exists():
+        shutil.rmtree(artifact_root)
     graph_root.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     before_load = memory_headroom()
@@ -178,7 +200,7 @@ def main() -> None:
 
     os.environ["LLMOPT_ARTIFACT_DIR"] = str(graph_root)
     os.environ["LLMOPT_FX_FALLBACK"] = "0"
-    os.environ["LLMOPT_QUANTIZATION"] = "q8"
+    os.environ["LLMOPT_QUANTIZATION"] = "w4a16-q8kv"
     os.environ.setdefault("LLMOPT_METAL_RUNTIME", "exact")
 
     from llmopt_backend import llmopt
@@ -222,6 +244,17 @@ def main() -> None:
     finished = time.perf_counter()
 
     graphs = graph_inventory(graph_root, checker)
+    serving_pair_validation = subprocess.check_output(
+        [
+            str(pair_checker),
+            "--kv",
+            "q8",
+            str(graph_root / "graph-0000"),
+            str(graph_root / "graph-0001"),
+        ],
+        text=True,
+        stderr=subprocess.STDOUT,
+    ).strip()
     result = {
         "model": args.model,
         "quantization": quantization,
@@ -244,6 +277,7 @@ def main() -> None:
         "eager_cache": eager_cache,
         "compiled_cache": compiled_cache,
         "shared_archive_bytes": (graph_root / "weights.llmopt").stat().st_size,
+        "serving_pair_validation": serving_pair_validation,
         "graphs": graphs,
     }
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

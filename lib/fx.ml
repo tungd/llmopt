@@ -80,6 +80,7 @@ let parse_dtype = function
   | "int64" | "torch.int64" | "long" | "i64" -> Ok Ir.Dtype.Int64
   | "int32" | "torch.int32" | "int" | "i32" -> Ok Ir.Dtype.Int32
   | "int8" | "torch.int8" | "i8" -> Ok Ir.Dtype.Int8
+  | "uint8" | "torch.uint8" | "u8" -> Ok Ir.Dtype.UInt8
   | "bool" | "torch.bool" -> Ok Ir.Dtype.Bool
   | value -> Error ("unsupported FX dtype: " ^ value)
 
@@ -296,6 +297,7 @@ let dtype_of_tag = function
   | 4 -> Ok Ir.Dtype.Int32
   | 5 -> Ok Ir.Dtype.Int8
   | 6 -> Ok Ir.Dtype.Bool
+  | 7 -> Ok Ir.Dtype.UInt8
   | tag -> Error (Printf.sprintf "unknown binary FX dtype tag: %d" tag)
 
 let read_binary_binding reader =

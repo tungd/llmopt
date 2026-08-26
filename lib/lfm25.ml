@@ -28,7 +28,7 @@ module Config = struct
       max_position_embeddings = 128000;
       conv_l_cache = 3;
       dtype = Ir.Dtype.Float16;
-      quantization = Ir.Quantization.Q8_weight_only;
+      quantization = Ir.Quantization.W4A16_Q8KV;
       layer_types =
         [ Conv; Conv; Full_attention; Conv; Conv; Full_attention; Conv; Conv;
           Full_attention; Conv; Full_attention; Conv; Full_attention; Conv;
@@ -51,9 +51,9 @@ module Config = struct
          "attention heads must divide evenly into KV heads")
       ; ((match config.quantization, config.dtype with
           | Ir.Quantization.Fp16, _ -> true
-          | Ir.Quantization.Q8_weight_only, (Ir.Dtype.Float16 | Ir.Dtype.Float32) -> true
-          | Ir.Quantization.Q8_weight_only, _ -> false),
-         "Q8 weight-only mode requires float16 or float32 compute dtype")
+          | Ir.Quantization.W4A16_Q8KV, Ir.Dtype.Float16 -> true
+          | Ir.Quantization.W4A16_Q8KV, _ -> false),
+         "W4A16 with Q8 KV requires float16 compute dtype")
       ]
     in
     match List.find_opt (fun (valid, _) -> not valid) checks with
@@ -83,19 +83,23 @@ let linear_kernel ~config ~rows () =
       in
       let output = Tile.add (Tile.matmul input weight) bias in
       Tile.output ~name:"linear_output" output
-  | Ir.Quantization.Q8_weight_only ->
+  | Ir.Quantization.W4A16_Q8KV ->
       let weight_shape =
         Shape.of_ints_exn ~rows:config.Config.feed_forward_size
-          ~cols:config.Config.hidden_size
+          ~cols:(config.Config.hidden_size / 2)
+      in
+      let scale_shape =
+        Shape.of_ints_exn ~rows:config.Config.feed_forward_size
+          ~cols:(config.Config.hidden_size / 64)
       in
       let scale =
-        Tile.input ~dtype:config.Config.dtype ~name:"linear_weight_scale"
-          ~shape:bias_shape ()
+        Tile.input ~dtype:Ir.Dtype.Float16 ~name:"linear_weight_scale"
+          ~shape:scale_shape ()
       in
       let weight =
-        Tile.input ~dtype:Ir.Dtype.Int8 ~name:"linear_weight_q8" ~shape:weight_shape ()
+        Tile.input ~dtype:Ir.Dtype.UInt8 ~name:"linear_weight_w4" ~shape:weight_shape ()
       in
-      let output = Tile.q8_linear input weight scale ~bias in
+      let output = Tile.w4a16_linear input weight scale ~bias in
       Tile.output ~name:"linear_output" output
 
 let primitive ~operation ~inputs ~logical_shape ~dtype =

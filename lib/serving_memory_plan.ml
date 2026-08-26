@@ -50,7 +50,7 @@ let value_bytes value =
     | Ir.Dtype.Float32 | Ir.Dtype.Int32 -> 4
     | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 -> 2
     | Ir.Dtype.Int64 -> 8
-    | Ir.Dtype.Int8 | Ir.Dtype.Bool -> 1
+    | Ir.Dtype.Int8 | Ir.Dtype.UInt8 | Ir.Dtype.Bool -> 1
   in
   if elements <= 0 then Error "workspace tensor must contain at least one element"
   else if elements > max_int / width then

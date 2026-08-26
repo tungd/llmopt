@@ -1,11 +1,19 @@
 module Format = struct
   type t = F16 | Q8 of { group_size : int }
 
-  let default = Q8 { group_size = 64 }
+  let q8_group_size = 64
+  let default = Q8 { group_size = q8_group_size }
   let f16 = F16
+
+  let validate = function
+    | F16 -> Ok ()
+    | Q8 { group_size } when group_size = q8_group_size -> Ok ()
+    | Q8 _ -> Error "Q8 KV group_size must be 64"
 
   let q8 ~group_size =
     if group_size <= 0 then Error "Q8 KV group_size must be positive"
+    else if group_size <> q8_group_size then
+      Error "Q8 KV group_size must be 64"
     else Ok (Q8 { group_size })
 
   let to_string = function
@@ -39,6 +47,8 @@ module Format = struct
 end
 
 module Layout = struct
+  let q8_head_dim = 64
+
   type t = {
     format : Format.t;
     attention_layers : int;
@@ -83,6 +93,7 @@ module Layout = struct
           "recurrent checkpoint layout requires positive width and window"
     | None ->
         let open Result.Syntax in
+        let* () = Format.validate format in
         let* token_elements =
           checked_product "attention KV element count"
             [ 2; attention_layers; kv_heads; head_dim ]
@@ -98,6 +109,9 @@ module Layout = struct
         let incompatible_segment =
           match Format.group_size format with
           | None -> None
+          | Some _
+            when attention_layers > 0 && head_dim <> q8_head_dim ->
+              Some "Q8 KV attention head_dim must be 64"
           | Some group_size
             when attention_layers > 0 && head_dim mod group_size <> 0 ->
               Some "Q8 KV group_size must divide attention head_dim"

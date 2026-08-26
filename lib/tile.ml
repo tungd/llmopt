@@ -103,6 +103,60 @@ let matmul left right =
     layout = Layout.row_major;
   }
 
+let w4a16_linear input weight scale ?bias =
+  let k = Shape.cols input.shape in
+  let n = Shape.rows weight.shape in
+  if input.dtype <> Ir.Dtype.Float16 then
+    invalid_arg "w4a16_linear: activation must be float16"
+  else if weight.dtype <> Ir.Dtype.UInt8 then
+    invalid_arg "w4a16_linear: packed weight must have uint8 storage"
+  else if scale.dtype <> Ir.Dtype.Float16 then
+    invalid_arg "w4a16_linear: scale must be float16"
+  else if k mod 64 <> 0 then
+    invalid_arg "w4a16_linear: input width must be divisible by group size 64"
+  else if Shape.cols weight.shape * 2 <> k then
+    invalid_arg
+      "w4a16_linear: packed weight shape must be [N,K/2]"
+  else
+    let output_shape =
+      Shape.of_ints_exn ~rows:(Shape.rows input.shape) ~cols:n
+    in
+    let expected_scale =
+      Shape.of_ints_exn ~rows:n ~cols:(k / 64)
+    in
+    if not (Shape.equal scale.shape expected_scale) then
+      invalid_arg
+        (Printf.sprintf "w4a16_linear: expected scale shape %s, got %s"
+           (Shape.to_string expected_scale) (Shape.to_string scale.shape))
+    else
+      (match bias with
+      | Some bias
+        when not
+               (Shape.equal bias.shape
+                  (Shape.of_ints_exn ~rows:1 ~cols:n)) ->
+          invalid_arg
+            (Printf.sprintf "w4a16_linear: expected bias shape [1x%d], got %s" n
+               (Shape.to_string bias.shape))
+      | _ ->
+          let value =
+            Tile_effect.w4a16_linear
+              {
+                input = input.value;
+                weight = weight.value;
+                scale = scale.value;
+                bias = Option.map (fun tile -> tile.value) bias;
+                shape = output_shape;
+                logical_shape = Tensor_shape.of_matrix output_shape;
+              }
+          in
+          {
+            value;
+            shape = output_shape;
+            dtype = input.dtype;
+            space = Space.register;
+            layout = Layout.row_major;
+          })
+
 let q8_linear input weight scale ?bias =
   if weight.dtype <> Ir.Dtype.Int8 then
     invalid_arg "q8_linear: weight must have int8 storage"

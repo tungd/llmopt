@@ -2,14 +2,13 @@ let ( let* ) = Result.bind
 
 let usage () =
   prerr_endline
-    "usage: llmopt-lfm-serving-smoke [--kv q8|fp16] [--tokens count] \
+    "usage: llmopt-lfm-serving-smoke [--kv q8] [--tokens count] \
      [--input-ids id,id,...] [--prefill-logits path] \
      <prefill-directory> <decode-directory>";
   exit 64
 
 let format = function
   | "q8" | "q8-group-64" -> Ok Kv_cache.Format.default
-  | "fp16" | "f16" -> Ok Kv_cache.Format.f16
   | value -> Error ("unsupported KV format: " ^ value)
 
 let input_ids value =

@@ -3,6 +3,7 @@ module Operation : sig
     | Matmul
     | Fused_linear
     | Linear
+    | W4a16_linear
     | Q8_linear
     | Q8_linear_silu
     | Q8_linear_add

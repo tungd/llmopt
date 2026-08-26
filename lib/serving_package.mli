@@ -42,6 +42,7 @@ end
 
 type t
 
+val current_abi_version : int
 val abi_version : t -> int
 
 val compiled_graph :

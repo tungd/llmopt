@@ -4,6 +4,7 @@ module Rms_rope = Pass_fuse_rms_rope
 module Short_conv = Pass_fuse_short_conv
 module Q8_epilogues = Pass_fuse_q8_epilogues
 module Dual_linear_swiglu = Pass_fuse_dual_linear_swiglu
+module Swiglu_ffn = Pass_fuse_swiglu_ffn
 module Qkv_linear = Pass_fuse_qkv_linear
 module Short_conv_step_fused = Pass_fuse_short_conv_step
 module Linear_residual_norm = Pass_fuse_linear_residual_norm
@@ -18,13 +19,32 @@ val fuse_q8_silu : Ir.Graph.t -> Ir.Graph.t
 val fuse_q8_add : Ir.Graph.t -> Ir.Graph.t
 val fuse_q8_mul_add : Ir.Graph.t -> Ir.Graph.t
 val fuse_dual_linear_swiglu : Ir.Graph.t -> Ir.Graph.t
+val discover_swiglu_ffn : Ir.Graph.t -> (Kernel_ir.t list, string) result
 val fuse_qkv_linear : Ir.Graph.t -> Ir.Graph.t
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
 val fuse_linear_residual_norm : Ir.Graph.t -> Ir.Graph.t
 val fuse_lm_head_argmax : Ir.Graph.t -> Ir.Graph.t
 val co_schedule : Ir.Graph.t -> Ir.Graph.t
+val co_schedule_plan : Compute_plan.t -> Ir.Graph.t
 
-val all_passes : Pass.t list
+(** Graph rewrites whose operations all have an executable backend lowering. *)
+val semantic_passes : Pass.t list
 val default_pipeline : Pass.Pipeline.t
 
-val optimize : Ir.Graph.t -> Ir.Graph.t
+module Optimization : sig
+  type t
+
+  (** Canonical optimized graph, before execution barriers are inserted. *)
+  val semantic_graph : t -> Ir.Graph.t
+
+  (** Backend-neutral dependency plan for [semantic_graph]. *)
+  val plan : t -> Compute_plan.t
+
+  (** Structured fusion candidates; these do not mutate [semantic_graph]. *)
+  val fusion_regions : t -> Kernel_ir.t list
+
+  (** Executable rewrite suffix followed by plan-based co-scheduling. *)
+  val execution_graph : t -> Ir.Graph.t
+end
+
+val optimize : Ir.Graph.t -> (Optimization.t, string) result

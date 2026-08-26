@@ -1,10 +1,10 @@
 module Dtype : sig
-  type t = Float32 | Float16 | Bfloat16 | Int64 | Int32 | Int8 | Bool
+  type t = Float32 | Float16 | Bfloat16 | Int64 | Int32 | Int8 | UInt8 | Bool
   val to_string : t -> string
 end
 
 module Quantization : sig
-  type t = Fp16 | Q8_weight_only
+  type t = Fp16 | W4A16_Q8KV
   val to_string : t -> string
 end
 
@@ -245,6 +245,7 @@ module Op : sig
     | Barrier_arrive of int
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
+    | W4a16_linear of { m : int; n : int; k : int; bias : bool }
     | Q8_linear of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
@@ -280,7 +281,6 @@ module Op : sig
         bias : bool;
         extra_outputs : Value.t list;
       }
-
   val additional_outputs : t -> Value.t list
 
   val to_string : t -> string

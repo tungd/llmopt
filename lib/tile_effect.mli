@@ -25,7 +25,7 @@ type linear = {
   shape : Shape.t;
   logical_shape : Tensor_shape.t;
 }
-type q8_linear = {
+type w4a16_linear = {
   input : Ir.Value.t;
   weight : Ir.Value.t;
   scale : Ir.Value.t;
@@ -33,6 +33,9 @@ type q8_linear = {
   shape : Shape.t;
   logical_shape : Tensor_shape.t;
 }
+
+
+type q8_linear = w4a16_linear
 type add = {
   lhs : Ir.Value.t;
   rhs : Ir.Value.t;
@@ -76,6 +79,7 @@ type _ Effect.t +=
   | Async_copy : { src : Ir.Value.t; dst : Ir.Value.t; barrier : Barrier.t } -> unit Effect.t
   | Matmul : matmul -> Ir.Value.t Effect.t
   | Linear : linear -> Ir.Value.t Effect.t
+  | W4a16_linear : w4a16_linear -> Ir.Value.t Effect.t
   | Q8_linear : q8_linear -> Ir.Value.t Effect.t
   | Add : add -> Ir.Value.t Effect.t
   | Gelu : unary -> Ir.Value.t Effect.t
@@ -104,6 +108,7 @@ val copy : src:Ir.Value.t -> dst:Ir.Value.t -> unit
 val async_copy : src:Ir.Value.t -> dst:Ir.Value.t -> barrier:Barrier.t -> unit
 val matmul : matmul -> Ir.Value.t
 val linear : linear -> Ir.Value.t
+val w4a16_linear : w4a16_linear -> Ir.Value.t
 val q8_linear : q8_linear -> Ir.Value.t
 val add : add -> Ir.Value.t
 val gelu : unary -> Ir.Value.t

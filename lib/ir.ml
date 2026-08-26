@@ -1,5 +1,5 @@
 module Dtype = struct
-  type t = Float32 | Float16 | Bfloat16 | Int64 | Int32 | Int8 | Bool
+  type t = Float32 | Float16 | Bfloat16 | Int64 | Int32 | Int8 | UInt8 | Bool
 
   let to_string = function
     | Float32 -> "f32"
@@ -8,15 +8,16 @@ module Dtype = struct
     | Int64 -> "i64"
     | Int32 -> "i32"
     | Int8 -> "i8"
+    | UInt8 -> "u8"
     | Bool -> "bool"
 end
 
 module Quantization = struct
-  type t = Fp16 | Q8_weight_only
+  type t = Fp16 | W4A16_Q8KV
 
   let to_string = function
     | Fp16 -> "fp16"
-    | Q8_weight_only -> "q8-weight-only"
+    | W4A16_Q8KV -> "w4a16-q8kv"
 end
 
 module Memory_space = struct
@@ -264,10 +265,13 @@ module Paged_attention_q8 = struct
     else if cache_layer < 0 || cache_layer >= attention_layers then
       Error "paged Q8 attention cache layer is outside the attention layout"
     else if kv_heads <= 0 then Error "paged Q8 attention requires positive KV heads"
-    else if group_size <= 0 then
-      Error "paged Q8 attention requires a positive group size"
-    else if token_stride <= 0 then
-      Error "paged Q8 attention requires a positive token stride"
+    else if group_size <> 64 then
+      Error "paged Q8 attention group size must be 64"
+    else if
+      token_stride <> 2 * attention_layers * kv_heads * (64 + 2)
+    then
+      Error
+        "paged Q8 attention token stride disagrees with the fixed head-64 layout"
     else
       Ok
         {
@@ -421,6 +425,7 @@ module Op = struct
     | Barrier_arrive of int
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
+    | W4a16_linear of { m : int; n : int; k : int; bias : bool }
     | Q8_linear of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
@@ -456,7 +461,6 @@ module Op = struct
         bias : bool;
         extra_outputs : Value.t list;
       }
-
   let additional_outputs = function
     | Q8_linear_add_norm { extra_outputs; _ }
     | Q8_lm_head_argmax { extra_outputs; _ }
@@ -499,6 +503,10 @@ module Op = struct
     | Barrier_wait id -> Printf.sprintf "barrier-wait(%d)" id
     | Fused_matmul_bias { m; n; k } ->
         Printf.sprintf "fused-matmul-bias[%dx%dx%d]" m n k
+    | W4a16_linear { m; n; k; bias = false } ->
+        Printf.sprintf "w4a16-linear-g64[%dx%dx%d]" m n k
+    | W4a16_linear { m; n; k; bias = true } ->
+        Printf.sprintf "w4a16-linear-g64+bias[%dx%dx%d]" m n k
     | Q8_linear { m; n; k; bias = false } ->
         Printf.sprintf "q8-linear[%dx%dx%d]" m n k
     | Q8_linear { m; n; k; bias = true } ->

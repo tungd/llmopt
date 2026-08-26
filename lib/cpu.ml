@@ -147,6 +147,32 @@ let q8_linear input weight scale output bias =
     done
   done
 
+let w4a16_linear input packed_weight scale output bias =
+  let input_shape = Tensor.shape input in
+  let output_shape = Tensor.shape output in
+  let signed_nibble nibble = if nibble land 0x8 = 0 then nibble else nibble - 16 in
+  for row = 0 to Shape.rows output_shape - 1 do
+    for col = 0 to Shape.cols output_shape - 1 do
+      let accumulator = ref 0.0 in
+      for inner = 0 to Shape.cols input_shape - 1 do
+        let byte =
+          Tensor.get packed_weight col (inner / 2) |> Float.round |> int_of_float
+        in
+        let nibble = if inner land 1 = 0 then byte land 0xF else byte lsr 4 land 0xF in
+        let weight = Float.of_int (signed_nibble nibble) in
+        let group_scale = Tensor.get scale col (inner / 64) in
+        accumulator :=
+          !accumulator +. (Tensor.get input row inner *. weight *. group_scale)
+      done;
+      let value =
+        match bias with
+        | None -> !accumulator
+        | Some bias -> !accumulator +. Tensor.get bias 0 col
+      in
+      Tensor.set output row col value
+    done
+  done
+
 let add ~left ~right ~output ~broadcast =
   let output_shape = Tensor.shape output in
   let left_shape = Tensor.shape left in
@@ -842,6 +868,19 @@ let run ~inputs thunk =
                   let tensor = Tensor.create shape in
                   linear (find state input) (find state weight) tensor
                     (Option.map (find state) bias);
+                  bind state value tensor;
+                  Effect.Deep.continue continuation value)
+          | Tile_effect.W4a16_linear
+              { input; weight; scale; bias; shape; logical_shape } ->
+              Some
+                (fun (continuation : (a, _) Effect.Deep.continuation) ->
+                  let value =
+                    fresh_value state ~logical_shape ~shape
+                      ~dtype:(Ir.Value.dtype input)
+                  in
+                  let tensor = Tensor.create shape in
+                  w4a16_linear (find state input) (find state weight) (find state scale)
+                    tensor (Option.map (find state) bias);
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
           | Tile_effect.Q8_linear

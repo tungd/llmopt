@@ -191,8 +191,12 @@ let head_names head =
 let validate_package package label =
   if Serving_package.stage package <> Serving_package.Stage.Serving then
     Error (label ^ " package is not serving-stage")
-  else if Serving_package.abi_version package < 8 then
-    Error (label ^ " package must use ABI v8 for sliced cache writes")
+  else if
+    Serving_package.abi_version package <> Serving_package.current_abi_version
+  then
+    Error
+      (Printf.sprintf "%s package must use ABI v%d" label
+         Serving_package.current_abi_version)
   else Ok ()
 
 let validate_cache_policy config package label =

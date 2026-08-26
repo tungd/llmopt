@@ -51,19 +51,19 @@ rule fx_manifest
   description = plan the static FX fixture
   pool = console
 
-rule q8_fx_manifest
-  command = mkdir -p _build/q8-fx-example && _build/bin/llmopt-fx $in _build/q8-fx-example
-  description = plan the static Q8 FX fixture
+rule w4a16_fx_manifest
+  command = mkdir -p _build/w4a16-fx-example && _build/bin/llmopt-fx $in _build/w4a16-fx-example
+  description = plan the fixed W4A16 FX fixture
   pool = console
 
-rule q8_tensor_store
-  command = PYTHONPATH=python python3.13 python/examples/write_q8_weight_fixture.py --output $out
-  description = write one binary Q8 tensor archive
+rule w4a16_tensor_store
+  command = PYTHONPATH=python python3.13 python/examples/write_w4a16_weight_fixture.py --output $out
+  description = write one packed-W4 tensor archive
   pool = console
 
-rule q8_serving_manifest
-  command = mkdir -p _build/q8-serving-example && _build/bin/llmopt-fx --weights weights.llmopt $in _build/q8-serving-example
-  description = plan the Q8 serving fixture
+rule w4a16_serving_manifest
+  command = mkdir -p _build/w4a16-serving-example && _build/bin/llmopt-fx --weights weights.llmopt $in _build/w4a16-serving-example
+  description = plan the W4A16 plus Q8-KV serving fixture
   pool = console
 
 rule package_check
@@ -73,7 +73,7 @@ rule package_check
 
 rule run_ocaml_metal_smoke
   command = $runner $directory > $out && cat $out
-  description = dispatch Q8 package through native OCaml Metal
+  description = dispatch W4A16 package through native OCaml Metal
   pool = console
 
 rule native_schedule_fixture
@@ -95,14 +95,9 @@ rule metal_check
   command = xcrun metal -c $in -o $out
   description = validate emitted Metal source
 
-rule q8_metal_check
+rule w4a16_metal_check
   command = xcrun metal -c _build/llmopt-demo/lfm25_linear.metal -o _build/llmopt-demo/lfm25_linear.air
-  description = validate emitted Q8 Metal source
-
-rule q8_llvm_check
-  command = clang -c -x ir _build/llmopt-demo/lfm25_linear.ll -o _build/llmopt-demo/lfm25_linear.ll.o
-  description = validate emitted Q8 LLVM IR
-  pool = console
+  description = validate emitted W4A16 Metal source
 
 rule rms_norm_metal_check
   command = xcrun metal -c _build/llmopt-demo/lfm25_rms_norm.metal -o _build/llmopt-demo/lfm25_rms_norm.air
@@ -135,23 +130,18 @@ rule native_runtime
   pool = console
 
 rule metal_runtime_smoke
-  command = PYTHONPATH=python python3.13 python/examples/metal_runtime_smoke.py --library _build/q8-fx-example/kernel.metallib
-  description = dispatch tiled Q8 Metal runtime smoke
+  command = PYTHONPATH=python python3.13 python/examples/metal_runtime_smoke.py --library _build/w4a16-fx-example/kernel.metallib
+  description = dispatch fixed W4A16 Metal runtime smoke
   pool = console
 
 rule metal_runtime_model_smoke
-  command = mkdir -p _artifacts/phase1-350m-mps && LLMOPT_METAL_RUNTIME=exact PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_mps.py --model LiquidAI/LFM2.5-350M --quantization q8 --iterations 1 --warmup 0 --artifact-dir _artifacts/phase1-350m-mps/graphs --output _artifacts/phase1-350m-mps/result.json
-  description = run 350M generated Metal Q8 FX integration smoke
-  pool = console
-
-rule metal_runtime_differential
-  command = mkdir -p _artifacts/phase1-350m-differential && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 python/examples/metal_runtime_differential.py --library _build/q8-fx-example/kernel.metallib --model LiquidAI/LFM2.5-350M --artifact-dir _artifacts/phase1-350m-differential/graphs --output _artifacts/phase1-350m-differential/result.json
-  description = run one 350M generated Q8 differential probe
+  command = mkdir -p _artifacts/phase1-350m-mps && LLMOPT_METAL_RUNTIME=native PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_mps.py --model LiquidAI/LFM2.5-350M --quantization w4a16-q8kv --iterations 1 --warmup 0 --artifact-dir _artifacts/phase1-350m-mps/graphs --output _artifacts/phase1-350m-mps/result.json
+  description = run 350M W4A16 plus Q8-KV integration smoke
   pool = console
 
 rule lfm25_prefill_decode_capture
-  command = PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_capture_decode.py --model LiquidAI/LFM2.5-350M --artifact-dir _artifacts/lfm25-350m-q8-prefill-decode --output $out
-  description = capture one 350M Q8 prefill and one-token decode
+  command = PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_capture_decode.py --model LiquidAI/LFM2.5-350M --artifact-dir _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode --output $out --replace-artifacts
+  description = capture one 350M W4A16 plus Q8-KV prefill and one-token decode
   pool = console
 
 rule lfm25_mps_benchmark
@@ -160,12 +150,12 @@ rule lfm25_mps_benchmark
   pool = console
 
 rule lfm25_benchsuite
-  command = mkdir -p _artifacts/lfm25-benchsuite-q8-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --model LiquidAI/LFM2.5-350M --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-q8-racebench-safe --output _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json --record-output bench/results/lfm25-350m-q8-racebench-baseline.json
+  command = mkdir -p _artifacts/lfm25-benchsuite-w4a16-q8kv-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --model LiquidAI/LFM2.5-350M --quantization w4a16-q8kv --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-w4a16-q8kv-racebench-safe --output _artifacts/lfm25-benchsuite-w4a16-q8kv-racebench-safe/result.json --record-output bench/results/lfm25-350m-w4a16-q8kv-racebench.json
   description = run racebench-shaped ERS trace and needle benchsuite on LFM2.5-350M MPS
   pool = console
 
 rule lfm25_benchsuite_350m
-  command = mkdir -p _artifacts/lfm25-benchsuite-350m-q8-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --model LiquidAI/LFM2.5-350M --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-350m-q8-racebench-safe --output _artifacts/lfm25-benchsuite-350m-q8-racebench-safe/result.json --record-output bench/results/lfm25-350m-q8-racebench-baseline.json
+  command = mkdir -p _artifacts/lfm25-benchsuite-350m-w4a16-q8kv-racebench-safe && PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --model LiquidAI/LFM2.5-350M --quantization w4a16-q8kv --profile semantic-5x3 --require-shape-matched-warmup --release-mps-cache --isolate --needle-lengths 2048,4096 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-350m-w4a16-q8kv-racebench-safe --output _artifacts/lfm25-benchsuite-350m-w4a16-q8kv-racebench-safe/result.json --record-output bench/results/lfm25-350m-w4a16-q8kv-racebench.json
   description = run racebench-shaped ERS trace and needle benchsuite on LFM2.5-350M MPS
   pool = console
 
@@ -173,6 +163,17 @@ rule lfm25_benchsuite_smoke
   command = mkdir -p _artifacts/lfm25-benchsuite-smoke && PYTHONPATH=python:bench python3.13 bench/lfm25_benchsuite.py --trace bench/traces/lfm25-mps-smoke.json --warmup-trace bench/traces/lfm25-mps-warmup.json --needle-lengths 128,256 --needle-positions 10,50,90 --artifact-dir _artifacts/lfm25-benchsuite-smoke --output _artifacts/lfm25-benchsuite-smoke/result.json
   description = run short ERS engine smoke on MPS
   pool = console
+
+rule llama_cpp_benchmark
+  command = PYTHONPATH=python:bench python3.13 bench/llama_cpp_bench.py --record-output bench/results/lfm25-350m-llama-cpp-q8-2026-08-26.json
+  description = benchmark native llama.cpp throughput on Apple Silicon
+  pool = console
+
+rule llama_cpp_server_benchmark
+  command = PYTHONPATH=python:bench python3.13 bench/llama_cpp_server_bench.py --record-output bench/results/lfm25-350m-llama-cpp-q8-trace-2026-08-26.json
+  description = benchmark llama.cpp server ERS on Apple Silicon
+  pool = console
+
 
 build _build/ocaml/shape.cmi: ocaml_interface lib/shape.mli
 build _build/ocaml/shape.cmx: ocaml_module lib/shape.ml | _build/ocaml/shape.cmi
@@ -182,6 +183,12 @@ build _build/ocaml/tensor_shape.cmx: ocaml_module lib/tensor_shape.ml | _build/o
 
 build _build/ocaml/ir.cmi: ocaml_interface lib/ir.mli | _build/ocaml/shape.cmi _build/ocaml/tensor_shape.cmi
 build _build/ocaml/ir.cmx: ocaml_module lib/ir.ml | _build/ocaml/ir.cmi _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx
+
+build _build/ocaml/kernel_ir.cmi: ocaml_interface lib/kernel_ir.mli | _build/ocaml/ir.cmi _build/ocaml/tensor_shape.cmi
+build _build/ocaml/kernel_ir.cmx: ocaml_module lib/kernel_ir.ml | _build/ocaml/kernel_ir.cmi _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx
+
+build _build/ocaml/fusion_query.cmi: ocaml_interface lib/fusion_query.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_ir.cmi
+build _build/ocaml/fusion_query.cmx: ocaml_module lib/fusion_query.ml | _build/ocaml/fusion_query.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_ir.cmx
 
 build _build/ocaml/kernel_cost_model.cmi: ocaml_interface lib/kernel_cost_model.mli
 build _build/ocaml/kernel_cost_model.cmx: ocaml_module lib/kernel_cost_model.ml | _build/ocaml/kernel_cost_model.cmi
@@ -219,13 +226,18 @@ build _build/ocaml/pass_fuse_q8_epilogues.cmx: ocaml_module lib/pass_fuse_q8_epi
 build _build/ocaml/dag_analysis.cmi: ocaml_interface lib/dag_analysis.mli | _build/ocaml/ir.cmi
 build _build/ocaml/dag_analysis.cmx: ocaml_module lib/dag_analysis.ml | _build/ocaml/dag_analysis.cmi _build/ocaml/ir.cmx
 
-build _build/ocaml/pass_co_schedule.cmi: ocaml_interface lib/pass_co_schedule.mli | _build/ocaml/pass.cmi
-build _build/ocaml/pass_co_schedule.cmx: ocaml_module lib/pass_co_schedule.ml | _build/ocaml/pass_co_schedule.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx
+build _build/ocaml/compute_plan.cmi: ocaml_interface lib/compute_plan.mli | _build/ocaml/ir.cmi
+build _build/ocaml/compute_plan.cmx: ocaml_module lib/compute_plan.ml | _build/ocaml/compute_plan.cmi _build/ocaml/ir.cmx
+
+build _build/ocaml/pass_co_schedule.cmi: ocaml_interface lib/pass_co_schedule.mli | _build/ocaml/pass.cmi _build/ocaml/compute_plan.cmi
+build _build/ocaml/pass_co_schedule.cmx: ocaml_module lib/pass_co_schedule.ml | _build/ocaml/pass_co_schedule.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx _build/ocaml/compute_plan.cmx
 
 build _build/ocaml/pass_fuse_dual_linear_swiglu.cmi: ocaml_interface lib/pass_fuse_dual_linear_swiglu.mli | _build/ocaml/pass.cmi
 build _build/ocaml/pass_fuse_dual_linear_swiglu.cmx: ocaml_module lib/pass_fuse_dual_linear_swiglu.ml | _build/ocaml/pass_fuse_dual_linear_swiglu.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx
 build _build/ocaml/pass_fuse_qkv_linear.cmi: ocaml_interface lib/pass_fuse_qkv_linear.mli | _build/ocaml/pass.cmi
 build _build/ocaml/pass_fuse_qkv_linear.cmx: ocaml_module lib/pass_fuse_qkv_linear.ml | _build/ocaml/pass_fuse_qkv_linear.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx
+build _build/ocaml/pass_fuse_swiglu_ffn.cmi: ocaml_interface lib/pass_fuse_swiglu_ffn.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_ir.cmi _build/ocaml/fusion_query.cmi
+build _build/ocaml/pass_fuse_swiglu_ffn.cmx: ocaml_module lib/pass_fuse_swiglu_ffn.ml | _build/ocaml/pass_fuse_swiglu_ffn.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/fusion_query.cmx
 build _build/ocaml/pass_fuse_short_conv_step.cmi: ocaml_interface lib/pass_fuse_short_conv_step.mli | _build/ocaml/pass.cmi
 build _build/ocaml/pass_fuse_short_conv_step.cmx: ocaml_module lib/pass_fuse_short_conv_step.ml | _build/ocaml/pass_fuse_short_conv_step.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx _build/ocaml/pass_fuse_short_conv.cmx
 build _build/ocaml/pass_fuse_linear_residual_norm.cmi: ocaml_interface lib/pass_fuse_linear_residual_norm.mli | _build/ocaml/pass.cmi
@@ -234,8 +246,8 @@ build _build/ocaml/pass_fuse_linear_residual_norm.cmx: ocaml_module lib/pass_fus
 build _build/ocaml/pass_fuse_lm_head_argmax.cmi: ocaml_interface lib/pass_fuse_lm_head_argmax.mli | _build/ocaml/pass.cmi _build/ocaml/ir.cmi _build/ocaml/tensor_shape.cmi
 build _build/ocaml/pass_fuse_lm_head_argmax.cmx: ocaml_module lib/pass_fuse_lm_head_argmax.ml | _build/ocaml/pass_fuse_lm_head_argmax.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx
 
-build _build/ocaml/passes.cmi: ocaml_interface lib/passes.mli | _build/ocaml/pass.cmi _build/ocaml/pass_fuse_linear_bias.cmi _build/ocaml/pass_fuse_rms_norm.cmi _build/ocaml/pass_fuse_rms_rope.cmi _build/ocaml/pass_fuse_short_conv.cmi _build/ocaml/pass_fuse_q8_epilogues.cmi _build/ocaml/pass_fuse_dual_linear_swiglu.cmi _build/ocaml/pass_fuse_qkv_linear.cmi _build/ocaml/pass_fuse_short_conv_step.cmi _build/ocaml/pass_fuse_linear_residual_norm.cmi _build/ocaml/pass_fuse_lm_head_argmax.cmi _build/ocaml/pass_co_schedule.cmi
-build _build/ocaml/passes.cmx: ocaml_module lib/passes.ml | _build/ocaml/passes.cmi _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx
+build _build/ocaml/passes.cmi: ocaml_interface lib/passes.mli | _build/ocaml/pass.cmi _build/ocaml/kernel_ir.cmi _build/ocaml/compute_plan.cmi _build/ocaml/pass_fuse_linear_bias.cmi _build/ocaml/pass_fuse_rms_norm.cmi _build/ocaml/pass_fuse_rms_rope.cmi _build/ocaml/pass_fuse_short_conv.cmi _build/ocaml/pass_fuse_q8_epilogues.cmi _build/ocaml/pass_fuse_dual_linear_swiglu.cmi _build/ocaml/pass_fuse_swiglu_ffn.cmi _build/ocaml/pass_fuse_qkv_linear.cmi _build/ocaml/pass_fuse_short_conv_step.cmi _build/ocaml/pass_fuse_linear_residual_norm.cmi _build/ocaml/pass_fuse_lm_head_argmax.cmi _build/ocaml/pass_co_schedule.cmi
+build _build/ocaml/passes.cmx: ocaml_module lib/passes.ml | _build/ocaml/passes.cmi _build/ocaml/pass.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/fusion_query.cmx _build/ocaml/compute_plan.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx
 
 build _build/ocaml/kernel_abi.cmi: ocaml_interface lib/kernel_abi.mli | _build/ocaml/ir.cmi
 build _build/ocaml/kernel_abi.cmx: ocaml_module lib/kernel_abi.ml | _build/ocaml/kernel_abi.cmi _build/ocaml/ir.cmx
@@ -328,14 +340,14 @@ build _build/ocaml/serving_validation.cmx: ocaml_module lib/serving_validation.m
 build _build/ocaml/fx_plan.cmi: ocaml_interface lib/fx_plan.mli | _build/ocaml/fx.cmi _build/ocaml/capture.cmi _build/ocaml/tile_effect.cmi
 build _build/ocaml/fx_plan.cmx: ocaml_module lib/fx_plan.ml | _build/ocaml/fx_plan.cmi _build/ocaml/fx.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/ir.cmx _build/ocaml/shape.cmx
 
-build _build/ocaml/demo.cmx: ocaml_module bin/demo.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
-build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/demo.cmx
+build _build/ocaml/demo.cmx: ocaml_module bin/demo.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx
+build _build/bin/llmopt-demo: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/fusion_query.cmx _build/ocaml/compute_plan.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/demo.cmx
 
-build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/dag_analysis.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/serving_replay.cmx _build/ocaml/serving_queue.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/sampling.cmx _build/ocaml/generation_core.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/kernel_cost_model.cmx
-build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/dag_analysis.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/serving_replay.cmx _build/ocaml/serving_queue.cmx _build/ocaml/binary.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/sampling.cmx _build/ocaml/generation_core.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/test.cmx
+build _build/ocaml/test.cmx: ocaml_module test/test.ml | _build/ocaml/shape.cmx _build/ocaml/tile.cmx _build/ocaml/cpu.cmx _build/ocaml/capture.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/dag_analysis.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/serving_replay.cmx _build/ocaml/serving_queue.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/sampling.cmx _build/ocaml/generation_core.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/binary.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/kernel_cost_model.cmx
+build _build/bin/llmopt-test: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/fusion_query.cmx _build/ocaml/compute_plan.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/capture.cmx _build/ocaml/cpu.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/dag_analysis.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/lfm25.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/serving_replay.cmx _build/ocaml/serving_queue.cmx _build/ocaml/binary.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/sampling.cmx _build/ocaml/generation_core.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/test.cmx
 
-build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
-build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/binary.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
+build _build/ocaml/fx_compile.cmx: ocaml_module bin/fx_compile.ml | _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/ir.cmx _build/ocaml/capture.cmx _build/ocaml/tile_effect.cmx _build/ocaml/shape.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
+build _build/bin/llmopt-fx: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/fusion_query.cmx _build/ocaml/compute_plan.cmx _build/ocaml/tile_effect.cmx _build/ocaml/capture.cmx _build/ocaml/binary.cmx _build/ocaml/fx.cmx _build/ocaml/fx_plan.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/llvm_ir.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/fx_compile.cmx
 
 build _build/ocaml/package_check.cmx: ocaml_module bin/package_check.ml | _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx
 build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/package_check.cmx
@@ -343,8 +355,8 @@ build _build/bin/llmopt-package-check: ocaml_link _build/ocaml/shape.cmx _build/
 build _build/ocaml/ocaml_metal_smoke.cmx: ocaml_module bin/ocaml_metal_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/weight_archive.cmx
 build _build/bin/llmopt-ocaml-metal-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_smoke.cmx _build/native/ocaml_metal_stubs.o
 
-build _build/ocaml/native_schedule_fixture.cmx: ocaml_module bin/native_schedule_fixture.ml | _build/ocaml/ir.cmx _build/ocaml/metal.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
-build _build/bin/llmopt-native-schedule-fixture: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/native_schedule_fixture.cmx
+build _build/ocaml/native_schedule_fixture.cmx: ocaml_module bin/native_schedule_fixture.ml | _build/ocaml/ir.cmx _build/ocaml/metal.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx
+build _build/bin/llmopt-native-schedule-fixture: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/fusion_query.cmx _build/ocaml/compute_plan.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/metal.cmx _build/ocaml/pass.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_rms_norm.cmx _build/ocaml/pass_fuse_rms_rope.cmx _build/ocaml/pass_fuse_short_conv.cmx _build/ocaml/pass_fuse_q8_epilogues.cmx _build/ocaml/pass_fuse_dual_linear_swiglu.cmx _build/ocaml/pass_fuse_swiglu_ffn.cmx _build/ocaml/pass_fuse_qkv_linear.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_linear_residual_norm.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/passes.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_package.cmx _build/ocaml/native_schedule_fixture.cmx
 
 build _build/ocaml/ocaml_metal_primitives_smoke.cmx: ocaml_module bin/ocaml_metal_primitives_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/weight_archive.cmx
 build _build/bin/llmopt-ocaml-metal-primitives-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_primitives_smoke.cmx _build/native/ocaml_metal_stubs.o
@@ -358,25 +370,23 @@ build _build/fx-example/package.ok: package_check _build/fx-example/package.llmo
   checker = _build/bin/llmopt-package-check
   directory = _build/fx-example
 
-build _build/fx-inputs/q8-linear.graph.llmopt: fx_graph python/examples/q8_linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
-build _build/q8-fx-example/graph.llmopt _build/q8-fx-example/plan.txt _build/q8-fx-example/kernel.metal _build/q8-fx-example/kernel.ll _build/q8-fx-example/package.llmopt: q8_fx_manifest _build/fx-inputs/q8-linear.graph.llmopt | _build/bin/llmopt-fx
-build _build/q8-fx-example/kernel.ll.o: llvm_check _build/q8-fx-example/kernel.ll
-build _build/q8-fx-example/kernel.air: metal_check _build/q8-fx-example/kernel.metal
-build _build/q8-fx-example/kernel.metallib: metal_lib _build/q8-fx-example/kernel.air
-build _build/q8-fx-example/package.ok: package_check _build/q8-fx-example/package.llmopt _build/q8-fx-example/kernel.metallib | _build/bin/llmopt-package-check
+build _build/fx-inputs/w4a16-linear.graph.llmopt: fx_graph python/examples/w4a16_linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
+build _build/w4a16-fx-example/graph.llmopt _build/w4a16-fx-example/plan.txt _build/w4a16-fx-example/kernel.metal _build/w4a16-fx-example/kernel.ll _build/w4a16-fx-example/package.llmopt: w4a16_fx_manifest _build/fx-inputs/w4a16-linear.graph.llmopt | _build/bin/llmopt-fx
+build _build/w4a16-fx-example/kernel.air: metal_check _build/w4a16-fx-example/kernel.metal
+build _build/w4a16-fx-example/kernel.metallib: metal_lib _build/w4a16-fx-example/kernel.air
+build _build/w4a16-fx-example/package.ok: package_check _build/w4a16-fx-example/package.llmopt _build/w4a16-fx-example/kernel.metallib | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
-  directory = _build/q8-fx-example
-build _build/q8-serving-example/weights.llmopt: q8_tensor_store python/examples/write_q8_weight_fixture.py
-build _build/q8-serving-example/graph.llmopt _build/q8-serving-example/plan.txt _build/q8-serving-example/kernel.metal _build/q8-serving-example/kernel.ll _build/q8-serving-example/package.llmopt: q8_serving_manifest _build/fx-inputs/q8-linear.graph.llmopt | _build/bin/llmopt-fx _build/q8-serving-example/weights.llmopt
-build _build/q8-serving-example/kernel.ll.o: llvm_check _build/q8-serving-example/kernel.ll
-build _build/q8-serving-example/kernel.air: metal_check _build/q8-serving-example/kernel.metal
-build _build/q8-serving-example/kernel.metallib: metal_lib _build/q8-serving-example/kernel.air
-build _build/q8-serving-example/package.ok: package_check _build/q8-serving-example/package.llmopt _build/q8-serving-example/kernel.metallib _build/q8-serving-example/weights.llmopt | _build/bin/llmopt-package-check
+  directory = _build/w4a16-fx-example
+build _build/w4a16-serving-example/weights.llmopt: w4a16_tensor_store python/examples/write_w4a16_weight_fixture.py
+build _build/w4a16-serving-example/graph.llmopt _build/w4a16-serving-example/plan.txt _build/w4a16-serving-example/kernel.metal _build/w4a16-serving-example/kernel.ll _build/w4a16-serving-example/package.llmopt: w4a16_serving_manifest _build/fx-inputs/w4a16-linear.graph.llmopt | _build/bin/llmopt-fx _build/w4a16-serving-example/weights.llmopt
+build _build/w4a16-serving-example/kernel.air: metal_check _build/w4a16-serving-example/kernel.metal
+build _build/w4a16-serving-example/kernel.metallib: metal_lib _build/w4a16-serving-example/kernel.air
+build _build/w4a16-serving-example/package.ok: package_check _build/w4a16-serving-example/package.llmopt _build/w4a16-serving-example/kernel.metallib _build/w4a16-serving-example/weights.llmopt | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
-  directory = _build/q8-serving-example
-build _build/q8-serving-example/ocaml-metal-smoke.txt: run_ocaml_metal_smoke _build/q8-serving-example/package.ok _build/bin/llmopt-ocaml-metal-smoke
+  directory = _build/w4a16-serving-example
+build _build/w4a16-serving-example/ocaml-metal-smoke.txt: run_ocaml_metal_smoke _build/w4a16-serving-example/package.ok _build/bin/llmopt-ocaml-metal-smoke
   runner = _build/bin/llmopt-ocaml-metal-smoke
-  directory = _build/q8-serving-example
+  directory = _build/w4a16-serving-example
 build _build/native-schedule-fixture/package.llmopt _build/native-schedule-fixture/kernel.metal: native_schedule_fixture | _build/bin/llmopt-native-schedule-fixture
   generator = _build/bin/llmopt-native-schedule-fixture
   directory = _build/native-schedule-fixture
@@ -389,16 +399,14 @@ build _build/native-schedule-fixture/device-smoke.txt: run_ocaml_metal_primitive
   runner = _build/bin/llmopt-ocaml-metal-primitives-smoke
   directory = _build/native-schedule-fixture
 build _build/native/metal-runtime.stamp: native_runtime native/metal_runtime.cpp native/build_metal_runtime.py
-build q8-fx-smoke: phony _build/q8-fx-example/kernel.ll.o _build/q8-fx-example/kernel.air _build/q8-fx-example/kernel.metallib _build/q8-fx-example/package.ok
-build q8-serving-smoke: phony _build/q8-serving-example/kernel.ll.o _build/q8-serving-example/kernel.air _build/q8-serving-example/kernel.metallib _build/q8-serving-example/package.ok
+build w4a16-fx-smoke: phony _build/w4a16-fx-example/kernel.air _build/w4a16-fx-example/kernel.metallib _build/w4a16-fx-example/package.ok
+build w4a16-serving-smoke: phony _build/w4a16-serving-example/kernel.air _build/w4a16-serving-example/kernel.metallib _build/w4a16-serving-example/package.ok
 build metal-runtime: phony _build/native/metal-runtime.stamp
-build metal-runtime-smoke: metal_runtime_smoke _build/native/metal-runtime.stamp _build/q8-fx-example/kernel.metallib python/examples/metal_runtime_smoke.py python/llmopt_backend/metal_runtime.py
+build metal-runtime-smoke: metal_runtime_smoke _build/native/metal-runtime.stamp _build/w4a16-fx-example/kernel.metallib python/examples/metal_runtime_smoke.py python/llmopt_backend/metal_runtime.py
 build _artifacts/phase1-350m-mps/result.json: metal_runtime_model_smoke _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_mps.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
 build metal-runtime-model-smoke: phony _artifacts/phase1-350m-mps/result.json
-build _artifacts/phase1-350m-differential/result.json: metal_runtime_differential _build/bin/llmopt-fx _build/native/metal-runtime.stamp _build/q8-fx-example/kernel.metallib python/examples/metal_runtime_differential.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
-build metal-runtime-differential: phony _artifacts/phase1-350m-differential/result.json
-build _artifacts/lfm25-350m-q8-prefill-decode/result.json: lfm25_prefill_decode_capture _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/native/metal-runtime.stamp bench/lfm25_capture_decode.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py python/llmopt_backend/tensor_archive.py
-build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-q8-prefill-decode/result.json
+build _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json: lfm25_prefill_decode_capture _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-lfm-serving-check _build/native/metal-runtime.stamp bench/lfm25_capture_decode.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py python/llmopt_backend/tensor_archive.py
+build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json
 
 build all: phony _build/bin/llmopt-demo _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-lfm-serving-check _build/bin/llmopt-lfm-serving-smoke _build/bin/llmopt-tokenize _build/bin/llmopt-generate _build/bin/llmopt-serve
 build ocaml-test: run_test _build/bin/llmopt-test
@@ -406,9 +414,8 @@ build python-test: python_test
 build test: phony ocaml-test python-test
 build demo: run_demo _build/bin/llmopt-demo
 build metal: metal_compile | demo
-build q8-metal: q8_metal_check | demo
-build q8-llvm: q8_llvm_check | demo
-build q8-smoke: phony q8-metal q8-llvm
+build w4a16-metal: w4a16_metal_check | demo
+build w4a16-smoke: phony w4a16-metal
 build rms-norm-smoke: rms_norm_metal_check | demo
 build short-conv-smoke: short_conv_metal_check | demo
 build attention-smoke: attention_metal_check | demo
@@ -416,13 +423,18 @@ build embedding-smoke: embedding_metal_check | demo
 build mask-position-smoke: mask_position_metal_check | demo
 build fx-smoke: phony _build/fx-example/kernel.ll.o _build/fx-example/kernel.air _build/fx-example/kernel.metallib _build/fx-example/package.ok
 build ocaml-metal-runtime: phony _build/bin/llmopt-ocaml-metal-smoke
-build ocaml-metal-runtime-smoke: phony _build/q8-serving-example/ocaml-metal-smoke.txt
+build ocaml-metal-runtime-smoke: phony _build/w4a16-serving-example/ocaml-metal-smoke.txt
 build native-schedule-smoke: phony _build/native-schedule-fixture/package.ok
 build ocaml-metal-primitives-smoke: phony _build/native-schedule-fixture/device-smoke.txt
 build bench-mps: lfm25_mps_benchmark | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_mps.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
-build _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json: lfm25_benchsuite | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
-build bench-suite: phony _artifacts/lfm25-benchsuite-q8-racebench-safe/result.json
-build _artifacts/lfm25-benchsuite-350m-q8-racebench-safe/result.json: lfm25_benchsuite_350m | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
-build bench-suite-350m: phony _artifacts/lfm25-benchsuite-350m-q8-racebench-safe/result.json
+build _artifacts/lfm25-benchsuite-w4a16-q8kv-racebench-safe/result.json: lfm25_benchsuite | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
+build bench-suite: phony _artifacts/lfm25-benchsuite-w4a16-q8kv-racebench-safe/result.json
+build _artifacts/lfm25-benchsuite-350m-w4a16-q8kv-racebench-safe/result.json: lfm25_benchsuite_350m | _build/bin/llmopt-fx _build/native/metal-runtime.stamp bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/racebench/benchmark.py bench/racebench/trace.py bench/racebench/score.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py
+build bench-suite-350m: phony _artifacts/lfm25-benchsuite-350m-w4a16-q8kv-racebench-safe/result.json
 build _artifacts/lfm25-benchsuite-smoke/result.json: lfm25_benchsuite_smoke | _build/bin/llmopt-fx bench/lfm25_benchsuite.py bench/racebench/profiles.py bench/traces/lfm25-mps-smoke.json bench/traces/lfm25-mps-warmup.json
 build bench-smoke: phony _artifacts/lfm25-benchsuite-smoke/result.json
+build _artifacts/llama-cpp/llama-bench.json: llama_cpp_benchmark | bench/llama_cpp_bench.py
+build bench-llama-cpp: phony _artifacts/llama-cpp/llama-bench.json
+build _artifacts/llama-cpp-trace/result.json: llama_cpp_server_benchmark | bench/llama_cpp_server_bench.py bench/racebench/http.py
+build bench-llama-cpp-trace: phony _artifacts/llama-cpp-trace/result.json
+

@@ -1,6 +1,18 @@
 module Config = struct
   type t = { model : Lfm25.Config.t; kv : Kv_cache.Config.t; page_size : int }
 
+  let validate_kv_geometry ~format ~head_dim =
+    match Kv_cache.Format.validate format with
+    | Error _ as error -> error
+    | Ok () ->
+        (match format with
+        | Kv_cache.Format.F16 ->
+            Error "serving requires the fixed Q8 KV format"
+        | Kv_cache.Format.Q8 _
+          when head_dim = Kv_cache.Layout.q8_head_dim -> Ok ()
+        | Kv_cache.Format.Q8 _ ->
+            Error "serving Q8 KV requires attention head_dim=64")
+
   let create ~model ?(kv_format = Kv_cache.Format.default) ~token_capacity
       ~checkpoint_capacity ~page_size () =
     if model.Lfm25.Config.hidden_size <= 0 then
@@ -22,20 +34,23 @@ module Config = struct
           Lfm25.Config.count_layers Lfm25.Config.Conv model
         in
         let head_dim = model.hidden_size / model.num_attention_heads in
-        match
-          Kv_cache.Layout.create ~format:kv_format ~attention_layers
-            ~kv_heads:model.num_key_value_heads ~head_dim ~recurrent_layers
-            ~recurrent_width:model.hidden_size
-            ~recurrent_window:model.conv_l_cache
-        with
+        (match validate_kv_geometry ~format:kv_format ~head_dim with
         | Error message -> Error message
-        | Ok layout ->
+        | Ok () ->
             (match
-               Kv_cache.Config.create ~layout ~token_capacity
-                 ~checkpoint_capacity
+               Kv_cache.Layout.create ~format:kv_format ~attention_layers
+                 ~kv_heads:model.num_key_value_heads ~head_dim ~recurrent_layers
+                 ~recurrent_width:model.hidden_size
+                 ~recurrent_window:model.conv_l_cache
              with
             | Error message -> Error message
-            | Ok kv -> Ok { model; kv; page_size })
+            | Ok layout ->
+                (match
+                   Kv_cache.Config.create ~layout ~token_capacity
+                     ~checkpoint_capacity
+                 with
+                | Error message -> Error message
+                | Ok kv -> Ok { model; kv; page_size })))
 
   let kv config = config.kv
   let page_size config = config.page_size

@@ -6,6 +6,7 @@ let dtype_matches fx_dtype archive_dtype =
   | Ir.Dtype.Int64, Weight_archive.Dtype.I64
   | Ir.Dtype.Int32, Weight_archive.Dtype.I32
   | Ir.Dtype.Int8, Weight_archive.Dtype.I8
+  | Ir.Dtype.UInt8, Weight_archive.Dtype.U8
   | Ir.Dtype.Bool, Weight_archive.Dtype.Bool -> true
   | _ -> false
 

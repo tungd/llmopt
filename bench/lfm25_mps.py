@@ -62,9 +62,9 @@ def main() -> None:
     parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
     parser.add_argument(
         "--quantization",
-        choices=("q8", "fp16"),
-        default="q8",
-        help="weight format for the model-level run (default: q8)",
+        choices=("w4a16-q8kv", "fp16"),
+        default="w4a16-q8kv",
+        help="model format (default: packed W4A16 weights with Q8 KV)",
     )
     parser.add_argument("--prompt", default="The capital of France is")
     parser.add_argument("--iterations", type=int, default=3)
@@ -96,7 +96,7 @@ def main() -> None:
     )
     model.eval()
     quantization_summary = None
-    if args.quantization == "q8":
+    if args.quantization == "w4a16-q8kv":
         quantization_summary = quantize_model_(model)
     model.to(device)
     os.environ["LLMOPT_QUANTIZATION"] = args.quantization

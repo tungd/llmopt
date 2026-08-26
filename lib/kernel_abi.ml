@@ -3,6 +3,7 @@ module Operation = struct
     | Matmul
     | Fused_linear
     | Linear
+    | W4a16_linear
     | Q8_linear
     | Q8_linear_silu
     | Q8_linear_add
@@ -32,6 +33,7 @@ module Operation = struct
     | Matmul -> "matmul"
     | Fused_linear -> "fused-linear"
     | Linear -> "linear"
+    | W4a16_linear -> "w4a16-linear-g64"
     | Q8_linear -> "q8-linear"
     | Q8_linear_silu -> "q8-linear-silu"
     | Q8_linear_add -> "q8-linear-add"
@@ -61,6 +63,7 @@ module Operation = struct
     | "matmul" -> Ok Matmul
     | "fused-linear" -> Ok Fused_linear
     | "linear" -> Ok Linear
+    | "w4a16-linear-g64" -> Ok W4a16_linear
     | "q8-linear" -> Ok Q8_linear
     | "q8-linear-silu" -> Ok Q8_linear_silu
     | "q8-linear-add" -> Ok Q8_linear_add

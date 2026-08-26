@@ -2,7 +2,7 @@ let ( let* ) = Result.bind
 
 let usage () =
   prerr_endline
-    "usage: llmopt-lfm-serving-check [--kv q8|fp16] \
+    "usage: llmopt-lfm-serving-check [--kv q8] \
      <prefill-directory> <decode-directory>";
   exit 64
 
@@ -11,7 +11,6 @@ let package root =
 
 let format = function
   | "q8" | "q8-group-64" -> Ok Kv_cache.Format.default
-  | "fp16" | "f16" -> Ok Kv_cache.Format.f16
   | value -> Error ("unsupported KV format: " ^ value)
 
 let arguments () =

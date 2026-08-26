@@ -1,5 +1,5 @@
 module Dtype : sig
-  type t = F32 | F16 | BF16 | I64 | I32 | I8 | Bool
+  type t = F32 | F16 | BF16 | I64 | I32 | I8 | Bool | U8
 
   val to_string : t -> string
   val byte_width : t -> int

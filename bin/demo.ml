@@ -37,7 +37,8 @@ let capture_or_fail thunk =
 let result_or_fail = function Ok value -> value | Error message -> failwith message
 
 let emit_graph ~directory ~stem graph =
-  let optimized = Passes.optimize graph in
+  let optimization = Passes.optimize graph |> result_or_fail in
+  let optimized = Passes.Optimization.execution_graph optimization in
   let metal =
     match Metal.emit optimized with
     | Ok source -> source
@@ -56,7 +57,8 @@ let emit_graph ~directory ~stem graph =
   Format.printf "%a" Ir.Graph.pp optimized
 
 let emit_metal_graph ~directory ~stem graph =
-  let optimized = Passes.optimize graph in
+  let optimization = Passes.optimize graph |> result_or_fail in
+  let optimized = Passes.Optimization.execution_graph optimization in
   let program =
     match Metal.lower optimized with
     | Ok program -> program
@@ -161,7 +163,7 @@ let () =
       (capture_or_fail (fun () ->
            Lfm25.linear_kernel ~config:Lfm25.Config.default ~rows:1 ()))
   in
-  emit_graph ~directory:!emit_directory ~stem:"lfm25_linear" target_graph;
+  emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_linear" target_graph;
   let rms_norm_graph =
     snd
       (capture_or_fail (fun () ->

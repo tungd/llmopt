@@ -111,8 +111,25 @@ let () =
                   prerr_endline message;
                   exit 3
           in
-          let planned = Passes.optimize graph in
-          let plan = Format.asprintf "%a" Ir.Graph.pp planned in
+          let optimization =
+            match Passes.optimize graph with
+            | Ok optimization -> optimization
+            | Error message ->
+                prerr_endline ("optimization failed: " ^ message);
+                exit 3
+          in
+          let planned = Passes.Optimization.execution_graph optimization in
+          let fusion_regions = Passes.Optimization.fusion_regions optimization in
+          let graph_plan = Format.asprintf "%a" Ir.Graph.pp planned in
+          let plan =
+            match fusion_regions with
+            | [] -> graph_plan
+            | regions ->
+                graph_plan ^ "\nstructured-regions:\n"
+                ^ (regions |> List.map Kernel_ir.to_string
+                  |> String.concat "\n")
+                ^ "\n"
+          in
           (match Serving_schedule.of_graph planned with
           | Error message ->
               prerr_endline ("schedule creation failed: " ^ message);
@@ -133,11 +150,9 @@ let () =
                            Serving_package.Cache.default)
                       metal_program
               in
-              (match Llvm_ir.emit planned with
-              | Error message ->
-                  prerr_endline ("LLVM emission failed: " ^ message);
-                  exit 6
-              | Ok llvm_source ->
+              let llvm_source =
+                Llvm_ir.emit planned |> Result.value ~default:""
+              in
                   let package_result =
                     match tensor_store with
                     | None ->
@@ -182,7 +197,9 @@ let () =
                   | Ok () -> ()
                   | Error message ->
                       prerr_endline message;
-                      exit 8)));
+                      exit 8));
           Printf.printf "planned %d FX nodes into %d IR nodes\n"
             (List.length (Fx.nodes fx_graph))
-            (List.length (Ir.Graph.nodes planned)))
+            (List.length (Ir.Graph.nodes planned));
+          Printf.printf "discovered %d structured fusion regions\n"
+            (List.length fusion_regions))

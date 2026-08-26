@@ -602,9 +602,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
     parser.add_argument(
         "--quantization",
-        choices=("q8", "fp16"),
-        default="q8",
-        help="weight format for the model-level run (default: q8)",
+        choices=("w4a16-q8kv", "fp16"),
+        default="w4a16-q8kv",
+        help="model format (default: packed W4A16 weights with Q8 KV)",
     )
     parser.add_argument("--trace", default="bench/traces/lfm25-mps-smoke.json")
     parser.add_argument(
@@ -984,7 +984,7 @@ def main() -> int:
         low_cpu_mem_usage=True,
     ).eval()
     quantization_summary = None
-    if args.quantization == "q8":
+    if args.quantization == "w4a16-q8kv":
         quantization_summary = quantize_model_(eager_model)
     eager_model = eager_model.to(device)
     load_seconds = time.perf_counter() - load_start

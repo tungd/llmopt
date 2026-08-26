@@ -276,6 +276,40 @@ let q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k ~input_mode
 let q8_parameterized_name ~tile_m ~tile_n ~tile_k =
   Printf.sprintf "llmopt_q8_linear_tm%d_tn%d_tk%d" tile_m tile_n tile_k
 
+let w4a16_source =
+  "\nstruct W4A16Params { uint m; uint n; uint k; uint has_bias; };\n\n"
+  ^ "kernel void llmopt_w4a16_linear_f16_g64(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const uchar* packed_weight [[buffer(1)]],\n"
+  ^ "    device const half* scale [[buffer(2)]],\n"
+  ^ "    device const half* bias_or_scale [[buffer(3)]],\n"
+  ^ "    device half* output [[buffer(4)]],\n"
+  ^ "    constant W4A16Params& params [[buffer(5)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.m * params.n;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint row = gid / params.n;\n"
+  ^ "  const uint col = gid - row * params.n;\n"
+  ^ "  const uint packed_base = col * (params.k >> 1);\n"
+  ^ "  const uint scale_base = col * (params.k >> 6);\n"
+  ^ "  float acc = 0.0f;\n"
+  ^ "  for (uint inner = 0; inner < params.k; ++inner) {\n"
+  ^ "    const uchar packed = packed_weight[packed_base + (inner >> 1)];\n"
+  ^ "    const uint raw = ((inner & 1u) == 0u) ? (packed & 0xFu) : (packed >> 4);\n"
+  ^ "    const int quantized = (raw < 8u) ? int(raw) : int(raw) - 16;\n"
+  ^ "    const float weight = float(quantized) * float(scale[scale_base + (inner >> 6)]);\n"
+  ^ "    acc += float(input[row * params.k + inner]) * weight;\n"
+  ^ "  }\n"
+  ^ "  if (params.has_bias != 0u) acc += float(bias_or_scale[col]);\n"
+  ^ "  output[gid] = half(acc);\n"
+  ^ "}\n"
+
+let w4a16_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_w4a16_linear_f16_g64"
+      ~operation:Kernel_abi.Operation.W4a16_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let q8_kernel_parameterized ~tile_m ~tile_n ~tile_k =
   q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k
     ~input_mode:Direct ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
@@ -3082,6 +3116,13 @@ let has_q8_linear graph =
          | Ir.Op.Q8_linear _ -> true
          | _ -> false)
 
+let has_w4a16_linear graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.W4a16_linear _ -> true
+         | _ -> false)
+
 let has_q8_linear_silu graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -3352,7 +3393,8 @@ let lower graph =
     has_primitive graph (function Ir.Primitive.Update_slice _ -> true | _ -> false)
   in
   let components =
-    [ has_q8 graph, q8_source, q8_entries graph;
+    [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
+      has_q8 graph, q8_source, q8_entries graph;
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;

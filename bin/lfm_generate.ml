@@ -17,7 +17,7 @@ let defaults =
 
 let usage () =
   prerr_endline
-    "usage: llmopt-generate [--kv q8|fp16] [--max-new-tokens count] \
+    "usage: llmopt-generate [--kv q8] [--max-new-tokens count] \
      [--token-capacity count] [--checkpoint-capacity count] \
      <tokenizer.llmopt> <prefill-directory> <decode-directory> \
      <role> <content> [<role> <content> ...]";
@@ -25,7 +25,6 @@ let usage () =
 
 let kv_format = function
   | "q8" | "q8-group-64" -> Ok Kv_cache.Format.default
-  | "fp16" | "f16" -> Ok Kv_cache.Format.f16
   | value -> Error ("unsupported KV format: " ^ value)
 
 let positive name value =
