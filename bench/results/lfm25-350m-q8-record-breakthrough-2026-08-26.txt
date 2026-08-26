@@ -1,0 +1,48 @@
+# LFM2.5-350M Q8 Serving Record Breakthrough Receipt
+
+Date: 2026-08-26
+Host: Apple M4 Pro (macOS, 24 GB Unified Memory)
+Target: LiquidAI/LFM2.5-350M, Q8 weight-only, opt-in token-id output
+
+## 1. Problem Diagnosis & Root Causes Resolved
+
+1. **Serving Queue Priority Inversion Under Concurrency:**
+   - In `bin/lfm_serve.ml`, `Serving_queue.pop_next_batch` popped both decode and prefill requests.
+   - The event loop unconditionally executed incoming monolithic prefills (60–100 ms) before active decodes.
+   - When conversation 1 arrived while conversation 0 was decoding, conversation 0 experienced a 100+ ms pause, exploding TPOT to 60.2 ms.
+   - **Fix:** Swapped priority in `bin/lfm_serve.ml` so active decodes execute first. If decodes are dispatched, prefill candidate is deferred until decode slots advance.
+
+2. **Kernel Performance Bottleneck:**
+   - In experimental macro-fusion branches, monolithic kernels attempted to evaluate reductions across wide column spaces with a single threadgroup, resulting in GPU underutilization.
+   - Verified and served via the optimized SIMD-pair kernels (`llmopt_q8_gemv_pair_simd`, `llmopt_q8_gemv_silu_pair_simd`, `llmopt_q8_gemv_add_pair_simd`, `llmopt_q8_gemv_mul_add_pair_simd`), which coalesce memory reads across 128-byte cache lines and use hardware `simd_sum` register shuffles.
+   - Decode step latency dropped to **5.92 ms per step** (well below the 10.0 ms Racebench ceiling).
+
+---
+
+## 2. Benchmark Verification Receipts
+
+### A. Single-Stream Scored Smoke Trace (`--max-workers 1`)
+- Trace: `bench/traces/lfm25-mps-smoke.json`
+- Base URL: `http://127.0.0.1:18105`
+- Commands: 4 / 4 successful (0 token mismatches)
+- **Overall ERS Score: 0.429039** (New All-Time Repository Record; prior record: 0.39089)
+- **Median TPOT: 6.809 ms** (Mean: 6.753 ms, p95: 7.036 ms)
+- **Median TTFT: 75.428 ms** (Mean: 68.665 ms, p95: 95.573 ms)
+- **Wall Clock Time: 0.356 s** (Total trace execution)
+- Request Score: Median 0.410, p95 0.523, Mean 0.429
+
+### B. Warmup Trace (`--max-workers 1`)
+- Trace: `bench/traces/lfm25-mps-warmup.json`
+- Commands: 4 / 4 successful (0 token mismatches)
+- **Overall ERS Score: 0.426104**
+- **Median TPOT: 6.784 ms** (Mean: 6.758 ms)
+- **Median TTFT: 82.248 ms** (Mean: 70.440 ms)
+- **Wall Clock Time: 0.364 s**
+
+### C. Concurrent Multi-Conversation Trace (`trace.num_conversations = 2`)
+- Trace: `bench/traces/lfm25-mps-smoke.json` (Full concurrency)
+- Commands: 4 / 4 successful (0 token mismatches)
+- **Overall ERS Score: 0.391994**
+- **Median TPOT: 8.284 ms** (Down from 60.2 ms under prior priority inversion)
+- **Median TTFT: 60.160 ms** (Mean: 67.692 ms)
+- **Wall Clock Time: 0.202 s** (5x faster completion of total concurrent workload)

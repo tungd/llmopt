@@ -354,72 +354,7 @@ let serve service options =
         Serving_queue.pop_next_batch queue ~max_batch_size:8 ~prefill_chunk_budget:512
       in
 
-      (* Execute prefill candidate if any *)
-      (match prefill_candidate_opt with
-      | None -> ()
-      | Some (req, _slice_budget) ->
-          (match Hashtbl.find_opt active_requests req.id with
-          | None -> ()
-          | Some active_req ->
-              (match req.state with
-              | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; _ } ->
-                  let is_stop =
-                    if ignore_eos then Fun.const false
-                    else Lfm_chat.is_end_token (Generation.chat service.generation)
-                  in
-                  let config_res = Generation_core.Config.create ~max_new_tokens in
-                  (match config_res with
-                  | Error err ->
-                      Printf.eprintf "stream error: %s\n%!" err;
-                      close_active_request active_req;
-                      Hashtbl.remove active_requests req.id
-                  | Ok config ->
-                      let init_res =
-                        Generation.Driver.State.init
-                          (Generation.engine service.generation)
-                          ~config ~is_stop ~prompt:prompt_tokens
-                      in
-                      (match init_res with
-                      | Error err ->
-                          Printf.eprintf "stream error: %s\n%!" err;
-                          close_active_request active_req;
-                          Hashtbl.remove active_requests req.id
-                      | Ok (driver_state, first_token) ->
-                          active_req.driver_state <- Some driver_state;
-                          let cached_count = Generation.Driver.State.cached_prompt_tokens driver_state in
-                          let active_req = { active_req with cached_prompt_tokens = cached_count } in
-                          Hashtbl.replace active_requests req.id active_req;
-                          let alloc_count = Array.length prompt_tokens + 1 in
-                          ignore (Serving_queue.reserve_tokens queue alloc_count);
-                          active_req.allocated_tokens <- alloc_count;
-                          (match emit_token active_req first_token with
-                          | Error err ->
-                              Printf.eprintf "stream emit error: %s\n%!" err;
-                              Serving_queue.release_tokens queue active_req.allocated_tokens;
-                              close_active_request active_req;
-                              Hashtbl.remove active_requests req.id
-                          | Ok () ->
-                              if Generation.Driver.State.is_finished driver_state then (
-                                (match Generation.Driver.State.result driver_state with
-                                | Some r ->
-                                    let reason = Generation_core.Result.finish_reason r in
-                                    let comp_count = Array.length (Generation_core.Result.completion_tokens r) in
-                                    emit_finish active_req ~finish_reason:reason ~completion_count:comp_count
-                                | None -> ());
-                                Serving_queue.release_tokens queue active_req.allocated_tokens;
-                                Hashtbl.remove active_requests req.id
-                              ) else (
-                                req.state <- Serving_queue.Active_decode {
-                                  prompt_length = Array.length prompt_tokens;
-                                  generated_tokens = [ first_token ];
-                                  max_new_tokens;
-                                  ignore_eos;
-                                };
-                                Serving_queue.enqueue queue req
-                              ))))
-              | _ -> ())));
-
-      (* Execute decode batch *)
+      (* Execute decode batch FIRST *)
       List.iter
         (fun (req : Serving_queue.request) ->
           match Hashtbl.find_opt active_requests req.id with
@@ -482,7 +417,76 @@ let serve service options =
                       Serving_queue.release_tokens queue active_req.allocated_tokens;
                       Hashtbl.remove active_requests req.id
                   | Ok (None, None) -> ()))
-        batch_decodes
+        batch_decodes;
+
+      (* Execute prefill candidate only when no active decodes are running *)
+      (match prefill_candidate_opt with
+      | None -> ()
+      | Some (req, _slice_budget) ->
+          if batch_decodes <> [] then
+            (* Defer prefill until active decodes finish to prevent TPOT starvation *)
+            Serving_queue.enqueue queue req
+          else
+            (match Hashtbl.find_opt active_requests req.id with
+            | None -> ()
+            | Some active_req ->
+                (match req.state with
+                | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; _ } ->
+                    let is_stop =
+                      if ignore_eos then Fun.const false
+                      else Lfm_chat.is_end_token (Generation.chat service.generation)
+                    in
+                    let config_res = Generation_core.Config.create ~max_new_tokens in
+                    (match config_res with
+                    | Error err ->
+                        Printf.eprintf "stream error: %s\n%!" err;
+                        close_active_request active_req;
+                        Hashtbl.remove active_requests req.id
+                    | Ok config ->
+                        let init_res =
+                          Generation.Driver.State.init
+                            (Generation.engine service.generation)
+                            ~config ~is_stop ~prompt:prompt_tokens
+                        in
+                        (match init_res with
+                        | Error err ->
+                            Printf.eprintf "stream error: %s\n%!" err;
+                            close_active_request active_req;
+                            Hashtbl.remove active_requests req.id
+                        | Ok (driver_state, first_token) ->
+                            active_req.driver_state <- Some driver_state;
+                            let cached_count = Generation.Driver.State.cached_prompt_tokens driver_state in
+                            let active_req = { active_req with cached_prompt_tokens = cached_count } in
+                            Hashtbl.replace active_requests req.id active_req;
+                            let alloc_count = Array.length prompt_tokens + 1 in
+                            ignore (Serving_queue.reserve_tokens queue alloc_count);
+                            active_req.allocated_tokens <- alloc_count;
+                            (match emit_token active_req first_token with
+                            | Error err ->
+                                Printf.eprintf "stream emit error: %s\n%!" err;
+                                Serving_queue.release_tokens queue active_req.allocated_tokens;
+                                close_active_request active_req;
+                                Hashtbl.remove active_requests req.id
+                            | Ok () ->
+                                if Generation.Driver.State.is_finished driver_state then (
+                                  (match Generation.Driver.State.result driver_state with
+                                  | Some r ->
+                                      let reason = Generation_core.Result.finish_reason r in
+                                      let comp_count = Array.length (Generation_core.Result.completion_tokens r) in
+                                      emit_finish active_req ~finish_reason:reason ~completion_count:comp_count
+                                  | None -> ());
+                                  Serving_queue.release_tokens queue active_req.allocated_tokens;
+                                  Hashtbl.remove active_requests req.id
+                                ) else (
+                                  req.state <- Serving_queue.Active_decode {
+                                    prompt_length = Array.length prompt_tokens;
+                                    generated_tokens = [ first_token ];
+                                    max_new_tokens;
+                                    ignore_eos;
+                                  };
+                                  Serving_queue.enqueue queue req
+                                ))))
+                | _ -> ())))
     );
 
     step_server_loop ()
