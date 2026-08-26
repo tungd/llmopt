@@ -19,9 +19,11 @@ val fuse_q8_silu : Ir.Graph.t -> Ir.Graph.t
 val fuse_q8_add : Ir.Graph.t -> Ir.Graph.t
 val fuse_q8_mul_add : Ir.Graph.t -> Ir.Graph.t
 val fuse_dual_linear_swiglu : Ir.Graph.t -> Ir.Graph.t
+val fuse_swiglu_ffn : Ir.Graph.t -> Ir.Graph.t
 val discover_swiglu_ffn : Ir.Graph.t -> (Kernel_ir.t list, string) result
 val fuse_qkv_linear : Ir.Graph.t -> Ir.Graph.t
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
+val fuse_short_conv_block : Ir.Graph.t -> Ir.Graph.t
 val fuse_linear_residual_norm : Ir.Graph.t -> Ir.Graph.t
 val fuse_lm_head_argmax : Ir.Graph.t -> Ir.Graph.t
 val co_schedule : Ir.Graph.t -> Ir.Graph.t

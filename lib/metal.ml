@@ -947,6 +947,225 @@ let q8_lm_head_argmax_source =
   ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_extra_f32"
       ~value_type:"float" ~weight_cast:"float" ~extra_output:true
 
+let q8_fused_swiglu_ffn_kernel ~name ~value_type ~weight_cast =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const " ^ value_type ^ "* residual [[buffer(1)]],\n"
+  ^ "    device const char* weight1 [[buffer(2)]],\n"
+  ^ "    device const half* scale1 [[buffer(3)]],\n"
+  ^ "    device const char* weight3 [[buffer(4)]],\n"
+  ^ "    device const half* scale3 [[buffer(5)]],\n"
+  ^ "    device const char* weight2 [[buffer(6)]],\n"
+  ^ "    device const half* scale2 [[buffer(7)]],\n"
+  ^ "    device const half* norm_weight [[buffer(8)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(9)]],\n"
+  ^ "    constant Q8SwiGLUFFNParams& params [[buffer(10)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
+  ^ "  const uint row = group_position.x;\n"
+  ^ "  if (row >= params.m) return;\n"
+  ^ "  const uint input_base = row * params.k;\n"
+  ^ "  const uint output_base = row * params.k;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
+  ^ "    const float v = float(input[input_base + i]);\n"
+  ^ "    square_sum += v * v;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint g = 0; g < 8; ++g) total += partial_sums[g];\n"
+  ^ "    partial_sums[0] = rsqrt(total / float(params.k) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  const float inv = partial_sums[0];\n"
+  ^ "  threadgroup half cached_norm[2048];\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
+  ^ "    cached_norm[i] = half(float(input[input_base + i]) * float(norm_weight[i]) * inv);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  threadgroup half cached_prod[8192];\n"
+  ^ "  const uint vectorized_k = params.k & ~3u;\n"
+  ^ "  for (uint c = tid; c < params.n; c += 256) {\n"
+  ^ "    const uint w1_base = c * params.k;\n"
+  ^ "    const uint w3_base = c * params.k;\n"
+  ^ "    float acc1 = 0.0f;\n"
+  ^ "    float acc3 = 0.0f;\n"
+  ^ "    for (uint i = 0; i < vectorized_k; i += 4) {\n"
+  ^ "      device const char4* w1_ptr = reinterpret_cast<device const char4*>(weight1 + w1_base + i);\n"
+  ^ "      device const char4* w3_ptr = reinterpret_cast<device const char4*>(weight3 + w3_base + i);\n"
+  ^ "      const char4 w1_v = *w1_ptr;\n"
+  ^ "      const char4 w3_v = *w3_ptr;\n"
+  ^ "      const float n0 = float(cached_norm[i + 0]);\n"
+  ^ "      const float n1 = float(cached_norm[i + 1]);\n"
+  ^ "      const float n2 = float(cached_norm[i + 2]);\n"
+  ^ "      const float n3 = float(cached_norm[i + 3]);\n"
+  ^ "      acc1 += n0 * float(w1_v.x) + n1 * float(w1_v.y) + n2 * float(w1_v.z) + n3 * float(w1_v.w);\n"
+  ^ "      acc3 += n0 * float(w3_v.x) + n1 * float(w3_v.y) + n2 * float(w3_v.z) + n3 * float(w3_v.w);\n"
+  ^ "    }\n"
+  ^ "    for (uint i = vectorized_k; i < params.k; ++i) {\n"
+  ^ "      const float n_v = float(cached_norm[i]);\n"
+  ^ "      acc1 += n_v * float(weight1[w1_base + i]);\n"
+  ^ "      acc3 += n_v * float(weight3[w3_base + i]);\n"
+  ^ "    }\n"
+  ^ "    acc1 *= float(scale1[c]);\n"
+  ^ "    acc3 *= float(scale3[c]);\n"
+  ^ "    const float silu = acc1 / (1.0f + exp(-acc1));\n"
+  ^ "    cached_prod[c] = half(silu * acc3);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  const uint vectorized_n = params.n & ~3u;\n"
+  ^ "  for (uint o = tid; o < params.k; o += 256) {\n"
+  ^ "    const uint w2_base = o * params.n;\n"
+  ^ "    float acc2 = 0.0f;\n"
+  ^ "    for (uint j = 0; j < vectorized_n; j += 4) {\n"
+  ^ "      device const char4* w2_ptr = reinterpret_cast<device const char4*>(weight2 + w2_base + j);\n"
+  ^ "      const char4 w2_v = *w2_ptr;\n"
+  ^ "      acc2 += float(cached_prod[j + 0]) * float(w2_v.x)\n"
+  ^ "            + float(cached_prod[j + 1]) * float(w2_v.y)\n"
+  ^ "            + float(cached_prod[j + 2]) * float(w2_v.z)\n"
+  ^ "            + float(cached_prod[j + 3]) * float(w2_v.w);\n"
+  ^ "    }\n"
+  ^ "    for (uint j = vectorized_n; j < params.n; ++j) {\n"
+  ^ "      acc2 += float(cached_prod[j]) * float(weight2[w2_base + j]);\n"
+  ^ "    }\n"
+  ^ "    acc2 *= float(scale2[o]);\n"
+  ^ "    acc2 += float(residual[input_base + o]);\n"
+  ^ "    output[output_base + o] = " ^ value_type ^ "(acc2);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let q8_fused_swiglu_ffn_source =
+  "\nstruct Q8SwiGLUFFNParams { uint m; uint n; uint k; float epsilon; };\n\n"
+  ^ q8_fused_swiglu_ffn_kernel ~name:"llmopt_q8_fused_swiglu_ffn_f16"
+      ~value_type:"half" ~weight_cast:"half"
+  ^ q8_fused_swiglu_ffn_kernel ~name:"llmopt_q8_fused_swiglu_ffn_f32"
+      ~value_type:"float" ~weight_cast:"float"
+
+let q8_fused_short_conv_kernel ~name ~value_type ~weight_cast =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const " ^ value_type ^ "* residual [[buffer(1)]],\n"
+  ^ "    device const char* weight_in [[buffer(2)]],\n"
+  ^ "    device const half* scale_in [[buffer(3)]],\n"
+  ^ "    device half* conv_state [[buffer(4)]],\n"
+  ^ "    device const half* conv_weight [[buffer(5)]],\n"
+  ^ "    device const char* weight_out [[buffer(6)]],\n"
+  ^ "    device const half* scale_out [[buffer(7)]],\n"
+  ^ "    device const half* norm_weight [[buffer(8)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(9)]],\n"
+  ^ "    constant Q8ShortConvParams& params [[buffer(10)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
+  ^ "  const uint row = group_position.x;\n"
+  ^ "  if (row >= params.m) return;\n\n"
+  ^ "  threadgroup half cached_norm[2048];\n"
+  ^ "  threadgroup half cached_in_proj[6144];\n"
+  ^ "  threadgroup half cached_conv_out[2048];\n"
+  ^ "  threadgroup float partial_sums[8];\n\n"
+  ^ "  const uint input_base = row * params.k;\n"
+  ^ "  const uint output_base = row * params.k;\n"
+  ^ "  const uint state_row_base = row * params.channels * params.window;\n\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
+  ^ "    const float val = float(input[input_base + i]);\n"
+  ^ "    square_sum += val * val;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  if (lane == 0) {\n"
+  ^ "    partial_sums[simdgroup] = square_sum;\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint s = 0; s < 8; ++s) {\n"
+  ^ "      total += partial_sums[s];\n"
+  ^ "    }\n"
+  ^ "    partial_sums[0] = rsqrt(total / float(params.k) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  const float inv = partial_sums[0];\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
+  ^ "    cached_norm[i] = half(float(input[input_base + i]) * float(norm_weight[i]) * inv);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  const uint in_proj_rows = 3 * params.channels;\n"
+  ^ "  for (uint r = tid; r < in_proj_rows; r += 256) {\n"
+  ^ "    const uint weight_base = r * params.k;\n"
+  ^ "    device const char4* w_vec = reinterpret_cast<device const char4*>(weight_in + weight_base);\n"
+  ^ "    float acc = 0.0f;\n"
+  ^ "    const uint num_vec4 = params.k / 4;\n"
+  ^ "    for (uint v = 0; v < num_vec4; ++v) {\n"
+  ^ "      const char4 w = w_vec[v];\n"
+  ^ "      const uint base = v * 4;\n"
+  ^ "      acc += float(w.x) * float(cached_norm[base + 0])\n"
+  ^ "           + float(w.y) * float(cached_norm[base + 1])\n"
+  ^ "           + float(w.z) * float(cached_norm[base + 2])\n"
+  ^ "           + float(w.w) * float(cached_norm[base + 3]);\n"
+  ^ "    }\n"
+  ^ "    for (uint i = num_vec4 * 4; i < params.k; ++i) {\n"
+  ^ "      acc += float(weight_in[weight_base + i]) * float(cached_norm[i]);\n"
+  ^ "    }\n"
+  ^ "    acc *= float(scale_in[r]);\n"
+  ^ "    cached_in_proj[r] = half(acc);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  for (uint c = tid; c < params.channels; c += 256) {\n"
+  ^ "    const float x0 = float(cached_in_proj[c]);\n"
+  ^ "    const float x1 = float(cached_in_proj[params.channels + c]);\n"
+  ^ "    const float x2 = float(cached_in_proj[2 * params.channels + c]);\n"
+  ^ "    const float g = x0 * x2;\n"
+  ^ "    const uint state_base = state_row_base + c * 3;\n"
+  ^ "    const float s0 = float(conv_state[state_base + 1]);\n"
+  ^ "    const float s1 = float(conv_state[state_base + 2]);\n"
+  ^ "    const float s2 = g;\n"
+  ^ "    conv_state[state_base + 0] = half(s0);\n"
+  ^ "    conv_state[state_base + 1] = half(s1);\n"
+  ^ "    conv_state[state_base + 2] = half(s2);\n"
+  ^ "    const uint weight_base = c * 3;\n"
+  ^ "    const float w0 = float(conv_weight[weight_base + 0]);\n"
+  ^ "    const float w1 = float(conv_weight[weight_base + 1]);\n"
+  ^ "    const float w2 = float(conv_weight[weight_base + 2]);\n"
+  ^ "    const float conv_out = s0 * w0 + s1 * w1 + s2 * w2;\n"
+  ^ "    cached_conv_out[c] = half(x1 * conv_out);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  for (uint o = tid; o < params.k; o += 256) {\n"
+  ^ "    const uint weight_base = o * params.channels;\n"
+  ^ "    device const char4* w_vec = reinterpret_cast<device const char4*>(weight_out + weight_base);\n"
+  ^ "    float acc = 0.0f;\n"
+  ^ "    const uint num_vec4 = params.channels / 4;\n"
+  ^ "    for (uint v = 0; v < num_vec4; ++v) {\n"
+  ^ "      const char4 w = w_vec[v];\n"
+  ^ "      const uint base = v * 4;\n"
+  ^ "      acc += float(w.x) * float(cached_conv_out[base + 0])\n"
+  ^ "           + float(w.y) * float(cached_conv_out[base + 1])\n"
+  ^ "           + float(w.z) * float(cached_conv_out[base + 2])\n"
+  ^ "           + float(w.w) * float(cached_conv_out[base + 3]);\n"
+  ^ "    }\n"
+  ^ "    for (uint i = num_vec4 * 4; i < params.channels; ++i) {\n"
+  ^ "      acc += float(weight_out[weight_base + i]) * float(cached_conv_out[i]);\n"
+  ^ "    }\n"
+  ^ "    acc *= float(scale_out[o]);\n"
+  ^ "    acc += float(residual[input_base + o]);\n"
+  ^ "    output[output_base + o] = " ^ value_type ^ "(acc);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let q8_fused_short_conv_source =
+  "\nstruct Q8ShortConvParams { uint m; uint channels; uint window; uint k; float epsilon; };\n\n"
+  ^ q8_fused_short_conv_kernel ~name:"llmopt_q8_fused_short_conv_f16"
+      ~value_type:"half" ~weight_cast:"half"
+  ^ q8_fused_short_conv_kernel ~name:"llmopt_q8_fused_short_conv_f32"
+      ~value_type:"float" ~weight_cast:"float"
+
 let q8_source =
   "\nconstant uint Q8_TILE = 64;\n\n"
   ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
@@ -1280,10 +1499,98 @@ let q8_parameterized_source =
          ^ q8_kernel_parameterized_f32 ~tile_m ~tile_n ~tile_k)
   |> String.concat "\n"
 
+let q8_gemm_simdgroup_kernel ~name ~value_type ~matrix_type ~zero_lit =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const char* weight [[buffer(1)]],\n"
+  ^ "    device const " ^ value_type ^ "* scale [[buffer(2)]],\n"
+  ^ "    device const " ^ value_type ^ "* bias [[buffer(3)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(4)]],\n"
+  ^ "    constant Q8Params& params [[buffer(5)]],\n"
+  ^ "    uint3 group_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simd_lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint m_block = group_position.y * 8;\n"
+  ^ "  const uint n_block = group_position.x * 8;\n"
+  ^ "  if (m_block >= params.m || n_block >= params.n) return;\n\n"
+  ^ "  threadgroup " ^ value_type ^ " a_tile[8][8];\n"
+  ^ "  threadgroup " ^ value_type ^ " b_tile[8][8];\n\n"
+  ^ "  " ^ matrix_type ^ " c_mat = make_filled_simdgroup_matrix<" ^ value_type ^ ", 8, 8>(" ^ zero_lit ^ ");\n\n"
+  ^ "  for (uint k_base = 0; k_base < params.k; k_base += 8) {\n"
+  ^ "    const uint idx0 = simd_lane * 2;\n"
+  ^ "    const uint idx1 = simd_lane * 2 + 1;\n"
+  ^ "    const uint r0 = idx0 / 8;\n"
+  ^ "    const uint c0 = idx0 % 8;\n"
+  ^ "    const uint r1 = idx1 / 8;\n"
+  ^ "    const uint c1 = idx1 % 8;\n\n"
+  ^ "    const uint in_r0 = m_block + r0;\n"
+  ^ "    const uint in_c0 = k_base + c0;\n"
+  ^ "    a_tile[r0][c0] = (in_r0 < params.m && in_c0 < params.k) ? input[in_r0 * params.k + in_c0] : " ^ zero_lit ^ ";\n"
+  ^ "    const uint in_r1 = m_block + r1;\n"
+  ^ "    const uint in_c1 = k_base + c1;\n"
+  ^ "    a_tile[r1][c1] = (in_r1 < params.m && in_c1 < params.k) ? input[in_r1 * params.k + in_c1] : " ^ zero_lit ^ ";\n\n"
+  ^ "    const uint w_n0 = n_block + c0;\n"
+  ^ "    const uint w_k0 = k_base + r0;\n"
+  ^ "    b_tile[r0][c0] = (w_n0 < params.n && w_k0 < params.k) ? " ^ value_type ^ "(float(weight[w_n0 * params.k + w_k0])) : " ^ zero_lit ^ ";\n"
+  ^ "    const uint w_n1 = n_block + c1;\n"
+  ^ "    const uint w_k1 = k_base + r1;\n"
+  ^ "    b_tile[r1][c1] = (w_n1 < params.n && w_k1 < params.k) ? " ^ value_type ^ "(float(weight[w_n1 * params.k + w_k1])) : " ^ zero_lit ^ ";\n\n"
+  ^ "    simdgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "    " ^ matrix_type ^ " a_mat;\n"
+  ^ "    " ^ matrix_type ^ " b_mat;\n"
+  ^ "    simdgroup_load(a_mat, &a_tile[0][0], 8);\n"
+  ^ "    simdgroup_load(b_mat, &b_tile[0][0], 8);\n"
+  ^ "    simdgroup_multiply_accumulate(c_mat, a_mat, b_mat, c_mat);\n\n"
+  ^ "    simdgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  }\n\n"
+  ^ "  threadgroup " ^ value_type ^ " c_tile[8][8];\n"
+  ^ "  simdgroup_store(c_mat, &c_tile[0][0], 8);\n"
+  ^ "  simdgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  const uint idx0 = simd_lane * 2;\n"
+  ^ "  const uint idx1 = simd_lane * 2 + 1;\n"
+  ^ "  const uint r0 = idx0 / 8;\n"
+  ^ "  const uint c0 = idx0 % 8;\n"
+  ^ "  const uint r1 = idx1 / 8;\n"
+  ^ "  const uint c1 = idx1 % 8;\n\n"
+  ^ "  const uint out_m0 = m_block + r0;\n"
+  ^ "  const uint out_n0 = n_block + c0;\n"
+  ^ "  if (out_m0 < params.m && out_n0 < params.n) {\n"
+  ^ "    " ^ value_type ^ " acc = c_tile[r0][c0] * scale[out_n0];\n"
+  ^ "    if (params.has_bias) acc += bias[out_n0];\n"
+  ^ "    output[out_m0 * params.n + out_n0] = acc;\n"
+  ^ "  }\n\n"
+  ^ "  const uint out_m1 = m_block + r1;\n"
+  ^ "  const uint out_n1 = n_block + c1;\n"
+  ^ "  if (out_m1 < params.m && out_n1 < params.n) {\n"
+  ^ "    " ^ value_type ^ " acc = c_tile[r1][c1] * scale[out_n1];\n"
+  ^ "    if (params.has_bias) acc += bias[out_n1];\n"
+  ^ "    output[out_m1 * params.n + out_n1] = acc;\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let q8_gemm_simdgroup_source =
+  "\n"
+  ^ q8_gemm_simdgroup_kernel ~name:"llmopt_q8_gemm_simdgroup_f16"
+      ~value_type:"half" ~matrix_type:"simdgroup_half8x8" ~zero_lit:"0.0h"
+  ^ q8_gemm_simdgroup_kernel ~name:"llmopt_q8_gemm_simdgroup_f32"
+      ~value_type:"float" ~matrix_type:"simdgroup_float8x8" ~zero_lit:"0.0f"
+
+let q8_gemm_simdgroup_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_q8_gemm_simdgroup_f16"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_q8_gemm_simdgroup_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
 let q8_source = q8_source ^ "\n" ^ q8_dual_linear_source ^ "\n"
   ^ q8_qkv_linear_source ^ "\n"
   ^ q8_linear_add_norm_source ^ "\n"
   ^ q8_lm_head_argmax_source ^ "\n"
+  ^ q8_fused_swiglu_ffn_source ^ "\n"
+  ^ q8_fused_short_conv_source ^ "\n"
+  ^ q8_gemm_simdgroup_source ^ "\n"
   ^ q8_parameterized_source
 
 let q8_parameterized_entries =
@@ -1304,6 +1611,7 @@ let q8_parameterized_entries =
   |> List.flatten
 
 let q8_all_entries =
+  q8_gemm_simdgroup_entries @
   [ kernel_entry_with_tile ~tile:(16, 16, 64) ~name:"llmopt_q8_linear"
       ~operation:Kernel_abi.Operation.Q8_linear
       ~input_dtype:Ir.Dtype.Float16
@@ -1495,6 +1803,26 @@ let q8_lm_head_argmax_entries =
       ~name:"llmopt_q8_lm_head_argmax_extra_f32"
       ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32 ]
+
+let q8_fused_swiglu_ffn_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_swiglu_ffn_f16"
+      ~operation:Kernel_abi.Operation.Q8_fused_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_swiglu_ffn_f32"
+      ~operation:Kernel_abi.Operation.Q8_fused_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
+let q8_fused_short_conv_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_short_conv_f16"
+      ~operation:Kernel_abi.Operation.Q8_fused_short_conv
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_short_conv_f32"
+      ~operation:Kernel_abi.Operation.Q8_fused_short_conv
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
 let cache_source =
   {|
@@ -3172,11 +3500,26 @@ let has_q8_qkv_linear graph =
          | Ir.Op.Q8_qkv_linear _ -> true
          | _ -> false)
 
+let has_q8_fused_swiglu_ffn graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_fused_swiglu_ffn _ -> true
+         | _ -> false)
+
+let has_q8_fused_short_conv graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_fused_short_conv _ -> true
+         | _ -> false)
+
 let has_q8 graph =
   has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
   || has_q8_linear_mul_add graph || has_q8_linear_add_norm graph
   || has_q8_dual_linear graph || has_q8_qkv_linear graph
-  || has_q8_lm_head_argmax graph
+  || has_q8_lm_head_argmax graph || has_q8_fused_swiglu_ffn graph
+  || has_q8_fused_short_conv graph
 
 let q8_entries graph =
   q8_all_entries
@@ -3199,6 +3542,16 @@ let q8_entries graph =
   let entries =
     if has_q8_linear_add_norm graph then
       entries @ q8_linear_add_norm_entries
+    else entries
+  in
+  let entries =
+    if has_q8_fused_swiglu_ffn graph then
+      entries @ q8_fused_swiglu_ffn_entries
+    else entries
+  in
+  let entries =
+    if has_q8_fused_short_conv graph then
+      entries @ q8_fused_short_conv_entries
     else entries
   in
   if has_q8_lm_head_argmax graph then
@@ -3250,7 +3603,7 @@ let lower_primary graph =
       let output_name = input_name graph output in
       let source =
         Printf.sprintf
-          "#include <metal_stdlib>\nusing namespace metal;\n\n"
+          "#include <metal_stdlib>\n#include <metal_matrix>\nusing namespace metal;\n\n"
           ^ "constant uint TILE = 16;\n\n"
           ^ "struct MatmulParams { uint m; uint n; uint k; };\n\n"
           ^ "kernel void llmopt_matmul(\n"
@@ -3267,14 +3620,13 @@ let lower_primary graph =
           ^ "  for (uint base = 0; base < params.k; base += TILE) {\n"
           ^ "    a_tile[tid.y][tid.x] = (row < params.m && base + tid.x < params.k)\n"
           ^ "        ? a[row * params.k + base + tid.x] : 0.0f;\n"
-          ^ "    b_tile[tid.y][tid.x] = (col < params.n && base + tid.y < params.k)\n"
+          ^ "    b_tile[tid.y][tid.x] = (base + tid.y < params.k && col < params.n)\n"
           ^ "        ? b[(base + tid.y) * params.n + col] : 0.0f;\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-          ^ "    for (uint inner = 0; inner < TILE; ++inner) acc += a_tile[tid.y][inner] * b_tile[inner][tid.x];\n"
+          ^ "    for (uint i = 0; i < TILE; ++i) acc += a_tile[tid.y][i] * b_tile[i][tid.x];\n"
           ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
           ^ "  }\n"
-          ^ "  if (row < params.m && col < params.n)\n"
-          ^ "    c[row * params.n + col] = acc;\n"
+          ^ "  if (row < params.m && col < params.n) c[row * params.n + col] = acc;\n"
           ^ "}\n"
       in
       ignore (a_name, b_name, output_name);
@@ -3292,7 +3644,7 @@ let lower_primary graph =
       let output_name = input_name graph output in
       let source =
         Printf.sprintf
-          "#include <metal_stdlib>\nusing namespace metal;\n\n"
+          "#include <metal_stdlib>\n#include <metal_matrix>\nusing namespace metal;\n\n"
           ^ "constant uint TILE = 16;\n\n"
           ^ "struct FusedLinearParams { uint m; uint n; uint k; };\n\n"
           ^ "kernel void llmopt_fused_linear(\n"
@@ -3347,7 +3699,7 @@ let lower_primary graph =
       let bias_value = if has_bias then " + bias[col]" else "" in
       let source =
         Printf.sprintf
-          "#include <metal_stdlib>\nusing namespace metal;\n\n"
+          "#include <metal_stdlib>\n#include <metal_matrix>\nusing namespace metal;\n\n"
           ^ "constant uint TILE = 16;\n\n"
           ^ "struct LinearF32Params { uint m; uint n; uint k; };\n\n"
           ^ "kernel void llmopt_linear(\n"
@@ -3455,7 +3807,7 @@ let lower graph =
       Ok
         (Program.make
            ~source:
-             ("#include <metal_stdlib>\nusing namespace metal;\n"
+             ("#include <metal_stdlib>\n#include <metal_matrix>\nusing namespace metal;\n"
              ^ auxiliary_source)
            ~kernels:auxiliary_entries)
   | Error message -> Error message

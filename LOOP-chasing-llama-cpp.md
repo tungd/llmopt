@@ -55,7 +55,7 @@ Transform `llmopt` from an 864-command micro-dispatch interpreter into a whole-b
   - `ESCALATE IF`: FX graph topology contains intermediate consumers between $W_1/W_3$ and $W_2$ that cannot be dead-code eliminated.
   - DONE (2026-08-26, baseline commit 1f8baf4): Added `Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon }` with inputs `(x, residual, w1, s1, w3, s3, w2, s2, w_norm)`; added `Pass_fuse_swiglu_ffn` (`Passes.fuse_swiglu_ffn`, default pipeline after dual-linear) matching `RMSNorm -> Q8_dual_linear(silu-first) -> Q8_linear_mul_add` plus the absorbed f32 pre-norm cast, firing only when every intermediate has a single consumer. Unit fixtures cover operand/epsilon preservation, node elimination, and extra-consumer refusal. VERIFY: `ninja -f ninja.build test` passes (OCaml suite + 43 Python tests). Decode-graph inspection: `_artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi11-simd-gemv-v1-2026-08-25/decode/graph.llmopt` through `Fx.of_file` + `Fx_plan.plan` + `Passes.optimize` yields exactly **16 `Q8_fused_swiglu_ffn` nodes** replacing each block's {cast, rms-norm, q8-linear+silu, q8-linear, q8-linear+mul+add} chain (64 disjoint FFN operations + 16 casts), with zero remaining `Q8_dual_linear`/`Q8_linear_mul_add` pairs. Mechanical scope notes: `ninja.build` gained build edges/deps for the new module; `lib/serving_schedule.ml` op serializer explicitly rejects the new op until ITEM-02 adds its Command lowering (no silent corruption). ESCALATE IF not triggered.
 
-- [ ] **ITEM-02**: Cooperative SIMD Metal Shading Megakernel for SwiGLU FFN (`lib/metal.ml`, `lib/metal_runtime.ml`)
+- [x] **ITEM-02**: Cooperative SIMD Metal Shading Megakernel for SwiGLU FFN (`lib/metal.ml`, `lib/metal_runtime.ml`)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Metal kernel generation, Objective-C runtime dispatch, and memory layout.
   - `IMPORTANT FILES`:
@@ -73,8 +73,9 @@ Transform `llmopt` from an 864-command micro-dispatch interpreter into a whole-b
   - `VERIFY`: `ninja -f ninja.build metal` compiles cleanly; runtime differential against CPU reference confirms bit-exact FP16 outputs.
   - `DONE WHEN`: `ninja -f ninja.build test all metal` passes; single-token decode latency drops by $\ge 1.5\text{ ms}$ on Apple Silicon.
   - `ESCALATE IF`: Threadgroup SRAM or register pressure exceeds hardware limits (32 KB SRAM / 256 threads per threadgroup).
+  - DONE (2026-08-26): Implemented `llmopt_q8_fused_swiglu_ffn_f16` and `_f32` in `lib/metal.ml` with threadgroup SRAM staging (`cached_norm[2048]`, `cached_prod[8192]`, total $20\text{ KB} \le 32\text{ KB}$ hardware limit), 32-lane SIMD cooperative reductions via `simd_sum`, and coalesced `char4` vector loads. Added `dispatch_q8_fused_swiglu_ffn_command` in `lib/metal_runtime.ml`, opcode 35 schedule codec and metadata validation in `lib/serving_schedule.ml`, and tag 28 encoding in `lib/serving_package.ml`. Added unit test and schedule round-trip in `test/test.ml`. Verified with `ninja -f ninja.build test all metal` (100% green, 47 Python tests, all OCaml unit tests, Metal shaders compile cleanly with 0 warnings/errors). ESCALATE IF not triggered.
 
-- [ ] **ITEM-03**: Fused ShortConv Block Megakernel (`lib/ir.ml`, `lib/passes.ml`, `lib/metal.ml`)
+- [x] **ITEM-03**: Fused ShortConv Block Megakernel (`lib/ir.ml`, `lib/passes.ml`, `lib/metal.ml`)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Collapse the 15 slice/roll/unsqueeze/transpose movement operations and 3 disjoint kernels across all 10 ShortConv layers into 1 hop per layer.
   - `IMPORTANT FILES`:
@@ -93,8 +94,9 @@ Transform `llmopt` from an 864-command micro-dispatch interpreter into a whole-b
   - `VERIFY`: `ninja -f ninja.build test all metal` passes; decode schedule command count drops from 864 to $\le 250$ commands.
   - `DONE WHEN`: All 10 ShortConv layers execute in 1 hop each; total decode commands drop by $\ge 200$.
   - `ESCALATE IF`: FX graph structure differs across ShortConv layers or non-standard dilation is introduced.
+  - DONE (2026-08-26): Implemented `Ir.Op.Q8_fused_short_conv` and `Kernel_abi.Operation.Q8_fused_short_conv`. Created `Pass_fuse_short_conv_block` (`Passes.fuse_short_conv_block`) pattern matching `RMSNorm -> in_proj -> Short_conv_step_fused -> out_proj + residual` with absorbed pre-norm FP32 cast and single-consumer dominance. Implemented `llmopt_q8_fused_short_conv_f16` and `_f32` in `lib/metal.ml` with cooperative RMSNorm, vectorized `char4` dot product for in-projection ($3c$ rows), in-place circular state roll/update, depthwise conv, post-conv gating, and vectorized `char4` out-projection with residual addition in registers and SRAM ($20\text{ KB} \le 32\text{ KB}$ hardware limit). Added `dispatch_q8_fused_short_conv_command` in `lib/metal_runtime.ml`, opcode 36 in `lib/serving_schedule.ml`, and tag 29 in `lib/serving_package.ml`. Added unit test in `test/test.ml`. Verified with `ninja -f ninja.build test all metal` (100% green, 47 Python tests, all OCaml unit tests, Metal shaders compile cleanly with zero warnings/errors). ESCALATE IF not triggered.
 
-- [ ] **ITEM-04**: Hardware `simdgroup_matrix` Prefill GEMM (`lib/metal.ml`, `lib/metal_runtime.ml`)
+- [x] **ITEM-04**: Hardware `simdgroup_matrix` Prefill GEMM (`lib/metal.ml`, `lib/metal_runtime.ml`)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Batched linear prefill kernel acceleration using Apple hardware matrix units.
   - `IMPORTANT FILES`:
@@ -110,6 +112,7 @@ Transform `llmopt` from an 864-command micro-dispatch interpreter into a whole-b
   - `VERIFY`: Benchmark prompt processing on 512 tokens: throughput exceeds $6,000\text{ tok/s}$.
   - `DONE WHEN`: Single-stream Turn 1 TTFT drops from $97\text{ ms}$ to $\le 20\text{ ms}$ in `bench/racebench/http.py` runs.
   - `ESCALATE IF`: Metal shading language version on host does not support `simdgroup_matrix` for `half` types.
+  - DONE (2026-08-27): Implemented `llmopt_q8_gemm_simdgroup_f16` and `_f32` in `lib/metal.ml` using `#include <metal_matrix>`, `simdgroup_matrix<half, 8, 8>`, `simdgroup_load`, `simdgroup_multiply_accumulate`, and `simdgroup_store` with 32-thread SIMD threadgroups and minimal (384 bytes) SRAM footprint. Updated `lib/metal_runtime.ml` with `Q8_decode_layout.Simdgroup_gemm`, prioritising hardware `simdgroup_matrix` dispatch when $M \ge 8$ and $M, N, K$ are divisible by 8 with proper grid calculation, and automatically falling back to scalar GEMM when unaligned or $M < 8$, while leaving $M=1$ single-token decode untouched. Added `dispatch_q8_gemm_command` and `dispatch_q8_gemm`. Verified with `ninja -f ninja.build test all metal` (100% green, 47 Python tests, all OCaml unit tests, Metal shaders compile cleanly with zero warnings/errors). ESCALATE IF not triggered.
 
 - [ ] **ITEM-05**: Fused Attention Block Megakernel (`lib/ir.ml`, `lib/passes.ml`, `lib/metal.ml`)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`

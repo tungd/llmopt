@@ -1963,7 +1963,7 @@ let () =
     (Serving_schedule.q8_selection q8_schedule_roundtrip ~node_id:q8_node_id
     = Some q8_selection)
     "Q8 cost-model selection survives schedule round trip";
-  expect (List.length q8_entries = 22) "Q8 Metal kernel ABI entries";
+  expect (List.length q8_entries = 24) "Q8 Metal kernel ABI entries";
   List.iter
     (fun (tile_m, tile_n, tile_k) ->
       let name =
@@ -5066,6 +5066,334 @@ let () =
   let blocked_regions = Passes.discover_swiglu_ffn swiglu_ffn_g |> expect_ok in
   expect (blocked_regions = [])
     "FFN fusion refuses blocks whose intermediates have extra consumers";
+
+  (* fuse_swiglu_ffn Q8 rewrite and schedule round-trip test *)
+  let q8_swiglu_ffn_g = Ir.Graph.create () in
+  let q8_swiglu_ffn_input =
+    Ir.Graph.tensor_input q8_swiglu_ffn_g ~name:"q8_swiglu_ffn_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_swiglu_ffn_residual =
+    Ir.Graph.tensor_input q8_swiglu_ffn_g ~name:"q8_swiglu_ffn_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_ffn_weight name rows columns =
+    Ir.Graph.tensor_input q8_swiglu_ffn_g ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ rows; columns ]) ~dtype:Ir.Dtype.Int8
+  in
+  let q8_ffn_scale name length =
+    Ir.Graph.tensor_input q8_swiglu_ffn_g ~name ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ length ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_ffn_w1 = q8_ffn_weight "q8_ffn_w1" 128 64 in
+  let q8_ffn_s1 = q8_ffn_scale "q8_ffn_s1" 128 in
+  let q8_ffn_w3 = q8_ffn_weight "q8_ffn_w3" 128 64 in
+  let q8_ffn_s3 = q8_ffn_scale "q8_ffn_s3" 128 in
+  let q8_ffn_w2 = q8_ffn_weight "q8_ffn_w2" 64 128 in
+  let q8_ffn_s2 = q8_ffn_scale "q8_ffn_s2" 64 in
+  let q8_ffn_norm_weight = q8_ffn_scale "q8_ffn_norm_weight" 64 in
+  let q8_ffn_cast_output =
+    Ir.Graph.fresh_tensor_value q8_swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float32
+  in
+  Ir.Graph.append q8_swiglu_ffn_g
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+    ~inputs:[ q8_swiglu_ffn_input ]
+    ~output:(Some q8_ffn_cast_output);
+  let q8_ffn_norm_output =
+    Ir.Graph.fresh_tensor_value q8_swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_swiglu_ffn_g
+    ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
+    ~inputs:[ q8_ffn_cast_output; q8_ffn_norm_weight ]
+    ~output:(Some q8_ffn_norm_output);
+  let q8_ffn_gate_output =
+    Ir.Graph.fresh_tensor_value q8_swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_swiglu_ffn_g
+    ~op:(Ir.Op.Q8_linear_silu { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ q8_ffn_norm_output; q8_ffn_w1; q8_ffn_s1 ]
+    ~output:(Some q8_ffn_gate_output);
+  let q8_ffn_up_output =
+    Ir.Graph.fresh_tensor_value q8_swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_swiglu_ffn_g
+    ~op:(Ir.Op.Q8_linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ q8_ffn_norm_output; q8_ffn_w3; q8_ffn_s3 ]
+    ~output:(Some q8_ffn_up_output);
+  let q8_ffn_block_output =
+    Ir.Graph.fresh_tensor_value q8_swiglu_ffn_g
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_swiglu_ffn_g
+    ~op:(Ir.Op.Q8_linear_mul_add { m = 1; n = 64; k = 128; bias = false })
+    ~inputs:
+      [ q8_ffn_gate_output; q8_ffn_up_output; q8_ffn_w2; q8_ffn_s2; q8_swiglu_ffn_residual ]
+    ~output:(Some q8_ffn_block_output);
+  Ir.Graph.add_output q8_swiglu_ffn_g ~name:"q8_ffn_block_output" q8_ffn_block_output;
+  let q8_swiglu_fused_block = Passes.fuse_swiglu_ffn q8_swiglu_ffn_g in
+  expect
+    (Ir.Graph.nodes q8_swiglu_fused_block
+    |> List.filter (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Q8_fused_swiglu_ffn _ -> true
+           | _ -> false)
+    |> List.length = 1)
+    "whole-block FFN fusion emits exactly one fused node";
+  expect
+    (Ir.Graph.nodes q8_swiglu_fused_block
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | Ir.Op.Q8_fused_swiglu_ffn { m = 1; n = 128; k = 64; epsilon },
+             [ x; residual; w1; s1; w3; s3; w2; s2; norm_weight ],
+             Some output ->
+               Float.abs (epsilon -. 1e-5) < 1e-12
+               && Ir.Value.equal x q8_swiglu_ffn_input
+               && Ir.Value.equal residual q8_swiglu_ffn_residual
+               && Ir.Value.equal w1 q8_ffn_w1
+               && Ir.Value.equal s1 q8_ffn_s1
+               && Ir.Value.equal w3 q8_ffn_w3
+               && Ir.Value.equal s3 q8_ffn_s3
+               && Ir.Value.equal w2 q8_ffn_w2
+               && Ir.Value.equal s2 q8_ffn_s2
+               && Ir.Value.equal norm_weight q8_ffn_norm_weight
+               && Ir.Value.equal output q8_ffn_block_output
+           | _ -> false))
+    "fused FFN preserves every block operand and epsilon";
+  expect
+    (Ir.Graph.nodes q8_swiglu_fused_block
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Rms_norm _
+           | Ir.Op.Primitive (Ir.Primitive.Cast _)
+           | Ir.Op.Q8_linear_silu _
+           | Ir.Op.Q8_linear _
+           | Ir.Op.Q8_linear_mul_add _ ->
+               false
+           | _ -> true))
+    "fused FFN removes every replaced micro-operation";
+  expect
+    (Ir.Graph.nodes q8_swiglu_fused_block |> List.length = 11)
+    "FFN fusion replaces five chained operations with one kernel node";
+  let q8_schedule =
+    expect_ok
+      (Serving_schedule.of_graph
+         (Passes.co_schedule q8_swiglu_fused_block))
+  in
+  let q8_schedule_bytes = Serving_schedule.to_bytes q8_schedule in
+  let q8_schedule_restored =
+    expect_ok (Serving_schedule.of_bytes q8_schedule_bytes)
+  in
+  expect
+    (Serving_schedule.commands q8_schedule_restored
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_fused_swiglu_ffn _ -> true
+           | _ -> false))
+    "Q8 fused SwiGLU FFN command survives the schedule round-trip";
+
+  (* fuse_short_conv_block Q8 rewrite and schedule round-trip test *)
+  let q8_conv_block_g = Ir.Graph.create () in
+  let q8_conv_block_in =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_in"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_conv_block_res =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_res"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_conv_norm_w =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_norm_w"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_conv_w_in =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_w_in"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 192; 64 ])
+      ~dtype:Ir.Dtype.Int8
+  in
+  let q8_conv_s_in =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_s_in"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 192 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_conv_state =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_state"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64; 3 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_conv_weight =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 64; 1; 3 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_conv_w_out =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_w_out"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 64; 64 ])
+      ~dtype:Ir.Dtype.Int8
+  in
+  let q8_conv_s_out =
+    Ir.Graph.tensor_input q8_conv_block_g ~name:"q8_conv_s_out"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_conv_append op inputs shape dtype =
+    let output =
+      Ir.Graph.fresh_tensor_value q8_conv_block_g
+        ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+    in
+    Ir.Graph.append q8_conv_block_g ~op ~inputs ~output:(Some output);
+    output
+  in
+  let q8_conv_cast =
+    q8_conv_append
+      (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+      [ q8_conv_block_in ] [ 1; 64 ] Ir.Dtype.Float32
+  in
+  let q8_conv_norm_out =
+    q8_conv_append
+      (Ir.Op.Rms_norm { epsilon = 1e-5 })
+      [ q8_conv_cast; q8_conv_norm_w ] [ 1; 64 ] Ir.Dtype.Float16
+  in
+  let q8_conv_in_proj_out =
+    q8_conv_append
+      (Ir.Op.Q8_linear { m = 1; n = 192; k = 64; bias = false })
+      [ q8_conv_norm_out; q8_conv_w_in; q8_conv_s_in ] [ 1; 192 ] Ir.Dtype.Float16
+  in
+  let q8_conv_step_cfg =
+    expect_ok (Ir.Short_conv_step.create ~channels:64 ~window:3)
+  in
+  let q8_conv_step_out =
+    q8_conv_append
+      (Ir.Op.Short_conv_step_fused q8_conv_step_cfg)
+      [ q8_conv_in_proj_out; q8_conv_state; q8_conv_weight ] [ 1; 64 ] Ir.Dtype.Float16
+  in
+  let q8_conv_block_out =
+    q8_conv_append
+      (Ir.Op.Q8_linear_add { m = 1; n = 64; k = 64; bias = false })
+      [ q8_conv_step_out; q8_conv_w_out; q8_conv_s_out; q8_conv_block_res ]
+      [ 1; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.add_output q8_conv_block_g ~name:"q8_conv_final" q8_conv_block_out;
+  let q8_conv_fused = Passes.fuse_short_conv_block q8_conv_block_g in
+  expect
+    (Ir.Graph.nodes q8_conv_fused
+    |> List.filter (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Q8_fused_short_conv _ -> true
+           | _ -> false)
+    |> List.length = 1)
+    "whole-block ShortConv fusion emits exactly one fused node";
+  expect
+    (Ir.Graph.nodes q8_conv_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | Ir.Op.Q8_fused_short_conv { m = 1; channels = 64; window = 3; k = 64; epsilon },
+             [ x; residual; win; sin; cs; cw; wout; sout; nw ],
+             Some output ->
+               Float.abs (epsilon -. 1e-5) < 1e-12
+               && Ir.Value.equal x q8_conv_block_in
+               && Ir.Value.equal residual q8_conv_block_res
+               && Ir.Value.equal win q8_conv_w_in
+               && Ir.Value.equal sin q8_conv_s_in
+               && Ir.Value.equal cs q8_conv_state
+               && Ir.Value.equal cw q8_conv_weight
+               && Ir.Value.equal wout q8_conv_w_out
+               && Ir.Value.equal sout q8_conv_s_out
+               && Ir.Value.equal nw q8_conv_norm_w
+               && Ir.Value.equal output q8_conv_block_out
+           | _ -> false))
+    "fused ShortConv preserves every block operand and config";
+  expect
+    (Ir.Graph.nodes q8_conv_fused
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Rms_norm _
+           | Ir.Op.Primitive (Ir.Primitive.Cast _)
+           | Ir.Op.Q8_linear _
+           | Ir.Op.Short_conv_step _
+           | Ir.Op.Short_conv_step_fused _
+           | Ir.Op.Q8_linear_add _ ->
+               false
+           | _ -> true))
+    "fused ShortConv removes all intermediate operations";
+  let q8_conv_schedule =
+    expect_ok
+      (Serving_schedule.of_graph
+         (Passes.co_schedule q8_conv_fused))
+  in
+  let q8_conv_schedule_bytes = Serving_schedule.to_bytes q8_conv_schedule in
+  let q8_conv_schedule_restored =
+    expect_ok (Serving_schedule.of_bytes q8_conv_schedule_bytes)
+  in
+  expect
+    (Serving_schedule.commands q8_conv_schedule_restored
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_fused_short_conv _ -> true
+           | _ -> false))
+    "Q8 fused ShortConv command survives schedule round-trip";
+  let q8_conv_program = Metal.lower q8_conv_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source q8_conv_program)
+       "kernel void llmopt_q8_fused_short_conv_f16")
+    "Metal lowering emits the fused ShortConv megakernel";
+  expect
+    (Metal.Program.kernels q8_conv_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q8_fused_short_conv_f16"
+           && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_fused_short_conv))
+    "fused ShortConv retains the runtime ABI operation";
+
+  (* Hardware simdgroup_matrix Prefill GEMM test *)
+  let gemm_g = Ir.Graph.create () in
+  let gemm_in =
+    Ir.Graph.tensor_input gemm_g ~name:"gemm_in" ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 16; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let gemm_w =
+    Ir.Graph.tensor_input gemm_g ~name:"gemm_w" ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 32; 64 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let gemm_s =
+    Ir.Graph.tensor_input gemm_g ~name:"gemm_s" ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 32 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let gemm_out =
+    Ir.Graph.fresh_tensor_value gemm_g
+      ~shape:(Tensor_shape.of_ints_exn [ 16; 32 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append gemm_g
+    ~op:(Ir.Op.Q8_linear { m = 16; n = 32; k = 64; bias = false })
+    ~inputs:[ gemm_in; gemm_w; gemm_s ] ~output:(Some gemm_out);
+  Ir.Graph.add_output gemm_g ~name:"gemm_final" gemm_out;
+  let gemm_program = Metal.lower gemm_g |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source gemm_program)
+       "kernel void llmopt_q8_gemm_simdgroup_f16")
+    "Metal lowering emits the hardware simdgroup_matrix GEMM kernel";
+  expect
+    (Metal.Program.kernels gemm_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q8_gemm_simdgroup_f16"
+           && Kernel_abi.Entry.threadgroup entry = (32, 1, 1)))
+    "hardware simdgroup_matrix GEMM kernel uses 32-thread SIMD threadgroups";
 
   (* fuse_qkv_linear test *)
   let qkv_g = Ir.Graph.create () in

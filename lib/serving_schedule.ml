@@ -208,7 +208,59 @@ let validate_command seen_values command =
             else
               Error
                 (Printf.sprintf
-                   "schedule node %d Q8 multiplied-residual metadata is inconsistent"
+                    "schedule node %d Q8 multiplied-residual metadata is inconsistent"
+                    command.Command.node_id)
+        | ( Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon = _ },
+            inputs,
+            Some output ) ->
+            let metadata_matches =
+              match inputs with
+              | [ input; residual; weight1; scale1; weight3; scale3; weight2; scale2; norm_weight ] ->
+                  q8_activation_dtype (Ir.Value.dtype input)
+                  && Ir.Value.dtype residual = Ir.Value.dtype input
+                  && q8_matrix_matches ~rows:n ~columns:k ~dtype:Ir.Dtype.Int8 weight1
+                  && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 scale1
+                  && q8_matrix_matches ~rows:n ~columns:k ~dtype:Ir.Dtype.Int8 weight3
+                  && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 scale3
+                  && q8_matrix_matches ~rows:k ~columns:n ~dtype:Ir.Dtype.Int8 weight2
+                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 scale2
+                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 norm_weight
+                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+                  && Tensor_shape.equal (Ir.Value.logical_shape residual) (Ir.Value.logical_shape output)
+                  && q8_output_matches ~rows:m ~columns:k ~dtype:(Ir.Value.dtype input) output
+              | _ -> false
+            in
+            if metadata_matches then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Q8 fused SwiGLU FFN metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Q8_fused_short_conv { m; channels; window = _; k; epsilon = _ },
+            inputs,
+            Some output ) ->
+            let metadata_matches =
+              match inputs with
+              | [ input; residual; weight_in; scale_in; conv_state; conv_weight; weight_out; scale_out; norm_weight ] ->
+                  q8_activation_dtype (Ir.Value.dtype input)
+                  && Ir.Value.dtype residual = Ir.Value.dtype input
+                  && q8_matrix_matches ~rows:(3 * channels) ~columns:k ~dtype:Ir.Dtype.Int8 weight_in
+                  && q8_vector_matches ~length:(3 * channels) ~dtype:Ir.Dtype.Float16 scale_in
+                  && Ir.Value.dtype conv_state = Ir.Dtype.Float16
+                  && Ir.Value.dtype conv_weight = Ir.Dtype.Float16
+                  && q8_matrix_matches ~rows:k ~columns:channels ~dtype:Ir.Dtype.Int8 weight_out
+                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 scale_out
+                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 norm_weight
+                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+                  && Tensor_shape.equal (Ir.Value.logical_shape residual) (Ir.Value.logical_shape output)
+                  && q8_output_matches ~rows:m ~columns:k ~dtype:(Ir.Value.dtype input) output
+              | _ -> false
+            in
+            if metadata_matches then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Q8 fused ShortConv metadata is inconsistent"
                    command.Command.node_id)
         | ( Ir.Op.Q8_dual_linear
               { m; n1; n2; k; bias; silu_first = _; extra_outputs },
@@ -843,9 +895,17 @@ let q8_selection_for_command device command =
   | Ir.Op.Q8_linear_silu { m; n; k; _ }
   | Ir.Op.Q8_linear_add { m; n; k; _ }
   | Ir.Op.Q8_linear_mul_add { m; n; k; _ }
-  | Ir.Op.Q8_linear_add_norm { m; n; k; _ } ->
+  | Ir.Op.Q8_linear_add_norm { m; n; k; _ }
+  | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; _ } ->
       let selection =
         match Kernel_cost_model.select_optimal_tile ~m ~n ~k ~device with
+        | Ok selection -> selection
+        | Error _ -> Kernel_cost_model.Gemm_16x16x64
+      in
+      Some (command.Command.node_id, selection)
+  | Ir.Op.Q8_fused_short_conv { m; channels; k; _ } ->
+      let selection =
+        match Kernel_cost_model.select_optimal_tile ~m ~n:channels ~k ~device with
         | Ok selection -> selection
         | Error _ -> Kernel_cost_model.Gemm_16x16x64
       in
@@ -2414,6 +2474,14 @@ let write_op writer = function
       Binary.Writer.u8 writer 19;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
+  | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon } ->
+      Binary.Writer.u8 writer 35;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
+      Binary.Writer.float64 writer epsilon
+  | Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon } ->
+      Binary.Writer.u8 writer 36;
+      List.iter (Binary.Writer.u64 writer) [ m; channels; window; k ];
+      Binary.Writer.float64 writer epsilon
   | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
       Binary.Writer.u8 writer (if extra_outputs = [] then 26 else 32);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
@@ -2476,6 +2544,13 @@ let read_three_dimensions reader =
   let* n = Binary.Reader.u64 reader in
   let* k = Binary.Reader.u64 reader in
   Ok (m, n, k)
+
+let read_four_dimensions reader =
+  let* d0 = Binary.Reader.u64 reader in
+  let* d1 = Binary.Reader.u64 reader in
+  let* d2 = Binary.Reader.u64 reader in
+  let* d3 = Binary.Reader.u64 reader in
+  Ok (d0, d1, d2, d3)
 
 let read_op values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2704,6 +2779,18 @@ let read_op values reader =
       Ok
         (Ir.Op.Q8_qkv_linear
            { m; n_q; n_kv; k; bias; extra_outputs })
+  | 35 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon && epsilon > 0.0 then
+        Ok (Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon })
+      else Error "schedule contains a non-finite Q8 fused SwiGLU FFN epsilon"
+  | 36 ->
+      let* m, channels, window, k = read_four_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon && epsilon > 0.0 then
+        Ok (Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon })
+      else Error "schedule contains a non-finite Q8 fused ShortConv epsilon"
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

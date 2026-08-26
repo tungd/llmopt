@@ -8,6 +8,8 @@ module Operation : sig
     | Q8_linear_silu
     | Q8_linear_add
     | Q8_linear_mul_add
+    | Q8_fused_swiglu_ffn
+    | Q8_fused_short_conv
     | Q8_lm_head_argmax
     | Q8_dequantize
     | Rms_norm

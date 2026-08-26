@@ -43,6 +43,25 @@ module Resource_class = struct
           +. (Float.of_int (m * n) *. 2.0)
         in
         flops /. max 1.0 bytes
+    | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; _ } ->
+        let flops = 6.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 4.0)
+          +. (Float.of_int (3 * n * k) *. 1.0)
+          +. (Float.of_int (2 * n + 2 * k) *. 2.0)
+        in
+        flops /. max 1.0 bytes
+    | Ir.Op.Q8_fused_short_conv { m; channels; window; k; _ } ->
+        let flops =
+          (8.0 *. Float.of_int (m * k * channels))
+          +. (2.0 *. Float.of_int (m * channels * window))
+        in
+        let bytes =
+          (Float.of_int (m * k) *. 4.0)
+          +. (Float.of_int (4 * channels * k) *. 1.0)
+          +. (Float.of_int (channels * window) *. 2.0)
+        in
+        flops /. max 1.0 bytes
     | Ir.Op.Q8_lm_head_argmax { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
         let bytes =
@@ -92,6 +111,8 @@ module Resource_class = struct
     | Ir.Op.Q8_linear_silu _
     | Ir.Op.Q8_linear_add _
     | Ir.Op.Q8_linear_mul_add _
+    | Ir.Op.Q8_fused_swiglu_ffn _
+    | Ir.Op.Q8_fused_short_conv _
     | Ir.Op.Q8_linear_add_norm _
     | Ir.Op.Q8_lm_head_argmax _
     | Ir.Op.Q8_dual_linear _

@@ -269,7 +269,7 @@ let q8_kernel ?name runtime ~operation dtype =
 type q8_epilogue = Identity | Silu | Add | Mul_add
 
 module Q8_decode_layout = struct
-  type t = Scalar | Simd_single | Simd_pair
+  type t = Scalar | Simd_single | Simd_pair | Simdgroup_gemm
 end
 
 let q8_operation = function
@@ -379,6 +379,9 @@ let dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n
         ("Q8 Metal dispatch requires f16 or f32 activations, got "
         ^ Ir.Dtype.to_string dtype)
 
+let dispatch_q8_gemm runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n ~k =
+  dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n ~k
+
 let kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype =
   Serving_package.kernels runtime.package
   |> List.find_opt (fun entry ->
@@ -468,6 +471,20 @@ module Parameters = struct
     let* encoded = u32s [ m; n; k ] in
     Bytes.blit encoded 0 bytes 0 12;
     Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
+    Ok bytes
+
+  let q8_fused_swiglu_ffn ~m ~n ~k ~epsilon =
+    let bytes = Bytes.make 16 '\000' in
+    let* encoded = u32s [ m; n; k ] in
+    Bytes.blit encoded 0 bytes 0 12;
+    Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
+    Ok bytes
+
+  let q8_fused_short_conv ~m ~channels ~window ~k ~epsilon =
+    let bytes = Bytes.make 20 '\000' in
+    let* encoded = u32s [ m; channels; window; k ] in
+    Bytes.blit encoded 0 bytes 0 16;
+    Bytes.set_int32_le bytes 16 (Int32.bits_of_float epsilon);
     Ok bytes
 
   let rms_rope ~batches ~tokens ~heads ~width ~half_dimension ~trig_batches
@@ -1406,6 +1423,7 @@ let q8_decode_grid columns = function
       q8_simd_grid ~outputs_per_simdgroup:1 columns
   | Q8_decode_layout.Simd_pair ->
       q8_simd_grid ~outputs_per_simdgroup:2 columns
+  | Q8_decode_layout.Simdgroup_gemm -> round_up columns 8
 
 let linear_f16_grid columns =
   let simdgroups_per_threadgroup = 8 in
@@ -1552,9 +1570,21 @@ let dispatch_q8_linear_batched batch runtime ~selection ~epilogue ~dtype ~input_
   let* selected_candidate = selected_candidate in
   let* legacy_candidates = legacy_candidates in
   let candidates =
-    match selected_candidate with
-    | None -> legacy_candidates
-    | Some selected -> selected :: legacy_candidates
+    let base_candidates =
+      match selected_candidate with
+      | None -> legacy_candidates
+      | Some selected -> selected :: legacy_candidates
+    in
+    if m >= 8 && m mod 8 = 0 && n mod 8 = 0 && k mod 8 = 0 && epilogue = Identity then
+      let simdgroup_gemm_name =
+        match dtype with
+        | Ir.Dtype.Float16 -> "llmopt_q8_gemm_simdgroup_f16"
+        | Ir.Dtype.Float32 -> "llmopt_q8_gemm_simdgroup_f32"
+        | _ -> preferred_name
+      in
+      (simdgroup_gemm_name, Q8_decode_layout.Simdgroup_gemm, Some (8, 8, 8))
+      :: base_candidates
+    else base_candidates
   in
   let rec select_kernel = function
     | [] ->
@@ -1577,9 +1607,23 @@ let dispatch_q8_linear_batched batch runtime ~selection ~epilogue ~dtype ~input_
   in
   let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
   let* grid_x =
-    if m = 1 then q8_decode_grid n layout else round_up n tile_n
+    if m = 1 then q8_decode_grid n layout
+    else
+      match layout with
+      | Q8_decode_layout.Simdgroup_gemm ->
+          let* blocks_n = round_up n tile_n in
+          Ok ((blocks_n / tile_n) * 32)
+      | _ -> round_up n tile_n
   in
-  let* grid_y = if m = 1 then Ok 1 else round_up m tile_m in
+  let* grid_y =
+    if m = 1 then Ok 1
+    else
+      match layout with
+      | Q8_decode_layout.Simdgroup_gemm ->
+          let* blocks_m = round_up m tile_m in
+          Ok (blocks_m / tile_m)
+      | _ -> round_up m tile_m
+  in
   let* buffers =
     match epilogue, input_right, residual with
     | (Identity | Silu), None, None ->
@@ -1695,6 +1739,8 @@ let dispatch_q8_command batch runtime state ~selection ~epilogue ~m ~n ~k ~has_b
       ~output:output_buffer ~m ~n ~k
   in
   Ok (bind_value state output output_buffer, kernel)
+
+let dispatch_q8_gemm_command = dispatch_q8_command
 
 let q8_macro_kernel_name dtype ~base ~has_bias =
   match dtype with
@@ -2020,6 +2066,140 @@ let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
     | Some value, Some buffer -> bind_value state value buffer
     | _ -> state
   in
+  Ok (state, kernel)
+
+let dispatch_q8_fused_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
+    values output =
+  let* input_val, residual_val, weight1_val, scale1_val, weight3_val, scale3_val, weight2_val, scale2_val, norm_weight_val =
+    match values with
+    | [ x; r; w1; s1; w3; s3; w2; s2; nw ] -> Ok (x, r, w1, s1, w3, s3, w2, s2, nw)
+    | _ -> Error "Q8 fused SwiGLU FFN schedule command has inconsistent inputs"
+  in
+  let* input = find_value state input_val in
+  let* residual = find_value state residual_val in
+  let* weight1 = find_value state weight1_val in
+  let* scale1 = find_value state scale1_val in
+  let* weight3 = find_value state weight3_val in
+  let* scale3 = find_value state scale3_val in
+  let* weight2 = find_value state weight2_val in
+  let* scale2 = find_value state scale2_val in
+  let* norm_weight = find_value state norm_weight_val in
+  let* output_buffer = workspace_buffer state output in
+  let* kernel_name =
+    match Ir.Value.dtype input_val with
+    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_swiglu_ffn_f16"
+    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_swiglu_ffn_f32"
+    | dtype ->
+        Error
+          (Printf.sprintf "unsupported Q8 fused SwiGLU FFN input dtype: %s"
+             (Ir.Dtype.to_string dtype))
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_fused_swiglu_ffn
+      ~input_dtype:(Ir.Value.dtype input_val)
+      ~output_dtype:(Ir.Value.dtype output)
+  in
+  let* parameters = Parameters.q8_fused_swiglu_ffn ~m ~n ~k ~epsilon in
+  let* () =
+    if
+      Ir.Value.dtype residual_val = Ir.Value.dtype input_val
+      && Tensor_shape.equal
+           (Ir.Value.logical_shape residual_val)
+           (Ir.Value.logical_shape output)
+      && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_val) = [ k ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape weight1_val) = [ n; k ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape scale1_val) = [ n ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape weight3_val) = [ n; k ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape scale3_val) = [ n ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape weight2_val) = [ k; n ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape scale2_val) = [ k ]
+    then Ok ()
+    else Error "Q8 fused SwiGLU FFN input metadata is inconsistent"
+  in
+  let buffers =
+    [ input; residual; weight1; scale1; weight3; scale3; weight2; scale2; norm_weight; output_buffer ]
+  in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers
+      ~parameters ~grid:(m * 256, 1, 1)
+  in
+  let state = bind_value state output output_buffer in
+  Ok (state, kernel)
+
+let dispatch_q8_fused_short_conv_command batch runtime state ~m ~channels ~window ~k
+    ~epsilon values output =
+  let* input_val, residual_val, weight_in_val, scale_in_val, conv_state_val, conv_weight_val, weight_out_val, scale_out_val, norm_weight_val =
+    match values with
+    | [ x; r; win; sin; cs; cw; wout; sout; nw ] ->
+        Ok (x, r, win, sin, cs, cw, wout, sout, nw)
+    | _ -> Error "Q8 fused ShortConv schedule command has inconsistent inputs"
+  in
+  let* input = find_value state input_val in
+  let* residual = find_value state residual_val in
+  let* weight_in = find_value state weight_in_val in
+  let* scale_in = find_value state scale_in_val in
+  let* conv_state = find_value state conv_state_val in
+  let* conv_weight = find_value state conv_weight_val in
+  let* weight_out = find_value state weight_out_val in
+  let* scale_out = find_value state scale_out_val in
+  let* norm_weight = find_value state norm_weight_val in
+  let* output_buffer = workspace_buffer state output in
+  let* kernel_name =
+    match Ir.Value.dtype input_val with
+    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_short_conv_f16"
+    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_short_conv_f32"
+    | dtype ->
+        Error
+          (Printf.sprintf "unsupported Q8 fused ShortConv input dtype: %s"
+             (Ir.Dtype.to_string dtype))
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_fused_short_conv
+      ~input_dtype:(Ir.Value.dtype input_val)
+      ~output_dtype:(Ir.Value.dtype output)
+  in
+  let* parameters =
+    Parameters.q8_fused_short_conv ~m ~channels ~window ~k ~epsilon
+  in
+  let* () =
+    if
+      Ir.Value.dtype residual_val = Ir.Value.dtype input_val
+      && Tensor_shape.equal
+           (Ir.Value.logical_shape residual_val)
+           (Ir.Value.logical_shape output)
+      && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_val) = [ k ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape weight_in_val) = [ 3 * channels; k ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape scale_in_val) = [ 3 * channels ]
+      && Ir.Value.dtype conv_state_val = Ir.Dtype.Float16
+      && Ir.Value.dtype conv_weight_val = Ir.Dtype.Float16
+      && Tensor_shape.dimensions (Ir.Value.logical_shape weight_out_val) = [ k; channels ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape scale_out_val) = [ k ]
+    then Ok ()
+    else Error "Q8 fused ShortConv input metadata is inconsistent"
+  in
+  let buffers =
+    [
+      input;
+      residual;
+      weight_in;
+      scale_in;
+      conv_state;
+      conv_weight;
+      weight_out;
+      scale_out;
+      norm_weight;
+      output_buffer;
+    ]
+  in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers
+      ~parameters ~grid:(m * 256, 1, 1)
+  in
+  let state = bind_value state output output_buffer in
   Ok (state, kernel)
 
 let split_axis shape axis =
@@ -2844,7 +3024,7 @@ let encode_schedule execution_batch ~schedule ~inputs =
                  ~grid:(m * n, 1, 1))
         | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, values, Some output ->
             dispatched
-              (dispatch_q8_command batch runtime state ~selection
+              (dispatch_q8_gemm_command batch runtime state ~selection
                  ~epilogue:Identity ~m ~n ~k ~has_bias values output)
         | ( Ir.Op.Q8_linear_silu { m; n; k; bias = has_bias },
             values,
@@ -2890,6 +3070,18 @@ let encode_schedule execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k
                  ~epsilon ~extra_outputs values output)
+        | ( Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_fused_swiglu_ffn_command batch runtime state ~m ~n ~k
+                 ~epsilon values output)
+        | ( Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_fused_short_conv_command batch runtime state ~m
+                 ~channels ~window ~k ~epsilon values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue

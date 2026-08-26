@@ -190,3 +190,16 @@ val dispatch_q8_linear :
   n:int ->
   k:int ->
   (string, string) result
+
+val dispatch_q8_gemm :
+  t ->
+  dtype:Ir.Dtype.t ->
+  input:Buffer.t ->
+  weight:Buffer.t ->
+  scale:Buffer.t ->
+  bias:Buffer.t option ->
+  output:Buffer.t ->
+  m:int ->
+  n:int ->
+  k:int ->
+  (string, string) result
