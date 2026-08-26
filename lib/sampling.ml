@@ -34,14 +34,24 @@ module Float16_logits = struct
 end
 
 module Greedy = struct
+  let token_at bytes offset =
+    let raw = Bytes.get_int32_le bytes offset |> Int64.of_int32 in
+    Int64.logand raw 0xffff_ffffL |> Int64.to_int
+
   let on_device bytes =
     if Bytes.length bytes <> 4 then
       Error
         (Printf.sprintf "on-device greedy token must contain 4 bytes; got %d"
            (Bytes.length bytes))
-    else
-      let raw = Bytes.get_int32_le bytes 0 |> Int64.of_int32 in
-      Ok (Int64.logand raw 0xffff_ffffL |> Int64.to_int)
+    else Ok (token_at bytes 0)
+
+  let on_device_last bytes =
+    if Bytes.length bytes = 0 || Bytes.length bytes mod 4 <> 0 then
+      Error
+        (Printf.sprintf
+           "on-device greedy token rows contain %d bytes; expected a positive multiple of 4"
+           (Bytes.length bytes))
+    else Ok (token_at bytes (Bytes.length bytes - 4))
 
   let f16_last_row ~vocabulary bytes =
     let ( let* ) = Result.bind in

@@ -4281,6 +4281,12 @@ let () =
        (Sampling.Greedy.on_device (Bytes.of_string "\x1a\x00\x00\x00"))
     = 26)
     "on-device greedy sampling decodes a little-endian token id";
+  expect
+    (expect_ok
+       (Sampling.Greedy.on_device_last
+          (Bytes.of_string "\x01\x00\x00\x00\x1a\x00\x00\x00"))
+     = 26)
+    "on-device greedy sampling selects the final prefill token id";
   (match Sampling.Greedy.on_device (Bytes.of_string "\x1a\x00") with
   | Ok _ -> fail "on-device greedy sampling accepted a short token buffer"
   | Error _ -> ());
@@ -4899,7 +4905,7 @@ let () =
     ~inputs:[ lm_hidden; lm_norm_weight ] ~output:(Some lm_normalized);
   let lm_logits =
     Ir.Graph.fresh_tensor_value lm_graph
-      ~shape:(Tensor_shape.of_ints_exn [ 1; 6 ]) ~dtype:Ir.Dtype.Float16
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 6 ]) ~dtype:Ir.Dtype.Float16
   in
   Ir.Graph.append lm_graph
     ~op:(Ir.Op.Q8_linear { m = 1; n = 6; k = 4; bias = false })
@@ -4948,6 +4954,48 @@ let () =
            && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Int32))
     "LM-head argmax registers a uint32 token-id ABI";
   let _ = expect_ok (Serving_memory_plan.create lm_schedule) in
+
+  Ir.Graph.add_output lm_graph ~name:"logits" lm_logits;
+  let lm_dual_fused = Passes.fuse_lm_head_argmax lm_graph in
+  expect
+    (Ir.Graph.nodes lm_dual_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Q8_lm_head_argmax { m = 1; n = 6; k = 4; extra_outputs; _ } ->
+               List.length extra_outputs = 1
+               && Ir.Value.equal (List.hd extra_outputs) lm_logits
+           | _ -> false))
+    "LM-head fusion retains a requested full-logit secondary output";
+  expect
+    (match Ir.Graph.outputs lm_dual_fused with
+    | [ ("token_id", token_id); ("logits", logits) ] ->
+        Ir.Value.dtype token_id = Ir.Dtype.Int32
+        && Tensor_shape.dimensions (Ir.Value.logical_shape token_id) = [ 1 ]
+        && Ir.Value.equal logits lm_logits
+    | _ -> false)
+    "LM-head fusion preserves both token-id and logits graph outputs";
+  let lm_dual_schedule =
+    lm_dual_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  let lm_dual_bytes = Serving_schedule.to_bytes lm_dual_schedule in
+  expect
+    (Bytes.get_uint16_le lm_dual_bytes 8 = 16)
+    "LM-head dual-output schedules use the extended binary version";
+  expect
+    (Serving_schedule.commands lm_dual_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_lm_head_argmax { extra_outputs = [ logits ]; _ } ->
+               Ir.Value.equal logits lm_logits
+           | _ -> false))
+    "LM-head schedule round-trip retains the full-logit secondary output";
+  let lm_dual_program = Metal.lower lm_dual_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source lm_dual_program)
+       "kernel void llmopt_q8_lm_head_argmax_extra_f16")
+    "LM-head lowering emits the token-id plus logits kernel";
+  let _ = expect_ok (Serving_memory_plan.create lm_dual_schedule) in
 
   (* Serving_memory_plan concurrent disjoint tests *)
   let sched = expect_ok (Serving_schedule.of_graph diamond_g) in

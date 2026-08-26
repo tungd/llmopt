@@ -728,14 +728,17 @@ let q8_linear_add_norm_source =
   ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_extra_f32"
       ~value_type:"float" ~weight_cast:"float" ~extra_output:true
 
-let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast =
+let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast ~extra_output =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
   ^ "    device const half* norm_weight [[buffer(1)]],\n"
   ^ "    device const char* weight [[buffer(2)]],\n"
   ^ "    device const half* scale [[buffer(3)]],\n"
   ^ "    device uint* token_ids [[buffer(4)]],\n"
-  ^ "    constant Q8LmHeadParams& params [[buffer(5)]],\n"
+  ^ (if extra_output then
+       "    device half* logits [[buffer(5)]],\n"
+       ^ "    constant Q8LmHeadParams& params [[buffer(6)]],\n"
+     else "    constant Q8LmHeadParams& params [[buffer(5)]],\n")
   ^ "    uint tid [[thread_index_in_threadgroup]],\n"
   ^ "    uint lane [[thread_index_in_simdgroup]],\n"
   ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
@@ -773,6 +776,9 @@ let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast =
   ^ "      best_value = accumulator;\n"
   ^ "      best_index = col;\n"
   ^ "    }\n"
+  ^ (if extra_output then
+       "    logits[row * params.n + col] = half(accumulator);\n"
+     else "")
   ^ "  }\n"
   ^ "  best_values[tid] = best_value;\n"
   ^ "  best_indices[tid] = best_index;\n"
@@ -795,9 +801,13 @@ let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast =
 let q8_lm_head_argmax_source =
   "\nstruct Q8LmHeadParams { uint m; uint n; uint k; float epsilon; };\n\n"
   ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_f16"
-      ~value_type:"half" ~weight_cast:"half"
+      ~value_type:"half" ~weight_cast:"half" ~extra_output:false
   ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_f32"
-      ~value_type:"float" ~weight_cast:"float"
+      ~value_type:"float" ~weight_cast:"float" ~extra_output:false
+  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_extra_f16"
+      ~value_type:"half" ~weight_cast:"half" ~extra_output:true
+  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_extra_f32"
+      ~value_type:"float" ~weight_cast:"float" ~extra_output:true
 
 let q8_source =
   "\nconstant uint Q8_TILE = 64;\n\n"
@@ -1337,6 +1347,14 @@ let q8_lm_head_argmax_entries =
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_lm_head_argmax_f32"
+      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_lm_head_argmax_extra_f16"
+      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_lm_head_argmax_extra_f32"
       ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32 ]
 

@@ -16,9 +16,15 @@ type recurrent_binding = {
   state_output : string;
 }
 
+type head_contract = {
+  logits : string option;
+  token_id : string option;
+}
+
 type contract = {
   input_ids : string;
-  logits : string;
+  prefill_head : head_contract;
+  decode_head : head_contract;
   prefill_tokens : int;
   past_tokens : int;
   attentions : attention_binding list;
@@ -39,13 +45,15 @@ end
 
 module Step = struct
   type t = {
-    logits : Metal_runtime.Buffer.t;
+    logits : Metal_runtime.Buffer.t option;
+    token_id : Metal_runtime.Buffer.t option;
     tokens : int array;
     cached_prefix : int;
     kernels : string list;
   }
 
   let logits step = step.logits
+  let token_id step = step.token_id
   let tokens step = Array.copy step.tokens
   let cached_prefix step = step.cached_prefix
   let kernels step = step.kernels
@@ -152,9 +160,33 @@ let expect_names values expected label =
   let expected = List.sort String.compare expected in
   if actual = expected then Ok ()
   else
-    Error
-      (Printf.sprintf "%s names differ: expected=[%s] actual=[%s]" label
+      Error
+        (Printf.sprintf "%s names differ: expected=[%s] actual=[%s]" label
          (String.concat "," expected) (String.concat "," actual))
+
+let optional_value values ~name ~dtype ~shape label =
+  match String_map.find_opt name values with
+  | None -> Ok None
+  | Some _ ->
+      expect_value values ~name ~dtype ~shape label
+      |> Result.map (fun _ -> Some name)
+
+let validate_head values ~tokens ~vocabulary label =
+  let* logits =
+    optional_value values ~name:"logits" ~dtype:Ir.Dtype.Float16
+      ~shape:[ 1; tokens; vocabulary ] label
+  in
+  let* token_id =
+    optional_value values ~name:"token_id" ~dtype:Ir.Dtype.Int32
+      ~shape:[ tokens ] label
+  in
+  match logits, token_id with
+  | None, None ->
+      Error (label ^ " must expose logits or token_id")
+  | _ -> Ok { logits; token_id }
+
+let head_names head =
+  [ head.logits; head.token_id ] |> List.filter_map Fun.id
 
 let validate_package package label =
   if Serving_package.stage package <> Serving_package.Stage.Serving then
@@ -181,7 +213,6 @@ let validate_cache_policy config package label =
 let contract ~config ~prefill ~decode =
   let model = Serving_cache.Config.model config in
   let input_ids = "l_kwargs_input_ids_" in
-  let logits = "logits" in
   let attentions, recurrents = cache_bindings model in
   let prefill_inputs = runtime_inputs prefill in
   let decode_inputs = runtime_inputs decode in
@@ -281,13 +312,13 @@ let contract ~config ~prefill ~decode =
     in
     let* () = validate_attention attentions in
     let* () = validate_recurrent recurrents in
-    let* _ =
-      expect_value prefill_outputs ~name:logits ~dtype:Ir.Dtype.Float16
-        ~shape:[ 1; prefill_tokens; model.vocab_size ] "prefill output"
+    let* prefill_head =
+      validate_head prefill_outputs ~tokens:prefill_tokens
+        ~vocabulary:model.vocab_size "prefill output"
     in
-    let* _ =
-      expect_value decode_outputs ~name:logits ~dtype:Ir.Dtype.Float16
-        ~shape:[ 1; 1; model.vocab_size ] "decode output"
+    let* decode_head =
+      validate_head decode_outputs ~tokens:1 ~vocabulary:model.vocab_size
+        "decode output"
     in
     let expected_prefill_inputs = [ input_ids ] in
     let expected_decode_inputs =
@@ -298,17 +329,17 @@ let contract ~config ~prefill ~decode =
          @ List.map (fun binding -> binding.state_input) recurrents)
     in
     let expected_prefill_outputs =
-      logits
-      :: (List.concat_map
-            (fun binding -> [ binding.key_output; binding.value_output ])
-            attentions
+      head_names prefill_head
+      @ (List.concat_map
+           (fun binding -> [ binding.key_output; binding.value_output ])
+           attentions
          @ List.map (fun binding -> binding.state_output) recurrents)
     in
     let expected_decode_outputs =
-      logits
-      :: List.concat_map
-           (fun binding -> [ binding.key_output; binding.value_output ])
-           attentions
+      head_names decode_head
+      @ List.concat_map
+          (fun binding -> [ binding.key_output; binding.value_output ])
+          attentions
     in
     let* () =
       expect_names prefill_inputs expected_prefill_inputs "prefill runtime input"
@@ -323,7 +354,8 @@ let contract ~config ~prefill ~decode =
     Ok
       {
         input_ids;
-        logits;
+        prefill_head;
+        decode_head;
         prefill_tokens;
         past_tokens;
         attentions;
@@ -402,6 +434,10 @@ let output execution name =
   match Metal_runtime.Execution.output execution ~name with
   | Some buffer -> Ok buffer
   | None -> Error ("model execution did not return output: " ^ name)
+
+let optional_output execution = function
+  | None -> Ok None
+  | Some name -> output execution name |> Result.map (fun buffer -> Some buffer)
 
 type reservation = {
   slots : Kv_cache.Slot.t array;
@@ -489,7 +525,10 @@ let prefill engine ~tokens =
           pack_prefill_recurrent batch execution reservation.checkpoint
             engine.contract.recurrents)
     in
-    let* logits = output execution engine.contract.logits in
+    let* logits = optional_output execution engine.contract.prefill_head.logits in
+    let* token_id =
+      optional_output execution engine.contract.prefill_head.token_id
+    in
     let* cached_prefix =
       Serving_cache.insert engine.logical_cache ~tokens
         ~slots:reservation.slots ~checkpoint:reservation.checkpoint ()
@@ -497,6 +536,7 @@ let prefill engine ~tokens =
     Ok
       {
         Step.logits;
+        token_id;
         tokens = Array.copy tokens;
         cached_prefix;
         kernels = Metal_runtime.Execution.kernels execution;
@@ -715,7 +755,10 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           in
           let tokens = Array.append prefix [| token |] in
           let slots = Array.append matched_slots reservation.slots in
-          let* logits = output execution engine.contract.logits in
+          let* logits = optional_output execution engine.contract.decode_head.logits in
+          let* token_id =
+            optional_output execution engine.contract.decode_head.token_id
+          in
           let* cached_prefix =
             Serving_cache.insert engine.logical_cache ~tokens ~slots
               ~checkpoint:reservation.checkpoint ()
@@ -723,6 +766,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           Ok
             {
               Step.logits;
+              token_id;
               tokens;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;
@@ -898,13 +942,21 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
                 replay initial_buffers cached_tokens)
             |> before_insert
           in
-          let* logits = output execution engine.contract.logits |> before_insert in
+          let* logits =
+            optional_output execution engine.contract.decode_head.logits
+            |> before_insert
+          in
+          let* token_id =
+            optional_output execution engine.contract.decode_head.token_id
+            |> before_insert
+          in
           let* cached_prefix =
             insert_replay engine ~tokens ~cached_tokens ~matched_slots reservation
           in
           Ok
             {
               Step.logits;
+              token_id;
               tokens = Array.copy tokens;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;
@@ -999,4 +1051,3 @@ let step_batch engine ~decodes ~prefill:prefill_slice_opt =
         Some res
   in
   Ok { Batch_result.decodes = decodes_results; prefill = prefill_result }
-

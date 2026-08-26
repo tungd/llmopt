@@ -432,7 +432,13 @@ module Op = struct
         epsilon : float;
         extra_outputs : Value.t list;
       }
-    | Q8_lm_head_argmax of { m : int; n : int; k : int; epsilon : float }
+    | Q8_lm_head_argmax of {
+        m : int;
+        n : int;
+        k : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
     | Q8_dual_linear of {
         m : int;
         n1 : int;
@@ -453,6 +459,7 @@ module Op = struct
 
   let additional_outputs = function
     | Q8_linear_add_norm { extra_outputs; _ }
+    | Q8_lm_head_argmax { extra_outputs; _ }
     | Q8_dual_linear { extra_outputs; _ }
     | Q8_qkv_linear { extra_outputs; _ } -> extra_outputs
     | _ -> []
@@ -512,8 +519,10 @@ module Op = struct
         Printf.sprintf "q8-linear+add+rms-norm%s[%dx%dx%d,eps=%.9g]"
           (if extra_outputs = [] then "" else "+residual-output") m n k
           epsilon
-    | Q8_lm_head_argmax { m; n; k; epsilon } ->
-        Printf.sprintf "q8-lm-head-argmax[%dx%dx%d,eps=%.9g]" m n k epsilon
+    | Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
+        Printf.sprintf "q8-lm-head-argmax%s[%dx%dx%d,eps=%.9g]"
+          (if extra_outputs = [] then "" else "+logits-output") m n k
+          epsilon
     | Q8_dual_linear { m; n1; n2; k; bias = false; silu_first; _ } ->
         Printf.sprintf "q8-dual-linear%s[%dx(%d+%d)x%d]"
           (if silu_first then "+silu" else "") m n1 n2 k

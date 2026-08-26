@@ -57,7 +57,7 @@ let workspace schedule =
   let* plan = Serving_memory_plan.create schedule in
   Ok (Serving_memory_plan.workspace_bytes plan)
 
-let output_shape ~name schedule =
+let output_shape_opt ~name schedule =
   schedule |> Serving_schedule.commands
   |> List.find_map (fun command ->
          match
@@ -67,15 +67,22 @@ let output_shape ~name schedule =
          | Ir.Op.Output output, [ value ] when output.name = name ->
              Some (dimensions value)
          | _ -> None)
-  |> function
+
+let output_shape ~name schedule =
+  match output_shape_opt ~name schedule with
   | Some shape -> Ok shape
   | None -> Error ("specialized schedule has no " ^ name ^ " output")
 
-let logits_rows schedule =
-  let* shape = output_shape ~name:"logits" schedule in
-  match shape with
-  | [ 1; rows; vocabulary ] when rows > 0 && vocabulary > 0 -> Ok rows
-  | _ -> Error "specialized logits output has an invalid shape"
+let head_rows schedule =
+  match output_shape_opt ~name:"logits" schedule with
+  | Some [ 1; rows; vocabulary ] when rows > 0 && vocabulary > 0 ->
+      Ok rows
+  | Some _ -> Error "specialized logits output has an invalid shape"
+  | None ->
+      (match output_shape_opt ~name:"token_id" schedule with
+      | Some [ rows ] when rows > 0 -> Ok rows
+      | Some _ -> Error "specialized token_id output has an invalid shape"
+      | None -> Error "specialized schedule has no logits or token_id output")
 
 let specialize ~cache prefill decode =
   let prefill_schedule = Serving_package.schedule prefill in
@@ -105,9 +112,9 @@ let specialize ~cache prefill decode =
   let* decode_one = specialize_decode 1 in
   let* decode_127 = specialize_decode 127 in
   let* decode_4095 = specialize_decode 4095 in
-  let* prefill_13_rows = logits_rows prefill_13 in
-  let* prefill_128_rows = logits_rows prefill_128 in
-  let* prefill_4096_rows = logits_rows prefill_4096 in
+  let* prefill_13_rows = head_rows prefill_13 in
+  let* prefill_128_rows = head_rows prefill_128 in
+  let* prefill_4096_rows = head_rows prefill_4096 in
   let* prefill_13 = workspace prefill_13 in
   let* prefill_128 = workspace prefill_128 in
   let* prefill_4096 = workspace prefill_4096 in
@@ -174,7 +181,7 @@ let run () =
       (Serving_package.abi_version prefill)
       (Serving_package.abi_version decode)
       (Kv_cache.Format.to_string kv_format) prefill_page;
-    Printf.printf "prefill logits rows: 13=%d, 128=%d, 4096=%d\n"
+    Printf.printf "prefill head rows: 13=%d, 128=%d, 4096=%d\n"
       prefill_13_rows prefill_128_rows prefill_4096_rows;
     Printf.printf
       "sequence templates: prefill=%d, decode-past=%d; workspaces: prefill-13=%d, prefill-128=%d, prefill-4096=%d, decode-1=%d, decode-127=%d, decode-4095=%d\n"

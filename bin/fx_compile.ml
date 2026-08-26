@@ -30,19 +30,60 @@ let package_files =
 let usage () =
   prerr_endline
     "usage: llmopt-fx [--weights <weights.llmopt>] \
-     <graph.llmopt|legacy-fx.json> <output-directory>";
+     [--greedy-token-id] <graph.llmopt|legacy-fx.json> <output-directory>";
   exit 64
 
+let rename_logits_to_token_id graph =
+  let nodes = Ir.Graph.nodes graph in
+  let found = ref false in
+  let nodes =
+    List.map
+      (fun node ->
+        match Ir.node_op node with
+        | Ir.Op.Output { name = "logits" } ->
+            found := true;
+            Ir.node_replace node ~op:(Ir.Op.Output { name = "token_id" })
+              ~inputs:(Ir.node_inputs node)
+        | _ -> node)
+      nodes
+  in
+  if not !found then Error "--greedy-token-id requires a logits graph output"
+  else
+    let outputs =
+      List.map
+        (fun (name, value) ->
+          if name = "logits" then "token_id", value else name, value)
+        (Ir.Graph.outputs graph)
+    in
+    Ok (Ir.Graph.with_nodes_and_outputs graph nodes outputs)
+
+let arguments () =
+  let rec parse greedy tensor_store positional = function
+    | [] ->
+        (match List.rev positional with
+        | [ graph_input; output_directory ] ->
+            Ok (greedy, tensor_store, graph_input, output_directory)
+        | _ -> usage ())
+    | "--greedy-token-id" :: rest -> parse true tensor_store positional rest
+    | "--weights" :: path :: rest ->
+        parse greedy
+          (Some (Serving_package.Tensor_store.weights ~file:(artifact path)))
+          positional rest
+    | "--weights" :: [] -> usage ()
+    | option :: _ when String.starts_with ~prefix:"--" option -> usage ()
+    | value :: rest -> parse greedy tensor_store (value :: positional) rest
+  in
+  match Array.to_list Sys.argv with
+  | _ :: argv -> parse false None [] argv
+  | [] -> usage ()
+
 let () =
-  let tensor_store, graph_input, output_directory =
-    match Array.to_list Sys.argv with
-    | [ _; graph_input; output_directory ] -> None, graph_input, output_directory
-    | [ _; "--weights"; path; graph_input; output_directory ] ->
-        Some
-          (Serving_package.Tensor_store.weights ~file:(artifact path)),
-        graph_input,
-        output_directory
-    | _ -> usage ()
+  let greedy_token_id, tensor_store, graph_input, output_directory =
+    match arguments () with
+    | Ok arguments -> arguments
+    | Error message ->
+        prerr_endline message;
+        exit 64
   in
   let graph_contents =
     try read_file graph_input
@@ -61,6 +102,15 @@ let () =
           prerr_endline message;
           exit 3
       | Ok graph ->
+          let graph =
+            if not greedy_token_id then graph
+            else
+              match rename_logits_to_token_id graph with
+              | Ok graph -> graph
+              | Error message ->
+                  prerr_endline message;
+                  exit 3
+          in
           let planned = Passes.optimize graph in
           let plan = Format.asprintf "%a" Ir.Graph.pp planned in
           (match Serving_schedule.of_graph planned with

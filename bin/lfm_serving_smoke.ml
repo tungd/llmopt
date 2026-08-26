@@ -95,13 +95,23 @@ let package root =
 let elapsed since = Unix.gettimeofday () -. since
 
 let logits_row step =
-  let* bytes = Metal_runtime.Buffer.contents (Serving_engine.Step.logits step) in
-  Sampling.Float16_logits.last_row
-    ~vocabulary:Lfm25.Config.default.vocab_size bytes
+  match Serving_engine.Step.logits step with
+  | None -> Error "serving step has no logits output"
+  | Some buffer ->
+      let* bytes = Metal_runtime.Buffer.contents buffer in
+      Sampling.Float16_logits.last_row
+        ~vocabulary:Lfm25.Config.default.vocab_size bytes
 
 let greedy step =
-  let* row = logits_row step in
-  Sampling.Greedy.f16_last_row ~vocabulary:Lfm25.Config.default.vocab_size row
+  match Serving_engine.Step.token_id step with
+  | Some buffer ->
+      let* bytes = Metal_runtime.Buffer.contents buffer in
+      if Bytes.length bytes = 4 then Sampling.Greedy.on_device bytes
+      else Sampling.Greedy.on_device_last bytes
+  | None ->
+      let* row = logits_row step in
+      Sampling.Greedy.f16_last_row
+        ~vocabulary:Lfm25.Config.default.vocab_size row
 
 let write_bytes path bytes =
   try
@@ -175,16 +185,18 @@ let run () =
   let prefill_started = Unix.gettimeofday () in
   let* prefill = Serving_engine.prefill engine ~tokens:arguments.input in
   let prefill_seconds = elapsed prefill_started in
-  let* prefill_logits = logits_row prefill in
-  let* () =
+  let* prefill_logits =
     match arguments.prefill_logits with
-    | None -> Ok ()
-    | Some path -> write_bytes path prefill_logits
+    | None -> Ok None
+    | Some _ -> logits_row prefill |> Result.map Option.some
   in
-  let* first_token =
-    Sampling.Greedy.f16_last_row ~vocabulary:Lfm25.Config.default.vocab_size
-      prefill_logits
+  let* () =
+    match arguments.prefill_logits, prefill_logits with
+    | None, _ -> Ok ()
+    | Some path, Some bytes -> write_bytes path bytes
+    | Some _, None -> Error "prefill logits were requested but unavailable"
   in
+  let* first_token = greedy prefill in
   let* decodes =
     decode_tokens engine ~prefix:arguments.input ~first_token
       ~count:arguments.generated_tokens

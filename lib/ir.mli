@@ -256,7 +256,13 @@ module Op : sig
         epsilon : float;
         extra_outputs : Value.t list;
       }
-    | Q8_lm_head_argmax of { m : int; n : int; k : int; epsilon : float }
+    | Q8_lm_head_argmax of {
+        m : int;
+        n : int;
+        k : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
     | Q8_dual_linear of {
         m : int;
         n1 : int;

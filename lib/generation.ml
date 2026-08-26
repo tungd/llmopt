@@ -14,9 +14,18 @@ module Native_engine = struct
   let tokens = Serving_engine.Step.tokens
 
   let next_token step =
-    let* bytes = Metal_runtime.Buffer.contents (Serving_engine.Step.logits step) in
-    Sampling.Greedy.f16_last_row ~vocabulary:Lfm25.Config.default.vocab_size
-      bytes
+    match Serving_engine.Step.token_id step with
+    | Some buffer ->
+        let* bytes = Metal_runtime.Buffer.contents buffer in
+        if Bytes.length bytes = 4 then Sampling.Greedy.on_device bytes
+        else Sampling.Greedy.on_device_last bytes
+    | None ->
+        (match Serving_engine.Step.logits step with
+        | Some buffer ->
+            let* bytes = Metal_runtime.Buffer.contents buffer in
+            Sampling.Greedy.f16_last_row
+              ~vocabulary:Lfm25.Config.default.vocab_size bytes
+        | None -> Error "serving step has neither token_id nor logits output")
 end
 
 module Driver = Generation_core.Make (Native_engine)

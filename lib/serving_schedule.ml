@@ -295,10 +295,18 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d linear-add-norm metadata is inconsistent"
                    command.Command.node_id)
-        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon },
+        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs },
             [ input; norm_weight; weight; scale ],
             Some output ) ->
             let dimensions value = Tensor_shape.dimensions (Ir.Value.logical_shape value) in
+            let secondary_matches =
+              match extra_outputs with
+              | [] -> true
+              | [ logits ] ->
+                  q8_output_matches ~rows:m ~columns:n
+                    ~dtype:Ir.Dtype.Float16 logits
+              | _ -> false
+            in
             if
               Float.is_finite epsilon && epsilon > 0.0
               && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
@@ -312,7 +320,8 @@ let validate_command seen_values command =
               && Ir.Value.dtype weight = Ir.Dtype.Int8
               && Ir.Value.dtype scale = Ir.Dtype.Float16
               && Ir.Value.dtype output = Ir.Dtype.Int32
-              && fresh_outputs seen_values [ output ]
+              && secondary_matches
+              && fresh_outputs seen_values (output :: extra_outputs)
             then Ok ()
             else
               Error
@@ -1039,7 +1048,7 @@ module Lfm25 = struct
                epsilon;
                extra_outputs;
              })
-    | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon } ->
+    | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
         Ok
           (Ir.Op.Q8_lm_head_argmax
              {
@@ -1047,6 +1056,7 @@ module Lfm25 = struct
                n = substitute substitutions n;
                k = substitute substitutions k;
                epsilon;
+               extra_outputs;
              })
     | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; silu_first; extra_outputs } ->
         Ok
@@ -1208,11 +1218,19 @@ module Lfm25 = struct
     with Invalid_argument message -> Error message
 
   let specialized_matrix_value substitutions ~rows ~columns original =
-    let* shape =
-      Tensor_shape.create
-        [ substitute substitutions rows; substitute substitutions columns ]
-      |> shape_error
+    let dimensions = Tensor_shape.dimensions (Ir.Value.logical_shape original) in
+    let* shape_dimensions =
+      match List.rev dimensions with
+      | original_columns :: original_rows :: prefix
+        when original_rows = rows && original_columns = columns ->
+          Ok
+            (List.rev prefix
+            @ [ substitute substitutions rows; substitute substitutions columns ])
+      | _ ->
+          Error
+            "secondary matrix output does not have the operation's row and column shape"
     in
+    let* shape = Tensor_shape.create shape_dimensions |> shape_error in
     try
       Ok
         (Ir.Value.make_tensor
@@ -1237,6 +1255,9 @@ module Lfm25 = struct
     | Ir.Op.Q8_linear_add_norm { m; n; _ }, [ raw_output ] ->
         specialized_matrix_value substitutions ~rows:m ~columns:n raw_output
         |> Result.map (fun output -> [ output ])
+    | Ir.Op.Q8_lm_head_argmax { m; n; _ }, [ logits_output ] ->
+        specialized_matrix_value substitutions ~rows:m ~columns:n logits_output
+        |> Result.map (fun output -> [ output ])
     | (Ir.Op.Q8_dual_linear _ | Ir.Op.Q8_qkv_linear _), _ ->
         Error "multi-output Q8 operation has an inconsistent secondary-output table"
     | _, [] -> Ok []
@@ -1250,6 +1271,8 @@ module Lfm25 = struct
         Ir.Op.Q8_qkv_linear { config with extra_outputs = outputs }
     | Ir.Op.Q8_linear_add_norm config ->
         Ir.Op.Q8_linear_add_norm { config with extra_outputs = outputs }
+    | Ir.Op.Q8_lm_head_argmax config ->
+        Ir.Op.Q8_lm_head_argmax { config with extra_outputs = outputs }
     | _ -> operation
 
   type last_token_projection = {
@@ -2325,10 +2348,14 @@ let write_op writer = function
         Binary.Writer.u8 writer (List.length extra_outputs);
         List.iter (write_value writer) extra_outputs
       end
-  | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon } ->
-      Binary.Writer.u8 writer 29;
+  | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
+      Binary.Writer.u8 writer (if extra_outputs = [] then 29 else 33);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.float64 writer epsilon
+      Binary.Writer.float64 writer epsilon;
+      if extra_outputs <> [] then begin
+        Binary.Writer.u8 writer (List.length extra_outputs);
+        List.iter (write_value writer) extra_outputs
+      end
   | Ir.Op.Rms_rope config ->
       Binary.Writer.u8 writer 20;
       Binary.Writer.float64 writer (Ir.Rms_rope.epsilon config);
@@ -2480,8 +2507,22 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* epsilon = Binary.Reader.float64 reader in
       if Float.is_finite epsilon && epsilon > 0.0 then
-        Ok (Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon })
+        Ok (Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs = [] })
       else Error "schedule contains a non-finite LM-head argmax epsilon"
+  | 33 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      if Float.is_finite epsilon && epsilon > 0.0 && count = 1 then
+        Ok (Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs })
+      else Error "schedule contains invalid LM-head argmax secondary outputs"
   | 20 ->
       let* epsilon = Binary.Reader.float64 reader in
       let* half_dimension = Binary.Reader.u64 reader in
@@ -2598,11 +2639,26 @@ let to_bytes schedule =
         match command.Command.op with
         | Ir.Op.Q8_linear_add_norm { extra_outputs; _ } ->
             extra_outputs <> []
+        | Ir.Op.Q8_lm_head_argmax { extra_outputs; _ } ->
+            extra_outputs <> []
         | _ -> false)
       schedule.commands
   in
+  let version =
+    if
+      List.exists
+        (fun command ->
+          match command.Command.op with
+          | Ir.Op.Q8_lm_head_argmax { extra_outputs; _ } ->
+              extra_outputs <> []
+          | _ -> false)
+        schedule.commands
+    then 16
+    else if extended then 15
+    else 14
+  in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer (if extended then 15 else 14);
+  Binary.Writer.u16 writer version;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2626,7 +2682,7 @@ let of_bytes ?device bytes =
       version <> 1 && version <> 2 && version <> 3 && version <> 4
       && version <> 5 && version <> 6 && version <> 7 && version <> 8
       && version <> 9 && version <> 10 && version <> 11 && version <> 12
-      && version <> 13 && version <> 14 && version <> 15
+      && version <> 13 && version <> 14 && version <> 15 && version <> 16
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else

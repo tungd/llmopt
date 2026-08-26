@@ -1865,7 +1865,7 @@ let dispatch_q8_qkv_command batch runtime state ~m ~n_q ~n_kv ~k ~bias
   Ok (bind_value state value_output value_buffer, kernel)
 
 let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
-    values output =
+    ~extra_outputs values output =
   let* input_value, norm_weight_value, weight_value, scale_value =
     match values with
     | [ input; norm_weight; weight; scale ] ->
@@ -1877,6 +1877,14 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
   let* weight = find_value state weight_value in
   let* scale = find_value state scale_value in
   let* output_buffer = workspace_buffer state output in
+  let* extra_output, extra_output_buffer =
+    match extra_outputs with
+    | [] -> Ok (None, None)
+    | [ extra_output ] ->
+        workspace_buffer state extra_output
+        |> Result.map (fun buffer -> (Some extra_output, Some buffer))
+    | _ -> Error "Q8 LM-head argmax command has too many secondary outputs"
+  in
   let* () =
     if
       Tensor_shape.numel (Ir.Value.logical_shape input_value) = m * k
@@ -1890,12 +1898,27 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
       && Ir.Value.dtype weight_value = Ir.Dtype.Int8
       && Ir.Value.dtype scale_value = Ir.Dtype.Float16
       && Ir.Value.dtype output = Ir.Dtype.Int32
+      && (match extra_outputs with
+         | [] -> true
+         | [ logits ] ->
+             Tensor_shape.numel (Ir.Value.logical_shape logits) = m * n
+             && (match
+                   List.rev (Tensor_shape.dimensions (Ir.Value.logical_shape logits))
+                 with
+                 | last_dimension :: _ -> last_dimension = n
+                 | [] -> false)
+             && Ir.Value.dtype logits = Ir.Dtype.Float16
+         | _ -> false)
     then Ok ()
     else Error "Q8 LM-head argmax input metadata is inconsistent"
   in
   let* kernel_name =
     q8_macro_kernel_name (Ir.Value.dtype input_value)
-      ~base:"llmopt_q8_lm_head_argmax" ~has_bias:false
+      ~base:
+        (if Option.is_some extra_output then
+           "llmopt_q8_lm_head_argmax_extra"
+         else "llmopt_q8_lm_head_argmax")
+      ~has_bias:false
   in
   let* entry =
     kernel_entry ~name:kernel_name runtime
@@ -1909,11 +1932,21 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
     else Ok (m * 256, 1, 1)
   in
   let* kernel =
+    let buffers =
+      [ input; norm_weight; weight; scale; output_buffer ]
+      @ Option.to_list extra_output_buffer
+    in
     dispatch ~batch runtime entry
-      ~buffers:[ input; norm_weight; weight; scale; output_buffer ]
+      ~buffers
       ~parameters ~grid
   in
-  Ok (bind_value state output output_buffer, kernel)
+  let state = bind_value state output output_buffer in
+  let state =
+    match extra_output, extra_output_buffer with
+    | Some value, Some buffer -> bind_value state value buffer
+    | _ -> state
+  in
+  Ok (state, kernel)
 
 let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
     ~extra_outputs values output =
@@ -2818,12 +2851,12 @@ let encode_schedule execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_q8_qkv_command batch runtime state ~m ~n_q ~n_kv ~k ~bias
                  ~extra_outputs values output)
-        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon },
+        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs },
             values,
             Some output ) ->
             dispatched
               (dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k
-                 ~epsilon values output)
+                 ~epsilon ~extra_outputs values output)
         | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs },
             values,
             Some output ) ->
