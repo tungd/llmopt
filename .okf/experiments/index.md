@@ -85,3 +85,4 @@
 * [Macro-fusion relative-model replan](exp-0084-macro-fusion-relative-model-replan-2026-08-26.md) - fresh all-five package inventory and serving-pair validation after installing the repaired selector.
 * [Q8 residual/output metadata validation repair](exp-0085-q8-residual-metadata-validator-2026-08-26.md) - schedule-level rejection of runtime-invalid residual metadata and rebuilt v3 package evidence.
 * [Q8 LM-head kernel-manifest repair](exp-0086-q8-lm-head-manifest-repair-2026-08-26.md) - one bounded native failure, the mixed-fusion ABI repair, and corrected v4 static package evidence.
+* [Q8 v4 macro-fusion native execution](exp-0087-q8-macro-probe-v4-execution.md) - successful Apple M4 Pro supervised native execution with 4/4 warmup, 4/4 scored parity, and zero token mismatches.

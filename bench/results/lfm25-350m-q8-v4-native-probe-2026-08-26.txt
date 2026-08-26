@@ -1,0 +1,24 @@
+# LFM2.5-350M Q8 v4 macro-fusion native probe results
+
+Date: 2026-08-26
+Target: `LiquidAI/LFM2.5-350M`, Q8 weight-only, full macro fusions with on-GPU token-id argmax
+
+## Supervised native probe results
+
+- Host: Apple M4 Pro, 25,769,803,776 bytes unified memory.
+- Packages: `_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v4/{prefill,decode}`.
+- Server: `_build/bin/llmopt-serve` on port `18104` with Q8 KV cache.
+- The server started cleanly: `device: Apple M4 Pro; kv: q8-group-64`, `ready: http://127.0.0.1:18104`.
+- Warmup trace (`bench/traces/lfm25-mps-warmup.json`):
+  - 4/4 requests successful (100%), 0 failed, 0 output token mismatches.
+  - ERS: 0.087973; median TTFT: 405.065 ms; median TPOT: 34.275 ms; wall time: 1.957s.
+- Scored trace (`bench/traces/lfm25-mps-smoke.json`):
+  - 4/4 requests successful (100%), 0 failed, 0 output token mismatches.
+  - ERS: 0.109047; median TTFT: 427.368 ms; median TPOT: 34.457 ms; wall time: 2.133s.
+- Server stopped cleanly, port was released, and no background processes remain.
+
+Raw artifacts:
+- `_artifacts/native-http-relative-model-v4-2026-08-26/warmup.json`
+- `_artifacts/native-http-relative-model-v4-2026-08-26/scored.json`
+- `_artifacts/native-http-relative-model-v4-2026-08-26/server.stderr`
+- `_artifacts/native-http-relative-model-v4-2026-08-26/server.stdout`
