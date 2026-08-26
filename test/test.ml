@@ -1568,11 +1568,13 @@ let () =
 
   Ir.Graph.add_output q8_add_norm_graph ~name:"q8_add_norm_residual_branch"
     q8_add_norm_cast_output;
+  Ir.Graph.add_output q8_add_norm_graph ~name:"q8_add_norm_raw_branch"
+    q8_add_norm_add_output;
   let q8_add_norm_external_optimized =
     Passes.fuse_linear_residual_norm q8_add_norm_graph
   in
-  expect (List.length (Ir.Graph.nodes q8_add_norm_external_optimized) = 9)
-    "linear-residual-norm keeps a cast for an external residual consumer";
+  expect (List.length (Ir.Graph.nodes q8_add_norm_external_optimized) = 10)
+    "linear-residual-norm keeps both external residual consumers";
   expect
     (Ir.Graph.nodes q8_add_norm_external_optimized
     |> List.exists (fun node ->

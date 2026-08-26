@@ -53,30 +53,33 @@ let candidate nodes q8_node =
       in
       let cast_match =
         consumers nodes q8_output
+        |> List.filter_map (fun cast_node ->
+               match
+                 Ir.node_op cast_node,
+                 Ir.node_inputs cast_node,
+                 Ir.node_output cast_node
+               with
+               | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32),
+                 [ cast_input ], Some cast_output
+                 when value_is q8_output cast_input ->
+                   Some (cast_node, cast_output)
+               | _ -> None)
         |> function
-        | [ cast_node ] -> (
-            match
-              Ir.node_op cast_node,
-              Ir.node_inputs cast_node,
-              Ir.node_output cast_node
-            with
-            | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32),
-              [ cast_input ], Some cast_output
-              when value_is q8_output cast_input
-                   && only_consumer nodes q8_output ->
-                Option.map
-                  (fun (rms_node, norm_weight, norm_output) ->
-                    let keep_cast =
-                      List.length (consumers nodes cast_output) > 1
-                    in
-                    ( Some cast_node,
-                      rms_node,
-                      norm_weight,
-                      norm_output,
-                      (if keep_cast then [ q8_output ] else []),
-                      keep_cast ))
-                  (rms_for cast_output)
-            | _ -> None)
+        | [ cast_node, cast_output ] ->
+            Option.map
+              (fun (rms_node, norm_weight, norm_output) ->
+                let keep_cast =
+                  List.length (consumers nodes cast_output) > 1
+                in
+                ( Some cast_node,
+                  rms_node,
+                  norm_weight,
+                  norm_output,
+                  (if List.length (consumers nodes q8_output) > 1 then
+                     [ q8_output ]
+                   else []),
+                  keep_cast ))
+              (rms_for cast_output)
         | _ -> None
       in
       let direct_match =
