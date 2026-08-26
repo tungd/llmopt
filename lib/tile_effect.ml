@@ -38,8 +38,6 @@ type w4a16_linear = {
   logical_shape : Tensor_shape.t;
 }
 
-type q8_linear = w4a16_linear
-
 type add = {
   lhs : Ir.Value.t;
   rhs : Ir.Value.t;
@@ -85,7 +83,6 @@ type _ Effect.t +=
   | Matmul : matmul -> Ir.Value.t Effect.t
   | Linear : linear -> Ir.Value.t Effect.t
   | W4a16_linear : w4a16_linear -> Ir.Value.t Effect.t
-  | Q8_linear : q8_linear -> Ir.Value.t Effect.t
   | Add : add -> Ir.Value.t Effect.t
   | Gelu : unary -> Ir.Value.t Effect.t
   | Relu : unary -> Ir.Value.t Effect.t
@@ -109,7 +106,6 @@ let async_copy ~src ~dst ~barrier = Effect.perform (Async_copy { src; dst; barri
 let matmul request = Effect.perform (Matmul request)
 let linear request = Effect.perform (Linear request)
 let w4a16_linear request = Effect.perform (W4a16_linear request)
-let q8_linear request = Effect.perform (Q8_linear request)
 let add request = Effect.perform (Add request)
 let gelu request = Effect.perform (Gelu request)
 let relu request = Effect.perform (Relu request)

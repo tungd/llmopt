@@ -11,7 +11,6 @@ module Config : sig
     max_position_embeddings : int;
     conv_l_cache : int;
     dtype : Ir.Dtype.t;
-    quantization : Ir.Quantization.t;
     layer_types : layer list;
   }
 

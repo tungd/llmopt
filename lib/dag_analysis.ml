@@ -31,79 +31,12 @@ module Resource_class = struct
           +. (Float.of_int (m * n) *. 2.0)
         in
         flops /. max 1.0 bytes
-    | Ir.Op.Q8_linear { m; n; k; _ }
-    | Ir.Op.Q8_linear_silu { m; n; k; _ }
-    | Ir.Op.Q8_linear_add { m; n; k; _ }
-    | Ir.Op.Q8_linear_mul_add { m; n; k; _ }
-    | Ir.Op.Q8_linear_add_norm { m; n; k; _ } ->
-        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
-        let bytes =
-          (Float.of_int (m * k) *. 2.0)
-          +. Float.of_int (n * k)
-          +. (Float.of_int (m * n) *. 2.0)
-        in
-        flops /. max 1.0 bytes
-    | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; _ } ->
-        let flops = 6.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
-        let bytes =
-          (Float.of_int (m * k) *. 4.0)
-          +. (Float.of_int (3 * n * k) *. 1.0)
-          +. (Float.of_int (2 * n + 2 * k) *. 2.0)
-        in
-        flops /. max 1.0 bytes
-    | Ir.Op.Q8_fused_short_conv { m; channels; window; k; _ } ->
-        let flops =
-          (8.0 *. Float.of_int (m * k * channels))
-          +. (2.0 *. Float.of_int (m * channels * window))
-        in
-        let bytes =
-          (Float.of_int (m * k) *. 4.0)
-          +. (Float.of_int (4 * channels * k) *. 1.0)
-          +. (Float.of_int (channels * window) *. 2.0)
-        in
-        flops /. max 1.0 bytes
-    | Ir.Op.Q8_lm_head_argmax { m; n; k; _ } ->
+    | Ir.Op.W4a16_lm_head_argmax { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
         let bytes =
           (Float.of_int (m * k) *. 2.0)
           +. Float.of_int (n * k)
           +. (Float.of_int m *. 4.0)
-        in
-        flops /. max 1.0 bytes
-    | Ir.Op.Q8_dual_linear { m; n1; n2; k; _ } ->
-        let n = n1 + n2 in
-        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
-        let bytes =
-          (Float.of_int (m * k) *. 2.0)
-          +. Float.of_int (n * k)
-          +. (Float.of_int (m * n) *. 2.0)
-        in
-        flops /. max 1.0 bytes
-    | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; _ } ->
-        let n = n_q + (2 * n_kv) in
-        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
-        let bytes =
-          (Float.of_int (m * k) *. 2.0)
-          +. Float.of_int (n * k)
-          +. (Float.of_int (m * n) *. 2.0)
-        in
-        flops /. max 1.0 bytes
-    | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; _ } ->
-        let n = n_q + (2 * n_kv) in
-        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
-        let bytes =
-          (Float.of_int (m * k) *. 2.0)
-          +. Float.of_int (n * k)
-          +. (Float.of_int (m * n) *. 2.0)
-        in
-        flops /. max 1.0 bytes
-    | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; _ } ->
-        let flops =
-          4.0 *. Float.of_int (m * heads * head_dim * k)
-        in
-        let bytes =
-          (Float.of_int (m * k) *. 4.0)
-          +. Float.of_int (heads * head_dim * k)
         in
         flops /. max 1.0 bytes
     | Ir.Op.Matmul { m; n; k; _ }
@@ -125,18 +58,7 @@ module Resource_class = struct
   let of_op (op : Ir.Op.t) =
     match op with
     | Ir.Op.W4a16_linear _
-    | Ir.Op.Q8_linear _
-    | Ir.Op.Q8_linear_silu _
-    | Ir.Op.Q8_linear_add _
-    | Ir.Op.Q8_linear_mul_add _
-    | Ir.Op.Q8_fused_swiglu_ffn _
-    | Ir.Op.Q8_fused_short_conv _
-    | Ir.Op.Q8_fused_qkv_rope _
-    | Ir.Op.Q8_fused_attn_out _
-    | Ir.Op.Q8_linear_add_norm _
-    | Ir.Op.Q8_lm_head_argmax _
-    | Ir.Op.Q8_dual_linear _
-    | Ir.Op.Q8_qkv_linear _
+    | Ir.Op.W4a16_lm_head_argmax _
     | Ir.Op.Matmul _
     | Ir.Op.Fused_matmul_bias _
     | Ir.Op.Linear _ ->

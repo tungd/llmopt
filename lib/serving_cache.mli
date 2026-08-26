@@ -3,7 +3,6 @@ module Config : sig
 
   val create :
     model:Lfm25.Config.t ->
-    ?kv_format:Kv_cache.Format.t ->
     token_capacity:int ->
     checkpoint_capacity:int ->
     page_size:int ->

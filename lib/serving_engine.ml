@@ -31,18 +31,6 @@ type contract = {
   recurrents : recurrent_binding list;
 }
 
-module Attention_cache = struct
-  type t = Materialized_f16 | Paged_q8
-
-  let of_config config =
-    match
-      config |> Serving_cache.Config.kv |> Kv_cache.Config.layout
-      |> Kv_cache.Layout.format
-    with
-    | Kv_cache.Format.F16 -> Materialized_f16
-    | Kv_cache.Format.Q8 _ -> Paged_q8
-end
-
 module Step = struct
   type t = {
     logits : Metal_runtime.Buffer.t option;
@@ -75,7 +63,6 @@ type t = {
   decode : Metal_runtime.t;
   logical_cache : Serving_cache.t;
   physical_cache : Metal_runtime.Cache.t;
-  attention_cache : Attention_cache.t;
   contract : contract;
   decode_workspace : Metal_runtime.Buffer.t option;
   decode_token_buffer : Metal_runtime.Buffer.t option;
@@ -207,17 +194,10 @@ let validate_package package label =
 
 let validate_cache_policy config package label =
   let package_cache = Serving_package.cache package in
-  let format =
-    config |> Serving_cache.Config.kv |> Kv_cache.Config.layout
-    |> Kv_cache.Layout.format
-  in
   if
     Serving_package.Cache.page_size package_cache
     <> Serving_cache.Config.page_size config
   then Error (label ^ " package radix page size differs from serving configuration")
-  else if
-    not (List.mem format (Serving_package.Cache.supported_kv package_cache))
-  then Error (label ^ " package does not support the configured KV format")
   else Ok ()
 
 let contract ~config ~prefill ~decode =
@@ -412,7 +392,6 @@ let create ~config ~prefill ~decode =
         decode;
         logical_cache = Serving_cache.create config;
         physical_cache;
-        attention_cache = Attention_cache.of_config config;
         contract;
         decode_workspace;
         decode_token_buffer;
@@ -436,14 +415,9 @@ let decode_schedule engine past_tokens =
         engine.decode |> Metal_runtime.package |> Serving_package.schedule
       in
       let* schedule =
-        match engine.attention_cache with
-        | Attention_cache.Materialized_f16 ->
-            Serving_schedule.Lfm25.specialize_decode
-              ~captured_past:engine.contract.past_tokens ~past_tokens base_schedule
-        | Attention_cache.Paged_q8 ->
-            Serving_schedule.Lfm25.specialize_decode_paged_q8
-              ~captured_past:engine.contract.past_tokens ~past_tokens
-              ~cache:(Serving_cache.Config.kv engine.config) base_schedule
+        Serving_schedule.Lfm25.specialize_decode_paged_q8
+          ~captured_past:engine.contract.past_tokens ~past_tokens
+          ~cache:(Serving_cache.Config.kv engine.config) base_schedule
       in
       Hashtbl.add engine.decode_schedules past_tokens schedule;
       Ok schedule
@@ -590,46 +564,14 @@ let checked_bytes label factors =
   in
   multiply 1 factors
 
-let prepare_decode_buffers engine slots checkpoint =
+let prepare_decode_buffers engine _slots checkpoint =
   let layout =
     engine.config |> Serving_cache.Config.kv |> Kv_cache.Config.layout
-  in
-  let* attention_bytes =
-    checked_bytes "decode attention cache"
-      [ 2; Array.length slots; Kv_cache.Layout.kv_heads layout;
-        Kv_cache.Layout.head_dim layout ]
   in
   let* recurrent_bytes =
     checked_bytes "decode recurrent cache"
       [ 2; Kv_cache.Layout.recurrent_width layout;
         Kv_cache.Layout.recurrent_window layout ]
-  in
-  let rec attention batch buffers (bindings : attention_binding list) =
-    match bindings with
-    | [] -> Ok (List.rev buffers)
-    | binding :: rest ->
-        let* key =
-          Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:attention_bytes
-        in
-        let* _ =
-          Metal_runtime.Cache.batch_unpack_attention batch
-            ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
-            ~slots ~destination:key
-        in
-        let* value =
-          Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:attention_bytes
-        in
-        let* _ =
-          Metal_runtime.Cache.batch_unpack_attention batch
-            ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
-            ~slots ~destination:value
-        in
-        attention batch
-          (( binding,
-             (binding.key_input, key),
-             (binding.value_input, value) )
-          :: buffers)
-          rest
   in
   let rec recurrent batch buffers (bindings : recurrent_binding list) =
     match bindings with
@@ -647,14 +589,8 @@ let prepare_decode_buffers engine slots checkpoint =
           rest
   in
   Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
-      let* attention =
-        match engine.attention_cache with
-        | Attention_cache.Materialized_f16 ->
-            attention batch [] engine.contract.attentions
-        | Attention_cache.Paged_q8 -> Ok []
-      in
       let* recurrent = recurrent batch [] engine.contract.recurrents in
-      Ok (Serving_replay.Decode_buffers.create ~attention ~recurrent))
+      Ok (Serving_replay.Decode_buffers.create ~attention:[] ~recurrent))
 
 let decode_buffers_from_execution execution buffers =
   Serving_replay.Decode_buffers.update_attention buffers ~f:(fun binding ->
@@ -664,19 +600,13 @@ let decode_buffers_from_execution execution buffers =
 
 let decode_inputs engine ~slots ~token_input buffers =
   let* attention_inputs =
-    match engine.attention_cache with
-    | Attention_cache.Materialized_f16 -> Ok []
-    | Attention_cache.Paged_q8 ->
-        Metal_runtime.Cache.q8_attention_inputs engine.physical_cache ~slots
+    Metal_runtime.Cache.q8_attention_inputs engine.physical_cache ~slots
   in
   Ok
     ((engine.contract.input_ids, token_input)
     :: (attention_inputs @ Serving_replay.Decode_buffers.inputs buffers))
 
-let attention_pack_slice engine ~past_tokens =
-  match engine.attention_cache with
-  | Attention_cache.Materialized_f16 -> past_tokens + 1, past_tokens
-  | Attention_cache.Paged_q8 -> 1, 0
+let attention_pack_slice _engine ~past_tokens:_ = 1, 0
 
 let rec pack_decode_attention batch execution slots ~source_items
     ~source_offset (bindings : attention_binding list) =

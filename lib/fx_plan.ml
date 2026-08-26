@@ -1203,42 +1203,6 @@ let plan fx_graph =
                 | [ input; weight; scale; bias ] ->
                     lower_w4a16 input weight scale (Some bias)
                 | _ -> lower_opaque inputs)
-              else if contains target "q8_linear" then
-                let lower_q8 input weight scale bias =
-                  if Ir.Value.dtype weight <> Ir.Dtype.Int8 then
-                    fail_unsupported node
-                      "q8_linear weight must have int8 storage"
-                  else if
-                    Ir.Value.dtype scale <> Ir.Dtype.Float16
-                    && Ir.Value.dtype scale <> Ir.Dtype.Float32
-                  then
-                    fail_unsupported node
-                      "q8_linear scale must be float16 or float32"
-                  else
-                    let output_shapes =
-                      match shapes_for node with
-                      | Ok shapes -> Ok shapes
-                      | Error _ ->
-                          Shape.create
-                            ~rows:(Shape.rows (Ir.Value.shape input))
-                            ~cols:(Shape.rows (Ir.Value.shape weight))
-                          |> Result.map (declared_or_matrix node)
-                    in
-                    match output_shapes with
-                    | Error error -> Error (Shape.error_to_string error)
-                    | Ok (logical_shape, shape) ->
-                        let value =
-                          Tile_effect.q8_linear
-                            { input; weight; scale; bias; shape; logical_shape }
-                        in
-                        Hashtbl.replace env name value;
-                        Ok ()
-                in
-                (match inputs with
-                | [ input; weight; scale ] -> lower_q8 input weight scale None
-                | [ input; weight; scale; bias ] ->
-                    lower_q8 input weight scale (Some bias)
-                | _ -> lower_opaque inputs)
               else if
                 typed_manifest
                 &&

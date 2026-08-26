@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit eager Q8 reference tokens for a bounded native serving probe."""
+"""Emit eager W4A16 reference tokens for a bounded native serving probe."""
 
 from __future__ import annotations
 

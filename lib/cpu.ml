@@ -125,28 +125,6 @@ let linear input weight output bias =
   done
   done
 
-let q8_linear input weight scale output bias =
-  let input_shape = Tensor.shape input in
-  let output_shape = Tensor.shape output in
-  for row = 0 to Shape.rows output_shape - 1 do
-    for col = 0 to Shape.cols output_shape - 1 do
-      let accumulator = ref 0.0 in
-      let scale_value = Tensor.get scale 0 col in
-      for inner = 0 to Shape.cols input_shape - 1 do
-        accumulator :=
-          !accumulator
-          +. (Tensor.get input row inner
-             *. (Tensor.get weight col inner *. scale_value))
-      done;
-      let value =
-        match bias with
-        | None -> !accumulator
-        | Some bias -> !accumulator +. Tensor.get bias 0 col
-      in
-      Tensor.set output row col value
-    done
-  done
-
 let w4a16_linear input packed_weight scale output bias =
   let input_shape = Tensor.shape input in
   let output_shape = Tensor.shape output in
@@ -880,19 +858,6 @@ let run ~inputs thunk =
                   in
                   let tensor = Tensor.create shape in
                   w4a16_linear (find state input) (find state weight) (find state scale)
-                    tensor (Option.map (find state) bias);
-                  bind state value tensor;
-                  Effect.Deep.continue continuation value)
-          | Tile_effect.Q8_linear
-              { input; weight; scale; bias; shape; logical_shape } ->
-              Some
-                (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let value =
-                    fresh_value state ~logical_shape ~shape
-                      ~dtype:(Ir.Value.dtype input)
-                  in
-                  let tensor = Tensor.create shape in
-                  q8_linear (find state input) (find state weight) (find state scale)
                     tensor (Option.map (find state) bias);
                   bind state value tensor;
                   Effect.Deep.continue continuation value)

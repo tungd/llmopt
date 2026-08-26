@@ -223,21 +223,6 @@ let () =
             (bytes_of_u16
                [ 0x3c00; 0x0000; 0x4000; 0xbc00; 0x0000; 0x3c00; 0xbc00;
                  0x4000; 0x4000; 0xc000; 0x0000; 0x3c00 ]);
-          input runtime "q8_gemv_input"
-            (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400 ]);
-          input runtime "q8_gemv_weight"
-            (bytes_of_i8 [ 1; 0; 2; -1; 0; 1; -1; 2; 2; -2; 0; 1 ]);
-          input runtime "q8_gemv_scale"
-            (bytes_of_u16 [ 0x3800; 0x3c00; 0xb400 ]);
-          input runtime "q8_gemv_bias"
-            (bytes_of_u16 [ 0x3800; 0x3c00; 0xbc00 ]);
-          input runtime "q8_add_residual"
-            (bytes_of_u16 [ 0x3c00; 0xbc00; 0x3800 ]);
-          input runtime "q8_mul_weight"
-            (bytes_of_i8 [ 1; 0; 0; 0; 1; 0 ]);
-          input runtime "q8_mul_scale" (bytes_of_u16 [ 0x3c00; 0x3c00 ]);
-          input runtime "q8_mul_residual"
-            (bytes_of_u16 [ 0x3c00; 0xbc00 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
     |> expect_ok
@@ -322,46 +307,11 @@ let () =
        [ 0x3c00; 0x4900; 0x4980; 0x4400; 0x4500; 0x4a00; 0x4a80; 0x4800 ]);
   expect_bytes execution "linear_f16"
     (bytes_of_u16 [ 0x4200; 0x4700; 0x4000; 0x3c00; 0x4200; 0x4200 ]);
-  expect_bytes execution "q8_gemv"
-    (bytes_of_u16 [ 0x4000; 0x4800; 0xbe00 ]);
-  expect_bytes execution "q8_gemv_silu"
-    (bytes_of_u16 [ 0x3f0c; 0x47ff; 0xb461 ]);
-  expect_bytes execution "q8_gemv_silu_reference"
-    (bytes_of_u16 [ 0x3f0c; 0x47ff; 0xb461 ]);
-  let q8_fused = output execution "q8_gemv_silu" in
-  let q8_reference = output execution "q8_gemv_silu_reference" in
-  if not (Bytes.equal q8_fused q8_reference) then
-    fail "fused Q8 SiLU differs from materialized Q8 plus standalone SiLU";
-  expect_bytes execution "q8_gemv_add"
-    (bytes_of_u16 [ 0x4200; 0x4700; 0xbc00 ]);
-  expect_bytes execution "q8_gemv_add_reference"
-    (bytes_of_u16 [ 0x4200; 0x4700; 0xbc00 ]);
-  let q8_add_fused = output execution "q8_gemv_add" in
-  let q8_add_reference = output execution "q8_gemv_add_reference" in
-  if not (Bytes.equal q8_add_fused q8_add_reference) then
-    fail "fused Q8 residual differs from materialized Q8 plus standalone add";
-  expect_bytes execution "q8_gemv_mul_add"
-    (bytes_of_u16 [ 0x4486; 0x53df ]);
-  expect_bytes execution "q8_gemv_mul_add_reference"
-    (bytes_of_u16 [ 0x4486; 0x53df ]);
-  let q8_mul_add_fused = output execution "q8_gemv_mul_add" in
-  let q8_mul_add_reference = output execution "q8_gemv_mul_add_reference" in
-  if not (Bytes.equal q8_mul_add_fused q8_mul_add_reference) then
-    fail
-      "fused Q8 multiplied input differs from materialized multiply and residual";
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
-  if List.length kernels <> 61 then
-    fail
-      (Printf.sprintf "native fixture dispatched %d kernels instead of 61"
-         (List.length kernels));
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
-  if workspace_bytes <> 15_104 then
-    fail
-      (Printf.sprintf "native fixture workspace is %d bytes instead of 15104"
-         workspace_bytes);
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: 52 exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\nq8-decode-kernel: llmopt_q8_gemv_pair_simd\nq8-silu-reference: exact\nq8-silu-decode-kernel: llmopt_q8_gemv_silu_pair_simd\nq8-add-reference: exact\nq8-add-decode-kernel: llmopt_q8_gemv_add_pair_simd\nq8-mul-add-reference: exact\nq8-mul-add-decode-kernel: llmopt_q8_gemv_mul_add_pair_simd\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: canonical primitive set exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

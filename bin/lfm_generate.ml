@@ -1,7 +1,6 @@
 let ( let* ) = Result.bind
 
 type options = {
-  kv_format : Kv_cache.Format.t;
   max_new_tokens : int;
   token_capacity : int;
   checkpoint_capacity : int;
@@ -9,7 +8,6 @@ type options = {
 
 let defaults =
   {
-    kv_format = Kv_cache.Format.default;
     max_new_tokens = 32;
     token_capacity = 4_096;
     checkpoint_capacity = 512;
@@ -17,15 +15,11 @@ let defaults =
 
 let usage () =
   prerr_endline
-    "usage: llmopt-generate [--kv q8] [--max-new-tokens count] \
+    "usage: llmopt-generate [--max-new-tokens count] \
      [--token-capacity count] [--checkpoint-capacity count] \
      <tokenizer.llmopt> <prefill-directory> <decode-directory> \
      <role> <content> [<role> <content> ...]";
   exit 64
-
-let kv_format = function
-  | "q8" | "q8-group-64" -> Ok Kv_cache.Format.default
-  | value -> Error ("unsupported KV format: " ^ value)
 
 let positive name value =
   match int_of_string_opt value with
@@ -35,9 +29,6 @@ let positive name value =
 let arguments () =
   let rec parse options positional = function
     | [] -> Ok (options, List.rev positional)
-    | "--kv" :: value :: rest ->
-        let* kv_format = kv_format value in
-        parse { options with kv_format } positional rest
     | "--max-new-tokens" :: value :: rest ->
         let* max_new_tokens = positive "max-new-tokens" value in
         parse { options with max_new_tokens } positional rest
@@ -100,7 +91,7 @@ let run () =
   in
   let* cache_config =
     Serving_cache.Config.create ~model:Lfm25.Config.default
-      ~kv_format:options.kv_format ~token_capacity:options.token_capacity
+      ~token_capacity:options.token_capacity
       ~checkpoint_capacity:options.checkpoint_capacity ~page_size ()
   in
   let* () =
@@ -132,7 +123,8 @@ let run () =
   let completion_tokens = Generation.Result.completion_tokens result in
   let cache = Generation.Result.cache result in
   Printf.printf "device: %s\n" device;
-  Printf.printf "format: %s\n" (Kv_cache.Format.to_string options.kv_format);
+  Printf.printf "format: %s\n"
+    (Kv_cache.Format.to_string Kv_cache.Format.default);
   Printf.printf "load-seconds: %.6f\n" load_seconds;
   Printf.printf "prompt-token-count: %d\n" (Array.length prompt_tokens);
   Printf.printf "prompt-tokens: %s\n" (ids prompt_tokens);

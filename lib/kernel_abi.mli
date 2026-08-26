@@ -4,16 +4,7 @@ module Operation : sig
     | Fused_linear
     | Linear
     | W4a16_linear
-    | Q8_linear
-    | Q8_linear_silu
-    | Q8_linear_add
-    | Q8_linear_mul_add
-    | Q8_fused_swiglu_ffn
-    | Q8_fused_short_conv
-    | Q8_fused_qkv_rope
-    | Q8_fused_attn_out
-    | Q8_lm_head_argmax
-    | Q8_dequantize
+    | W4a16_lm_head_argmax
     | Rms_norm
     | Rms_rope
     | Short_conv

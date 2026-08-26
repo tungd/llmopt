@@ -52,13 +52,6 @@ val w4a16_linear :
   ?bias:(Space.global, Layout.row_major) t ->
   (Space.register, Layout.row_major) t
 
-val q8_linear :
-  ('input_space, Layout.row_major) t ->
-  (Space.global, Layout.row_major) t ->
-  (Space.global, Layout.row_major) t ->
-  ?bias:(Space.global, Layout.row_major) t ->
-  (Space.register, Layout.row_major) t
-
 val add :
   ('left, Layout.row_major) t ->
   ('right, Layout.row_major) t ->

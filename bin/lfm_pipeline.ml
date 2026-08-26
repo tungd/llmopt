@@ -106,10 +106,7 @@ let compile_single_graph ~weights_path ~graph_path ~output_dir ~greedy =
     Serving_package.Tensor_store.weights ~file:(artifact "weights.llmopt")
   in
   let metal_program =
-    Metal.add_cache_kernels
-      ~formats:
-        (Serving_package.Cache.supported_kv Serving_package.Cache.default)
-      metal_program
+    Metal.add_cache_kernels metal_program
   in
   let llvm_source = Llvm_ir.emit planned |> Result.value ~default:"" in
   let* package =

@@ -12,14 +12,6 @@ module Dtype = struct
     | Bool -> "bool"
 end
 
-module Quantization = struct
-  type t = Fp16 | W4A16_Q8KV
-
-  let to_string = function
-    | Fp16 -> "fp16"
-    | W4A16_Q8KV -> "w4a16-q8kv"
-end
-
 module Memory_space = struct
   type t = Global | Shared | Register | Private
 
@@ -426,76 +418,15 @@ module Op = struct
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
     | W4a16_linear of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
-    | Q8_fused_swiglu_ffn of {
-        m : int;
-        n : int;
-        k : int;
-        epsilon : float;
-      }
-    | Q8_fused_short_conv of {
-        m : int;
-        channels : int;
-        window : int;
-        k : int;
-        epsilon : float;
-      }
-    | Q8_linear_add_norm of {
+    | W4a16_lm_head_argmax of {
         m : int;
         n : int;
         k : int;
         epsilon : float;
         extra_outputs : Value.t list;
-      }
-    | Q8_lm_head_argmax of {
-        m : int;
-        n : int;
-        k : int;
-        epsilon : float;
-        extra_outputs : Value.t list;
-      }
-    | Q8_dual_linear of {
-        m : int;
-        n1 : int;
-        n2 : int;
-        k : int;
-        bias : bool;
-        silu_first : bool;
-        extra_outputs : Value.t list;
-      }
-    | Q8_qkv_linear of {
-        m : int;
-        n_q : int;
-        n_kv : int;
-        k : int;
-        bias : bool;
-        extra_outputs : Value.t list;
-      }
-    | Q8_fused_qkv_rope of {
-        m : int;
-        n_q : int;
-        n_kv : int;
-        k : int;
-        half_dimension : int;
-        epsilon : float;
-        extra_outputs : Value.t list;
-      }
-    | Q8_fused_attn_out of {
-        m : int;
-        heads : int;
-        head_dim : int;
-        k : int;
-        scale : float;
       }
   let additional_outputs = function
-    | Q8_linear_add_norm { extra_outputs; _ }
-    | Q8_lm_head_argmax { extra_outputs; _ }
-    | Q8_dual_linear { extra_outputs; _ }
-    | Q8_qkv_linear { extra_outputs; _ }
-    | Q8_fused_qkv_rope { extra_outputs; _ } -> extra_outputs
+    | W4a16_lm_head_argmax { extra_outputs; _ } -> extra_outputs
     | _ -> []
 
   let to_string = function
@@ -537,51 +468,10 @@ module Op = struct
         Printf.sprintf "w4a16-linear-g64[%dx%dx%d]" m n k
     | W4a16_linear { m; n; k; bias = true } ->
         Printf.sprintf "w4a16-linear-g64+bias[%dx%dx%d]" m n k
-    | Q8_linear { m; n; k; bias = false } ->
-        Printf.sprintf "q8-linear[%dx%dx%d]" m n k
-    | Q8_linear { m; n; k; bias = true } ->
-        Printf.sprintf "q8-linear+bias[%dx%dx%d]" m n k
-    | Q8_linear_silu { m; n; k; bias = false } ->
-        Printf.sprintf "q8-linear+silu[%dx%dx%d]" m n k
-    | Q8_linear_silu { m; n; k; bias = true } ->
-        Printf.sprintf "q8-linear+bias+silu[%dx%dx%d]" m n k
-    | Q8_linear_add { m; n; k; bias = false } ->
-        Printf.sprintf "q8-linear+add[%dx%dx%d]" m n k
-    | Q8_linear_add { m; n; k; bias = true } ->
-        Printf.sprintf "q8-linear+bias+add[%dx%dx%d]" m n k
-    | Q8_linear_mul_add { m; n; k; bias = false } ->
-        Printf.sprintf "q8-linear+mul+add[%dx%dx%d]" m n k
-    | Q8_linear_mul_add { m; n; k; bias = true } ->
-        Printf.sprintf "q8-linear+bias+mul+add[%dx%dx%d]" m n k
-    | Q8_fused_swiglu_ffn { m; n; k; epsilon } ->
-        Printf.sprintf "q8-fused-swiglu-ffn[%dx%dx%d,eps=%.9g]" m n k epsilon
-    | Q8_fused_short_conv { m; channels; window; k; epsilon } ->
-        Printf.sprintf "q8-fused-short-conv[%dxc=%d,w=%d,k=%d,eps=%.9g]" m channels window k epsilon
-    | Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
-        Printf.sprintf "q8-linear+add+rms-norm%s[%dx%dx%d,eps=%.9g]"
-          (if extra_outputs = [] then "" else "+residual-output") m n k
-          epsilon
-    | Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
-        Printf.sprintf "q8-lm-head-argmax%s[%dx%dx%d,eps=%.9g]"
+    | W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
+        Printf.sprintf "w4a16-lm-head-argmax%s[%dx%dx%d,eps=%.9g]"
           (if extra_outputs = [] then "" else "+logits-output") m n k
           epsilon
-    | Q8_dual_linear { m; n1; n2; k; bias = false; silu_first; _ } ->
-        Printf.sprintf "q8-dual-linear%s[%dx(%d+%d)x%d]"
-          (if silu_first then "+silu" else "") m n1 n2 k
-    | Q8_dual_linear { m; n1; n2; k; bias = true; silu_first; _ } ->
-        Printf.sprintf "q8-dual-linear+bias%s[%dx(%d+%d)x%d]"
-          (if silu_first then "+silu" else "") m n1 n2 k
-    | Q8_qkv_linear { m; n_q; n_kv; k; bias = false; _ } ->
-        Printf.sprintf "q8-qkv-linear[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv k
-    | Q8_qkv_linear { m; n_q; n_kv; k; bias = true; _ } ->
-        Printf.sprintf "q8-qkv-linear+bias[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv
-          k
-    | Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension; epsilon; _ } ->
-        Printf.sprintf "q8-fused-qkv-rope[%dx(%d+%d+%d)x%d,half=%d,eps=%.9g]"
-          m n_q n_kv n_kv k half_dimension epsilon
-    | Q8_fused_attn_out { m; heads; head_dim; k; scale } ->
-        Printf.sprintf "q8-fused-attn-out[%dx(h=%d,d=%d)x%d,scale=%.9g]"
-          m heads head_dim k scale
 end
 
 type node = {

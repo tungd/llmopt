@@ -22,7 +22,7 @@ from racebench.http import run_trace, write_report
 from racebench.trace import WorkloadTrace, validate_warmup_policy
 
 
-DEFAULT_HF_REPO = "LiquidAI/LFM2.5-350M-GGUF:Q8_0"
+DEFAULT_HF_REPO = "LiquidAI/LFM2.5-350M-GGUF:Q4_0"
 DEFAULT_TRACE = "bench/traces/lfm25-mps-smoke.json"
 DEFAULT_WARMUP_TRACE = "bench/traces/lfm25-mps-warmup.json"
 DEFAULT_ARTIFACT_DIR = "_artifacts/llama-cpp-trace"
@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--binary", help="path to llama-server")
     parser.add_argument("--hf-repo", default=DEFAULT_HF_REPO)
     parser.add_argument("--model", help="local GGUF path; overrides --hf-repo")
-    parser.add_argument("--model-id", default="llama-cpp-lfm25-350m-q8")
+    parser.add_argument("--model-id", default="llama-cpp-lfm25-350m-q4")
     parser.add_argument("--trace", default=DEFAULT_TRACE)
     parser.add_argument("--warmup-trace", default=DEFAULT_WARMUP_TRACE)
     parser.add_argument("--host", default="127.0.0.1")

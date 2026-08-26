@@ -40,10 +40,7 @@ module Tensor_input = struct
   let value input = input.value
 end
 
-type t = {
-  commands : Command.t list;
-  q8_selections : (int * Kernel_cost_model.selection) list;
-}
+type t = { commands : Command.t list }
 
 let commands schedule = schedule.commands
 
@@ -196,267 +193,7 @@ let validate_command seen_values command =
             else Error "schedule copy tensor metadata is inconsistent"
         | Ir.Op.Copy _, _, _ ->
             Error "schedule copy must have source/destination dependencies and no result"
-        | (Ir.Op.Q8_linear_add _, inputs, Some output) ->
-            if q8_residual_metadata_matches inputs output then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d Q8 residual-add metadata is inconsistent"
-                   command.Command.node_id)
-        | (Ir.Op.Q8_linear_mul_add _, inputs, Some output) ->
-            if q8_residual_metadata_matches inputs output then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                    "schedule node %d Q8 multiplied-residual metadata is inconsistent"
-                    command.Command.node_id)
-        | ( Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon = _ },
-            inputs,
-            Some output ) ->
-            let metadata_matches =
-              match inputs with
-              | [ input; residual; weight1; scale1; weight3; scale3; weight2; scale2; norm_weight ] ->
-                  q8_activation_dtype (Ir.Value.dtype input)
-                  && Ir.Value.dtype residual = Ir.Value.dtype input
-                  && q8_matrix_matches ~rows:n ~columns:k ~dtype:Ir.Dtype.Int8 weight1
-                  && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 scale1
-                  && q8_matrix_matches ~rows:n ~columns:k ~dtype:Ir.Dtype.Int8 weight3
-                  && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 scale3
-                  && q8_matrix_matches ~rows:k ~columns:n ~dtype:Ir.Dtype.Int8 weight2
-                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 scale2
-                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 norm_weight
-                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && Tensor_shape.equal (Ir.Value.logical_shape residual) (Ir.Value.logical_shape output)
-                  && q8_output_matches ~rows:m ~columns:k ~dtype:(Ir.Value.dtype input) output
-              | _ -> false
-            in
-            if metadata_matches then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d Q8 fused SwiGLU FFN metadata is inconsistent"
-                   command.Command.node_id)
-        | ( Ir.Op.Q8_fused_short_conv { m; channels; window = _; k; epsilon = _ },
-            inputs,
-            Some output ) ->
-            let metadata_matches =
-              match inputs with
-              | [ input; residual; weight_in; scale_in; conv_state; conv_weight; weight_out; scale_out; norm_weight ] ->
-                  q8_activation_dtype (Ir.Value.dtype input)
-                  && Ir.Value.dtype residual = Ir.Value.dtype input
-                  && q8_matrix_matches ~rows:(3 * channels) ~columns:k ~dtype:Ir.Dtype.Int8 weight_in
-                  && q8_vector_matches ~length:(3 * channels) ~dtype:Ir.Dtype.Float16 scale_in
-                  && Ir.Value.dtype conv_state = Ir.Dtype.Float16
-                  && Ir.Value.dtype conv_weight = Ir.Dtype.Float16
-                  && q8_matrix_matches ~rows:k ~columns:channels ~dtype:Ir.Dtype.Int8 weight_out
-                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 scale_out
-                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 norm_weight
-                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && Tensor_shape.equal (Ir.Value.logical_shape residual) (Ir.Value.logical_shape output)
-                  && q8_output_matches ~rows:m ~columns:k ~dtype:(Ir.Value.dtype input) output
-              | _ -> false
-            in
-            if metadata_matches then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d Q8 fused ShortConv metadata is inconsistent"
-                   command.Command.node_id)
-        | ( Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension = _; epsilon = _; extra_outputs },
-            inputs,
-            Some output ) ->
-            let secondary_matches =
-              match extra_outputs with
-              | [ key_output; value_output ] ->
-                  q8_output_matches ~rows:m ~columns:n_kv
-                    ~dtype:(Ir.Value.dtype output) key_output
-                  && q8_output_matches ~rows:m ~columns:n_kv
-                       ~dtype:(Ir.Value.dtype output) value_output
-              | _ -> false
-            in
-            let metadata_matches =
-              match inputs with
-              | [ input; norm_weight; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v; _cosine; _sine ] ->
-                  q8_activation_dtype (Ir.Value.dtype input)
-                  && Ir.Value.dtype norm_weight = Ir.Dtype.Float16
-                  && q8_matrix_matches ~rows:n_q ~columns:k ~dtype:Ir.Dtype.Int8 weight_q
-                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 scale_q
-                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8 weight_k
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_k
-                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8 weight_v
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
-                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_output_matches ~rows:m ~columns:n_q ~dtype:(Ir.Value.dtype input) output
-              | _ -> false
-            in
-            if metadata_matches && secondary_matches
-               && fresh_outputs seen_values (output :: extra_outputs)
-            then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d Q8 fused QKV RoPE metadata is inconsistent"
-                   command.Command.node_id)
-        | ( Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale = _ },
-            inputs,
-            Some output ) ->
-            let metadata_matches =
-              match inputs with
-              | [ query; _key; _value; _mask; out_weight; out_scale; residual ] ->
-                  q8_activation_dtype (Ir.Value.dtype query)
-                  && q8_matrix_matches ~rows:k ~columns:(heads * head_dim) ~dtype:Ir.Dtype.Int8 out_weight
-                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 out_scale
-                  && Ir.Value.dtype residual = Ir.Value.dtype output
-                  && q8_output_matches ~rows:m ~columns:k ~dtype:(Ir.Value.dtype query) output
-              | _ -> false
-            in
-            if metadata_matches then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d Q8 fused Attn Out metadata is inconsistent"
-                   command.Command.node_id)
-        | ( Ir.Op.Q8_dual_linear
-              { m; n1; n2; k; bias; silu_first = _; extra_outputs },
-            inputs,
-            Some output ) ->
-            let metadata_matches =
-              match inputs, bias with
-              | [ input; weight1; scale1; weight2; scale2 ], false ->
-                  q8_activation_dtype (Ir.Value.dtype input)
-                  && q8_matrix_matches ~rows:n1 ~columns:k ~dtype:Ir.Dtype.Int8
-                    weight1
-                  && q8_vector_matches ~length:n1 ~dtype:Ir.Dtype.Float16 scale1
-                  && q8_matrix_matches ~rows:n2 ~columns:k ~dtype:Ir.Dtype.Int8
-                       weight2
-                  && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 scale2
-                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_output_matches ~rows:m ~columns:n1
-                       ~dtype:(Ir.Value.dtype input) output
-              | [ input; weight1; scale1; bias1; weight2; scale2; bias2 ], true ->
-                  q8_activation_dtype (Ir.Value.dtype input)
-                  && q8_matrix_matches ~rows:n1 ~columns:k ~dtype:Ir.Dtype.Int8
-                    weight1
-                  && q8_vector_matches ~length:n1 ~dtype:Ir.Dtype.Float16 scale1
-                  && q8_vector_matches ~length:n1 ~dtype:Ir.Dtype.Float16 bias1
-                  && q8_matrix_matches ~rows:n2 ~columns:k ~dtype:Ir.Dtype.Int8
-                       weight2
-                  && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 scale2
-                  && q8_vector_matches ~length:n2 ~dtype:Ir.Dtype.Float16 bias2
-                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_output_matches ~rows:m ~columns:n1
-                       ~dtype:(Ir.Value.dtype input) output
-              | _ -> false
-            in
-            let secondary_matches =
-              match extra_outputs with
-              | [ output2 ] ->
-                  q8_output_matches ~rows:m ~columns:n2
-                    ~dtype:(Ir.Value.dtype output) output2
-              | _ -> false
-            in
-            if metadata_matches && secondary_matches
-               && fresh_outputs seen_values (output :: extra_outputs)
-            then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d dual-linear metadata is inconsistent"
-                   command.Command.node_id)
-        | ( Ir.Op.Q8_qkv_linear
-              { m; n_q; n_kv; k; bias; extra_outputs },
-            inputs,
-            Some output ) ->
-            let metadata_matches =
-              match inputs, bias with
-              | [ input; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v ],
-                false ->
-                  q8_activation_dtype (Ir.Value.dtype input)
-                  && q8_matrix_matches ~rows:n_q ~columns:k ~dtype:Ir.Dtype.Int8
-                    weight_q
-                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 scale_q
-                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
-                       weight_k
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_k
-                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
-                       weight_v
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
-                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_output_matches ~rows:m ~columns:n_q
-                       ~dtype:(Ir.Value.dtype input) output
-              | ( [ input; weight_q; scale_q; bias_q; weight_k; scale_k; bias_k;
-                    weight_v; scale_v; bias_v ],
-                  true ) ->
-                  q8_activation_dtype (Ir.Value.dtype input)
-                  && q8_matrix_matches ~rows:n_q ~columns:k ~dtype:Ir.Dtype.Int8
-                    weight_q
-                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 scale_q
-                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 bias_q
-                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
-                       weight_k
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_k
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 bias_k
-                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8
-                       weight_v
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
-                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 bias_v
-                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-                  && q8_output_matches ~rows:m ~columns:n_q
-                       ~dtype:(Ir.Value.dtype input) output
-              | _ -> false
-            in
-            let secondary_matches =
-              match extra_outputs with
-              | [ key_output; value_output ] ->
-                  q8_output_matches ~rows:m ~columns:n_kv
-                    ~dtype:(Ir.Value.dtype output) key_output
-                  && q8_output_matches ~rows:m ~columns:n_kv
-                       ~dtype:(Ir.Value.dtype output) value_output
-              | _ -> false
-            in
-            if metadata_matches && secondary_matches
-               && fresh_outputs seen_values (output :: extra_outputs)
-            then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d QKV metadata is inconsistent"
-                   command.Command.node_id)
-        | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs },
-            [ input; weight; scale; residual; norm_weight ],
-            Some output ) ->
-            let secondary_matches =
-              match extra_outputs with
-              | [] -> true
-              | [ raw_output ] ->
-                  q8_output_matches ~rows:m ~columns:n
-                    ~dtype:Ir.Dtype.Float16 raw_output
-              | _ -> false
-            in
-            if
-              Float.is_finite epsilon && epsilon > 0.0
-              && q8_activation_dtype (Ir.Value.dtype input)
-              && Ir.Value.dtype input = Ir.Dtype.Float16
-              && q8_matrix_matches ~rows:n ~columns:k ~dtype:Ir.Dtype.Int8
-                   weight
-              && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 scale
-              && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
-              && q8_output_matches ~rows:m ~columns:n
-                   ~dtype:Ir.Dtype.Float16 output
-              && Ir.Value.dtype residual = Ir.Dtype.Float16
-              && Tensor_shape.equal
-                   (Ir.Value.logical_shape residual)
-                   (Ir.Value.logical_shape output)
-              && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 norm_weight
-              && secondary_matches
-              && fresh_outputs seen_values (output :: extra_outputs)
-            then Ok ()
-            else
-              Error
-                (Printf.sprintf
-                   "schedule node %d linear-add-norm metadata is inconsistent"
-                   command.Command.node_id)
-        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs },
+        | ( Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs },
             [ input; norm_weight; weight; scale ],
             Some output ) ->
             let dimensions value = Tensor_shape.dimensions (Ir.Value.logical_shape value) in
@@ -472,13 +209,14 @@ let validate_command seen_values command =
               Float.is_finite epsilon && epsilon > 0.0
               && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
               && dimensions norm_weight = [ k ]
-              && dimensions weight = [ n; k ]
-              && dimensions scale = [ n ]
+              && k mod 64 = 0
+              && dimensions weight = [ n; k / 2 ]
+              && dimensions scale = [ n; k / 64 ]
               && dimensions output = [ m ]
               && (Ir.Value.dtype input = Ir.Dtype.Float16
                   || Ir.Value.dtype input = Ir.Dtype.Float32)
               && Ir.Value.dtype norm_weight = Ir.Dtype.Float16
-              && Ir.Value.dtype weight = Ir.Dtype.Int8
+              && Ir.Value.dtype weight = Ir.Dtype.UInt8
               && Ir.Value.dtype scale = Ir.Dtype.Float16
               && Ir.Value.dtype output = Ir.Dtype.Int32
               && secondary_matches
@@ -943,72 +681,9 @@ let validate_command seen_values command =
                  command.Command.node_id)
         | _ -> Ok ()
 
-let q8_selection_for_command device command =
-  match command.Command.op with
-  | Ir.Op.Q8_linear { m; n; k; _ }
-  | Ir.Op.Q8_linear_silu { m; n; k; _ }
-  | Ir.Op.Q8_linear_add { m; n; k; _ }
-  | Ir.Op.Q8_linear_mul_add { m; n; k; _ }
-  | Ir.Op.Q8_linear_add_norm { m; n; k; _ }
-  | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; _ } ->
-      let selection =
-        match Kernel_cost_model.select_optimal_tile ~m ~n ~k ~device with
-        | Ok selection -> selection
-        | Error _ -> Kernel_cost_model.Gemm_16x16x64
-      in
-      Some (command.Command.node_id, selection)
-  | Ir.Op.Q8_fused_short_conv { m; channels; k; _ } ->
-      let selection =
-        match Kernel_cost_model.select_optimal_tile ~m ~n:channels ~k ~device with
-        | Ok selection -> selection
-        | Error _ -> Kernel_cost_model.Gemm_16x16x64
-      in
-      Some (command.Command.node_id, selection)
-  | Ir.Op.Q8_dual_linear { m; n1; n2; k; _ } ->
-      let selection =
-        match Kernel_cost_model.select_optimal_tile ~m ~n:(n1 + n2) ~k ~device with
-        | Ok selection -> selection
-        | Error _ -> Kernel_cost_model.Gemm_16x16x64
-      in
-      Some (command.Command.node_id, selection)
-  | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; _ } ->
-      let selection =
-        match
-          Kernel_cost_model.select_optimal_tile ~m
-            ~n:(n_q + (2 * n_kv)) ~k ~device
-        with
-        | Ok selection -> selection
-        | Error _ -> Kernel_cost_model.Gemm_16x16x64
-      in
-      Some (command.Command.node_id, selection)
-  | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; _ } ->
-      let selection =
-        match
-          Kernel_cost_model.select_optimal_tile ~m
-            ~n:(n_q + (2 * n_kv)) ~k ~device
-        with
-        | Ok selection -> selection
-        | Error _ -> Kernel_cost_model.Gemm_16x16x64
-      in
-      Some (command.Command.node_id, selection)
-  | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; _ } ->
-      let selection =
-        match
-          Kernel_cost_model.select_optimal_tile ~m
-            ~n:k ~k:(heads * head_dim) ~device
-        with
-        | Ok selection -> selection
-        | Error _ -> Kernel_cost_model.Gemm_16x16x64
-      in
-      Some (command.Command.node_id, selection)
-  | _ -> None
-
-let create ?(device = Kernel_cost_model.Device.default) commands =
-  let q8_selections commands =
-    List.filter_map (q8_selection_for_command device) commands
-  in
+let create commands =
   let rec loop seen_nodes seen_values previous_node_id = function
-    | [] -> Ok { commands; q8_selections = q8_selections commands }
+    | [] -> Ok { commands }
     | command :: rest ->
         if Int_set.mem command.Command.node_id seen_nodes then
           Error
@@ -1030,7 +705,7 @@ let create ?(device = Kernel_cost_model.Device.default) commands =
   in
   loop Int_set.empty Int_set.empty (-1) commands
 
-let of_graph ?device graph =
+let of_graph graph =
   graph |> Ir.Graph.nodes
   |> List.map (fun node ->
          {
@@ -1039,10 +714,7 @@ let of_graph ?device graph =
            inputs = Ir.node_inputs node;
            output = Ir.node_output node;
          })
-  |> create ?device
-
-let q8_selection schedule ~node_id =
-  List.assoc_opt node_id schedule.q8_selections
+  |> create
 
 let tensor_inputs schedule =
   schedule.commands
@@ -1200,125 +872,15 @@ module Lfm25 = struct
                k = substitute substitutions k;
                bias;
              })
-    | Ir.Op.Q8_linear { m; n; k; bias } ->
+    | Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
         Ok
-          (Ir.Op.Q8_linear
-             {
-               m = substitute substitutions m;
-               n = substitute substitutions n;
-               k = substitute substitutions k;
-               bias;
-             })
-    | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
-        Ok
-          (Ir.Op.Q8_linear_silu
-             {
-               m = substitute substitutions m;
-               n = substitute substitutions n;
-               k = substitute substitutions k;
-               bias;
-             })
-    | Ir.Op.Q8_linear_add { m; n; k; bias } ->
-        Ok
-          (Ir.Op.Q8_linear_add
-             {
-               m = substitute substitutions m;
-               n = substitute substitutions n;
-               k = substitute substitutions k;
-               bias;
-             })
-    | Ir.Op.Q8_linear_mul_add { m; n; k; bias } ->
-        Ok
-          (Ir.Op.Q8_linear_mul_add
-             {
-               m = substitute substitutions m;
-               n = substitute substitutions n;
-               k = substitute substitutions k;
-               bias;
-             })
-    | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
-        Ok
-          (Ir.Op.Q8_linear_add_norm
+          (Ir.Op.W4a16_lm_head_argmax
              {
                m = substitute substitutions m;
                n = substitute substitutions n;
                k = substitute substitutions k;
                epsilon;
                extra_outputs;
-             })
-    | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
-        Ok
-          (Ir.Op.Q8_lm_head_argmax
-             {
-               m = substitute substitutions m;
-               n = substitute substitutions n;
-               k = substitute substitutions k;
-               epsilon;
-               extra_outputs;
-             })
-    | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; silu_first; extra_outputs } ->
-        Ok
-          (Ir.Op.Q8_dual_linear
-             {
-               m = substitute substitutions m;
-               n1 = substitute substitutions n1;
-               n2 = substitute substitutions n2;
-               k = substitute substitutions k;
-               bias;
-               silu_first;
-               extra_outputs;
-             })
-    | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias; extra_outputs } ->
-        Ok
-          (Ir.Op.Q8_qkv_linear
-             {
-               m = substitute substitutions m;
-               n_q = substitute substitutions n_q;
-               n_kv = substitute substitutions n_kv;
-               k = substitute substitutions k;
-               bias;
-               extra_outputs;
-             })
-    | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs } ->
-        Ok
-          (Ir.Op.Q8_fused_qkv_rope
-             {
-               m = substitute substitutions m;
-               n_q = substitute substitutions n_q;
-               n_kv = substitute substitutions n_kv;
-               k = substitute substitutions k;
-               half_dimension;
-               epsilon;
-               extra_outputs;
-             })
-    | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale } ->
-        Ok
-          (Ir.Op.Q8_fused_attn_out
-             {
-               m = substitute substitutions m;
-               heads;
-               head_dim;
-               k = substitute substitutions k;
-               scale;
-             })
-    | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon } ->
-        Ok
-          (Ir.Op.Q8_fused_swiglu_ffn
-             {
-               m = substitute substitutions m;
-               n = substitute substitutions n;
-               k = substitute substitutions k;
-               epsilon;
-             })
-    | Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon } ->
-        Ok
-          (Ir.Op.Q8_fused_short_conv
-             {
-               m = substitute substitutions m;
-               channels;
-               window;
-               k = substitute substitutions k;
-               epsilon;
              })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
@@ -1433,19 +995,10 @@ module Lfm25 = struct
           (Ir.Value.logical_shape right)
         |> shape_error
     | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
-      | Ir.Op.Q8_linear _ | Ir.Op.Q8_linear_silu _ | Ir.Op.Q8_linear_add _
-      | Ir.Op.Q8_linear_mul_add _ | Ir.Op.Q8_linear_add_norm _
-      | Ir.Op.Q8_dual_linear _
-      | Ir.Op.Q8_qkv_linear _
-      | Ir.Op.Q8_fused_qkv_rope _
-      | Ir.Op.Q8_fused_attn_out _
-      | Ir.Op.Q8_fused_swiglu_ffn _
-      | Ir.Op.Q8_fused_short_conv _ ),
-      _ ->
+      | Ir.Op.W4a16_linear _ ), _ ->
         map_shape substitutions original
-    | Ir.Op.Q8_lm_head_argmax { m; _ }, _ ->
-        Tensor_shape.create [ substitute substitutions m ]
-        |> shape_error
+    | Ir.Op.W4a16_lm_head_argmax { m; _ }, _ ->
+        Tensor_shape.create [ substitute substitutions m ] |> shape_error
     | _ -> map_shape substitutions original
 
   let output_value substitutions operation inputs original =
@@ -1483,50 +1036,16 @@ module Lfm25 = struct
 
   let specialized_additional_outputs substitutions operation originals =
     match operation, originals with
-    | Ir.Op.Q8_dual_linear { m; n2; _ }, [ output ] ->
-        specialized_matrix_value substitutions ~rows:m ~columns:n2 output
-        |> Result.map (fun output -> [ output ])
-    | Ir.Op.Q8_qkv_linear { m; n_kv; _ }, [ key_output; value_output ] ->
-        let* key_output =
-          specialized_matrix_value substitutions ~rows:m ~columns:n_kv key_output
-        in
-        let* value_output =
-          specialized_matrix_value substitutions ~rows:m ~columns:n_kv
-            value_output
-        in
-        Ok [ key_output; value_output ]
-    | Ir.Op.Q8_fused_qkv_rope { m; n_kv; _ }, [ key_output; value_output ] ->
-        let* key_output =
-          specialized_matrix_value substitutions ~rows:m ~columns:n_kv key_output
-        in
-        let* value_output =
-          specialized_matrix_value substitutions ~rows:m ~columns:n_kv
-            value_output
-        in
-        Ok [ key_output; value_output ]
-    | Ir.Op.Q8_linear_add_norm { m; n; _ }, [ raw_output ] ->
-        specialized_matrix_value substitutions ~rows:m ~columns:n raw_output
-        |> Result.map (fun output -> [ output ])
-    | Ir.Op.Q8_lm_head_argmax { m; n; _ }, [ logits_output ] ->
+    | Ir.Op.W4a16_lm_head_argmax { m; n; _ }, [ logits_output ] ->
         specialized_matrix_value substitutions ~rows:m ~columns:n logits_output
         |> Result.map (fun output -> [ output ])
-    | (Ir.Op.Q8_dual_linear _ | Ir.Op.Q8_qkv_linear _ | Ir.Op.Q8_fused_qkv_rope _), _ ->
-        Error "multi-output Q8 operation has an inconsistent secondary-output table"
     | _, [] -> Ok []
     | _, _ -> Error "unexpected secondary outputs in specialized schedule"
 
   let replace_additional_outputs operation outputs =
     match operation with
-    | Ir.Op.Q8_dual_linear config ->
-        Ir.Op.Q8_dual_linear { config with extra_outputs = outputs }
-    | Ir.Op.Q8_qkv_linear config ->
-        Ir.Op.Q8_qkv_linear { config with extra_outputs = outputs }
-    | Ir.Op.Q8_fused_qkv_rope config ->
-        Ir.Op.Q8_fused_qkv_rope { config with extra_outputs = outputs }
-    | Ir.Op.Q8_linear_add_norm config ->
-        Ir.Op.Q8_linear_add_norm { config with extra_outputs = outputs }
-    | Ir.Op.Q8_lm_head_argmax config ->
-        Ir.Op.Q8_lm_head_argmax { config with extra_outputs = outputs }
+    | Ir.Op.W4a16_lm_head_argmax config ->
+        Ir.Op.W4a16_lm_head_argmax { config with extra_outputs = outputs }
     | _ -> operation
 
   type last_token_projection = {
@@ -1555,9 +1074,7 @@ module Lfm25 = struct
 
   let projection_dimensions = function
     | Ir.Op.Linear { m; n; k; _ }
-    | Ir.Op.W4a16_linear { m; n; k; _ }
-    | Ir.Op.Q8_linear { m; n; k; _ } ->
-        Some (m, n, k)
+    | Ir.Op.W4a16_linear { m; n; k; _ } -> Some (m, n, k)
     | _ -> None
 
   let is_identity_index source index =
@@ -1708,8 +1225,6 @@ module Lfm25 = struct
                 (match command.Command.op with
                 | Ir.Op.Linear { n; k; bias; _ } ->
                     Ok (Ir.Op.Linear { m = 1; n; k; bias })
-                | Ir.Op.Q8_linear { n; k; bias; _ } ->
-                    Ok (Ir.Op.Q8_linear { m = 1; n; k; bias })
                 | Ir.Op.W4a16_linear { n; k; bias; _ } ->
                     Ok (Ir.Op.W4a16_linear { m = 1; n; k; bias })
                 | _ ->
@@ -1890,12 +1405,7 @@ module Lfm25 = struct
 
   let direct_q8_attention ~past_tokens ~cache schedule =
     let layout = Kv_cache.Config.layout cache in
-    let* group_size =
-      match Kv_cache.Layout.format layout with
-      | Kv_cache.Format.Q8 { group_size } -> Ok group_size
-      | Kv_cache.Format.F16 ->
-          Error "paged Q8 attention requires a grouped-Q8 physical cache"
-    in
+    let group_size = Kv_cache.Format.q8_group_size in
     let commands = schedule.commands in
     let maximum = max_value_id commands in
     if maximum > max_int - 2 then Error "paged Q8 attention value ids overflow"
@@ -2520,16 +2030,6 @@ let read_primitive values reader =
            { Ir.Reduction.operator = Sum; axes; keepdim })
   | 13 ->
       read_index reader |> Result.map (fun index -> Ir.Primitive.Update_slice index)
-  | 14 ->
-      let* scale = Binary.Reader.float64 reader in
-      let* cache_layer = Binary.Reader.u32 reader in
-      let* attention_layers = Binary.Reader.u32 reader in
-      let* kv_heads = Binary.Reader.u32 reader in
-      let* group_size = Binary.Reader.u32 reader in
-      let* token_stride = Binary.Reader.u32 reader in
-      Ir.Paged_attention_q8.create ~scale ~cache_layer ~attention_layers
-        ~kv_heads ~group_size ~token_stride
-      |> Result.map (fun config -> Ir.Primitive.Paged_attention_q8 config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -2593,49 +2093,7 @@ let write_op writer = function
       Binary.Writer.u8 writer 34;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
-  | Ir.Op.Q8_linear { m; n; k; bias } ->
-      Binary.Writer.u8 writer 14;
-      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.bool writer bias
-  | Ir.Op.Q8_linear_silu { m; n; k; bias } ->
-      Binary.Writer.u8 writer 17;
-      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.bool writer bias
-  | Ir.Op.Q8_linear_add { m; n; k; bias } ->
-      Binary.Writer.u8 writer 18;
-      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.bool writer bias
-  | Ir.Op.Q8_linear_mul_add { m; n; k; bias } ->
-      Binary.Writer.u8 writer 19;
-      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.bool writer bias
-  | Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon } ->
-      Binary.Writer.u8 writer 35;
-      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.float64 writer epsilon
-  | Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon } ->
-      Binary.Writer.u8 writer 36;
-      List.iter (Binary.Writer.u64 writer) [ m; channels; window; k ];
-      Binary.Writer.float64 writer epsilon
-  | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs } ->
-      Binary.Writer.u8 writer 37;
-      List.iter (Binary.Writer.u64 writer) [ m; n_q; n_kv; k; half_dimension ];
-      Binary.Writer.float64 writer epsilon;
-      Binary.Writer.u8 writer (List.length extra_outputs);
-      List.iter (write_value writer) extra_outputs
-  | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale } ->
-      Binary.Writer.u8 writer 38;
-      List.iter (Binary.Writer.u64 writer) [ m; heads; head_dim; k ];
-      Binary.Writer.float64 writer scale
-  | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
-      Binary.Writer.u8 writer (if extra_outputs = [] then 26 else 32);
-      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.float64 writer epsilon;
-      if extra_outputs <> [] then begin
-        Binary.Writer.u8 writer (List.length extra_outputs);
-        List.iter (write_value writer) extra_outputs
-      end
-  | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
+  | Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
       Binary.Writer.u8 writer (if extra_outputs = [] then 29 else 33);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.float64 writer epsilon;
@@ -2659,51 +2117,12 @@ let write_op writer = function
       Binary.Writer.u8 writer 22;
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.channels config);
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.window config)
-  | Ir.Op.Q8_dual_linear { m; n1; n2; k; bias; silu_first; extra_outputs } ->
-      Binary.Writer.u8 writer
-        (if extra_outputs = [] then if silu_first then 30 else 23
-         else if silu_first then 31 else 27);
-      Binary.Writer.u64 writer m;
-      Binary.Writer.u64 writer n1;
-      Binary.Writer.u64 writer n2;
-      Binary.Writer.u64 writer k;
-      Binary.Writer.bool writer bias;
-      if silu_first then Binary.Writer.bool writer true;
-      if extra_outputs <> [] then begin
-        Binary.Writer.u8 writer (List.length extra_outputs);
-        List.iter (write_value writer) extra_outputs
-      end
-  | Ir.Op.Q8_qkv_linear { m; n_q; n_kv; k; bias; extra_outputs } ->
-      Binary.Writer.u8 writer (if extra_outputs = [] then 24 else 28);
-      Binary.Writer.u64 writer m;
-      Binary.Writer.u64 writer n_q;
-      Binary.Writer.u64 writer n_kv;
-      Binary.Writer.u64 writer k;
-      Binary.Writer.bool writer bias;
-      if extra_outputs <> [] then begin
-        Binary.Writer.u8 writer (List.length extra_outputs);
-        List.iter (write_value writer) extra_outputs
-      end
+
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
   let* n = Binary.Reader.u64 reader in
   let* k = Binary.Reader.u64 reader in
   Ok (m, n, k)
-
-let read_four_dimensions reader =
-  let* d0 = Binary.Reader.u64 reader in
-  let* d1 = Binary.Reader.u64 reader in
-  let* d2 = Binary.Reader.u64 reader in
-  let* d3 = Binary.Reader.u64 reader in
-  Ok (d0, d1, d2, d3)
-
-let read_five_dimensions reader =
-  let* d0 = Binary.Reader.u64 reader in
-  let* d1 = Binary.Reader.u64 reader in
-  let* d2 = Binary.Reader.u64 reader in
-  let* d3 = Binary.Reader.u64 reader in
-  let* d4 = Binary.Reader.u64 reader in
-  Ok (d0, d1, d2, d3, d4)
 
 let read_op values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2763,10 +2182,6 @@ let read_op values reader =
   | 13 ->
       let* m, n, k = read_three_dimensions reader in
       Ok (Ir.Op.Fused_matmul_bias { m; n; k })
-  | 14 ->
-      let* m, n, k = read_three_dimensions reader in
-      let* bias = Binary.Reader.bool reader in
-      Ok (Ir.Op.Q8_linear { m; n; k; bias })
   | 34 ->
       let* m, n, k = read_three_dimensions reader in
       let* bias = Binary.Reader.bool reader in
@@ -2776,43 +2191,11 @@ let read_op values reader =
       let* epsilon = Binary.Reader.float64 reader in
       if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm { epsilon })
       else Error "schedule contains a non-finite RMSNorm epsilon"
-  | 17 ->
-      let* m, n, k = read_three_dimensions reader in
-      let* bias = Binary.Reader.bool reader in
-      Ok (Ir.Op.Q8_linear_silu { m; n; k; bias })
-  | 18 ->
-      let* m, n, k = read_three_dimensions reader in
-      let* bias = Binary.Reader.bool reader in
-      Ok (Ir.Op.Q8_linear_add { m; n; k; bias })
-  | 19 ->
-      let* m, n, k = read_three_dimensions reader in
-      let* bias = Binary.Reader.bool reader in
-      Ok (Ir.Op.Q8_linear_mul_add { m; n; k; bias })
-  | 26 ->
-      let* m, n, k = read_three_dimensions reader in
-      let* epsilon = Binary.Reader.float64 reader in
-      if Float.is_finite epsilon && epsilon > 0.0 then
-        Ok (Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs = [] })
-      else Error "schedule contains a non-finite linear-add-norm epsilon"
-  | 32 ->
-      let* m, n, k = read_three_dimensions reader in
-      let* epsilon = Binary.Reader.float64 reader in
-      let* count = Binary.Reader.u8 reader in
-      let rec outputs acc remaining =
-        if remaining = 0 then Ok (List.rev acc)
-        else
-          let* output = read_value reader in
-          outputs (output :: acc) (remaining - 1)
-      in
-      let* extra_outputs = outputs [] count in
-      if Float.is_finite epsilon && epsilon > 0.0 && count = 1 then
-        Ok (Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs })
-      else Error "schedule contains invalid linear-add-norm secondary outputs"
   | 29 ->
       let* m, n, k = read_three_dimensions reader in
       let* epsilon = Binary.Reader.float64 reader in
       if Float.is_finite epsilon && epsilon > 0.0 then
-        Ok (Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs = [] })
+        Ok (Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs = [] })
       else Error "schedule contains a non-finite LM-head argmax epsilon"
   | 33 ->
       let* m, n, k = read_three_dimensions reader in
@@ -2826,7 +2209,7 @@ let read_op values reader =
       in
       let* extra_outputs = outputs [] count in
       if Float.is_finite epsilon && epsilon > 0.0 && count = 1 then
-        Ok (Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs })
+        Ok (Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs })
       else Error "schedule contains invalid LM-head argmax secondary outputs"
   | 20 ->
       let* epsilon = Binary.Reader.float64 reader in
@@ -2843,129 +2226,11 @@ let read_op values reader =
       let* window = Binary.Reader.u64 reader in
       Ir.Short_conv_prefill.create ~channels ~window
       |> Result.map (fun config -> Ir.Op.Short_conv_prefill config)
-  | 23 ->
-      let* m = Binary.Reader.u64 reader in
-      let* n1 = Binary.Reader.u64 reader in
-      let* n2 = Binary.Reader.u64 reader in
-      let* k = Binary.Reader.u64 reader in
-      let* bias = Binary.Reader.bool reader in
-      Ok
-        (Ir.Op.Q8_dual_linear
-           { m; n1; n2; k; bias; silu_first = false; extra_outputs = [] })
-  | 24 ->
-      let* m = Binary.Reader.u64 reader in
-      let* n_q = Binary.Reader.u64 reader in
-      let* n_kv = Binary.Reader.u64 reader in
-      let* k = Binary.Reader.u64 reader in
-      let* bias = Binary.Reader.bool reader in
-      Ok
-        (Ir.Op.Q8_qkv_linear
-           { m; n_q; n_kv; k; bias; extra_outputs = [] })
   | 25 ->
       let* channels = Binary.Reader.u64 reader in
       let* window = Binary.Reader.u64 reader in
       Ir.Short_conv_step.create ~channels ~window
       |> Result.map (fun config -> Ir.Op.Short_conv_step_fused config)
-  | 27 ->
-      let* m = Binary.Reader.u64 reader in
-      let* n1 = Binary.Reader.u64 reader in
-      let* n2 = Binary.Reader.u64 reader in
-      let* k = Binary.Reader.u64 reader in
-      let* bias = Binary.Reader.bool reader in
-      let* count = Binary.Reader.u8 reader in
-      let rec outputs acc remaining =
-        if remaining = 0 then Ok (List.rev acc)
-        else
-          let* output = read_value reader in
-          outputs (output :: acc) (remaining - 1)
-      in
-      let* extra_outputs = outputs [] count in
-      Ok
-        (Ir.Op.Q8_dual_linear
-           { m; n1; n2; k; bias; silu_first = false; extra_outputs })
-  | 30 ->
-      let* m = Binary.Reader.u64 reader in
-      let* n1 = Binary.Reader.u64 reader in
-      let* n2 = Binary.Reader.u64 reader in
-      let* k = Binary.Reader.u64 reader in
-      let* bias = Binary.Reader.bool reader in
-      let* silu_first = Binary.Reader.bool reader in
-      if not silu_first then Error "silu dual-linear opcode has no activation"
-      else
-        Ok
-          (Ir.Op.Q8_dual_linear
-             { m; n1; n2; k; bias; silu_first; extra_outputs = [] })
-  | 31 ->
-      let* m = Binary.Reader.u64 reader in
-      let* n1 = Binary.Reader.u64 reader in
-      let* n2 = Binary.Reader.u64 reader in
-      let* k = Binary.Reader.u64 reader in
-      let* bias = Binary.Reader.bool reader in
-      let* silu_first = Binary.Reader.bool reader in
-      let* count = Binary.Reader.u8 reader in
-      let rec outputs acc remaining =
-        if remaining = 0 then Ok (List.rev acc)
-        else
-          let* output = read_value reader in
-          outputs (output :: acc) (remaining - 1)
-      in
-      let* extra_outputs = outputs [] count in
-      if not silu_first then Error "silu dual-linear opcode has no activation"
-      else
-        Ok
-          (Ir.Op.Q8_dual_linear
-             { m; n1; n2; k; bias; silu_first; extra_outputs })
-  | 28 ->
-      let* m = Binary.Reader.u64 reader in
-      let* n_q = Binary.Reader.u64 reader in
-      let* n_kv = Binary.Reader.u64 reader in
-      let* k = Binary.Reader.u64 reader in
-      let* bias = Binary.Reader.bool reader in
-      let* count = Binary.Reader.u8 reader in
-      let rec outputs acc remaining =
-        if remaining = 0 then Ok (List.rev acc)
-        else
-          let* output = read_value reader in
-          outputs (output :: acc) (remaining - 1)
-      in
-      let* extra_outputs = outputs [] count in
-      Ok
-        (Ir.Op.Q8_qkv_linear
-           { m; n_q; n_kv; k; bias; extra_outputs })
-  | 35 ->
-      let* m, n, k = read_three_dimensions reader in
-      let* epsilon = Binary.Reader.float64 reader in
-      if Float.is_finite epsilon && epsilon > 0.0 then
-        Ok (Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon })
-      else Error "schedule contains a non-finite Q8 fused SwiGLU FFN epsilon"
-  | 36 ->
-      let* m, channels, window, k = read_four_dimensions reader in
-      let* epsilon = Binary.Reader.float64 reader in
-      if Float.is_finite epsilon && epsilon > 0.0 then
-        Ok (Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon })
-      else Error "schedule contains a non-finite Q8 fused ShortConv epsilon"
-  | 37 ->
-      let* m, n_q, n_kv, k, half_dimension = read_five_dimensions reader in
-      let* epsilon = Binary.Reader.float64 reader in
-      let* count = Binary.Reader.u8 reader in
-      let rec outputs acc remaining =
-        if remaining = 0 then Ok (List.rev acc)
-        else
-          let* output = read_value reader in
-          outputs (output :: acc) (remaining - 1)
-      in
-      let* extra_outputs = outputs [] count in
-      if Float.is_finite epsilon && epsilon > 0.0 then
-        Ok
-          (Ir.Op.Q8_fused_qkv_rope
-             { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs })
-      else Error "schedule contains a non-finite Q8 fused QKV RoPE epsilon"
-  | 38 ->
-      let* m, heads, head_dim, k = read_four_dimensions reader in
-      let* scale = Binary.Reader.float64 reader in
-      if Float.is_finite scale && scale > 0.0 then
-        Ok (Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale })
-      else Error "schedule contains a non-finite Q8 fused Attn Out scale"
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"
@@ -2973,7 +2238,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 17;
+  Binary.Writer.u16 writer 18;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2987,13 +2252,13 @@ let to_bytes schedule =
     schedule.commands;
   Binary.Writer.contents writer
 
-let of_bytes ?device bytes =
+let of_bytes bytes =
   let reader = Binary.Reader.create bytes in
   let* actual_magic = Binary.Reader.raw_string reader ~length:(String.length magic) in
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 17 then
+    if version <> 18 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 
@@ -3029,4 +2294,4 @@ let of_bytes ?device bytes =
       in
       let* commands = read_values [] count in
       let* () = Binary.Reader.finish reader in
-      create ?device commands
+      create commands

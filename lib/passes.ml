@@ -2,31 +2,16 @@ module Linear_bias = Pass_fuse_linear_bias
 module Rms_norm = Pass_fuse_rms_norm
 module Rms_rope = Pass_fuse_rms_rope
 module Short_conv = Pass_fuse_short_conv
-module Q8_epilogues = Pass_fuse_q8_epilogues
-module Dual_linear_swiglu = Pass_fuse_dual_linear_swiglu
-module Swiglu_ffn = Pass_fuse_swiglu_ffn
-module Qkv_linear = Pass_fuse_qkv_linear
 module Short_conv_step_fused = Pass_fuse_short_conv_step
-module Linear_residual_norm = Pass_fuse_linear_residual_norm
 module Lm_head_argmax = Pass_fuse_lm_head_argmax
-module Attention_block = Pass_fuse_attention_block
 module Co_schedule = Pass_co_schedule
 
 let fuse_linear_bias = Pass_fuse_linear_bias.run
 let fuse_rms_norm = Pass_fuse_rms_norm.run
 let fuse_rms_rope = Pass_fuse_rms_rope.run
 let fuse_short_conv = Pass_fuse_short_conv.run
-let fuse_q8_silu = Pass_fuse_q8_epilogues.run_silu
-let fuse_q8_add = Pass_fuse_q8_epilogues.run_add
-let fuse_q8_mul_add = Pass_fuse_q8_epilogues.run_mul_add
-let fuse_dual_linear_swiglu = Pass_fuse_dual_linear_swiglu.run
-let fuse_swiglu_ffn = Pass_fuse_swiglu_ffn.run
 let discover_swiglu_ffn = Pass_fuse_swiglu_ffn.discover
-let fuse_qkv_linear = Pass_fuse_qkv_linear.run
 let fuse_short_conv_step = Pass_fuse_short_conv_step.run
-let fuse_short_conv_block = Pass_fuse_short_conv_block.run
-let fuse_attention_block = Pass_fuse_attention_block.run
-let fuse_linear_residual_norm = Pass_fuse_linear_residual_norm.run
 let fuse_lm_head_argmax = Pass_fuse_lm_head_argmax.run
 let co_schedule = Pass_co_schedule.run
 let co_schedule_plan = Pass_co_schedule.run_plan
@@ -43,14 +28,8 @@ let default_pipeline = Pass.Pipeline.of_list semantic_passes
 
 let execution_passes =
   [
-    Pass_fuse_qkv_linear.pass;
-    Pass_fuse_q8_epilogues.pass_silu;
-    Pass_fuse_dual_linear_swiglu.pass;
-    Pass_fuse_q8_epilogues.pass_add;
-    Pass_fuse_q8_epilogues.pass_mul_add;
     Pass_fuse_short_conv_step.pass;
     Pass_fuse_lm_head_argmax.pass;
-    Pass_fuse_attention_block.pass;
   ]
 
 let execution_pipeline = Pass.Pipeline.of_list execution_passes

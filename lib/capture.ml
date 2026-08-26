@@ -118,28 +118,6 @@ let run thunk =
                     ~inputs:(input :: weight :: scale :: Option.to_list bias)
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
-          | Tile_effect.Q8_linear
-              { input; weight; scale; bias; shape; logical_shape } ->
-              Some
-                (fun (continuation : (a, _) Effect.Deep.continuation) ->
-                  let input_shape = Ir.Value.shape input in
-                  let weight_shape = Ir.Value.shape weight in
-                  let output =
-                    fresh_tensor_value state.graph ~shape ~logical_shape
-                      ~dtype:(Ir.Value.dtype input)
-                  in
-                  Ir.Graph.append state.graph
-                    ~op:
-                      (Ir.Op.Q8_linear
-                         {
-                           m = Shape.rows input_shape;
-                           n = Shape.rows weight_shape;
-                           k = Shape.cols input_shape;
-                           bias = Option.is_some bias;
-                         })
-                    ~inputs:(input :: weight :: scale :: Option.to_list bias)
-                    ~output:(Some output);
-                  Effect.Deep.continue continuation output)
           | Tile_effect.Add { lhs; rhs; shape; logical_shape; broadcast } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->

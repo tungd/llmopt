@@ -146,8 +146,8 @@ Build an optimizing LLM compiler whose frontend is a PyTorch
 `torch.compile`/Dynamo FX backend and whose serving data plane is entirely
 OCaml plus Metal. Compilation emits a self-contained serving package. The
 OCaml process loads that package, tokenizes and schedules requests, dispatches
-the generated Metal kernels, and owns mandatory radix-prefix reuse with a
-configurable FP16 or grouped-Q8 KV cache. LFM2.5-350M Q8 is the primary
+the generated Metal kernels, and owns mandatory radix-prefix reuse with the
+fixed grouped-Q8 KV cache. LFM2.5-350M W4A16/KVQ8 is the primary
 development and memory-bounded validation target; the design must retain a
 deferred portability path to the 2.6B variant.
 
@@ -176,7 +176,7 @@ LFM2.5-350M graph, crosses a versioned binary compiler boundary, produces a
 versioned serving package, launches the OCaml
 runtime, serves the benchmark through generated Metal kernels, records actual
 radix/KV reuse across turns, and emits parity, needle, latency, and ERS
-evidence. Q8 must be the default cache/weight policy with FP16 selectable.
+evidence. W4A16 weights and grouped-Q8 KV are the only supported policy.
 There is no predeclared ERS score threshold; the measured value is evidence,
 not a substitute completion gate.
 
@@ -190,7 +190,7 @@ not a substitute completion gate.
    and schedule every prefill/decode operation against its tensor keys.
 5. Implement OCaml tokenization, sampling, request handling, and persistent
    generation state.
-6. Bind physical FP16/Q8 KV buffers and recurrent checkpoints to mandatory
+6. Bind physical grouped-Q8 KV buffers and recurrent checkpoints to mandatory
    radix-cache ownership.
 7. Measure exact behavior, cache reuse, raw latency, and ERS; then optimize the
    measured Metal boundaries.

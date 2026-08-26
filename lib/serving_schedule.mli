@@ -26,10 +26,8 @@ end
 
 type t
 
-val of_graph :
-  ?device:Kernel_cost_model.Device.t -> Ir.Graph.t -> (t, string) result
+val of_graph : Ir.Graph.t -> (t, string) result
 val commands : t -> Command.t list
-val q8_selection : t -> node_id:int -> Kernel_cost_model.selection option
 val stages : t -> Stage.t list
 val tensor_inputs : t -> Tensor_input.t list
 val runtime_inputs : t -> (string * Ir.Value.t) list
@@ -39,14 +37,9 @@ module Lfm25 : sig
   (** Rebuild a captured LFM prefill template for [tokens]. The request must
       cover the model's three-token recurrent window. When the [logits] output
       is the full-sequence vocabulary projection, specialize its existing
-      identity index and FP16 or Q8 linear command to the final token row. *)
+      identity index and W4A16 linear command to the final token row. *)
   val specialize_prefill :
     captured_tokens:int -> tokens:int -> t -> (t, string) result
-
-  (** Rebuild a captured one-token decode template for a non-empty
-      [past_tokens] prefix. *)
-  val specialize_decode :
-    captured_past:int -> past_tokens:int -> t -> (t, string) result
 
   val q8_attention_pool_input : string
   val q8_attention_slots_input : string
@@ -64,5 +57,4 @@ module Lfm25 : sig
 end
 
 val to_bytes : t -> bytes
-val of_bytes :
-  ?device:Kernel_cost_model.Device.t -> bytes -> (t, string) result
+val of_bytes : bytes -> (t, string) result

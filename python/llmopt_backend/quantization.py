@@ -9,7 +9,6 @@ implementation is the FP32-accumulating reference fallback.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Any
 
 import torch
@@ -246,16 +245,10 @@ class W4A16Linear(nn.Module):
         )
 
 
-def quantize_model_(
-    model: nn.Module,
-    *,
-    skip_suffixes: Iterable[str] = (),
-) -> dict[str, Any]:
-    """Replace eligible linear children in place and return an audit summary."""
+def quantize_model_(model: nn.Module) -> dict[str, Any]:
+    """Replace every linear child in place and return an audit summary."""
 
-    suffixes = tuple(skip_suffixes)
     converted: list[str] = []
-    skipped: list[str] = []
 
     def visit(module: nn.Module, prefix: str) -> None:
         for name, child in list(module.named_children()):
@@ -263,11 +256,8 @@ def quantize_model_(
             if isinstance(child, W4A16Linear):
                 continue
             if isinstance(child, nn.Linear):
-                if qualified_name.endswith(suffixes):
-                    skipped.append(qualified_name)
-                else:
-                    setattr(module, name, W4A16Linear.from_linear(child))
-                    converted.append(qualified_name)
+                setattr(module, name, W4A16Linear.from_linear(child))
+                converted.append(qualified_name)
                 continue
             visit(child, qualified_name)
 
@@ -279,7 +269,6 @@ def quantize_model_(
         "group_size": GROUP_SIZE,
         "converted_linear_modules": len(converted),
         "converted_modules": converted,
-        "skipped_modules": skipped,
     }
 
 

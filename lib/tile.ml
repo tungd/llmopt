@@ -157,52 +157,6 @@ let w4a16_linear input weight scale ?bias =
             layout = Layout.row_major;
           })
 
-let q8_linear input weight scale ?bias =
-  if weight.dtype <> Ir.Dtype.Int8 then
-    invalid_arg "q8_linear: weight must have int8 storage"
-  else if scale.dtype <> Ir.Dtype.Float16 && scale.dtype <> Ir.Dtype.Float32 then
-    invalid_arg "q8_linear: scale must be float16 or float32"
-  else if Shape.cols input.shape <> Shape.cols weight.shape then
-    invalid_arg
-      (Shape.error_to_string
-         (Shape.Not_broadcastable (input.shape, weight.shape)))
-  else
-    let output_shape =
-      Shape.of_ints_exn ~rows:(Shape.rows input.shape) ~cols:(Shape.rows weight.shape)
-    in
-    let expected_scale =
-      Shape.of_ints_exn ~rows:1 ~cols:(Shape.rows weight.shape)
-    in
-    if not (Shape.equal scale.shape expected_scale) then
-      invalid_arg
-        (Printf.sprintf "q8_linear: expected scale shape %s, got %s"
-           (Shape.to_string expected_scale) (Shape.to_string scale.shape))
-    else
-      (match bias with
-      | Some bias when not (Shape.equal bias.shape expected_scale) ->
-          invalid_arg
-            (Printf.sprintf "q8_linear: expected bias shape %s, got %s"
-               (Shape.to_string expected_scale) (Shape.to_string bias.shape))
-      | _ ->
-          let value =
-            Tile_effect.q8_linear
-              {
-                input = input.value;
-                weight = weight.value;
-                scale = scale.value;
-                bias = Option.map (fun tile -> tile.value) bias;
-                shape = output_shape;
-                logical_shape = Tensor_shape.of_matrix output_shape;
-              }
-          in
-          {
-            value;
-            shape = output_shape;
-            dtype = input.dtype;
-            space = Space.register;
-            layout = Layout.row_major;
-          })
-
 let add left right =
   let result_shape, broadcast =
     match Shape.add left.shape right.shape with

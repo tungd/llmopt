@@ -2,23 +2,16 @@ let ( let* ) = Result.bind
 
 let usage () =
   prerr_endline
-    "usage: llmopt-lfm-serving-check [--kv q8] \
+    "usage: llmopt-lfm-serving-check \
      <prefill-directory> <decode-directory>";
   exit 64
 
 let package root =
   Serving_package.of_file (Filename.concat root "package.llmopt")
 
-let format = function
-  | "q8" | "q8-group-64" -> Ok Kv_cache.Format.default
-  | value -> Error ("unsupported KV format: " ^ value)
-
 let arguments () =
   match Array.to_list Sys.argv with
-  | [ _; prefill; decode ] -> Ok (Kv_cache.Format.default, prefill, decode)
-  | [ _; "--kv"; value; prefill; decode ] ->
-      let* format = format value in
-      Ok (format, prefill, decode)
+  | [ _; prefill; decode ] -> Ok (prefill, decode)
   | _ -> usage ()
 
 let dimensions value =
@@ -100,13 +93,8 @@ let specialize ~cache prefill decode =
       ~captured_tokens:captured_prefill ~tokens:4096 prefill_schedule
   in
   let specialize_decode past_tokens =
-    match Kv_cache.Layout.format (Kv_cache.Config.layout cache) with
-    | Kv_cache.Format.F16 ->
-        Serving_schedule.Lfm25.specialize_decode ~captured_past ~past_tokens
-          decode_schedule
-    | Kv_cache.Format.Q8 _ ->
-        Serving_schedule.Lfm25.specialize_decode_paged_q8 ~captured_past
-          ~past_tokens ~cache decode_schedule
+    Serving_schedule.Lfm25.specialize_decode_paged_q8 ~captured_past
+      ~past_tokens ~cache decode_schedule
   in
   let* decode_one = specialize_decode 1 in
   let* decode_127 = specialize_decode 127 in
@@ -148,7 +136,7 @@ let specialize ~cache prefill decode =
       paged_attention )
 
 let run () =
-  let* kv_format, prefill_root, decode_root = arguments () in
+  let* prefill_root, decode_root = arguments () in
   let* prefill = package prefill_root in
   let* decode = package decode_root in
   let* () = Serving_package.validate_files ~root:prefill_root prefill in
@@ -165,7 +153,7 @@ let run () =
          prefill_page decode_page)
   else
     let* config =
-      Serving_cache.Config.create ~model:Lfm25.Config.default ~kv_format
+      Serving_cache.Config.create ~model:Lfm25.Config.default
         ~token_capacity:1 ~checkpoint_capacity:1 ~page_size:prefill_page ()
     in
     let* () = Serving_engine.validate_packages ~config ~prefill ~decode in
@@ -179,7 +167,7 @@ let run () =
       "valid LFM2.5 serving pair: prefill ABI=%d, decode ABI=%d, KV=%s, page=%d\n"
       (Serving_package.abi_version prefill)
       (Serving_package.abi_version decode)
-      (Kv_cache.Format.to_string kv_format) prefill_page;
+      (Kv_cache.Format.to_string Kv_cache.Format.default) prefill_page;
     Printf.printf "prefill head rows: 13=%d, 128=%d, 4096=%d\n"
       prefill_13_rows prefill_128_rows prefill_4096_rows;
     Printf.printf

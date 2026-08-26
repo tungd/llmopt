@@ -1,49 +1,24 @@
 module Format = struct
-  type t = F16 | Q8 of { group_size : int }
+  type t = Q8
 
   let q8_group_size = 64
-  let default = Q8 { group_size = q8_group_size }
-  let f16 = F16
-
-  let validate = function
-    | F16 -> Ok ()
-    | Q8 { group_size } when group_size = q8_group_size -> Ok ()
-    | Q8 _ -> Error "Q8 KV group_size must be 64"
-
-  let q8 ~group_size =
-    if group_size <= 0 then Error "Q8 KV group_size must be positive"
-    else if group_size <> q8_group_size then
-      Error "Q8 KV group_size must be 64"
-    else Ok (Q8 { group_size })
-
-  let to_string = function
-    | F16 -> "f16"
-    | Q8 { group_size } -> Printf.sprintf "q8-group-%d" group_size
-
-  let group_size = function
-    | F16 -> None
-    | Q8 { group_size } -> Some group_size
+  let default = Q8
+  let validate Q8 = Ok ()
+  let to_string Q8 = "q8-group-64"
+  let group_size Q8 = Some q8_group_size
 
   let groups_for_elements format ~elements =
     if elements < 0 then invalid_arg "KV element count cannot be negative";
-    match format with
-    | F16 -> 0
-    | Q8 { group_size } ->
-        (elements / group_size)
-        + if elements mod group_size = 0 then 0 else 1
+    let group_size = q8_group_size in
+    (elements / group_size)
+    + if elements mod group_size = 0 then 0 else 1
 
   let bytes_for_elements format ~elements =
     if elements < 0 then invalid_arg "KV element count cannot be negative";
-    match format with
-    | F16 ->
-        if elements > max_int / 2 then
-          invalid_arg "FP16 KV byte length overflows"
-        else 2 * elements
-    | Q8 _ ->
-        let groups = groups_for_elements format ~elements in
-        if groups > (max_int - elements) / 2 then
-          invalid_arg "Q8 KV byte length overflows"
-        else elements + (2 * groups)
+    let groups = groups_for_elements format ~elements in
+    if groups > (max_int - elements) / 2 then
+      invalid_arg "Q8 KV byte length overflows"
+    else elements + (2 * groups)
 end
 
 module Layout = struct

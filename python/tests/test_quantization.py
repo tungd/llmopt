@@ -68,21 +68,6 @@ class QuantizationTest(unittest.TestCase):
         self.assertIsInstance(model.proj, W4A16Linear)
         self.assertIsInstance(model.lm_head, W4A16Linear)
         self.assertEqual(summary["group_size"], GROUP_SIZE)
-        self.assertEqual(summary["skipped_modules"], [])
-
-    def test_model_rewrite_retains_explicit_skip_suffixes(self):
-        class Tiny(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.proj = torch.nn.Linear(GROUP_SIZE, 3)
-                self.lm_head = torch.nn.Linear(GROUP_SIZE, 8)
-
-        model = Tiny()
-        summary = quantize_model_(model, skip_suffixes=("lm_head",))
-        self.assertEqual(summary["converted_linear_modules"], 1)
-        self.assertIsInstance(model.proj, W4A16Linear)
-        self.assertIsInstance(model.lm_head, torch.nn.Linear)
-        self.assertEqual(summary["skipped_modules"], ["lm_head"])
 
     def test_non_group_aligned_k_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "multiple of 64"):

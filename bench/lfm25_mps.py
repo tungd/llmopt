@@ -60,12 +60,6 @@ def hardware_model() -> str | None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
-    parser.add_argument(
-        "--quantization",
-        choices=("w4a16-q8kv", "fp16"),
-        default="w4a16-q8kv",
-        help="model format (default: packed W4A16 weights with Q8 KV)",
-    )
     parser.add_argument("--prompt", default="The capital of France is")
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
@@ -95,11 +89,8 @@ def main() -> None:
         low_cpu_mem_usage=True,
     )
     model.eval()
-    quantization_summary = None
-    if args.quantization == "w4a16-q8kv":
-        quantization_summary = quantize_model_(model)
+    quantization_summary = quantize_model_(model)
     model.to(device)
-    os.environ["LLMOPT_QUANTIZATION"] = args.quantization
     load_seconds = time.perf_counter() - load_start
     input_ids = tokenizer(args.prompt, return_tensors="pt")["input_ids"].to(device)
 
@@ -139,14 +130,14 @@ def main() -> None:
         },
         "input_tokens": input_ids.shape[-1],
         "parameters": sum(parameter.numel() for parameter in model.parameters()),
-        "quantization": args.quantization,
+        "quantization": "w4a16-q8kv",
         "quantization_summary": quantization_summary,
         "load_seconds": load_seconds,
         "compile_first_call_seconds": first_call_seconds,
         "eager": summary(eager_samples),
         "llmopt_mps": summary(compiled_samples),
         "correctness": {"max_abs": max_abs, "mean_abs": mean_abs, "exact": True},
-        "optimization": f"fx-direct-execution+{args.quantization}",
+        "optimization": "fx-direct-execution+w4a16-q8kv",
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

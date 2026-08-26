@@ -202,32 +202,6 @@ val precompile_decode_batch :
 val tensor :
   t -> name:string -> (Buffer.t * Weight_archive.Tensor.t, string) result
 
-val dispatch_q8_linear :
-  t ->
-  dtype:Ir.Dtype.t ->
-  input:Buffer.t ->
-  weight:Buffer.t ->
-  scale:Buffer.t ->
-  bias:Buffer.t option ->
-  output:Buffer.t ->
-  m:int ->
-  n:int ->
-  k:int ->
-  (string, string) result
-
-val dispatch_q8_gemm :
-  t ->
-  dtype:Ir.Dtype.t ->
-  input:Buffer.t ->
-  weight:Buffer.t ->
-  scale:Buffer.t ->
-  bias:Buffer.t option ->
-  output:Buffer.t ->
-  m:int ->
-  n:int ->
-  k:int ->
-  (string, string) result
-
 module Ring_queue : sig
   type t
 
@@ -269,4 +243,3 @@ module Prebaked : sig
 
   val execute : t -> token:int -> past_tokens:int -> (int, string) result
 end
-

@@ -28,16 +28,10 @@ end
 module Cache : sig
   type t
 
-  val create :
-    page_size:int ->
-    default_kv:Kv_cache.Format.t ->
-    supported_kv:Kv_cache.Format.t list ->
-    (t, string) result
+  val create : page_size:int -> (t, string) result
 
   val default : t
   val page_size : t -> int
-  val default_kv : t -> Kv_cache.Format.t
-  val supported_kv : t -> Kv_cache.Format.t list
 end
 
 type t

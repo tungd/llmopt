@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_HF_REPO = "LiquidAI/LFM2.5-350M-GGUF:Q8_0"
+DEFAULT_HF_REPO = "LiquidAI/LFM2.5-350M-GGUF:Q4_0"
 DEFAULT_OUTPUT = "_artifacts/llama-cpp/llama-bench.json"
 
 

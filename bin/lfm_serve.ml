@@ -3,7 +3,6 @@ let ( let* ) = Result.bind
 type options = {
   host : string;
   port : int;
-  kv_format : Kv_cache.Format.t;
   token_capacity : int;
   checkpoint_capacity : int;
   max_body_bytes : int;
@@ -13,7 +12,6 @@ let defaults =
   {
     host = "127.0.0.1";
     port = 8000;
-    kv_format = Kv_cache.Format.default;
     token_capacity = 8_192;
     checkpoint_capacity = 1_024;
     max_body_bytes = 64 * 1_024 * 1_024;
@@ -21,7 +19,7 @@ let defaults =
 
 let usage () =
   prerr_endline
-    "usage: llmopt-serve [--host address] [--port number] [--kv q8] \
+    "usage: llmopt-serve [--host address] [--port number] \
      [--token-capacity count] [--checkpoint-capacity count] \
      [--max-body-bytes count] <engine-directory | tokenizer.llmopt prefill-dir decode-dir>";
   exit 64
@@ -30,10 +28,6 @@ let positive name value =
   match int_of_string_opt value with
   | Some value when value > 0 -> Ok value
   | _ -> Error (name ^ " must be a positive integer")
-
-let kv_format = function
-  | "q8" | "q8-group-64" -> Ok Kv_cache.Format.default
-  | value -> Error ("unsupported KV format: " ^ value)
 
 let arguments () =
   let rec parse options positional = function
@@ -44,9 +38,6 @@ let arguments () =
         let* port = positive "port" value in
         if port > 65_535 then Error "port must not exceed 65535"
         else parse { options with port } positional rest
-    | "--kv" :: value :: rest ->
-        let* kv_format = kv_format value in
-        parse { options with kv_format } positional rest
     | "--token-capacity" :: value :: rest ->
         let* token_capacity = positive "token-capacity" value in
         parse { options with token_capacity } positional rest
@@ -82,7 +73,7 @@ let load options tokenizer_path prefill_root decode_root =
   in
   let* cache_config =
     Serving_cache.Config.create ~model:Lfm25.Config.default
-      ~kv_format:options.kv_format ~token_capacity:options.token_capacity
+      ~token_capacity:options.token_capacity
       ~checkpoint_capacity:options.checkpoint_capacity ~page_size ()
   in
   let* () =
@@ -511,7 +502,7 @@ let run () =
   in
   let* service, device = load options tokenizer prefill decode in
   Printf.eprintf "device: %s; kv: %s\n%!" device
-    (Kv_cache.Format.to_string options.kv_format);
+    (Kv_cache.Format.to_string Kv_cache.Format.default);
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   serve service options
 

@@ -525,7 +525,7 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
             json.dumps(captured.manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    quantization = os.environ.get("LLMOPT_QUANTIZATION", "w4a16-q8kv")
+    quantization = "w4a16-q8kv"
     metal_library: Path | None = None
     try:
         compiler_command = [str(compiler)]

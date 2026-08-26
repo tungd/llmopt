@@ -57,10 +57,9 @@ llama-server SSE does not expose the llmopt token-ID instrumentation; the HTTP
 side comparison therefore retains timing and visible streamed output while
 preserving the existing token-parity observations for llmopt versus eager Q8.
 
-The 2026-08-27 Q4_0 target run replayed against an engine generated from the
-preserved Q8 graph and weight archive. It is a valid endpoint timing comparison,
-but it is not weight-precision parity; a full W4 capture-to-engine run is the
-next like-for-like comparison.
+The 2026-08-27 canonical rerun feeds the preserved W4A16 graph and weight
+archive through the unified pipeline and compares the resulting native engine
+with Q4_0, establishing the requested weight-precision parity boundary.
 
 The benchmark records measurements for comparison and introduces no additional
 performance threshold.

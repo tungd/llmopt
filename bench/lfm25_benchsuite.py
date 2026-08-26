@@ -600,12 +600,6 @@ def _metadata(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
-    parser.add_argument(
-        "--quantization",
-        choices=("w4a16-q8kv", "fp16"),
-        default="w4a16-q8kv",
-        help="model format (default: packed W4A16 weights with Q8 KV)",
-    )
     parser.add_argument("--trace", default="bench/traces/lfm25-mps-smoke.json")
     parser.add_argument(
         "--warmup-trace", default="bench/traces/lfm25-mps-warmup.json"
@@ -769,8 +763,6 @@ def _worker_command(args: argparse.Namespace, candidate: str, root: Path) -> lis
         str(Path(__file__).resolve()),
         "--model",
         args.model,
-        "--quantization",
-        args.quantization,
         "--prompt",
         args.prompt,
         "--needle-lengths",
@@ -870,7 +862,7 @@ def _combine_isolated_results(
         "measurement_status": "isolated_observation",
         "created_at": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
         "target": "pytorch-mps",
-        "optimization": f"fx-direct-execution+{args.quantization}",
+        "optimization": "fx-direct-execution+w4a16-q8kv",
         "trace": args.profile or args.trace,
         "warmup_trace": (
             f"profile:{args.profile}:warmup" if args.profile else args.warmup_trace
@@ -970,7 +962,6 @@ def main() -> int:
     if not compiler.exists() and not os.environ.get("LLMOPT_FX_COMPILER"):
         raise RuntimeError("llmopt-fx is not available; run `ninja -f ninja.build all`")
     os.environ["LLMOPT_FX_FALLBACK"] = "0"
-    os.environ["LLMOPT_QUANTIZATION"] = args.quantization
     artifact_root = Path(args.artifact_dir)
     artifact_root.mkdir(parents=True, exist_ok=True)
     os.environ["LLMOPT_ARTIFACT_DIR"] = str(artifact_root / "graphs")
@@ -983,16 +974,14 @@ def main() -> int:
         dtype=torch.float16,
         low_cpu_mem_usage=True,
     ).eval()
-    quantization_summary = None
-    if args.quantization == "w4a16-q8kv":
-        quantization_summary = quantize_model_(eager_model)
+    quantization_summary = quantize_model_(eager_model)
     eager_model = eager_model.to(device)
     load_seconds = time.perf_counter() - load_start
     metadata = _metadata(
         args.model,
         device,
         load_seconds,
-        quantization=args.quantization,
+        quantization="w4a16-q8kv",
         quantization_summary=quantization_summary,
     )
 
@@ -1108,7 +1097,7 @@ def main() -> int:
         "measurement_status": "worker_observation" if args.worker else "in_process_observation",
         "created_at": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
         "target": "pytorch-mps",
-        "optimization": f"fx-direct-execution+{args.quantization}",
+        "optimization": "fx-direct-execution+w4a16-q8kv",
         "trace": trace_source,
         "warmup_trace": (
             f"profile:{args.profile}:warmup" if args.profile else args.warmup_trace

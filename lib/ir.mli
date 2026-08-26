@@ -3,11 +3,6 @@ module Dtype : sig
   val to_string : t -> string
 end
 
-module Quantization : sig
-  type t = Fp16 | W4A16_Q8KV
-  val to_string : t -> string
-end
-
 module Memory_space : sig
   type t = Global | Shared | Register | Private
   val to_string : t -> string
@@ -246,69 +241,12 @@ module Op : sig
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
     | W4a16_linear of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
-    | Q8_fused_swiglu_ffn of {
-        m : int;
-        n : int;
-        k : int;
-        epsilon : float;
-      }
-    | Q8_fused_short_conv of {
-        m : int;
-        channels : int;
-        window : int;
-        k : int;
-        epsilon : float;
-      }
-    | Q8_linear_add_norm of {
+    | W4a16_lm_head_argmax of {
         m : int;
         n : int;
         k : int;
         epsilon : float;
         extra_outputs : Value.t list;
-      }
-    | Q8_lm_head_argmax of {
-        m : int;
-        n : int;
-        k : int;
-        epsilon : float;
-        extra_outputs : Value.t list;
-      }
-    | Q8_dual_linear of {
-        m : int;
-        n1 : int;
-        n2 : int;
-        k : int;
-        bias : bool;
-        silu_first : bool;
-        extra_outputs : Value.t list;
-      }
-    | Q8_qkv_linear of {
-        m : int;
-        n_q : int;
-        n_kv : int;
-        k : int;
-        bias : bool;
-        extra_outputs : Value.t list;
-      }
-    | Q8_fused_qkv_rope of {
-        m : int;
-        n_q : int;
-        n_kv : int;
-        k : int;
-        half_dimension : int;
-        epsilon : float;
-        extra_outputs : Value.t list;
-      }
-    | Q8_fused_attn_out of {
-        m : int;
-        heads : int;
-        head_dim : int;
-        k : int;
-        scale : float;
       }
   val additional_outputs : t -> Value.t list
 

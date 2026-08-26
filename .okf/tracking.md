@@ -21,6 +21,15 @@ The authoritative end state and requirement-level evidence are tracked in the
 
 | Slice | State | Evidence |
 |---|---|---|
+| Canonical W4A16/KVQ8 model-to-binary pipeline | implemented and model-executed | The preserved 93-linear W4 capture feeds the unified pipeline into ABI-v16/schedule-v18 packages: prefill has 928 commands/54 kernels, decode has 947 commands/51 kernels, both have 243 static bindings and zero opaque commands. The W4 LM-head emits an `i32` token, and one native shared-trace run completed 4/4 scored requests with ERS `0.0775578873`, median TTFT `266.1998955 ms`, median TPOT `17.1107082 ms`, and 80/193 cached prompt tokens. |
+| Canonical surface cleanup | implemented | Q8-weight IR/ABI/kernels/passes/bridges and FP16 weight/KV selectors were removed. Capture, package generation, serving, tests, and benchmark defaults now expose only W4A16/KVQ8. |
+
+The rows below are the chronological research register. Entries for Q8 weights
+and selectable FP16 KV are retained as historical evidence and no longer map to
+executable paths.
+
+| Slice | State | Evidence |
+|---|---|---|
 | Ninja-built OCaml 5 effect/IR prototype | implemented | `ninja test` passes |
 | Python Dynamo/FX manifest exporter | implemented | v2 captures rank plus typed node, integer, float, bool, null, string, symbol, sequence, mapping, and slice arguments; Python unittest passes |
 | Dynamo-to-OCaml compiler transport | implemented | default capture writes `LLMOPTFX` ABI-v1 `graph.llmopt`; OCaml parses manifest-v2 typed fields and rejects malformed/truncated/trailing data. The preserved prefill/decode graphs round-trip exactly at 253,354/259,928 bytes versus 776,844/796,970 JSON bytes; JSON emission is opt-in |
@@ -79,16 +88,14 @@ measurement into a release gate.
 - Which FX decomposition boundary gives the cleanest LFM2.5 conv/GQA op set?
 - How should symbolic sequence length be represented when Dynamo specializes or
   recompiles a graph?
-- What additional Q8 tile shapes and launch policies should be selected for
-  the LFM2.5 projection dimensions beyond the initial 16x16 kernel?
+- What W4A16 tile shapes and launch policies best fit the LFM2.5 projection
+  dimensions?
 - How should generated libraries be versioned and invalidated when the FX
   graph, target device, or compiler flags change?
 - How much repeat/counterbalance sampling should be used when comparing MPS
   latency distributions after the isolated profile is recorded?
-- Which LFM2.5 linear subgraphs can use the generated Q8 callable without
-  falling back to PyTorch dequantization?
-- Which reduction schedule or MPS-compatible matmul lowering can make the
-  native Phase 2 float32 Q8 path match the exact generated dequantization path?
+- Which W4A16 linear subgraphs should be fused without violating the packed
+  group-64 contract?
 - Which vocabulary-projection tile and reduction order best balance prefill and
   one-token decode before batched command-buffer submission?
 - Which symbolic-dimension representation should replace the current

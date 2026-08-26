@@ -2,14 +2,10 @@ let ( let* ) = Result.bind
 
 let usage () =
   prerr_endline
-    "usage: llmopt-lfm-serving-smoke [--kv q8] [--tokens count] \
+    "usage: llmopt-lfm-serving-smoke [--tokens count] \
      [--input-ids id,id,...] [--prefill-logits path] \
      <prefill-directory> <decode-directory>";
   exit 64
-
-let format = function
-  | "q8" | "q8-group-64" -> Ok Kv_cache.Format.default
-  | value -> Error ("unsupported KV format: " ^ value)
 
 let input_ids value =
   let values = String.split_on_char ',' value in
@@ -38,7 +34,6 @@ let input_ids value =
     |> Result.map (fun values -> values |> List.rev |> Array.of_list)
 
 type arguments = {
-  kv_format : Kv_cache.Format.t;
   generated_tokens : int;
   input : int array;
   prefill_logits : string option;
@@ -47,7 +42,7 @@ type arguments = {
 }
 
 let arguments () =
-  let rec parse kv_format generated_tokens input prefill_logits positional =
+  let rec parse generated_tokens input prefill_logits positional =
     function
     | [] ->
         (match List.rev positional with
@@ -57,7 +52,6 @@ let arguments () =
             else
               Ok
                 {
-                  kv_format;
                   generated_tokens;
                   input;
                   prefill_logits;
@@ -65,26 +59,23 @@ let arguments () =
                   decode_root = decode;
                 }
         | _ -> usage ())
-    | "--kv" :: value :: rest ->
-        let* kv_format = format value in
-        parse kv_format generated_tokens input prefill_logits positional rest
     | "--tokens" :: value :: rest ->
         (match int_of_string_opt value with
         | Some generated_tokens ->
-            parse kv_format generated_tokens input prefill_logits positional rest
+            parse generated_tokens input prefill_logits positional rest
         | None -> Error ("invalid generated token count: " ^ value))
     | "--input-ids" :: value :: rest ->
         let* input = input_ids value in
-        parse kv_format generated_tokens input prefill_logits positional rest
+        parse generated_tokens input prefill_logits positional rest
     | "--prefill-logits" :: value :: rest ->
-        parse kv_format generated_tokens input (Some value) positional rest
+        parse generated_tokens input (Some value) positional rest
     | value :: rest ->
-        parse kv_format generated_tokens input prefill_logits
+        parse generated_tokens input prefill_logits
           (value :: positional) rest
   in
   match Array.to_list Sys.argv with
   | _ :: arguments ->
-      parse Kv_cache.Format.default 4 [| 1; 2; 3; 4; 5; 6 |] None []
+      parse 4 [| 1; 2; 3; 4; 5; 6 |] None []
         arguments
   | [] -> usage ()
 
@@ -159,7 +150,6 @@ let run () =
   in
   let* config =
     Serving_cache.Config.create ~model:Lfm25.Config.default
-      ~kv_format:arguments.kv_format
       ~token_capacity:64 ~checkpoint_capacity:8 ~page_size ()
   in
   let* () =
@@ -215,7 +205,7 @@ let run () =
   in
   Printf.printf "device: %s\n" (Metal_runtime.device_name prefill_runtime);
   Printf.printf "format: %s\n"
-    (Kv_cache.Format.to_string arguments.kv_format);
+    (Kv_cache.Format.to_string Kv_cache.Format.default);
   Printf.printf "input: %s\n"
     (arguments.input |> Array.to_list |> List.map string_of_int
    |> String.concat ",");

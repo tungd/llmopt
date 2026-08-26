@@ -109,6 +109,12 @@ sources:
 
 # Overview
 
+The canonical model contract is packed group-64 W4A16 for every linear module
+and grouped-Q8 for attention KV plus recurrent checkpoints. The current IR,
+kernel ABI, schedule ABI v18, package ABI v16, runtime, serving CLI, and Python
+capture surface expose no Q8-weight or FP16-KV alternative. Earlier Q8-weight
+and selectable-cache sections below describe superseded experiments only.
+
 The public frontend is a PyTorch `torch.compile` backend. Dynamo calls the
 backend with an FX `GraphModule` and example inputs, and the backend returns a
 callable with the same forward contract.[^pytorch-backend-contract]
@@ -144,9 +150,9 @@ diagnostics; neither format is read by serving.
 | compiled graph package manifest and artifact validation | OCaml compiler and Ninja |
 | tensor archive indexing, mapping, and Metal buffer views | OCaml runtime plus Objective-C Metal bindings |
 | direct FX execution and device dispatch | Python FX GraphModule plus PyTorch MPS |
-| generated Q8 library loading and tensor binding | Python loader plus PyTorch MPS C++ bridge |
+| generated W4A16 library loading and tensor binding | Python loader plus PyTorch MPS C++ bridge |
 | custom Metal buffers and command submission | PyTorch MPS stream through the bridge |
-| standalone package loading and Q8 Metal dispatch | OCaml runtime plus Objective-C Metal bindings |
+| standalone package loading and W4A16/KVQ8 Metal dispatch | OCaml runtime plus Objective-C Metal bindings |
 | serving prefix lookup, eviction, and cache ownership | OCaml serving runtime |
 | serving KV format policy and slot allocation | OCaml serving runtime |
 
@@ -157,8 +163,8 @@ serves the HTTP/SSE benchmark without Python or PyTorch in its hot path.
 
 # Current scope
 
-The cross-language planner supports N-dimensional placeholders, `linear`,
-Q8 linear, `mm`/`matmul`, pointwise arithmetic/comparison and common unary
+The cross-language planner supports N-dimensional placeholders, W4A16
+`linear`, `mm`/`matmul`, pointwise arithmetic/comparison and common unary
 operators, mean, casts, views, reshape, transpose, unsqueeze, expand,
 contiguous, normalized static indexing, concat, `relu`, `gelu`, static integer
 ranges, prepended differences, boolean cumulative sums, scalar fills, and

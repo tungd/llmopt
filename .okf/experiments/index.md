@@ -89,3 +89,4 @@
 * [Q8 serving record breakthrough](exp-0088-q8-serving-record-breakthrough-2026-08-26.md) - decode-first scheduling fix and SIMD-pair kernels breaking repository all-time record with ERS 0.4290 (TPOT 6.81 ms).
 * [llama.cpp target benchmark setup](exp-0089-llama-cpp-target-2026-08-26.md) - native llama-bench throughput, same-trace llama-server ERS, and optional llmopt side comparison.
 * [Prebaked decode dispatch and Q4 target replay](exp-0090-prebaked-decode-q4-comparison-2026-08-27.md) - retained Metal decode records, refreshed Q8 side evidence, and the requested llama.cpp Q4_0 timing comparison.
+* [Canonical W4A16/KVQ8 pipeline and Q4 comparison](exp-0091-canonical-w4a16-kvq8-pipeline-2026-08-27.md) - W4 LM-head repair, removal of superseded paths, ABI-v16 engine generation, and one native Q4_0 shared-trace measurement.

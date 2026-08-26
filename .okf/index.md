@@ -4,6 +4,10 @@ okf_version: '0.2'
 
 # llmopt: effect-driven tile compiler research
 
+The executable project contract is W4A16 weights plus grouped-Q8 KV/recurrent
+state. Q8-weight and FP16-KV material below is historical evidence, not an
+available compiler, package, runtime, CLI, or benchmark configuration.
+
 ## Orientation
 
 * [Architecture](architecture.md) - current Dynamo/FX to OCaml planning pipeline.
@@ -17,7 +21,7 @@ okf_version: '0.2'
 * [Effect planning](decisions/effect-planning.md) - why OCaml effects own staging.
 * [Metal backend boundary](decisions/backend-boundary.md) - MSL execution and LLVM inspection.
 * [LFM2.5-350M ESR bandwidth target](decisions/target-lfm25-350m-bandwidth.md) - memory bandwidth physics and ERS feasibility on Apple Silicon.
-* [llama.cpp performance target](decisions/llama-cpp-target.md) - llama.cpp Q8_0 as the primary external comparison, with MPS retained as reference.
+* [llama.cpp performance target](decisions/llama-cpp-target.md) - llama.cpp Q4_0 as the W4 parity comparison, with MPS retained as reference.
 
 ## Experiments and benchmarks
 
@@ -96,4 +100,3 @@ okf_version: '0.2'
 * [Direct paged-Q8 attention measurement](experiments/exp-0072-paged-q8-attention-measurement.md) - bounded 350M short and long-context evidence with exact tokens and mixed latency deltas.
 * [Fused RMSNorm and RoPE](experiments/exp-0073-rmsnorm-rope-fusion.md) - twelve 10-command query/key chains across 6 attention layers fuse into single SIMD Metal kernels.
 * [Fused RMSNorm-RoPE measurement](experiments/exp-0074-rmsnorm-rope-measurement.md) - bounded 350M trace and needle matrix for the fused RMSNorm-RoPE package.
-

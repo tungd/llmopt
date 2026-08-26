@@ -22,10 +22,7 @@ _native_module: Any | None = None
 _dispatches = 0
 _compiled_runtime_kind = "generated-metal-native"
 
-# The Xcode Metal compiler defaults to aggressive fast-math.  The generated
-# Q8 reduction is deliberately kept in source order so that its numerical
-# behavior is comparable with the MPS fallback; use safe FP32 math while the
-# kernel is being used as the model reference implementation.
+# Keep generated W4A16 arithmetic deterministic across compiler revisions.
 _METAL_FLAGS = (
     "-fmetal-math-mode=safe",
     "-fmetal-math-fp32-functions=precise",
@@ -92,28 +89,18 @@ def _run(command: list[str]) -> None:
 
 
 def compile_library(source: Path) -> Path | None:
-    """Compile a generated W4A16 or legacy Q8 MSL source into a metallib."""
+    """Compile a generated W4A16 MSL source into a metallib."""
 
     if _mode() == "off" or not source.exists():
         return None
     generated_source = source.read_text(encoding="utf-8")
-    if (
-        "llmopt_q8_linear" not in generated_source
-        and "llmopt_w4a16_linear_f16_g64" not in generated_source
-    ):
+    if "llmopt_w4a16_linear_f16_g64" not in generated_source:
         return None
     if _native() is None:
         return None
 
-    has_w4a16 = "llmopt_w4a16_linear_f16_g64" in generated_source
-    has_q8_linear = "kernel void llmopt_q8_linear(" in generated_source
     global _compiled_runtime_kind
-    if has_w4a16 and has_q8_linear:
-        _compiled_runtime_kind = "generated-metal-w4a16+q8"
-    elif has_w4a16:
-        _compiled_runtime_kind = "generated-metal-w4a16-f16-g64"
-    else:
-        _compiled_runtime_kind = "generated-metal-q8"
+    _compiled_runtime_kind = "generated-metal-w4a16-f16-g64"
 
     air = source.with_suffix(".air")
     library = source.with_suffix(".metallib")
@@ -134,70 +121,6 @@ def activate(library: Path | None) -> Iterator[None]:
         yield
     finally:
         _active_library.reset(token)
-
-
-def _kernel_name_for_input(kernel_name: str, input: Any) -> str:
-    """Select the generated entry-point family for the input precision."""
-
-    if str(getattr(input, "dtype", "")) != "torch.float32":
-        return kernel_name
-    if kernel_name == "llmopt_q8_linear":
-        return "llmopt_q8_linear_f32"
-    if not kernel_name.endswith("_f32"):
-        return f"{kernel_name}_f32"
-    return kernel_name
-
-
-def dispatch_q8_linear(
-    input: Any,
-    weight: Any,
-    scale: Any,
-    bias: Any | None,
-    *,
-    kernel_name: str = "llmopt_q8_linear",
-    tile: tuple[int, int, int] = (16, 16, 64),
-) -> Any | None:
-    library = _active_library.get()
-    if library is None or _mode() == "off":
-        return None
-    if getattr(input, "device", None) is None or input.device.type != "mps":
-        return None
-    if getattr(input, "dtype", None) is None or str(input.dtype) not in {
-        "torch.float16",
-        "torch.float32",
-    }:
-        return None
-    if getattr(weight, "device", None) is None or weight.device.type != "mps":
-        return None
-    if getattr(scale, "device", None) is None or scale.device.type != "mps":
-        return None
-    if str(weight.dtype) != "torch.int8" or str(scale.dtype) != "torch.float16":
-        return None
-    if bias is not None:
-        if getattr(bias, "device", None) is None or bias.device.type != "mps":
-            return None
-        if str(bias.dtype) != "torch.float16":
-            return None
-    module = _native()
-    if module is None:
-        return None
-    tile_m, tile_n, tile_k = tile
-    native_kernel_name = _kernel_name_for_input(kernel_name, input)
-    global _dispatches
-    output = module.q8_linear(
-        input,
-        weight,
-        scale,
-        bias,
-        str(library),
-        _mode() == "exact",
-        native_kernel_name,
-        tile_m,
-        tile_n,
-        tile_k,
-    )
-    _dispatches += 1
-    return output
 
 
 def dispatch_w4a16_linear(

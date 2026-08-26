@@ -12,7 +12,6 @@ module Config = struct
     max_position_embeddings : int;
     conv_l_cache : int;
     dtype : Ir.Dtype.t;
-    quantization : Ir.Quantization.t;
     layer_types : layer list;
   }
 
@@ -28,7 +27,6 @@ module Config = struct
       max_position_embeddings = 128000;
       conv_l_cache = 3;
       dtype = Ir.Dtype.Float16;
-      quantization = Ir.Quantization.W4A16_Q8KV;
       layer_types =
         [ Conv; Conv; Full_attention; Conv; Conv; Full_attention; Conv; Conv;
           Full_attention; Conv; Full_attention; Conv; Full_attention; Conv;
@@ -49,10 +47,7 @@ module Config = struct
       ; (count_layers Full_attention config = 6, "expected 6 attention layers")
       ; (config.num_attention_heads mod config.num_key_value_heads = 0,
          "attention heads must divide evenly into KV heads")
-      ; ((match config.quantization, config.dtype with
-          | Ir.Quantization.Fp16, _ -> true
-          | Ir.Quantization.W4A16_Q8KV, Ir.Dtype.Float16 -> true
-          | Ir.Quantization.W4A16_Q8KV, _ -> false),
+      ; (config.dtype = Ir.Dtype.Float16,
          "W4A16 with Q8 KV requires float16 compute dtype")
       ]
     in
@@ -72,35 +67,23 @@ let linear_kernel ~config ~rows () =
   let bias =
     Tile.input ~dtype:config.Config.dtype ~name:"linear_bias" ~shape:bias_shape ()
   in
-  match config.Config.quantization with
-  | Ir.Quantization.Fp16 ->
-      let weight_shape =
-        Shape.of_ints_exn ~rows:config.Config.hidden_size
-          ~cols:config.Config.feed_forward_size
-      in
-      let weight =
-        Tile.input ~dtype:config.Config.dtype ~name:"linear_weight" ~shape:weight_shape ()
-      in
-      let output = Tile.add (Tile.matmul input weight) bias in
-      Tile.output ~name:"linear_output" output
-  | Ir.Quantization.W4A16_Q8KV ->
-      let weight_shape =
-        Shape.of_ints_exn ~rows:config.Config.feed_forward_size
-          ~cols:(config.Config.hidden_size / 2)
-      in
-      let scale_shape =
-        Shape.of_ints_exn ~rows:config.Config.feed_forward_size
-          ~cols:(config.Config.hidden_size / 64)
-      in
-      let scale =
-        Tile.input ~dtype:Ir.Dtype.Float16 ~name:"linear_weight_scale"
-          ~shape:scale_shape ()
-      in
-      let weight =
-        Tile.input ~dtype:Ir.Dtype.UInt8 ~name:"linear_weight_w4" ~shape:weight_shape ()
-      in
-      let output = Tile.w4a16_linear input weight scale ~bias in
-      Tile.output ~name:"linear_output" output
+  let weight_shape =
+    Shape.of_ints_exn ~rows:config.Config.feed_forward_size
+      ~cols:(config.Config.hidden_size / 2)
+  in
+  let scale_shape =
+    Shape.of_ints_exn ~rows:config.Config.feed_forward_size
+      ~cols:(config.Config.hidden_size / 64)
+  in
+  let scale =
+    Tile.input ~dtype:Ir.Dtype.Float16 ~name:"linear_weight_scale"
+      ~shape:scale_shape ()
+  in
+  let weight =
+    Tile.input ~dtype:Ir.Dtype.UInt8 ~name:"linear_weight_w4" ~shape:weight_shape ()
+  in
+  let output = Tile.w4a16_linear input weight scale ~bias in
+  Tile.output ~name:"linear_output" output
 
 let primitive ~operation ~inputs ~logical_shape ~dtype =
   Tile_effect.primitive

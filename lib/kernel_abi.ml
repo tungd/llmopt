@@ -4,16 +4,7 @@ module Operation = struct
     | Fused_linear
     | Linear
     | W4a16_linear
-    | Q8_linear
-    | Q8_linear_silu
-    | Q8_linear_add
-    | Q8_linear_mul_add
-    | Q8_fused_swiglu_ffn
-    | Q8_fused_short_conv
-    | Q8_fused_qkv_rope
-    | Q8_fused_attn_out
-    | Q8_lm_head_argmax
-    | Q8_dequantize
+    | W4a16_lm_head_argmax
     | Rms_norm
     | Rms_rope
     | Short_conv
@@ -38,16 +29,7 @@ module Operation = struct
     | Fused_linear -> "fused-linear"
     | Linear -> "linear"
     | W4a16_linear -> "w4a16-linear-g64"
-    | Q8_linear -> "q8-linear"
-    | Q8_linear_silu -> "q8-linear-silu"
-    | Q8_linear_add -> "q8-linear-add"
-    | Q8_linear_mul_add -> "q8-linear-mul-add"
-    | Q8_fused_swiglu_ffn -> "q8-fused-swiglu-ffn"
-    | Q8_fused_short_conv -> "q8-fused-short-conv"
-    | Q8_fused_qkv_rope -> "q8-fused-qkv-rope"
-    | Q8_fused_attn_out -> "q8-fused-attn-out"
-    | Q8_lm_head_argmax -> "q8-lm-head-argmax"
-    | Q8_dequantize -> "q8-dequantize"
+    | W4a16_lm_head_argmax -> "w4a16-lm-head-argmax"
     | Rms_norm -> "rms-norm"
     | Rms_rope -> "rms-rope"
     | Short_conv -> "short-conv"
@@ -72,16 +54,7 @@ module Operation = struct
     | "fused-linear" -> Ok Fused_linear
     | "linear" -> Ok Linear
     | "w4a16-linear-g64" -> Ok W4a16_linear
-    | "q8-linear" -> Ok Q8_linear
-    | "q8-linear-silu" -> Ok Q8_linear_silu
-    | "q8-linear-add" -> Ok Q8_linear_add
-    | "q8-linear-mul_add" -> Ok Q8_linear_mul_add
-    | "q8-fused-swiglu-ffn" -> Ok Q8_fused_swiglu_ffn
-    | "q8-fused-short-conv" -> Ok Q8_fused_short_conv
-    | "q8-fused-qkv-rope" -> Ok Q8_fused_qkv_rope
-    | "q8-fused-attn-out" -> Ok Q8_fused_attn_out
-    | "q8-lm-head-argmax" -> Ok Q8_lm_head_argmax
-    | "q8-dequantize" -> Ok Q8_dequantize
+    | "w4a16-lm-head-argmax" -> Ok W4a16_lm_head_argmax
     | "rms-norm" -> Ok Rms_norm
     | "rms-rope" -> Ok Rms_rope
     | "short-conv" -> Ok Short_conv

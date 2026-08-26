@@ -1,12 +1,10 @@
 module Format : sig
-  type t = private F16 | Q8 of { group_size : int }
+  type t
 
   (** The fixed number of KV elements represented by one Q8 scale. *)
   val q8_group_size : int
   val default : t
-  val f16 : t
   val validate : t -> (unit, string) result
-  val q8 : group_size:int -> (t, string) result
   val to_string : t -> string
   val group_size : t -> int option
   val groups_for_elements : t -> elements:int -> int

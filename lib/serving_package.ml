@@ -44,34 +44,20 @@ module Tensor_store = struct
 end
 
 module Cache = struct
-  type t = {
-    page_size : int;
-    default_kv : Kv_cache.Format.t;
-    supported_kv : Kv_cache.Format.t list;
-  }
+  type t = { page_size : int }
 
-  let create ~page_size ~default_kv ~supported_kv =
-    let unique = List.sort_uniq Stdlib.compare supported_kv in
+  let create ~page_size =
     if page_size <= 0 then Error "serving-package radix page_size must be positive"
-    else if supported_kv = [] then
-      Error "serving-package must support at least one KV format"
-    else if List.length unique <> List.length supported_kv then
-      Error "serving-package KV formats must be unique"
-    else if not (List.mem default_kv supported_kv) then
-      Error "serving-package default KV format must be supported"
-    else Ok { page_size; default_kv; supported_kv }
+    else Ok { page_size }
 
   let default =
     match
-      create ~page_size:1 ~default_kv:Kv_cache.Format.default
-        ~supported_kv:[ Kv_cache.Format.default ]
+      create ~page_size:1
     with
     | Ok cache -> cache
     | Error message -> invalid_arg message
 
   let page_size cache = cache.page_size
-  let default_kv cache = cache.default_kv
-  let supported_kv cache = cache.supported_kv
 end
 
 type t = {
@@ -85,7 +71,7 @@ type t = {
   cache : Cache.t;
 }
 
-let current_abi_version = 15
+let current_abi_version = 16
 
 let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
@@ -157,8 +143,6 @@ let operation_tag = function
   | Kernel_abi.Operation.Matmul -> 0
   | Kernel_abi.Operation.Fused_linear -> 1
   | Kernel_abi.Operation.Linear -> 2
-  | Kernel_abi.Operation.Q8_linear -> 3
-  | Kernel_abi.Operation.Q8_dequantize -> 4
   | Kernel_abi.Operation.Rms_norm -> 5
   | Kernel_abi.Operation.Short_conv -> 6
   | Kernel_abi.Operation.Attention -> 7
@@ -174,25 +158,16 @@ let operation_tag = function
   | Kernel_abi.Operation.Reduction -> 17
   | Kernel_abi.Operation.Update_slice -> 18
   | Kernel_abi.Operation.Cache -> 19
-  | Kernel_abi.Operation.Q8_linear_silu -> 20
-  | Kernel_abi.Operation.Q8_linear_add -> 21
-  | Kernel_abi.Operation.Q8_linear_mul_add -> 22
   | Kernel_abi.Operation.Rms_rope -> 23
   | Kernel_abi.Operation.Short_conv_step -> 24
   | Kernel_abi.Operation.Short_conv_prefill -> 25
-  | Kernel_abi.Operation.Q8_lm_head_argmax -> 26
+  | Kernel_abi.Operation.W4a16_lm_head_argmax -> 26
   | Kernel_abi.Operation.W4a16_linear -> 27
-  | Kernel_abi.Operation.Q8_fused_swiglu_ffn -> 28
-  | Kernel_abi.Operation.Q8_fused_short_conv -> 29
-  | Kernel_abi.Operation.Q8_fused_qkv_rope -> 30
-  | Kernel_abi.Operation.Q8_fused_attn_out -> 31
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
   | 1 -> Ok Kernel_abi.Operation.Fused_linear
   | 2 -> Ok Kernel_abi.Operation.Linear
-  | 3 -> Ok Kernel_abi.Operation.Q8_linear
-  | 4 -> Ok Kernel_abi.Operation.Q8_dequantize
   | 5 -> Ok Kernel_abi.Operation.Rms_norm
   | 6 -> Ok Kernel_abi.Operation.Short_conv
   | 7 -> Ok Kernel_abi.Operation.Attention
@@ -208,18 +183,11 @@ let operation_of_tag = function
   | 17 -> Ok Kernel_abi.Operation.Reduction
   | 18 -> Ok Kernel_abi.Operation.Update_slice
   | 19 -> Ok Kernel_abi.Operation.Cache
-  | 20 -> Ok Kernel_abi.Operation.Q8_linear_silu
-  | 21 -> Ok Kernel_abi.Operation.Q8_linear_add
-  | 22 -> Ok Kernel_abi.Operation.Q8_linear_mul_add
   | 23 -> Ok Kernel_abi.Operation.Rms_rope
   | 24 -> Ok Kernel_abi.Operation.Short_conv_step
   | 25 -> Ok Kernel_abi.Operation.Short_conv_prefill
-  | 26 -> Ok Kernel_abi.Operation.Q8_lm_head_argmax
+  | 26 -> Ok Kernel_abi.Operation.W4a16_lm_head_argmax
   | 27 -> Ok Kernel_abi.Operation.W4a16_linear
-  | 28 -> Ok Kernel_abi.Operation.Q8_fused_swiglu_ffn
-  | 29 -> Ok Kernel_abi.Operation.Q8_fused_short_conv
-  | 30 -> Ok Kernel_abi.Operation.Q8_fused_qkv_rope
-  | 31 -> Ok Kernel_abi.Operation.Q8_fused_attn_out
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function
@@ -265,39 +233,12 @@ let read_kernel reader =
   Kernel_abi.Entry.create ~name ~operation ~input_dtype ~output_dtype
     ~threadgroup:(x, y, z)
 
-let write_kv_format writer = function
-  | Kv_cache.Format.F16 -> Binary.Writer.u8 writer 0
-  | Kv_cache.Format.Q8 { group_size } ->
-      Binary.Writer.u8 writer 1;
-      Binary.Writer.u32 writer group_size
-
-let read_kv_format reader =
-  let* tag = Binary.Reader.u8 reader in
-  match tag with
-  | 0 -> Ok Kv_cache.Format.f16
-  | 1 ->
-      let* group_size = Binary.Reader.u32 reader in
-      Kv_cache.Format.q8 ~group_size
-  | _ -> Error (Printf.sprintf "unknown KV format tag: %d" tag)
-
 let write_cache writer cache =
-  Binary.Writer.u32 writer cache.Cache.page_size;
-  write_kv_format writer cache.default_kv;
-  Binary.Writer.u16 writer (List.length cache.supported_kv);
-  List.iter (write_kv_format writer) cache.supported_kv
+  Binary.Writer.u32 writer cache.Cache.page_size
 
 let read_cache reader =
   let* page_size = Binary.Reader.u32 reader in
-  let* default_kv = read_kv_format reader in
-  let* count = Binary.Reader.u16 reader in
-  let rec formats acc remaining =
-    if remaining = 0 then Ok (List.rev acc)
-    else
-      let* format = read_kv_format reader in
-      formats (format :: acc) (remaining - 1)
-  in
-  let* supported_kv = formats [] count in
-  Cache.create ~page_size ~default_kv ~supported_kv
+  Cache.create ~page_size
 
 let write_tensor_store writer (Tensor_store.Weights { file }) =
   Binary.Writer.u8 writer 0;

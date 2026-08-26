@@ -1,7 +1,7 @@
 let name = "fuse_lm_head_argmax"
 
 let description =
-  "Fuse the opt-in greedy token output path through final RMSNorm and the Q8 LM head"
+  "Fuse the greedy token output path through final RMSNorm and the W4A16 LM head"
 
 let value_is left right = Ir.Value.equal left right
 
@@ -57,7 +57,7 @@ let candidate graph nodes rms_node ?index_node lm_node =
   | ( Ir.Op.Rms_norm { epsilon },
       [ hidden; norm_weight ],
       Some normalized,
-      Ir.Op.Q8_linear { m; n; k; bias = false },
+      Ir.Op.W4a16_linear { m; n; k; bias = false },
       [ lm_input; lm_weight; lm_scale ],
       Some logits )
     when (match index_node with
@@ -76,8 +76,13 @@ let candidate graph nodes rms_node ?index_node lm_node =
                  && is_identity_index normalized index
              | _ -> false))
          && Tensor_shape.numel (Ir.Value.logical_shape hidden) = m * k
-         && Tensor_shape.dimensions (Ir.Value.logical_shape lm_weight) = [ n; k ]
-         && Tensor_shape.dimensions (Ir.Value.logical_shape lm_scale) = [ n ]
+         && k mod 64 = 0
+         && Tensor_shape.dimensions (Ir.Value.logical_shape lm_weight) =
+            [ n; k / 2 ]
+         && Tensor_shape.dimensions (Ir.Value.logical_shape lm_scale) =
+            [ n; k / 64 ]
+         && Ir.Value.dtype lm_weight = Ir.Dtype.UInt8
+         && Ir.Value.dtype lm_scale = Ir.Dtype.Float16
          && Tensor_shape.numel (Ir.Value.logical_shape logits) = m * n ->
       let outputs = output_consumers nodes logits in
       let token_outputs =
@@ -106,7 +111,7 @@ let candidate graph nodes rms_node ?index_node lm_node =
         let fused =
           Ir.node_create ~id:(Ir.node_id rms_node)
             ~op:
-              (Ir.Op.Q8_lm_head_argmax
+              (Ir.Op.W4a16_lm_head_argmax
                  { m; n; k; epsilon; extra_outputs })
             ~inputs:[ hidden; norm_weight; lm_weight; lm_scale ]
             ~output:(Some token_output)
@@ -170,7 +175,7 @@ let run graph =
       | [] -> None
       | node :: rest ->
           (match Ir.node_op node, Ir.node_output node with
-          | Ir.Op.Q8_lm_head_argmax _, Some output -> Some output
+          | Ir.Op.W4a16_lm_head_argmax _, Some output -> Some output
           | _ -> find_token rest)
     in
     let token_output = find_token rewritten in

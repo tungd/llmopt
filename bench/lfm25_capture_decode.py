@@ -200,7 +200,6 @@ def main() -> None:
 
     os.environ["LLMOPT_ARTIFACT_DIR"] = str(graph_root)
     os.environ["LLMOPT_FX_FALLBACK"] = "0"
-    os.environ["LLMOPT_QUANTIZATION"] = "w4a16-q8kv"
     os.environ.setdefault("LLMOPT_METAL_RUNTIME", "exact")
 
     from llmopt_backend import llmopt
@@ -247,8 +246,6 @@ def main() -> None:
     serving_pair_validation = subprocess.check_output(
         [
             str(pair_checker),
-            "--kv",
-            "q8",
             str(graph_root / "graph-0000"),
             str(graph_root / "graph-0001"),
         ],

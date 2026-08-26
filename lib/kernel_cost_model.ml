@@ -1092,20 +1092,6 @@ let tree_15 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 =
 let predict_latency f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 =
   0.0 +. 1.0 *. (tree_0 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_1 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_2 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_3 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_4 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_5 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_6 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_7 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_8 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_9 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_10 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_11 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_12 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_13 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_14 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 +. tree_15 f0 f1 f2 f3 f4 f5 f6 f7 f8 f9)
 
-type mode = Gemm | Gemv_single | Gemv_pair
-
-type selection =
-  | Gemm_16x16x64
-  | Gemm_32x8x64
-  | Gemm_8x32x64
-  | Gemm_32x32x64
-  | Gemm_16x16x128
-  | Gemm_32x8x128
-  | Gemm_8x32x128
-  | Gemm_32x32x128
-  | Gemv_single
-  | Gemv_pair
-
 module Device = struct
   type t = { gpu_core_count : int; memory_bandwidth_gbps : float }
 
@@ -1125,82 +1111,6 @@ module Device = struct
   let gpu_core_count device = device.gpu_core_count
   let memory_bandwidth_gbps device = device.memory_bandwidth_gbps
 end
-
-let mode = function
-  | Gemm_16x16x64 | Gemm_32x8x64 | Gemm_8x32x64 | Gemm_32x32x64
-  | Gemm_16x16x128 | Gemm_32x8x128 | Gemm_8x32x128 | Gemm_32x32x128 -> Gemm
-  | Gemv_single -> Gemv_single
-  | Gemv_pair -> Gemv_pair
-
-let tile = function
-  | Gemm_16x16x64 -> (16, 16, 64)
-  | Gemm_32x8x64 -> (32, 8, 64)
-  | Gemm_8x32x64 -> (8, 32, 64)
-  | Gemm_32x32x64 -> (32, 32, 64)
-  | Gemm_16x16x128 -> (16, 16, 128)
-  | Gemm_32x8x128 -> (32, 8, 128)
-  | Gemm_8x32x128 -> (8, 32, 128)
-  | Gemm_32x32x128 -> (32, 32, 128)
-  | Gemv_single -> (1, 16, 64)
-  | Gemv_pair -> (1, 32, 64)
-
-let threadgroup selection =
-  match selection with
-  | Gemm_16x16x64 -> (16, 16, 1)
-  | Gemm_32x8x64 | Gemm_32x8x128 -> (8, 32, 1)
-  | Gemm_8x32x64 | Gemm_8x32x128 -> (32, 8, 1)
-  | Gemm_32x32x64 | Gemm_32x32x128 -> (32, 32, 1)
-  | Gemm_16x16x128 -> (16, 16, 1)
-  | Gemv_single | Gemv_pair -> (256, 1, 1)
-
-let kernel_name = function
-  | Gemm_16x16x64 -> "llmopt_q8_linear"
-  | Gemm_32x8x64 -> "llmopt_q8_linear_tm32_tn8_tk64"
-  | Gemm_8x32x64 -> "llmopt_q8_linear_tm8_tn32_tk64"
-  | Gemm_32x32x64 -> "llmopt_q8_linear_tm32_tn32_tk64"
-  | Gemm_16x16x128 -> "llmopt_q8_linear_tm16_tn16_tk128"
-  | Gemm_32x8x128 -> "llmopt_q8_linear_tm32_tn8_tk128"
-  | Gemm_8x32x128 -> "llmopt_q8_linear_tm8_tn32_tk128"
-  | Gemm_32x32x128 -> "llmopt_q8_linear_tm32_tn32_tk128"
-  | Gemv_single -> "llmopt_q8_gemv_simd"
-  | Gemv_pair -> "llmopt_q8_gemv_pair_simd"
-
-let mode_code = function
-  | Gemm_16x16x64 | Gemm_32x8x64 | Gemm_8x32x64 | Gemm_32x32x64
-  | Gemm_16x16x128 | Gemm_32x8x128 | Gemm_8x32x128 | Gemm_32x32x128 -> 1.0
-  | Gemv_single | Gemv_pair -> 0.0
-
-let score ~m ~n ~k ~device selection =
-  let tile_m, tile_n, tile_k = tile selection in
-  let group_x, group_y, group_z = threadgroup selection in
-  predict_latency (float_of_int m) (float_of_int n) (float_of_int k)
-    (float_of_int (Device.gpu_core_count device))
-    (Device.memory_bandwidth_gbps device) (float_of_int tile_m)
-    (float_of_int tile_n) (float_of_int tile_k)
-    (float_of_int (group_x * group_y * group_z)) (mode_code selection)
-
-let better ~m ~n ~k ~device left right =
-  if score ~m ~n ~k ~device left < score ~m ~n ~k ~device right then left
-  else right
-
-let select_gemm ~m ~n ~k ~device =
-  let best =
-    better ~m ~n ~k ~device Gemm_32x8x64 Gemm_16x16x64
-  in
-  let best = better ~m ~n ~k ~device Gemm_8x32x64 best in
-  let best = better ~m ~n ~k ~device Gemm_32x32x64 best in
-  let best = better ~m ~n ~k ~device Gemm_16x16x128 best in
-  let best = better ~m ~n ~k ~device Gemm_32x8x128 best in
-  let best = better ~m ~n ~k ~device Gemm_8x32x128 best in
-  better ~m ~n ~k ~device Gemm_32x32x128 best
-
-let select_optimal_tile ~m ~n ~k ~device =
-  if m <= 0 || n <= 0 || k <= 0 then
-    Error "cost-model shape dimensions must be positive"
-  else if m = 1 then
-    let best = better ~m ~n ~k ~device Gemv_single Gemv_pair in
-    Ok best
-  else Ok (select_gemm ~m ~n ~k ~device)
 
 module Megakernel = struct
   type qkv_rope_tile = {

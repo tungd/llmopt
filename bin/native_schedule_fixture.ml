@@ -443,83 +443,6 @@ let graph () =
     [ linear_f16_input; linear_f16_weight ] [ 2; 3 ] Ir.Dtype.Float16
   |> output graph "linear_f16";
 
-  let q8_gemv_input =
-    input graph "q8_gemv_input" [ 1; 4 ] Ir.Dtype.Float16
-  in
-  let q8_gemv_weight =
-    input graph "q8_gemv_weight" [ 3; 4 ] Ir.Dtype.Int8
-  in
-  let q8_gemv_scale =
-    input graph "q8_gemv_scale" [ 1; 3 ] Ir.Dtype.Float16
-  in
-  let q8_gemv_bias =
-    input graph "q8_gemv_bias" [ 1; 3 ] Ir.Dtype.Float16
-  in
-  let q8_gemv =
-    command graph (Ir.Op.Q8_linear { m = 1; n = 3; k = 4; bias = true })
-      [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias ] [ 1; 3 ]
-      Ir.Dtype.Float16
-  in
-  output graph "q8_gemv" q8_gemv;
-  primitive graph
-    (Ir.Primitive.Pointwise
-       (Ir.Pointwise.Unary (Ir.Pointwise.Silu, q8_gemv)))
-    [ q8_gemv ] [ 1; 3 ] Ir.Dtype.Float16
-  |> output graph "q8_gemv_silu_reference";
-  let q8_gemv_silu =
-    command graph (Ir.Op.Q8_linear_silu { m = 1; n = 3; k = 4; bias = true })
-      [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias ] [ 1; 3 ]
-      Ir.Dtype.Float16
-  in
-  output graph "q8_gemv_silu" q8_gemv_silu;
-  let q8_add_residual =
-    input graph "q8_add_residual" [ 1; 3 ] Ir.Dtype.Float16
-  in
-  primitive graph
-    (Ir.Primitive.Pointwise
-       (Ir.Pointwise.Binary
-          ( Ir.Pointwise.Add,
-            Ir.Pointwise.Tensor q8_gemv,
-            Ir.Pointwise.Tensor q8_add_residual )))
-    [ q8_gemv; q8_add_residual ] [ 1; 3 ] Ir.Dtype.Float16
-  |> output graph "q8_gemv_add_reference";
-  command graph (Ir.Op.Q8_linear_add { m = 1; n = 3; k = 4; bias = true })
-    [ q8_gemv_input; q8_gemv_weight; q8_gemv_scale; q8_gemv_bias;
-      q8_add_residual ]
-    [ 1; 3 ] Ir.Dtype.Float16
-  |> output graph "q8_gemv_add";
-  let q8_mul_weight = input graph "q8_mul_weight" [ 2; 3 ] Ir.Dtype.Int8 in
-  let q8_mul_scale = input graph "q8_mul_scale" [ 2 ] Ir.Dtype.Float16 in
-  let q8_mul_residual =
-    input graph "q8_mul_residual" [ 1; 2 ] Ir.Dtype.Float16
-  in
-  let multiplied =
-    primitive graph
-      (Ir.Primitive.Pointwise
-         (Ir.Pointwise.Binary
-            ( Ir.Pointwise.Mul,
-              Ir.Pointwise.Tensor q8_gemv,
-              Ir.Pointwise.Tensor q8_gemv_silu )))
-      [ q8_gemv; q8_gemv_silu ] [ 1; 3 ] Ir.Dtype.Float16
-  in
-  let materialized_down =
-    command graph (Ir.Op.Q8_linear { m = 1; n = 2; k = 3; bias = false })
-      [ multiplied; q8_mul_weight; q8_mul_scale ] [ 1; 2 ] Ir.Dtype.Float16
-  in
-  primitive graph
-    (Ir.Primitive.Pointwise
-       (Ir.Pointwise.Binary
-          ( Ir.Pointwise.Add,
-            Ir.Pointwise.Tensor materialized_down,
-            Ir.Pointwise.Tensor q8_mul_residual )))
-    [ materialized_down; q8_mul_residual ] [ 1; 2 ] Ir.Dtype.Float16
-  |> output graph "q8_gemv_mul_add_reference";
-  command graph
-    (Ir.Op.Q8_linear_mul_add { m = 1; n = 2; k = 3; bias = false })
-    [ q8_gemv; q8_gemv_silu; q8_mul_weight; q8_mul_scale; q8_mul_residual ]
-    [ 1; 2 ] Ir.Dtype.Float16
-  |> output graph "q8_gemv_mul_add";
-
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in
   command graph (Ir.Op.Matmul { m = 2; n = 2; k = 3 }) [ lhs; rhs ] [ 2; 2 ]
@@ -539,7 +462,7 @@ let () =
   let schedule = Serving_schedule.of_graph graph |> expect_ok in
   let program =
     Metal.lower graph |> expect_ok
-    |> Metal.add_cache_kernels ~formats:[ Kv_cache.Format.default ]
+    |> Metal.add_cache_kernels
   in
   let files =
     Serving_package.Files.create ~metal_library:(artifact "kernel.metallib")

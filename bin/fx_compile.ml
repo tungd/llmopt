@@ -144,11 +144,7 @@ let () =
                 match tensor_store with
                 | None -> metal_program
                 | Some _ ->
-                    Metal.add_cache_kernels
-                      ~formats:
-                        (Serving_package.Cache.supported_kv
-                           Serving_package.Cache.default)
-                      metal_program
+                    Metal.add_cache_kernels metal_program
               in
               let llvm_source =
                 Llvm_ir.emit planned |> Result.value ~default:""

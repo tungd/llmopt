@@ -51,231 +51,6 @@ let input_name graph value =
   | None ->
       Printf.sprintf "value-%d" (Ir.Value_id.to_int (Ir.Value.id value))
 
-type q8_input_mode = Direct | Product
-
-let q8_input_signature ~value_type = function
-  | Direct ->
-      "    device const " ^ value_type ^ "* input [[buffer(0)]],\n", 0
-  | Product ->
-      ( "    device const " ^ value_type ^ "* input_left [[buffer(0)]],\n"
-        ^ "    device const " ^ value_type ^ "* input_right [[buffer(1)]],\n",
-        1 )
-
-let q8_input_vector_load ~value_type ~vector_type ~offset ~values_name = function
-  | Direct ->
-      "        device const " ^ vector_type ^ "* input_vector =\n"
-      ^ "            reinterpret_cast<device const " ^ vector_type
-      ^ "*>(input + " ^ offset ^ ");\n"
-      ^ "        " ^ vector_type ^ " " ^ values_name ^ " = *input_vector;\n"
-  | Product ->
-      "        device const " ^ vector_type ^ "* input_left_vector =\n"
-      ^ "            reinterpret_cast<device const " ^ vector_type
-      ^ "*>(input_left + " ^ offset ^ ");\n"
-      ^ "        device const " ^ vector_type ^ "* input_right_vector =\n"
-      ^ "            reinterpret_cast<device const " ^ vector_type
-      ^ "*>(input_right + " ^ offset ^ ");\n"
-      ^ "        const " ^ vector_type ^ " left_values = *input_left_vector;\n"
-      ^ "        const " ^ vector_type ^ " right_values = *input_right_vector;\n"
-      ^ "        " ^ vector_type ^ " " ^ values_name ^ " = " ^ vector_type
-      ^ "(left_values * right_values);\n"
-
-let q8_input_scalar ~value_type index = function
-  | Direct -> "input[" ^ index ^ "]"
-  | Product ->
-      value_type ^ "(input_left[" ^ index ^ "] * input_right[" ^ index ^ "])"
-
-let q8_kernel_with_input ~input_mode ~extra_argument ~output_buffer
-    ~parameter_buffer ~name ~value_type ~vector_type ~alignment
-    ~weight_cast ~scale_type ~scale_zero ~zero_value ~store_value =
-  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
-  let input_vector_load =
-    q8_input_vector_load ~value_type ~vector_type ~offset:"input_offset"
-      ~values_name:"input_values" input_mode
-  in
-  let input_scalar =
-    q8_input_scalar ~value_type "input_offset + lane" input_mode
-  in
-  "kernel void " ^ name ^ "(\n"
-  ^ input_signature
-  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* bias_or_scale [[buffer("
-  ^ string_of_int (3 + input_shift) ^ ")]],\n"
-  ^ extra_argument
-  ^ "    device " ^ value_type ^ "* output [[buffer("
-  ^ string_of_int output_buffer ^ ")]],\n"
-  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
-  ^ ")]],\n"
-  ^ "    uint2 gid [[thread_position_in_grid]],\n"
-  ^ "    uint2 tid [[thread_position_in_threadgroup]]) {\n"
-  ^ "  const uint row = gid.y;\n"
-  ^ "  const uint col = gid.x;\n"
-  ^ "  threadgroup " ^ vector_type ^ " input_tile[16][16];\n"
-  ^ "  threadgroup " ^ vector_type ^ " weight_tile[16][16];\n"
-  ^ "  float acc = 0.0f;\n"
-  ^ "  const " ^ scale_type ^ " channel_scale =\n"
-  ^ "      (col < params.n) ? scale[col] : " ^ scale_zero ^ ";\n"
-  ^ "  for (uint base = 0; base < params.k; base += Q8_TILE) {\n"
-  ^ "    const uint input_offset = row * params.k + base + tid.x * 4;\n"
-  ^ "    if (row < params.m && base + tid.x * 4 + 3 < params.k &&\n"
-  ^ "        input_offset % " ^ alignment ^ " == 0) {\n"
-  ^ input_vector_load
-  ^ "      input_tile[tid.y][tid.x] = input_values;\n"
-  ^ "    } else {\n"
-  ^ "      " ^ vector_type ^ " input_values = " ^ vector_type ^ "("
-  ^ zero_value ^ ");\n"
-  ^ "      for (uint lane = 0; lane < 4; ++lane)\n"
-  ^ "        if (row < params.m && base + tid.x * 4 + lane < params.k)\n"
-  ^ "          input_values[lane] = " ^ input_scalar ^ ";\n"
-  ^ "      input_tile[tid.y][tid.x] = input_values;\n"
-  ^ "    }\n"
-  ^ "    const uint weight_offset = col * params.k + base + tid.y * 4;\n"
-  ^ "    if (col < params.n && base + tid.y * 4 + 3 < params.k &&\n"
-  ^ "        weight_offset % 4 == 0) {\n"
-  ^ "      device const char4* weight_vector =\n"
-  ^ "          reinterpret_cast<device const char4*>(weight + weight_offset);\n"
-  ^ "      const char4 weight_values = *weight_vector;\n"
-  ^ "      const " ^ vector_type ^ " dequantized_weights = " ^ vector_type
-  ^ "(weight_values) * channel_scale;\n"
-  ^ "      weight_tile[tid.y][tid.x] = dequantized_weights;\n"
-  ^ "    } else {\n"
-  ^ "      " ^ vector_type ^ " dequantized_weights = " ^ vector_type ^ "("
-  ^ weight_cast ^ "(0));\n"
-  ^ "      for (uint lane = 0; lane < 4; ++lane)\n"
-  ^ "        if (col < params.n && base + tid.y * 4 + lane < params.k)\n"
-  ^ "          dequantized_weights[lane] = " ^ weight_cast
-  ^ "(weight[weight_offset + lane]) * channel_scale;\n"
-  ^ "      weight_tile[tid.y][tid.x] = dequantized_weights;\n"
-  ^ "    }\n"
-  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "    #pragma clang loop unroll(full)\n"
-  ^ "    for (uint inner = 0; inner < 16; ++inner)\n"
-  ^ "      acc += dot(float4(input_tile[tid.y][inner]),\n"
-  ^ "                 float4(weight_tile[inner][tid.x]));\n"
-  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  }\n"
-  ^ "  if (row < params.m && col < params.n) {\n"
-  ^ "    if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
-  ^ "    output[row * params.n + col] = " ^ store_value ^ ";\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_kernel = q8_kernel_with_input ~input_mode:Direct
-
-let validate_q8_tile ~tile_m ~tile_n ~tile_k =
-  if tile_m <= 0 || tile_n <= 0 then
-    invalid_arg "Q8 tile output dimensions must be positive"
-  else if tile_k <= 0 || tile_k mod 4 <> 0 then
-    invalid_arg "Q8 tile reduction dimension must be a positive multiple of four"
-
-let q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k ~input_mode
-    ~extra_argument ~output_buffer ~parameter_buffer ~name ~value_type
-    ~vector_type ~alignment ~weight_cast ~scale_type ~scale_zero ~zero_value
-    ~store_value =
-  validate_q8_tile ~tile_m ~tile_n ~tile_k;
-  let tile_k_vectors = tile_k / 4 in
-  let thread_count = tile_m * tile_n in
-  let input_vector_load =
-    q8_input_vector_load ~value_type ~vector_type ~offset:"input_offset"
-      ~values_name:"input_values" input_mode
-  in
-  let input_scalar =
-    q8_input_scalar ~value_type "input_offset + lane" input_mode
-  in
-  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
-  "kernel void " ^ name ^ "(\n"
-  ^ input_signature
-  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* bias_or_scale [[buffer("
-  ^ string_of_int (3 + input_shift) ^ ")]],\n"
-  ^ extra_argument
-  ^ "    device " ^ value_type ^ "* output [[buffer(" ^ string_of_int output_buffer
-  ^ ")]],\n"
-  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
-  ^ ")]],\n"
-  ^ "    uint2 gid [[thread_position_in_grid]],\n"
-  ^ "    uint2 tid [[thread_position_in_threadgroup]],\n"
-  ^ "    uint2 group_position [[threadgroup_position_in_grid]]) {\n"
-  ^ "  const uint row = gid.y;\n"
-  ^ "  const uint col = gid.x;\n"
-  ^ "  const uint group_row = group_position.y * " ^ string_of_int tile_m ^ ";\n"
-  ^ "  const uint group_col = group_position.x * " ^ string_of_int tile_n ^ ";\n"
-  ^ "  const uint local_thread = tid.y * " ^ string_of_int tile_n ^ " + tid.x;\n"
-  ^ "  const uint thread_count = " ^ string_of_int thread_count ^ ";\n"
-  ^ "  threadgroup " ^ vector_type ^ " input_tile[" ^ string_of_int tile_m
-  ^ "][" ^ string_of_int tile_k_vectors ^ "];\n"
-  ^ "  threadgroup " ^ vector_type ^ " weight_tile[" ^ string_of_int tile_k_vectors
-  ^ "][" ^ string_of_int tile_n ^ "];\n"
-  ^ "  float acc = 0.0f;\n"
-  ^ "  for (uint base = 0; base < params.k; base += "
-  ^ string_of_int tile_k ^ ") {\n"
-  ^ "    for (uint load = local_thread; load < "
-  ^ string_of_int (tile_m * tile_k_vectors)
-  ^ "; load += thread_count) {\n"
-  ^ "      const uint local_row = load / " ^ string_of_int tile_k_vectors ^ ";\n"
-  ^ "      const uint vector_index = load % " ^ string_of_int tile_k_vectors ^ ";\n"
-  ^ "      const uint input_row = group_row + local_row;\n"
-  ^ "      const uint input_offset = input_row * params.k + base + vector_index * 4;\n"
-  ^ "      if (input_row < params.m && base + vector_index * 4 + 3 < params.k &&\n"
-  ^ "          input_offset % " ^ alignment ^ " == 0) {\n"
-  ^ input_vector_load
-  ^ "        input_tile[local_row][vector_index] = input_values;\n"
-  ^ "      } else {\n"
-  ^ "        " ^ vector_type ^ " input_values = " ^ vector_type ^ "(" ^ zero_value
-  ^ ");\n"
-  ^ "        for (uint lane = 0; lane < 4; ++lane)\n"
-  ^ "          if (input_row < params.m && base + vector_index * 4 + lane < params.k)\n"
-  ^ "            input_values[lane] = " ^ input_scalar ^ ";\n"
-  ^ "        input_tile[local_row][vector_index] = input_values;\n"
-  ^ "      }\n"
-  ^ "    }\n"
-  ^ "    for (uint load = local_thread; load < "
-  ^ string_of_int (tile_k_vectors * tile_n)
-  ^ "; load += thread_count) {\n"
-  ^ "      const uint inner = load / " ^ string_of_int tile_n ^ ";\n"
-  ^ "      const uint local_col = load % " ^ string_of_int tile_n ^ ";\n"
-  ^ "      const uint weight_col = group_col + local_col;\n"
-  ^ "      const uint weight_offset = weight_col * params.k + base + inner * 4;\n"
-  ^ "      const " ^ scale_type ^ " weight_scale =\n"
-  ^ "          (weight_col < params.n) ? scale[weight_col] : " ^ scale_zero ^ ";\n"
-  ^ "      if (weight_col < params.n && base + inner * 4 + 3 < params.k &&\n"
-  ^ "          weight_offset % 4 == 0) {\n"
-  ^ "        device const char4* weight_vector =\n"
-  ^ "            reinterpret_cast<device const char4*>(weight + weight_offset);\n"
-  ^ "        const char4 weight_values = *weight_vector;\n"
-  ^ "        weight_tile[inner][local_col] = " ^ vector_type
-  ^ "(weight_values) * weight_scale;\n"
-  ^ "      } else {\n"
-  ^ "        " ^ vector_type ^ " dequantized_weights = " ^ vector_type ^ "("
-  ^ weight_cast ^ "(0));\n"
-  ^ "        for (uint lane = 0; lane < 4; ++lane)\n"
-  ^ "          if (weight_col < params.n && base + inner * 4 + lane < params.k)\n"
-  ^ "            dequantized_weights[lane] = " ^ weight_cast
-  ^ "(weight[weight_offset + lane]) * weight_scale;\n"
-  ^ "        weight_tile[inner][local_col] = dequantized_weights;\n"
-  ^ "      }\n"
-  ^ "    }\n"
-  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "    #pragma clang loop unroll(full)\n"
-  ^ "    for (uint inner = 0; inner < " ^ string_of_int tile_k_vectors ^ "; ++inner)\n"
-  ^ "      acc += dot(float4(input_tile[tid.y][inner]),\n"
-  ^ "                 float4(weight_tile[inner][tid.x]));\n"
-  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  }\n"
-  ^ "  if (row < params.m && col < params.n) {\n"
-  ^ "    if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
-  ^ "    output[row * params.n + col] = " ^ store_value ^ ";\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_parameterized_name ~tile_m ~tile_n ~tile_k =
-  Printf.sprintf "llmopt_q8_linear_tm%d_tn%d_tk%d" tile_m tile_n tile_k
-
 let w4a16_source =
   "\nstruct W4A16Params { uint m; uint n; uint k; uint has_bias; };\n\n"
   ^ "kernel void llmopt_w4a16_linear_f16_g64(\n"
@@ -310,547 +85,17 @@ let w4a16_entries =
       ~operation:Kernel_abi.Operation.W4a16_linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
-let q8_kernel_parameterized ~tile_m ~tile_n ~tile_k =
-  q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k
-    ~input_mode:Direct ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-    ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k) ~value_type:"half"
-    ~vector_type:"half4" ~alignment:"8" ~weight_cast:"half"
-    ~scale_type:"half" ~scale_zero:"half(0.0h)" ~zero_value:"half(0.0h)"
-    ~store_value:"half(acc)"
-
-let q8_kernel_parameterized_f32 ~tile_m ~tile_n ~tile_k =
-  q8_parameterized_kernel_with_input ~tile_m ~tile_n ~tile_k
-    ~input_mode:Direct ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-    ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k ^ "_f32")
-    ~value_type:"float" ~vector_type:"float4" ~alignment:"16"
-    ~weight_cast:"float" ~scale_type:"float" ~scale_zero:"0.0f"
-    ~zero_value:"0.0f" ~store_value:"acc"
-
-let q8_gemv_kernel_with_input ~input_mode ~extra_argument ~output_buffer
-    ~parameter_buffer ~name ~value_type ~vector_type ~weight_cast ~scale_type
-    ~store_value =
-  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
-  let input_vector_load =
-    q8_input_vector_load ~value_type ~vector_type ~offset:"inner"
-      ~values_name:"input_values" input_mode
-  in
-  let input_scalar = q8_input_scalar ~value_type "inner" input_mode in
-  "kernel void " ^ name ^ "(\n"
-  ^ input_signature
-  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* bias_or_scale [[buffer("
-  ^ string_of_int (3 + input_shift) ^ ")]],\n"
-  ^ extra_argument
-  ^ "    device " ^ value_type ^ "* output [[buffer("
-  ^ string_of_int output_buffer ^ ")]],\n"
-  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
-  ^ ")]],\n"
-  ^ "    uint col [[thread_position_in_grid]]) {\n"
-  ^ "  if (params.m != 1 || col >= params.n) return;\n"
-  ^ "  const " ^ scale_type ^ " channel_scale = scale[col];\n"
-  ^ "  const uint weight_base = col * params.k;\n"
-  ^ "  float acc = 0.0f;\n"
-  ^ "  uint inner = 0;\n"
-  ^ "  if (weight_base % 4 == 0) {\n"
-  ^ "    for (; inner + 3 < params.k; inner += 4) {\n"
-  ^ input_vector_load
-  ^ "      device const char4* weight_vector =\n"
-  ^ "          reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const char4 weight_values = *weight_vector;\n"
-  ^ "      acc += float(input_values[0]) * float("
-  ^ weight_cast ^ "(weight_values[0]) * channel_scale);\n"
-  ^ "      acc += float(input_values[1]) * float("
-  ^ weight_cast ^ "(weight_values[1]) * channel_scale);\n"
-  ^ "      acc += float(input_values[2]) * float("
-  ^ weight_cast ^ "(weight_values[2]) * channel_scale);\n"
-  ^ "      acc += float(input_values[3]) * float("
-  ^ weight_cast ^ "(weight_values[3]) * channel_scale);\n"
-  ^ "    }\n"
-  ^ "  }\n"
-  ^ "  for (; inner < params.k; ++inner)\n"
-  ^ "    acc += float(" ^ input_scalar ^ ") *\n"
-  ^ "           float(" ^ weight_cast
-  ^ "(weight[weight_base + inner]) * channel_scale);\n"
-  ^ "  if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
-  ^ "  output[col] = " ^ store_value ^ ";\n"
-  ^ "}\n"
-
-let q8_gemv_kernel = q8_gemv_kernel_with_input ~input_mode:Direct
-
-let q8_gemv_simd_kernel_with_input ~input_mode ~extra_argument ~output_buffer
-    ~parameter_buffer ~name ~value_type ~vector_type ~weight_cast ~scale_type
-    ~store_value =
-  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
-  let input_vector_load =
-    q8_input_vector_load ~value_type ~vector_type ~offset:"inner"
-      ~values_name:"input_values" input_mode
-  in
-  let input_scalar = q8_input_scalar ~value_type "inner" input_mode in
-  "kernel void " ^ name ^ "(\n"
-  ^ input_signature
-  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* bias_or_scale [[buffer("
-  ^ string_of_int (3 + input_shift) ^ ")]],\n"
-  ^ extra_argument
-  ^ "    device " ^ value_type ^ "* output [[buffer("
-  ^ string_of_int output_buffer ^ ")]],\n"
-  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
-  ^ ")]],\n"
-  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
-  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]]) {\n"
-  ^ "  const uint col = threadgroup_position.x * 8 + simdgroup;\n"
-  ^ "  if (params.m != 1 || col >= params.n) return;\n"
-  ^ "  const " ^ scale_type ^ " channel_scale = scale[col];\n"
-  ^ "  const uint weight_base = col * params.k;\n"
-  ^ "  float acc = 0.0f;\n"
-  ^ "  uint scalar_start = 0;\n"
-  ^ "  if ((weight_base & 3u) == 0) {\n"
-  ^ "    const uint vectorized = params.k & ~3u;\n"
-  ^ "    for (uint inner = lane * 4; inner < vectorized; inner += 128) {\n"
-  ^ input_vector_load
-  ^ "      device const char4* weight_vector =\n"
-  ^ "          reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const char4 weight_values = *weight_vector;\n"
-  ^ "      const " ^ vector_type ^ " dequantized_weights = " ^ vector_type
-  ^ "(weight_values) * channel_scale;\n"
-  ^ "      acc += dot(float4(input_values), float4(dequantized_weights));\n"
-  ^ "    }\n"
-  ^ "    scalar_start = vectorized;\n"
-  ^ "  }\n"
-  ^ "  for (uint inner = scalar_start + lane; inner < params.k; inner += 32)\n"
-  ^ "    acc += float(" ^ input_scalar ^ ") *\n"
-  ^ "           float(" ^ weight_cast
-  ^ "(weight[weight_base + inner]) * channel_scale);\n"
-  ^ "  acc = simd_sum(acc);\n"
-  ^ "  if (lane == 0) {\n"
-  ^ "    if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
-  ^ "    output[col] = " ^ store_value ^ ";\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_gemv_simd_kernel =
-  q8_gemv_simd_kernel_with_input ~input_mode:Direct
-
-let q8_gemv_pair_simd_kernel_with_input ~input_mode ~extra_argument
-    ~output_buffer ~parameter_buffer ~name ~value_type ~vector_type
-    ~weight_cast ~scale_type ~store_value =
-  let input_signature, input_shift = q8_input_signature ~value_type input_mode in
-  let input_vector_load =
-    q8_input_vector_load ~value_type ~vector_type ~offset:"inner"
-      ~values_name:"input_values" input_mode
-  in
-  let input_scalar = q8_input_scalar ~value_type "inner" input_mode in
-  "kernel void " ^ name ^ "(\n"
-  ^ input_signature
-  ^ "    device const char* weight [[buffer(" ^ string_of_int (1 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* scale [[buffer(" ^ string_of_int (2 + input_shift)
-  ^ ")]],\n"
-  ^ "    device const half* bias_or_scale [[buffer("
-  ^ string_of_int (3 + input_shift) ^ ")]],\n"
-  ^ extra_argument
-  ^ "    device " ^ value_type ^ "* output [[buffer("
-  ^ string_of_int output_buffer ^ ")]],\n"
-  ^ "    constant Q8Params& params [[buffer(" ^ string_of_int parameter_buffer
-  ^ ")]],\n"
-  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
-  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]]) {\n"
-  ^ "  const uint col = threadgroup_position.x * 16 + simdgroup * 2;\n"
-  ^ "  const uint next_col = col + 1;\n"
-  ^ "  if (params.m != 1 || col >= params.n) return;\n"
-  ^ "  const bool next_valid = next_col < params.n;\n"
-  ^ "  const " ^ scale_type ^ " channel_scale = scale[col];\n"
-  ^ "  const " ^ scale_type ^ " next_channel_scale =\n"
-  ^ "      next_valid ? scale[next_col] : " ^ scale_type ^ "(0);\n"
-  ^ "  const uint weight_base = col * params.k;\n"
-  ^ "  const uint next_weight_base = next_col * params.k;\n"
-  ^ "  float acc = 0.0f;\n"
-  ^ "  float next_acc = 0.0f;\n"
-  ^ "  uint scalar_start = 0;\n"
-  ^ "  if ((weight_base & 3u) == 0 &&\n"
-  ^ "      (!next_valid || (next_weight_base & 3u) == 0)) {\n"
-  ^ "    const uint vectorized = params.k & ~3u;\n"
-  ^ "    for (uint inner = lane * 4; inner < vectorized; inner += 128) {\n"
-  ^ input_vector_load
-  ^ "      device const char4* weight_vector =\n"
-  ^ "          reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const char4 weight_values = *weight_vector;\n"
-  ^ "      const char4 next_weight_values = next_valid\n"
-  ^ "          ? *reinterpret_cast<device const char4*>(\n"
-  ^ "                weight + next_weight_base + inner)\n"
-  ^ "          : char4(0);\n"
-  ^ "      const " ^ vector_type ^ " dequantized_weights = " ^ vector_type
-  ^ "(weight_values) * channel_scale;\n"
-  ^ "      const " ^ vector_type ^ " next_dequantized_weights = " ^ vector_type
-  ^ "(next_weight_values) * next_channel_scale;\n"
-  ^ "      acc += dot(float4(input_values), float4(dequantized_weights));\n"
-  ^ "      next_acc += dot(float4(input_values),\n"
-  ^ "                      float4(next_dequantized_weights));\n"
-  ^ "    }\n"
-  ^ "    scalar_start = vectorized;\n"
-  ^ "  }\n"
-  ^ "  for (uint inner = scalar_start + lane; inner < params.k; inner += 32) {\n"
-  ^ "    const float input_value = float(" ^ input_scalar ^ ");\n"
-  ^ "    acc += input_value * float(" ^ weight_cast
-  ^ "(weight[weight_base + inner]) * channel_scale);\n"
-  ^ "    if (next_valid)\n"
-  ^ "      next_acc += input_value * float(" ^ weight_cast
-  ^ "(weight[next_weight_base + inner]) * next_channel_scale);\n"
-  ^ "  }\n"
-  ^ "  acc = simd_sum(acc);\n"
-  ^ "  next_acc = simd_sum(next_acc);\n"
-  ^ "  if (lane == 0) {\n"
-  ^ "    if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
-  ^ "    output[col] = " ^ store_value ^ ";\n"
-  ^ "    if (next_valid) {\n"
-  ^ "      const uint col = next_col;\n"
-  ^ "      float acc = next_acc;\n"
-  ^ "      if (params.has_bias != 0) acc += float(bias_or_scale[col]);\n"
-  ^ "      output[col] = " ^ store_value ^ ";\n"
-  ^ "    }\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_gemv_pair_simd_kernel =
-  q8_gemv_pair_simd_kernel_with_input ~input_mode:Direct
-
-let q8_dequant_kernel ~name ~value_type ~weight_cast ~scale_cast =
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const char* weight [[buffer(0)]],\n"
-  ^ "    device const half* scale [[buffer(1)]],\n"
-  ^ "    device " ^ value_type ^ "* output [[buffer(2)]],\n"
-  ^ "    constant Q8Params& params [[buffer(3)]],\n"
-  ^ "    uint2 gid [[thread_position_in_grid]]) {\n"
-  ^ "  const uint col = gid.y;\n"
-  ^ "  const uint inner = gid.x;\n"
-  ^ "  if (col < params.n && inner < params.k) {\n"
-  ^ "    output[col * params.k + inner] = " ^ weight_cast
-  ^ "(weight[col * params.k + inner]) * " ^ scale_cast ^ "(scale[col]);\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_dual_linear_kernel ~name ~value_type ~weight_cast ~store_value
-    ~has_bias ~silu_first =
-  let weight2_buffer, scale2_buffer, bias1, bias2, output1_buffer,
-      output2_buffer, parameter_buffer =
-    if has_bias then 4, 5, "    device const half* bias1 [[buffer(3)]],\n",
-      "    device const half* bias2 [[buffer(6)]],\n", 7, 8, 9
-    else 3, 4, "", "", 5, 6, 7
-  in
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const char* weight1 [[buffer(1)]],\n"
-  ^ "    device const half* scale1 [[buffer(2)]],\n"
-  ^ bias1
-  ^ "    device const char* weight2 [[buffer(" ^ string_of_int weight2_buffer
-  ^ ")]],\n"
-  ^ "    device const half* scale2 [[buffer(" ^ string_of_int scale2_buffer
-  ^ ")]],\n"
-  ^ bias2
-  ^ "    device " ^ value_type ^ "* output1 [[buffer("
-  ^ string_of_int output1_buffer ^ ")]],\n"
-  ^ "    device " ^ value_type ^ "* output2 [[buffer("
-  ^ string_of_int output2_buffer ^ ")]],\n"
-  ^ "    constant Q8DualParams& params [[buffer("
-  ^ string_of_int parameter_buffer ^ ")]],\n"
-  ^ "    uint2 gid [[thread_position_in_grid]],\n"
-  ^ "    uint tid [[thread_index_in_threadgroup]]) {\n"
-  ^ "  const uint row = gid.y;\n"
-  ^ "  const uint col = gid.x;\n"
-  ^ "  const uint width = params.n1 + params.n2;\n"
-  ^ "  if (row >= params.m || col >= width) return;\n"
-  ^ "  threadgroup " ^ value_type ^ " cached_in[1024];\n"
-  ^ "  const bool can_cache = params.k <= 1024;\n"
-  ^ "  if (can_cache) {\n"
-  ^ "    const uint input_base = row * params.k;\n"
-  ^ "    for (uint i = tid; i < params.k; i += 256) {\n"
-  ^ "      cached_in[i] = input[input_base + i];\n"
-  ^ "    }\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  const bool second = col >= params.n1;\n"
-  ^ "  const uint channel = second ? col - params.n1 : col;\n"
-  ^ "  device const char* weight = second ? weight2 : weight1;\n"
-  ^ "  device const half* scale = second ? scale2 : scale1;\n"
-  ^ "  const uint weight_base = channel * params.k;\n"
-  ^ "  const uint input_base = row * params.k;\n"
-  ^ "  const float channel_scale = float(scale[channel]);\n"
-  ^ "  const uint vectorized = params.k & ~3u;\n"
-  ^ "  float accumulator = 0.0f;\n"
-  ^ "  if (can_cache) {\n"
-  ^ "    for (uint inner = 0; inner < vectorized; inner += 4) {\n"
-  ^ "      device const char4* w4 = reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const char4 wv = *w4;\n"
-  ^ "      accumulator += float(cached_in[inner + 0]) * float(wv.x)\n"
-  ^ "                   + float(cached_in[inner + 1]) * float(wv.y)\n"
-  ^ "                   + float(cached_in[inner + 2]) * float(wv.z)\n"
-  ^ "                   + float(cached_in[inner + 3]) * float(wv.w);\n"
-  ^ "    }\n"
-  ^ "    for (uint inner = vectorized; inner < params.k; ++inner)\n"
-  ^ "      accumulator += float(cached_in[inner]) * float(weight[weight_base + inner]);\n"
-  ^ "  } else {\n"
-  ^ "    for (uint inner = 0; inner < vectorized; inner += 4) {\n"
-  ^ "      device const char4* w4 = reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const char4 wv = *w4;\n"
-  ^ "      accumulator += float(input[input_base + inner + 0]) * float(wv.x)\n"
-  ^ "                   + float(input[input_base + inner + 1]) * float(wv.y)\n"
-  ^ "                   + float(input[input_base + inner + 2]) * float(wv.z)\n"
-  ^ "                   + float(input[input_base + inner + 3]) * float(wv.w);\n"
-  ^ "    }\n"
-  ^ "    for (uint inner = vectorized; inner < params.k; ++inner)\n"
-  ^ "      accumulator += float(input[input_base + inner]) * float(weight[weight_base + inner]);\n"
-  ^ "  }\n"
-  ^ "  accumulator *= channel_scale;\n"
-  ^ (if has_bias then
-       "  if (second) accumulator += float(bias2[channel]);\n"
-     ^ "  else accumulator += float(bias1[channel]);\n"
-     else "")
-  ^ (if silu_first then
-       "  if (!second) accumulator = accumulator / (1.0f + exp(-accumulator));\n"
-     else "")
-  ^ "  if (second) output2[row * params.n2 + channel] = " ^ store_value ^ ";\n"
-  ^ "  else output1[row * params.n1 + channel] = " ^ store_value ^ ";\n"
-  ^ "}\n"
-
-let q8_dual_linear_source =
-  "\nstruct Q8DualParams { uint m; uint n1; uint n2; uint k; };\n\n"
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16" ~value_type:"half"
-      ~weight_cast:"half" ~store_value:"half(accumulator)" ~has_bias:false
-      ~silu_first:false
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f16_bias"
-      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
-      ~has_bias:true ~silu_first:false
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f32" ~value_type:"float"
-      ~weight_cast:"float" ~store_value:"accumulator" ~has_bias:false
-      ~silu_first:false
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_f32_bias"
-      ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
-      ~has_bias:true ~silu_first:false
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f16"
-      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
-      ~has_bias:false ~silu_first:true
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f16_bias"
-      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
-      ~has_bias:true ~silu_first:true
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f32"
-      ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
-      ~has_bias:false ~silu_first:true
-  ^ q8_dual_linear_kernel ~name:"llmopt_q8_dual_linear_silu_f32_bias"
-      ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
-      ~has_bias:true ~silu_first:true
-
-let q8_qkv_linear_kernel ~name ~value_type ~weight_cast ~store_value ~has_bias =
-  let weight_k_buffer, scale_k_buffer, bias_q, bias_k, weight_v_buffer,
-      scale_v_buffer, bias_v, output_q_buffer, output_k_buffer, output_v_buffer,
-      parameter_buffer =
-    if has_bias then
-      4, 5, "    device const half* bias_q [[buffer(3)]],\n",
-      "    device const half* bias_k [[buffer(6)]],\n", 7, 8,
-      "    device const half* bias_v [[buffer(9)]],\n", 10, 11, 12, 13
-    else 3, 4, "", "", 5, 6, "", 7, 8, 9, 10
-  in
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const char* weight_q [[buffer(1)]],\n"
-  ^ "    device const half* scale_q [[buffer(2)]],\n"
-  ^ bias_q
-  ^ "    device const char* weight_k [[buffer(" ^ string_of_int weight_k_buffer
-  ^ ")]],\n"
-  ^ "    device const half* scale_k [[buffer(" ^ string_of_int scale_k_buffer
-  ^ ")]],\n"
-  ^ bias_k
-  ^ "    device const char* weight_v [[buffer(" ^ string_of_int weight_v_buffer
-  ^ ")]],\n"
-  ^ "    device const half* scale_v [[buffer(" ^ string_of_int scale_v_buffer
-  ^ ")]],\n"
-  ^ bias_v
-  ^ "    device " ^ value_type ^ "* output_q [[buffer("
-  ^ string_of_int output_q_buffer ^ ")]],\n"
-  ^ "    device " ^ value_type ^ "* output_k [[buffer("
-  ^ string_of_int output_k_buffer ^ ")]],\n"
-  ^ "    device " ^ value_type ^ "* output_v [[buffer("
-  ^ string_of_int output_v_buffer ^ ")]],\n"
-  ^ "    constant Q8QkvParams& params [[buffer("
-  ^ string_of_int parameter_buffer ^ ")]],\n"
-  ^ "    uint2 gid [[thread_position_in_grid]],\n"
-  ^ "    uint tid [[thread_index_in_threadgroup]]) {\n"
-  ^ "  const uint row = gid.y;\n"
-  ^ "  const uint col = gid.x;\n"
-  ^ "  const uint kv_end = params.n_q + params.n_kv;\n"
-  ^ "  const uint width = params.n_q + 2 * params.n_kv;\n"
-  ^ "  if (row >= params.m || col >= width) return;\n"
-  ^ "  threadgroup " ^ value_type ^ " cached_in[1024];\n"
-  ^ "  const bool can_cache = params.k <= 1024;\n"
-  ^ "  if (can_cache) {\n"
-  ^ "    const uint input_base = row * params.k;\n"
-  ^ "    for (uint i = tid; i < params.k; i += 256) {\n"
-  ^ "      cached_in[i] = input[input_base + i];\n"
-  ^ "    }\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  const uint group = col < params.n_q ? 0 : (col < kv_end ? 1 : 2);\n"
-  ^ "  const uint channel = group == 0 ? col\n"
-  ^ "      : (group == 1 ? col - params.n_q : col - kv_end);\n"
-  ^ "  device const char* weight = group == 0 ? weight_q\n"
-  ^ "      : (group == 1 ? weight_k : weight_v);\n"
-  ^ "  device const half* scale = group == 0 ? scale_q\n"
-  ^ "      : (group == 1 ? scale_k : scale_v);\n"
-  ^ "  const uint weight_base = channel * params.k;\n"
-  ^ "  const uint input_base = row * params.k;\n"
-  ^ "  const float channel_scale = float(scale[channel]);\n"
-  ^ "  const uint vectorized = params.k & ~3u;\n"
-  ^ "  float accumulator = 0.0f;\n"
-  ^ "  if (can_cache) {\n"
-  ^ "    for (uint inner = 0; inner < vectorized; inner += 4) {\n"
-  ^ "      device const char4* w4 = reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const char4 wv = *w4;\n"
-  ^ "      accumulator += float(cached_in[inner + 0]) * float(wv.x)\n"
-  ^ "                   + float(cached_in[inner + 1]) * float(wv.y)\n"
-  ^ "                   + float(cached_in[inner + 2]) * float(wv.z)\n"
-  ^ "                   + float(cached_in[inner + 3]) * float(wv.w);\n"
-  ^ "    }\n"
-  ^ "    for (uint inner = vectorized; inner < params.k; ++inner)\n"
-  ^ "      accumulator += float(cached_in[inner]) * float(weight[weight_base + inner]);\n"
-  ^ "  } else {\n"
-  ^ "    for (uint inner = 0; inner < vectorized; inner += 4) {\n"
-  ^ "      device const char4* w4 = reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "      const char4 wv = *w4;\n"
-  ^ "      accumulator += float(input[input_base + inner + 0]) * float(wv.x)\n"
-  ^ "                   + float(input[input_base + inner + 1]) * float(wv.y)\n"
-  ^ "                   + float(input[input_base + inner + 2]) * float(wv.z)\n"
-  ^ "                   + float(input[input_base + inner + 3]) * float(wv.w);\n"
-  ^ "    }\n"
-  ^ "    for (uint inner = vectorized; inner < params.k; ++inner)\n"
-  ^ "      accumulator += float(input[input_base + inner]) * float(weight[weight_base + inner]);\n"
-  ^ "  }\n"
-  ^ "  accumulator *= channel_scale;\n"
-  ^ (if has_bias then
-       "  if (group == 0) accumulator += float(bias_q[channel]);\n"
-     ^ "  else if (group == 1) accumulator += float(bias_k[channel]);\n"
-     ^ "  else accumulator += float(bias_v[channel]);\n"
-     else "")
-  ^ "  if (group == 0) output_q[row * params.n_q + channel] = "
-  ^ store_value ^ ";\n"
-  ^ "  else if (group == 1) output_k[row * params.n_kv + channel] = "
-  ^ store_value ^ ";\n"
-  ^ "  else output_v[row * params.n_kv + channel] = " ^ store_value ^ ";\n"
-  ^ "}\n"
-
-let q8_qkv_linear_source =
-  "\nstruct Q8QkvParams { uint m; uint n_q; uint n_kv; uint k; };\n\n"
-  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f16" ~value_type:"half"
-      ~weight_cast:"half" ~store_value:"half(accumulator)" ~has_bias:false
-  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f16_bias"
-      ~value_type:"half" ~weight_cast:"half" ~store_value:"half(accumulator)"
-      ~has_bias:true
-  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f32" ~value_type:"float"
-      ~weight_cast:"float" ~store_value:"accumulator" ~has_bias:false
-  ^ q8_qkv_linear_kernel ~name:"llmopt_q8_qkv_linear_f32_bias"
-      ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
-      ~has_bias:true
-
-let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast ~extra_output =
-  let value_name = name ^ "_value" in
-  "inline float " ^ value_name ^ "(\n"
-  ^ "    uint row, uint col, device const " ^ value_type ^ "* input,\n"
-  ^ "    device const char* weight, device const half* scale,\n"
-  ^ "    device const " ^ value_type ^ "* residual,\n"
-  ^ "    constant Q8LinearAddNormParams& params) {\n"
-  ^ "  float accumulator = 0.0f;\n"
-  ^ "  const uint weight_base = col * params.k;\n"
-  ^ "  const uint input_base = row * params.k;\n"
-  ^ "  const float col_scale = float(scale[col]);\n"
-  ^ "  const uint vectorized = params.k & ~3u;\n"
-  ^ "  for (uint inner = 0; inner < vectorized; inner += 4) {\n"
-  ^ "    device const char4* w4 = reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "    const char4 wv = *w4;\n"
-  ^ "    accumulator += float(input[input_base + inner + 0]) * float(wv.x)\n"
-  ^ "                 + float(input[input_base + inner + 1]) * float(wv.y)\n"
-  ^ "                 + float(input[input_base + inner + 2]) * float(wv.z)\n"
-  ^ "                 + float(input[input_base + inner + 3]) * float(wv.w);\n"
-  ^ "  }\n"
-  ^ "  for (uint inner = vectorized; inner < params.k; ++inner)\n"
-  ^ "    accumulator += float(input[input_base + inner]) * float(weight[weight_base + inner]);\n"
-  ^ "  return accumulator * col_scale + float(residual[row * params.n + col]);\n"
-  ^ "}\n\n"
-  ^ "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const char* weight [[buffer(1)]],\n"
-  ^ "    device const half* scale [[buffer(2)]],\n"
-  ^ "    device const " ^ value_type ^ "* residual [[buffer(3)]],\n"
-  ^ "    device const half* norm_weight [[buffer(4)]],\n"
-  ^ "    device half* output [[buffer(5)]],\n"
-  ^ (if extra_output then
-       "    device half* residual_output [[buffer(6)]],\n"
-       ^ "    constant Q8LinearAddNormParams& params [[buffer(7)]],\n"
-     else "    constant Q8LinearAddNormParams& params [[buffer(6)]],\n")
-  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
-  ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
-  ^ "  const uint row = group_position.x;\n"
-  ^ "  if (row >= params.m) return;\n"
-  ^ "  const uint thread_index = simdgroup * 32 + lane;\n"
-  ^ "  threadgroup float intermediate[2048];\n"
-  ^ "  const bool can_cache = params.n <= 2048;\n"
-  ^ "  float square_sum = 0.0f;\n"
-  ^ "  for (uint col = thread_index; col < params.n; col += 256) {\n"
-  ^ "    const float value = " ^ value_name
-  ^ "(row, col, input, weight, scale, residual, params);\n"
-  ^ "    if (can_cache) intermediate[col] = value;\n"
-  ^ "    square_sum += value * value;\n"
-  ^ "  }\n"
-  ^ "  threadgroup float partial_sums[8];\n"
-  ^ "  threadgroup float inverse;\n"
-  ^ "  square_sum = simd_sum(square_sum);\n"
-  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  if (simdgroup == 0 && lane == 0) {\n"
-  ^ "    float total = 0.0f;\n"
-  ^ "    for (uint group = 0; group < 8; ++group)\n"
-  ^ "      total += partial_sums[group];\n"
-  ^ "    inverse = rsqrt(total / float(params.n) + params.epsilon);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  for (uint col = thread_index; col < params.n; col += 256) {\n"
-  ^ "    const float value = can_cache ? intermediate[col] : " ^ value_name
-  ^ "(row, col, input, weight, scale, residual, params);\n"
-  ^ (if extra_output then
-       "    residual_output[row * params.n + col] = half(value);\n"
-     else "")
-  ^ "    output[row * params.n + col] = half(value * inverse * float(norm_weight[col]));\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_linear_add_norm_source =
-  "\nstruct Q8LinearAddNormParams { uint m; uint n; uint k; float epsilon; };\n\n"
-  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f16"
-      ~value_type:"half" ~weight_cast:"half" ~extra_output:false
-  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f32"
-      ~value_type:"float" ~weight_cast:"float" ~extra_output:false
-  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_extra_f16"
-      ~value_type:"half" ~weight_cast:"half" ~extra_output:true
-  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_extra_f32"
-      ~value_type:"float" ~weight_cast:"float" ~extra_output:true
-
-let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast ~extra_output =
+let w4a16_lm_head_argmax_kernel ~name ~value_type ~extra_output =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
   ^ "    device const half* norm_weight [[buffer(1)]],\n"
-  ^ "    device const char* weight [[buffer(2)]],\n"
+  ^ "    device const uchar* weight [[buffer(2)]],\n"
   ^ "    device const half* scale [[buffer(3)]],\n"
   ^ "    device uint* token_ids [[buffer(4)]],\n"
   ^ (if extra_output then
        "    device half* logits [[buffer(5)]],\n"
-       ^ "    constant Q8LmHeadParams& params [[buffer(6)]],\n"
-     else "    constant Q8LmHeadParams& params [[buffer(5)]],\n")
+       ^ "    constant W4A16LmHeadParams& params [[buffer(6)]],\n"
+     else "    constant W4A16LmHeadParams& params [[buffer(5)]],\n")
   ^ "    uint tid [[thread_index_in_threadgroup]],\n"
   ^ "    uint lane [[thread_index_in_simdgroup]],\n"
   ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
@@ -884,31 +129,29 @@ let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast ~extra_output =
   ^ "  threadgroup uint best_indices[256];\n"
   ^ "  float best_value = -3.402823466e+38f;\n"
   ^ "  uint best_index = 0;\n"
-  ^ "  const uint vectorized = params.k & ~3u;\n"
   ^ "  for (uint col = tid; col < params.n; col += 256) {\n"
-  ^ "    const uint weight_base = col * params.k;\n"
-  ^ "    const float col_scale = float(scale[col]);\n"
+  ^ "    const uint weight_base = col * (params.k / 2);\n"
+  ^ "    const uint scale_base = col * (params.k / 64);\n"
   ^ "    float accumulator = 0.0f;\n"
   ^ "    if (can_cache) {\n"
-  ^ "      for (uint inner = 0; inner < vectorized; inner += 4) {\n"
-  ^ "        device const char4* w4 = reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "        const char4 wv = *w4;\n"
-  ^ "        accumulator += cached_norm[inner + 0] * float(wv.x)\n"
-  ^ "                     + cached_norm[inner + 1] * float(wv.y)\n"
-  ^ "                     + cached_norm[inner + 2] * float(wv.z)\n"
-  ^ "                     + cached_norm[inner + 3] * float(wv.w);\n"
-  ^ "      }\n"
-  ^ "      for (uint inner = vectorized; inner < params.k; ++inner) {\n"
-  ^ "        accumulator += cached_norm[inner] * float(weight[weight_base + inner]);\n"
+  ^ "      for (uint inner = 0; inner < params.k; ++inner) {\n"
+  ^ "        const uchar packed = weight[weight_base + inner / 2];\n"
+  ^ "        int quantized = int((packed >> ((inner & 1u) * 4u)) & 15u);\n"
+  ^ "        if (quantized >= 8) quantized -= 16;\n"
+  ^ "        accumulator += cached_norm[inner] * float(quantized) *\n"
+  ^ "            float(scale[scale_base + inner / 64]);\n"
   ^ "      }\n"
   ^ "    } else {\n"
   ^ "      for (uint inner = 0; inner < params.k; ++inner) {\n"
   ^ "        float normalized = float(input[row * params.k + inner]) *\n"
   ^ "            float(norm_weight[inner]) * inverse;\n"
-  ^ "        accumulator += normalized * float(weight[weight_base + inner]);\n"
+  ^ "        const uchar packed = weight[weight_base + inner / 2];\n"
+  ^ "        int quantized = int((packed >> ((inner & 1u) * 4u)) & 15u);\n"
+  ^ "        if (quantized >= 8) quantized -= 16;\n"
+  ^ "        accumulator += normalized * float(quantized) *\n"
+  ^ "            float(scale[scale_base + inner / 64]);\n"
   ^ "      }\n"
   ^ "    }\n"
-  ^ "    accumulator *= col_scale;\n"
   ^ "    if (accumulator > best_value ||\n"
   ^ "        (accumulator == best_value && col < best_index)) {\n"
   ^ "      best_value = accumulator;\n"
@@ -936,17 +179,17 @@ let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast ~extra_output =
   ^ "  if (tid == 0) token_ids[row] = best_indices[0];\n"
   ^ "}\n"
 
-let q8_lm_head_argmax_stage1_kernel ~name ~value_type ~weight_cast:_ ~extra_output =
+let w4a16_lm_head_argmax_stage1_kernel ~name ~value_type ~extra_output =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
   ^ "    device const half* norm_weight [[buffer(1)]],\n"
-  ^ "    device const char* weight [[buffer(2)]],\n"
+  ^ "    device const uchar* weight [[buffer(2)]],\n"
   ^ "    device const half* scale [[buffer(3)]],\n"
-  ^ "    device Q8LmHeadCandidate* candidates [[buffer(4)]],\n"
+  ^ "    device W4A16LmHeadCandidate* candidates [[buffer(4)]],\n"
   ^ (if extra_output then
        "    device half* logits [[buffer(5)]],\n"
-       ^ "    constant Q8LmHeadParams& params [[buffer(6)]],\n"
-     else "    constant Q8LmHeadParams& params [[buffer(5)]],\n")
+       ^ "    constant W4A16LmHeadParams& params [[buffer(6)]],\n"
+     else "    constant W4A16LmHeadParams& params [[buffer(5)]],\n")
   ^ "    uint tid [[thread_index_in_threadgroup]],\n"
   ^ "    uint lane [[thread_index_in_simdgroup]],\n"
   ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
@@ -983,31 +226,29 @@ let q8_lm_head_argmax_stage1_kernel ~name ~value_type ~weight_cast:_ ~extra_outp
   ^ "  threadgroup uint best_indices[256];\n"
   ^ "  float best_value = -3.402823466e+38f;\n"
   ^ "  uint best_index = 0;\n"
-  ^ "  const uint vectorized = params.k & ~3u;\n"
   ^ "  for (uint col = group_idx * 256 + tid; col < params.n; col += 256 * 256) {\n"
-  ^ "    const uint weight_base = col * params.k;\n"
-  ^ "    const float col_scale = float(scale[col]);\n"
+  ^ "    const uint weight_base = col * (params.k / 2);\n"
+  ^ "    const uint scale_base = col * (params.k / 64);\n"
   ^ "    float accumulator = 0.0f;\n"
   ^ "    if (can_cache) {\n"
-  ^ "      for (uint inner = 0; inner < vectorized; inner += 4) {\n"
-  ^ "        device const char4* w4 = reinterpret_cast<device const char4*>(weight + weight_base + inner);\n"
-  ^ "        const char4 wv = *w4;\n"
-  ^ "        accumulator += cached_norm[inner + 0] * float(wv.x)\n"
-  ^ "                     + cached_norm[inner + 1] * float(wv.y)\n"
-  ^ "                     + cached_norm[inner + 2] * float(wv.z)\n"
-  ^ "                     + cached_norm[inner + 3] * float(wv.w);\n"
-  ^ "      }\n"
-  ^ "      for (uint inner = vectorized; inner < params.k; ++inner) {\n"
-  ^ "        accumulator += cached_norm[inner] * float(weight[weight_base + inner]);\n"
+  ^ "      for (uint inner = 0; inner < params.k; ++inner) {\n"
+  ^ "        const uchar packed = weight[weight_base + inner / 2];\n"
+  ^ "        int quantized = int((packed >> ((inner & 1u) * 4u)) & 15u);\n"
+  ^ "        if (quantized >= 8) quantized -= 16;\n"
+  ^ "        accumulator += cached_norm[inner] * float(quantized) *\n"
+  ^ "            float(scale[scale_base + inner / 64]);\n"
   ^ "      }\n"
   ^ "    } else {\n"
   ^ "      for (uint inner = 0; inner < params.k; ++inner) {\n"
   ^ "        float normalized = float(input[row * params.k + inner]) *\n"
   ^ "            float(norm_weight[inner]) * inverse;\n"
-  ^ "        accumulator += normalized * float(weight[weight_base + inner]);\n"
+  ^ "        const uchar packed = weight[weight_base + inner / 2];\n"
+  ^ "        int quantized = int((packed >> ((inner & 1u) * 4u)) & 15u);\n"
+  ^ "        if (quantized >= 8) quantized -= 16;\n"
+  ^ "        accumulator += normalized * float(quantized) *\n"
+  ^ "            float(scale[scale_base + inner / 64]);\n"
   ^ "      }\n"
   ^ "    }\n"
-  ^ "    accumulator *= col_scale;\n"
   ^ "    if (accumulator > best_value ||\n"
   ^ "        (accumulator == best_value && col < best_index)) {\n"
   ^ "      best_value = accumulator;\n"
@@ -1038,9 +279,9 @@ let q8_lm_head_argmax_stage1_kernel ~name ~value_type ~weight_cast:_ ~extra_outp
   ^ "  }\n"
   ^ "}\n\n"
 
-let q8_lm_head_reduce_kernel =
-  "kernel void llmopt_q8_lm_head_reduce(\n"
-  ^ "    device const Q8LmHeadCandidate* candidates [[buffer(0)]],\n"
+let w4a16_lm_head_reduce_kernel =
+  "kernel void llmopt_w4a16_lm_head_reduce(\n"
+  ^ "    device const W4A16LmHeadCandidate* candidates [[buffer(0)]],\n"
   ^ "    device uint* token_ids [[buffer(1)]],\n"
   ^ "    constant uint& m [[buffer(2)]],\n"
   ^ "    uint tid [[thread_index_in_threadgroup]],\n"
@@ -1069,1167 +310,68 @@ let q8_lm_head_reduce_kernel =
   ^ "  }\n"
   ^ "}\n\n"
 
-let q8_lm_head_argmax_source =
-  "\nstruct Q8LmHeadParams { uint m; uint n; uint k; float epsilon; };\n\n"
-  ^ "struct Q8LmHeadCandidate { float value; uint index; };\n\n"
-  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_f16"
-      ~value_type:"half" ~weight_cast:"half" ~extra_output:false
-  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_f32"
-      ~value_type:"float" ~weight_cast:"float" ~extra_output:false
-  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_extra_f16"
-      ~value_type:"half" ~weight_cast:"half" ~extra_output:true
-  ^ q8_lm_head_argmax_kernel ~name:"llmopt_q8_lm_head_argmax_extra_f32"
-      ~value_type:"float" ~weight_cast:"float" ~extra_output:true
-  ^ q8_lm_head_argmax_stage1_kernel ~name:"llmopt_q8_lm_head_argmax_stage1_f16"
-      ~value_type:"half" ~weight_cast:"half" ~extra_output:false
-  ^ q8_lm_head_argmax_stage1_kernel ~name:"llmopt_q8_lm_head_argmax_stage1_f32"
-      ~value_type:"float" ~weight_cast:"float" ~extra_output:false
-  ^ q8_lm_head_argmax_stage1_kernel ~name:"llmopt_q8_lm_head_argmax_stage1_extra_f16"
-      ~value_type:"half" ~weight_cast:"half" ~extra_output:true
-  ^ q8_lm_head_argmax_stage1_kernel ~name:"llmopt_q8_lm_head_argmax_stage1_extra_f32"
-      ~value_type:"float" ~weight_cast:"float" ~extra_output:true
-  ^ q8_lm_head_reduce_kernel
+let w4a16_lm_head_argmax_source =
+  "\nstruct W4A16LmHeadParams { uint m; uint n; uint k; float epsilon; };\n\n"
+  ^ "struct W4A16LmHeadCandidate { float value; uint index; };\n\n"
+  ^ w4a16_lm_head_argmax_kernel ~name:"llmopt_w4a16_lm_head_argmax_f16"
+      ~value_type:"half" ~extra_output:false
+  ^ w4a16_lm_head_argmax_kernel ~name:"llmopt_w4a16_lm_head_argmax_f32"
+      ~value_type:"float" ~extra_output:false
+  ^ w4a16_lm_head_argmax_kernel ~name:"llmopt_w4a16_lm_head_argmax_extra_f16"
+      ~value_type:"half" ~extra_output:true
+  ^ w4a16_lm_head_argmax_kernel ~name:"llmopt_w4a16_lm_head_argmax_extra_f32"
+      ~value_type:"float" ~extra_output:true
+  ^ w4a16_lm_head_argmax_stage1_kernel
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_f16"
+      ~value_type:"half" ~extra_output:false
+  ^ w4a16_lm_head_argmax_stage1_kernel
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_f32"
+      ~value_type:"float" ~extra_output:false
+  ^ w4a16_lm_head_argmax_stage1_kernel
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_extra_f16"
+      ~value_type:"half" ~extra_output:true
+  ^ w4a16_lm_head_argmax_stage1_kernel
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_extra_f32"
+      ~value_type:"float" ~extra_output:true
+  ^ w4a16_lm_head_reduce_kernel
 
-let q8_fused_swiglu_ffn_kernel ~name ~value_type ~weight_cast =
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const " ^ value_type ^ "* residual [[buffer(1)]],\n"
-  ^ "    device const char* weight1 [[buffer(2)]],\n"
-  ^ "    device const half* scale1 [[buffer(3)]],\n"
-  ^ "    device const char* weight3 [[buffer(4)]],\n"
-  ^ "    device const half* scale3 [[buffer(5)]],\n"
-  ^ "    device const char* weight2 [[buffer(6)]],\n"
-  ^ "    device const half* scale2 [[buffer(7)]],\n"
-  ^ "    device const half* norm_weight [[buffer(8)]],\n"
-  ^ "    device " ^ value_type ^ "* output [[buffer(9)]],\n"
-  ^ "    constant Q8SwiGLUFFNParams& params [[buffer(10)]],\n"
-  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
-  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
-  ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
-  ^ "  const uint row = group_position.x;\n"
-  ^ "  if (row >= params.m) return;\n"
-  ^ "  const uint input_base = row * params.k;\n"
-  ^ "  const uint output_base = row * params.k;\n"
-  ^ "  float square_sum = 0.0f;\n"
-  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
-  ^ "    const float v = float(input[input_base + i]);\n"
-  ^ "    square_sum += v * v;\n"
-  ^ "  }\n"
-  ^ "  square_sum = simd_sum(square_sum);\n"
-  ^ "  threadgroup float partial_sums[8];\n"
-  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  if (tid == 0) {\n"
-  ^ "    float total = 0.0f;\n"
-  ^ "    for (uint g = 0; g < 8; ++g) total += partial_sums[g];\n"
-  ^ "    partial_sums[0] = rsqrt(total / float(params.k) + params.epsilon);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  const float inv = partial_sums[0];\n"
-  ^ "  threadgroup half cached_norm[2048];\n"
-  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
-  ^ "    cached_norm[i] = half(float(input[input_base + i]) * float(norm_weight[i]) * inv);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  threadgroup half cached_prod[8192];\n"
-  ^ "  const uint vectorized_k = params.k & ~3u;\n"
-  ^ "  for (uint c = tid; c < params.n; c += 256) {\n"
-  ^ "    const uint w1_base = c * params.k;\n"
-  ^ "    const uint w3_base = c * params.k;\n"
-  ^ "    float acc1 = 0.0f;\n"
-  ^ "    float acc3 = 0.0f;\n"
-  ^ "    for (uint i = 0; i < vectorized_k; i += 4) {\n"
-  ^ "      device const char4* w1_ptr = reinterpret_cast<device const char4*>(weight1 + w1_base + i);\n"
-  ^ "      device const char4* w3_ptr = reinterpret_cast<device const char4*>(weight3 + w3_base + i);\n"
-  ^ "      const char4 w1_v = *w1_ptr;\n"
-  ^ "      const char4 w3_v = *w3_ptr;\n"
-  ^ "      const float n0 = float(cached_norm[i + 0]);\n"
-  ^ "      const float n1 = float(cached_norm[i + 1]);\n"
-  ^ "      const float n2 = float(cached_norm[i + 2]);\n"
-  ^ "      const float n3 = float(cached_norm[i + 3]);\n"
-  ^ "      acc1 += n0 * float(w1_v.x) + n1 * float(w1_v.y) + n2 * float(w1_v.z) + n3 * float(w1_v.w);\n"
-  ^ "      acc3 += n0 * float(w3_v.x) + n1 * float(w3_v.y) + n2 * float(w3_v.z) + n3 * float(w3_v.w);\n"
-  ^ "    }\n"
-  ^ "    for (uint i = vectorized_k; i < params.k; ++i) {\n"
-  ^ "      const float n_v = float(cached_norm[i]);\n"
-  ^ "      acc1 += n_v * float(weight1[w1_base + i]);\n"
-  ^ "      acc3 += n_v * float(weight3[w3_base + i]);\n"
-  ^ "    }\n"
-  ^ "    acc1 *= float(scale1[c]);\n"
-  ^ "    acc3 *= float(scale3[c]);\n"
-  ^ "    const float silu = acc1 / (1.0f + exp(-acc1));\n"
-  ^ "    cached_prod[c] = half(silu * acc3);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  const uint vectorized_n = params.n & ~3u;\n"
-  ^ "  for (uint o = tid; o < params.k; o += 256) {\n"
-  ^ "    const uint w2_base = o * params.n;\n"
-  ^ "    float acc2 = 0.0f;\n"
-  ^ "    for (uint j = 0; j < vectorized_n; j += 4) {\n"
-  ^ "      device const char4* w2_ptr = reinterpret_cast<device const char4*>(weight2 + w2_base + j);\n"
-  ^ "      const char4 w2_v = *w2_ptr;\n"
-  ^ "      acc2 += float(cached_prod[j + 0]) * float(w2_v.x)\n"
-  ^ "            + float(cached_prod[j + 1]) * float(w2_v.y)\n"
-  ^ "            + float(cached_prod[j + 2]) * float(w2_v.z)\n"
-  ^ "            + float(cached_prod[j + 3]) * float(w2_v.w);\n"
-  ^ "    }\n"
-  ^ "    for (uint j = vectorized_n; j < params.n; ++j) {\n"
-  ^ "      acc2 += float(cached_prod[j]) * float(weight2[w2_base + j]);\n"
-  ^ "    }\n"
-  ^ "    acc2 *= float(scale2[o]);\n"
-  ^ "    acc2 += float(residual[input_base + o]);\n"
-  ^ "    output[output_base + o] = " ^ value_type ^ "(acc2);\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_fused_swiglu_ffn_source =
-  "\nstruct Q8SwiGLUFFNParams { uint m; uint n; uint k; float epsilon; };\n\n"
-  ^ q8_fused_swiglu_ffn_kernel ~name:"llmopt_q8_fused_swiglu_ffn_f16"
-      ~value_type:"half" ~weight_cast:"half"
-  ^ q8_fused_swiglu_ffn_kernel ~name:"llmopt_q8_fused_swiglu_ffn_f32"
-      ~value_type:"float" ~weight_cast:"float"
-
-let q8_fused_short_conv_kernel ~name ~value_type ~weight_cast =
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const " ^ value_type ^ "* residual [[buffer(1)]],\n"
-  ^ "    device const char* weight_in [[buffer(2)]],\n"
-  ^ "    device const half* scale_in [[buffer(3)]],\n"
-  ^ "    device half* conv_state [[buffer(4)]],\n"
-  ^ "    device const half* conv_weight [[buffer(5)]],\n"
-  ^ "    device const char* weight_out [[buffer(6)]],\n"
-  ^ "    device const half* scale_out [[buffer(7)]],\n"
-  ^ "    device const half* norm_weight [[buffer(8)]],\n"
-  ^ "    device " ^ value_type ^ "* output [[buffer(9)]],\n"
-  ^ "    constant Q8ShortConvParams& params [[buffer(10)]],\n"
-  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
-  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
-  ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
-  ^ "  const uint row = group_position.x;\n"
-  ^ "  if (row >= params.m) return;\n\n"
-  ^ "  threadgroup half cached_norm[2048];\n"
-  ^ "  threadgroup half cached_in_proj[6144];\n"
-  ^ "  threadgroup half cached_conv_out[2048];\n"
-  ^ "  threadgroup float partial_sums[8];\n\n"
-  ^ "  const uint input_base = row * params.k;\n"
-  ^ "  const uint output_base = row * params.k;\n"
-  ^ "  const uint state_row_base = row * params.channels * params.window;\n\n"
-  ^ "  float square_sum = 0.0f;\n"
-  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
-  ^ "    const float val = float(input[input_base + i]);\n"
-  ^ "    square_sum += val * val;\n"
-  ^ "  }\n"
-  ^ "  square_sum = simd_sum(square_sum);\n"
-  ^ "  if (lane == 0) {\n"
-  ^ "    partial_sums[simdgroup] = square_sum;\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  if (tid == 0) {\n"
-  ^ "    float total = 0.0f;\n"
-  ^ "    for (uint s = 0; s < 8; ++s) {\n"
-  ^ "      total += partial_sums[s];\n"
-  ^ "    }\n"
-  ^ "    partial_sums[0] = rsqrt(total / float(params.k) + params.epsilon);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  const float inv = partial_sums[0];\n"
-  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
-  ^ "    cached_norm[i] = half(float(input[input_base + i]) * float(norm_weight[i]) * inv);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  const uint in_proj_rows = 3 * params.channels;\n"
-  ^ "  for (uint r = tid; r < in_proj_rows; r += 256) {\n"
-  ^ "    const uint weight_base = r * params.k;\n"
-  ^ "    device const char4* w_vec = reinterpret_cast<device const char4*>(weight_in + weight_base);\n"
-  ^ "    float acc = 0.0f;\n"
-  ^ "    const uint num_vec4 = params.k / 4;\n"
-  ^ "    for (uint v = 0; v < num_vec4; ++v) {\n"
-  ^ "      const char4 w = w_vec[v];\n"
-  ^ "      const uint base = v * 4;\n"
-  ^ "      acc += float(w.x) * float(cached_norm[base + 0])\n"
-  ^ "           + float(w.y) * float(cached_norm[base + 1])\n"
-  ^ "           + float(w.z) * float(cached_norm[base + 2])\n"
-  ^ "           + float(w.w) * float(cached_norm[base + 3]);\n"
-  ^ "    }\n"
-  ^ "    for (uint i = num_vec4 * 4; i < params.k; ++i) {\n"
-  ^ "      acc += float(weight_in[weight_base + i]) * float(cached_norm[i]);\n"
-  ^ "    }\n"
-  ^ "    acc *= float(scale_in[r]);\n"
-  ^ "    cached_in_proj[r] = half(acc);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  for (uint c = tid; c < params.channels; c += 256) {\n"
-  ^ "    const float x0 = float(cached_in_proj[c]);\n"
-  ^ "    const float x1 = float(cached_in_proj[params.channels + c]);\n"
-  ^ "    const float x2 = float(cached_in_proj[2 * params.channels + c]);\n"
-  ^ "    const float g = x0 * x2;\n"
-  ^ "    const uint state_base = state_row_base + c * 3;\n"
-  ^ "    const float s0 = float(conv_state[state_base + 1]);\n"
-  ^ "    const float s1 = float(conv_state[state_base + 2]);\n"
-  ^ "    const float s2 = g;\n"
-  ^ "    conv_state[state_base + 0] = half(s0);\n"
-  ^ "    conv_state[state_base + 1] = half(s1);\n"
-  ^ "    conv_state[state_base + 2] = half(s2);\n"
-  ^ "    const uint weight_base = c * 3;\n"
-  ^ "    const float w0 = float(conv_weight[weight_base + 0]);\n"
-  ^ "    const float w1 = float(conv_weight[weight_base + 1]);\n"
-  ^ "    const float w2 = float(conv_weight[weight_base + 2]);\n"
-  ^ "    const float conv_out = s0 * w0 + s1 * w1 + s2 * w2;\n"
-  ^ "    cached_conv_out[c] = half(x1 * conv_out);\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  for (uint o = tid; o < params.k; o += 256) {\n"
-  ^ "    const uint weight_base = o * params.channels;\n"
-  ^ "    device const char4* w_vec = reinterpret_cast<device const char4*>(weight_out + weight_base);\n"
-  ^ "    float acc = 0.0f;\n"
-  ^ "    const uint num_vec4 = params.channels / 4;\n"
-  ^ "    for (uint v = 0; v < num_vec4; ++v) {\n"
-  ^ "      const char4 w = w_vec[v];\n"
-  ^ "      const uint base = v * 4;\n"
-  ^ "      acc += float(w.x) * float(cached_conv_out[base + 0])\n"
-  ^ "           + float(w.y) * float(cached_conv_out[base + 1])\n"
-  ^ "           + float(w.z) * float(cached_conv_out[base + 2])\n"
-  ^ "           + float(w.w) * float(cached_conv_out[base + 3]);\n"
-  ^ "    }\n"
-  ^ "    for (uint i = num_vec4 * 4; i < params.channels; ++i) {\n"
-  ^ "      acc += float(weight_out[weight_base + i]) * float(cached_conv_out[i]);\n"
-  ^ "    }\n"
-  ^ "    acc *= float(scale_out[o]);\n"
-  ^ "    acc += float(residual[input_base + o]);\n"
-  ^ "    output[output_base + o] = " ^ value_type ^ "(acc);\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_fused_short_conv_source =
-  "\nstruct Q8ShortConvParams { uint m; uint channels; uint window; uint k; float epsilon; };\n\n"
-  ^ q8_fused_short_conv_kernel ~name:"llmopt_q8_fused_short_conv_f16"
-      ~value_type:"half" ~weight_cast:"half"
-  ^ q8_fused_short_conv_kernel ~name:"llmopt_q8_fused_short_conv_f32"
-      ~value_type:"float" ~weight_cast:"float"
-
-let q8_fused_qkv_rope_kernel ~name ~value_type ~weight_cast:_ =
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* activation [[buffer(0)]],\n"
-  ^ "    device const " ^ value_type ^ "* norm_weight [[buffer(1)]],\n"
-  ^ "    device const char* qkv_weight [[buffer(2)]],\n"
-  ^ "    device const " ^ value_type ^ "* qkv_scale [[buffer(3)]],\n"
-  ^ "    device const " ^ value_type ^ "* cosine [[buffer(4)]],\n"
-  ^ "    device const " ^ value_type ^ "* sine [[buffer(5)]],\n"
-  ^ "    device " ^ value_type ^ "* q_output [[buffer(6)]],\n"
-  ^ "    device " ^ value_type ^ "* k_output [[buffer(7)]],\n"
-  ^ "    device " ^ value_type ^ "* v_output [[buffer(8)]],\n"
-  ^ "    constant Q8FusedQkvRopeParams& params [[buffer(9)]],\n"
-  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
-  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
-  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]]) {\n"
-  ^ "  const uint token_idx = threadgroup_position.y;\n"
-  ^ "  if (token_idx >= params.m) return;\n"
-  ^ "  const uint act_base = token_idx * params.k;\n"
-  ^ "  const uint q_base = token_idx * params.n_q;\n"
-  ^ "  const uint kv_base = token_idx * params.n_kv;\n\n"
-  ^ "  threadgroup " ^ value_type ^ " cached_norm[1024];\n"
-  ^ "  threadgroup float partial_sums[4];\n\n"
-  ^ "  float square_sum = 0.0f;\n"
-  ^ "  for (uint i = tid; i < params.k; i += 128) {\n"
-  ^ "    const float val = float(activation[act_base + i]);\n"
-  ^ "    square_sum += val * val;\n"
-  ^ "  }\n"
-  ^ "  square_sum = simd_sum(square_sum);\n"
-  ^ "  if (lane == 0) {\n"
-  ^ "    partial_sums[simdgroup] = square_sum;\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  if (simdgroup == 0) {\n"
-  ^ "    float total = lane < 4 ? partial_sums[lane] : 0.0f;\n"
-  ^ "    total = simd_sum(total);\n"
-  ^ "    if (lane == 0) {\n"
-  ^ "      partial_sums[0] = rsqrt(total / float(params.k) + params.epsilon);\n"
-  ^ "    }\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  const float inv_rms = partial_sums[0];\n\n"
-  ^ "  for (uint i = tid; i < params.k; i += 128) {\n"
-  ^ "    cached_norm[i] = " ^ value_type ^ "(float(activation[act_base + i]) * inv_rms * float(norm_weight[i]));\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  const uint q_pairs = params.n_q / 2;\n"
-  ^ "  const uint k_pairs = params.n_kv / 2;\n"
-  ^ "  const uint v_pairs = params.n_kv / 2;\n"
-  ^ "  const uint total_pairs = q_pairs + k_pairs + v_pairs;\n"
-  ^ "  const uint pair_idx = threadgroup_position.x * 4 + simdgroup;\n"
-  ^ "  if (pair_idx >= total_pairs) return;\n\n"
-  ^ "  uint row0 = 0;\n"
-  ^ "  uint row1 = 0;\n"
-  ^ "  uint d = 0;\n"
-  ^ "  bool is_rope = false;\n"
-  ^ "  if (pair_idx < q_pairs) {\n"
-  ^ "    const uint head = pair_idx / params.half_dimension;\n"
-  ^ "    d = pair_idx % params.half_dimension;\n"
-  ^ "    row0 = head * (2 * params.half_dimension) + d;\n"
-  ^ "    row1 = row0 + params.half_dimension;\n"
-  ^ "    is_rope = true;\n"
-  ^ "  } else if (pair_idx < q_pairs + k_pairs) {\n"
-  ^ "    const uint k_idx = pair_idx - q_pairs;\n"
-  ^ "    const uint head = k_idx / params.half_dimension;\n"
-  ^ "    d = k_idx % params.half_dimension;\n"
-  ^ "    row0 = params.n_q + head * (2 * params.half_dimension) + d;\n"
-  ^ "    row1 = row0 + params.half_dimension;\n"
-  ^ "    is_rope = true;\n"
-  ^ "  } else {\n"
-  ^ "    const uint v_idx = pair_idx - q_pairs - k_pairs;\n"
-  ^ "    row0 = params.n_q + params.n_kv + v_idx * 2;\n"
-  ^ "    row1 = row0 + 1;\n"
-  ^ "    is_rope = false;\n"
-  ^ "  }\n\n"
-  ^ "  const uint total_rows = params.n_q + 2 * params.n_kv;\n"
-  ^ "  const uint w0_base = row0 * params.k;\n"
-  ^ "  const uint w1_base = row1 * params.k;\n"
-  ^ "  float acc0 = 0.0f;\n"
-  ^ "  float acc1 = 0.0f;\n"
-  ^ "  const uint num_vec4 = params.k / 4;\n"
-  ^ "  for (uint v = lane; v < num_vec4; v += 32) {\n"
-  ^ "    const uint base = v * 4;\n"
-  ^ "    device const char4* w0_ptr = reinterpret_cast<device const char4*>(qkv_weight + w0_base + base);\n"
-  ^ "    device const char4* w1_ptr = reinterpret_cast<device const char4*>(qkv_weight + w1_base + base);\n"
-  ^ "    threadgroup const " ^ value_type ^ "4* in_ptr = reinterpret_cast<threadgroup const " ^ value_type ^ "4*>(cached_norm + base);\n"
-  ^ "    const char4 w0 = *w0_ptr;\n"
-  ^ "    const char4 w1 = (row1 < total_rows) ? *w1_ptr : char4(0);\n"
-  ^ "    const " ^ value_type ^ "4 in4 = *in_ptr;\n"
-  ^ "    acc0 += float(w0.x) * float(in4.x) + float(w0.y) * float(in4.y) + float(w0.z) * float(in4.z) + float(w0.w) * float(in4.w);\n"
-  ^ "    acc1 += float(w1.x) * float(in4.x) + float(w1.y) * float(in4.y) + float(w1.z) * float(in4.z) + float(w1.w) * float(in4.w);\n"
-  ^ "  }\n"
-  ^ "  acc0 = simd_sum(acc0) * float(qkv_scale[row0]);\n"
-  ^ "  acc1 = simd_sum(acc1) * (row1 < total_rows ? float(qkv_scale[row1]) : 0.0f);\n\n"
-  ^ "  if (lane == 0) {\n"
-  ^ "    if (is_rope) {\n"
-  ^ "      const float cos_v = float(cosine[d]);\n"
-  ^ "      const float sin_v = float(sine[d]);\n"
-  ^ "      const float rot0 = acc0 * cos_v - acc1 * sin_v;\n"
-  ^ "      const float rot1 = acc1 * cos_v + acc0 * sin_v;\n"
-  ^ "      if (pair_idx < q_pairs) {\n"
-  ^ "        q_output[q_base + row0] = " ^ value_type ^ "(rot0);\n"
-  ^ "        q_output[q_base + row1] = " ^ value_type ^ "(rot1);\n"
-  ^ "      } else {\n"
-  ^ "        const uint k_out_row0 = row0 - params.n_q;\n"
-  ^ "        const uint k_out_row1 = row1 - params.n_q;\n"
-  ^ "        k_output[kv_base + k_out_row0] = " ^ value_type ^ "(rot0);\n"
-  ^ "        k_output[kv_base + k_out_row1] = " ^ value_type ^ "(rot1);\n"
-  ^ "      }\n"
-  ^ "    } else {\n"
-  ^ "      const uint v_out_row0 = row0 - params.n_q - params.n_kv;\n"
-  ^ "      const uint v_out_row1 = row1 - params.n_q - params.n_kv;\n"
-  ^ "      v_output[kv_base + v_out_row0] = " ^ value_type ^ "(acc0);\n"
-  ^ "      if (row1 < total_rows) v_output[kv_base + v_out_row1] = " ^ value_type ^ "(acc1);\n"
-  ^ "    }\n"
-  ^ "  }\n"
-  ^ "}\n\n"
-
-let q8_fused_qkv_rope_source =
-  "\nstruct Q8FusedQkvRopeParams { uint m; uint n_q; uint n_kv; uint k; uint half_dimension; float epsilon; };\n\n"
-  ^ q8_fused_qkv_rope_kernel ~name:"llmopt_q8_fused_qkv_rope_f16"
-      ~value_type:"half" ~weight_cast:"half"
-  ^ q8_fused_qkv_rope_kernel ~name:"llmopt_q8_fused_qkv_rope_f32"
-      ~value_type:"float" ~weight_cast:"float"
-
-let q8_fused_attn_out_kernel ~name ~value_type ~weight_cast:_ =
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* query [[buffer(0)]],\n"
-  ^ "    device const " ^ value_type ^ "* key [[buffer(1)]],\n"
-  ^ "    device const " ^ value_type ^ "* value [[buffer(2)]],\n"
-  ^ "    device const uchar* mask [[buffer(3)]],\n"
-  ^ "    device const char* out_weight [[buffer(4)]],\n"
-  ^ "    device const " ^ value_type ^ "* out_scale [[buffer(5)]],\n"
-  ^ "    device const " ^ value_type ^ "* residual [[buffer(6)]],\n"
-  ^ "    device " ^ value_type ^ "* output [[buffer(7)]],\n"
-  ^ "    constant Q8FusedAttnOutParams& params [[buffer(8)]],\n"
-  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
-  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
-  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]]) {\n"
-  ^ "  const uint token_idx = threadgroup_position.x;\n"
-  ^ "  if (token_idx >= params.m) return;\n"
-  ^ "  const uint out_base = token_idx * params.k;\n"
-  ^ "  const uint q_base = token_idx * (params.heads * params.head_dim);\n\n"
-  ^ "  threadgroup " ^ value_type ^ " cached_attn[1024];\n\n"
-  ^ "  const uint head = tid / 16;\n"
-  ^ "  const uint sub_lane = tid % 16;\n"
-  ^ "  if (head < params.heads) {\n"
-  ^ "    const uint q_head_base = q_base + head * params.head_dim;\n"
-  ^ "    float max_score = -INFINITY;\n"
-  ^ "    for (uint kp = 0; kp < params.key_length; ++kp) {\n"
-  ^ "      if (mask != nullptr && mask[kp] == 0) continue;\n"
-  ^ "      float score = 0.0f;\n"
-  ^ "      const uint k_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
-  ^ "                            + kp * params.head_dim;\n"
-  ^ "      for (uint d = sub_lane; d < params.head_dim; d += 16) {\n"
-  ^ "        score += float(query[q_head_base + d]) * float(key[k_pos_base + d]);\n"
-  ^ "      }\n"
-  ^ "      score = simd_sum(score) * params.scale;\n"
-  ^ "      max_score = max(max_score, score);\n"
-  ^ "    }\n"
-  ^ "    float denom = 0.0f;\n"
-  ^ "    for (uint kp = 0; kp < params.key_length; ++kp) {\n"
-  ^ "      if (mask != nullptr && mask[kp] == 0) continue;\n"
-  ^ "      float score = 0.0f;\n"
-  ^ "      const uint k_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
-  ^ "                            + kp * params.head_dim;\n"
-  ^ "      for (uint d = sub_lane; d < params.head_dim; d += 16) {\n"
-  ^ "        score += float(query[q_head_base + d]) * float(key[k_pos_base + d]);\n"
-  ^ "      }\n"
-  ^ "      score = simd_sum(score) * params.scale;\n"
-  ^ "      denom += exp(score - max_score);\n"
-  ^ "    }\n"
-  ^ "    const float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;\n"
-  ^ "    for (uint d = sub_lane; d < params.head_dim; d += 16) {\n"
-  ^ "      float ctx = 0.0f;\n"
-  ^ "      for (uint kp = 0; kp < params.key_length; ++kp) {\n"
-  ^ "        if (mask != nullptr && mask[kp] == 0) continue;\n"
-  ^ "        float score = 0.0f;\n"
-  ^ "        const uint k_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
-  ^ "                              + kp * params.head_dim;\n"
-  ^ "        for (uint kd = 0; kd < params.head_dim; ++kd) {\n"
-  ^ "          score += float(query[q_head_base + kd]) * float(key[k_pos_base + kd]);\n"
-  ^ "        }\n"
-  ^ "        const float weight = exp(score * params.scale - max_score) * inv_denom;\n"
-  ^ "        const uint v_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
-  ^ "                              + kp * params.head_dim;\n"
-  ^ "        ctx += weight * float(value[v_pos_base + d]);\n"
-  ^ "      }\n"
-  ^ "      cached_attn[head * params.head_dim + d] = " ^ value_type ^ "(ctx);\n"
-  ^ "    }\n"
-  ^ "  }\n"
-  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  const uint num_vec4 = params.k / 4;\n"
-  ^ "  for (uint row = tid; row < params.k; row += 256) {\n"
-  ^ "    const uint weight_base = row * params.k;\n"
-  ^ "    device const char4* w_vec = (device const char4*)(out_weight + weight_base);\n"
-  ^ "    float acc = 0.0f;\n"
-  ^ "    for (uint v = 0; v < num_vec4; ++v) {\n"
-  ^ "      const char4 w = w_vec[v];\n"
-  ^ "      const uint base = v * 4;\n"
-  ^ "      acc += float(w.x) * float(cached_attn[base + 0])\n"
-  ^ "           + float(w.y) * float(cached_attn[base + 1])\n"
-  ^ "           + float(w.z) * float(cached_attn[base + 2])\n"
-  ^ "           + float(w.w) * float(cached_attn[base + 3]);\n"
-  ^ "    }\n"
-  ^ "    for (uint i = num_vec4 * 4; i < params.k; ++i) {\n"
-  ^ "      acc += float(out_weight[weight_base + i]) * float(cached_attn[i]);\n"
-  ^ "    }\n"
-  ^ "    acc *= float(out_scale[row]);\n"
-  ^ "    acc += float(residual[out_base + row]);\n"
-  ^ "    output[out_base + row] = " ^ value_type ^ "(acc);\n"
-  ^ "  }\n"
-  ^ "}\n\n"
-
-let q8_fused_attn_out_source =
-  "\nstruct Q8FusedAttnOutParams { uint m; uint heads; uint head_dim; uint k; uint key_length; float scale; };\n\n"
-  ^ q8_fused_attn_out_kernel ~name:"llmopt_q8_fused_attn_out_f16"
-      ~value_type:"half" ~weight_cast:"half"
-  ^ q8_fused_attn_out_kernel ~name:"llmopt_q8_fused_attn_out_f32"
-      ~value_type:"float" ~weight_cast:"float"
-
-let q8_source =
-  "\nconstant uint Q8_TILE = 64;\n\n"
-  ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
-  ^ q8_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_linear"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~alignment:"8"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~scale_zero:"half(0.0h)"
-      ~zero_value:"half(0.0h)"
-      ~store_value:"half(acc)"
-  ^ q8_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_linear_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~alignment:"16"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~scale_zero:"0.0f"
-      ~zero_value:"0.0f"
-      ~store_value:"acc"
-  ^ q8_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_linear_silu"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~alignment:"8"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~scale_zero:"half(0.0h)"
-      ~zero_value:"half(0.0h)"
-      ~store_value:
-        "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
-  ^ q8_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_linear_silu_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~alignment:"16"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~scale_zero:"0.0f"
-      ~zero_value:"0.0f"
-      ~store_value:"acc / (1.0f + exp(-acc))"
-  ^ q8_kernel
-      ~extra_argument:"    device const half* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_linear_add"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~alignment:"8"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~scale_zero:"half(0.0h)"
-      ~zero_value:"half(0.0h)"
-      ~store_value:"half(half(acc) + residual[row * params.n + col])"
-  ^ q8_kernel
-      ~extra_argument:"    device const float* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_linear_add_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~alignment:"16"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~scale_zero:"0.0f"
-      ~zero_value:"0.0f"
-      ~store_value:"acc + residual[row * params.n + col]"
-  ^ q8_gemv_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(acc)"
-  ^ q8_gemv_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc"
-  ^ q8_gemv_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_silu"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:
-        "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
-  ^ q8_gemv_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_silu_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc / (1.0f + exp(-acc))"
-  ^ q8_gemv_kernel
-      ~extra_argument:"    device const half* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_gemv_add"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(half(acc) + residual[col])"
-  ^ q8_gemv_kernel
-      ~extra_argument:"    device const float* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_gemv_add_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc + residual[col]"
-  ^ q8_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const half* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_linear_mul_add"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~alignment:"8"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~scale_zero:"half(0.0h)"
-      ~zero_value:"half(0.0h)"
-      ~store_value:"half(half(acc) + residual[row * params.n + col])"
-  ^ q8_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const float* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_linear_mul_add_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~alignment:"16"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~scale_zero:"0.0f"
-      ~zero_value:"0.0f"
-      ~store_value:"acc + residual[row * params.n + col]"
-  ^ q8_gemv_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const half* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_gemv_mul_add"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(half(acc) + residual[col])"
-  ^ q8_gemv_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const float* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_gemv_mul_add_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc + residual[col]"
-  ^ q8_gemv_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(acc)"
-  ^ q8_gemv_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc"
-  ^ q8_gemv_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_silu_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:
-        "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
-  ^ q8_gemv_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_silu_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc / (1.0f + exp(-acc))"
-  ^ q8_gemv_simd_kernel
-      ~extra_argument:"    device const half* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_gemv_add_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(half(acc) + residual[col])"
-  ^ q8_gemv_simd_kernel
-      ~extra_argument:"    device const float* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_gemv_add_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc + residual[col]"
-  ^ q8_gemv_simd_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const half* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_gemv_mul_add_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(half(acc) + residual[col])"
-  ^ q8_gemv_simd_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const float* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_gemv_mul_add_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc + residual[col]"
-  ^ q8_gemv_pair_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_pair_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(acc)"
-  ^ q8_gemv_pair_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_pair_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc"
-  ^ q8_gemv_pair_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_silu_pair_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:
-        "half(float(half(acc)) / (1.0f + exp(-float(half(acc)))))"
-  ^ q8_gemv_pair_simd_kernel
-      ~extra_argument:"" ~output_buffer:4 ~parameter_buffer:5
-      ~name:"llmopt_q8_gemv_silu_pair_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc / (1.0f + exp(-acc))"
-  ^ q8_gemv_pair_simd_kernel
-      ~extra_argument:"    device const half* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_gemv_add_pair_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(half(acc) + residual[col])"
-  ^ q8_gemv_pair_simd_kernel
-      ~extra_argument:"    device const float* residual [[buffer(4)]],\n"
-      ~output_buffer:5 ~parameter_buffer:6
-      ~name:"llmopt_q8_gemv_add_pair_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc + residual[col]"
-  ^ q8_gemv_pair_simd_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const half* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_gemv_mul_add_pair_simd"
-      ~value_type:"half"
-      ~vector_type:"half4"
-      ~weight_cast:"half"
-      ~scale_type:"half"
-      ~store_value:"half(half(acc) + residual[col])"
-  ^ q8_gemv_pair_simd_kernel_with_input
-      ~input_mode:Product
-      ~extra_argument:"    device const float* residual [[buffer(5)]],\n"
-      ~output_buffer:6 ~parameter_buffer:7
-      ~name:"llmopt_q8_gemv_mul_add_pair_simd_f32"
-      ~value_type:"float"
-      ~vector_type:"float4"
-      ~weight_cast:"float"
-      ~scale_type:"float"
-      ~store_value:"acc + residual[col]"
-  ^ q8_dequant_kernel
-      ~name:"llmopt_q8_dequantize"
-      ~value_type:"half"
-      ~weight_cast:"half"
-      ~scale_cast:"half"
-  ^ q8_dequant_kernel
-      ~name:"llmopt_q8_dequantize_f32"
-      ~value_type:"float"
-      ~weight_cast:"float"
-      ~scale_cast:"float"
-
-let q8_parameterized_tiles =
-  [ (32, 8, 64); (8, 32, 64); (32, 32, 64); (16, 16, 128);
-    (32, 8, 128); (8, 32, 128); (32, 32, 128) ]
-
-let q8_parameterized_source =
-  q8_parameterized_tiles
-  |> List.map (fun (tile_m, tile_n, tile_k) ->
-         q8_kernel_parameterized ~tile_m ~tile_n ~tile_k
-         ^ q8_kernel_parameterized_f32 ~tile_m ~tile_n ~tile_k)
-  |> String.concat "\n"
-
-let q8_gemm_simdgroup_kernel ~name ~value_type ~matrix_type ~zero_lit =
-  "kernel void " ^ name ^ "(\n"
-  ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
-  ^ "    device const char* weight [[buffer(1)]],\n"
-  ^ "    device const " ^ value_type ^ "* scale [[buffer(2)]],\n"
-  ^ "    device const " ^ value_type ^ "* bias [[buffer(3)]],\n"
-  ^ "    device " ^ value_type ^ "* output [[buffer(4)]],\n"
-  ^ "    constant Q8Params& params [[buffer(5)]],\n"
-  ^ "    uint3 group_position [[threadgroup_position_in_grid]],\n"
-  ^ "    uint simd_lane [[thread_index_in_simdgroup]]) {\n"
-  ^ "  const uint m_block = group_position.y * 8;\n"
-  ^ "  const uint n_block = group_position.x * 8;\n"
-  ^ "  if (m_block >= params.m || n_block >= params.n) return;\n\n"
-  ^ "  threadgroup " ^ value_type ^ " a_tile[8][8];\n"
-  ^ "  threadgroup " ^ value_type ^ " b_tile[8][8];\n\n"
-  ^ "  " ^ matrix_type ^ " c_mat = make_filled_simdgroup_matrix<" ^ value_type ^ ", 8, 8>(" ^ zero_lit ^ ");\n\n"
-  ^ "  for (uint k_base = 0; k_base < params.k; k_base += 8) {\n"
-  ^ "    const uint idx0 = simd_lane * 2;\n"
-  ^ "    const uint idx1 = simd_lane * 2 + 1;\n"
-  ^ "    const uint r0 = idx0 / 8;\n"
-  ^ "    const uint c0 = idx0 % 8;\n"
-  ^ "    const uint r1 = idx1 / 8;\n"
-  ^ "    const uint c1 = idx1 % 8;\n\n"
-  ^ "    const uint in_r0 = m_block + r0;\n"
-  ^ "    const uint in_c0 = k_base + c0;\n"
-  ^ "    a_tile[r0][c0] = (in_r0 < params.m && in_c0 < params.k) ? input[in_r0 * params.k + in_c0] : " ^ zero_lit ^ ";\n"
-  ^ "    const uint in_r1 = m_block + r1;\n"
-  ^ "    const uint in_c1 = k_base + c1;\n"
-  ^ "    a_tile[r1][c1] = (in_r1 < params.m && in_c1 < params.k) ? input[in_r1 * params.k + in_c1] : " ^ zero_lit ^ ";\n\n"
-  ^ "    const uint w_n0 = n_block + c0;\n"
-  ^ "    const uint w_k0 = k_base + r0;\n"
-  ^ "    b_tile[r0][c0] = (w_n0 < params.n && w_k0 < params.k) ? " ^ value_type ^ "(float(weight[w_n0 * params.k + w_k0])) : " ^ zero_lit ^ ";\n"
-  ^ "    const uint w_n1 = n_block + c1;\n"
-  ^ "    const uint w_k1 = k_base + r1;\n"
-  ^ "    b_tile[r1][c1] = (w_n1 < params.n && w_k1 < params.k) ? " ^ value_type ^ "(float(weight[w_n1 * params.k + w_k1])) : " ^ zero_lit ^ ";\n\n"
-  ^ "    simdgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "    " ^ matrix_type ^ " a_mat;\n"
-  ^ "    " ^ matrix_type ^ " b_mat;\n"
-  ^ "    simdgroup_load(a_mat, &a_tile[0][0], 8);\n"
-  ^ "    simdgroup_load(b_mat, &b_tile[0][0], 8);\n"
-  ^ "    simdgroup_multiply_accumulate(c_mat, a_mat, b_mat, c_mat);\n\n"
-  ^ "    simdgroup_barrier(mem_flags::mem_threadgroup);\n"
-  ^ "  }\n\n"
-  ^ "  threadgroup " ^ value_type ^ " c_tile[8][8];\n"
-  ^ "  simdgroup_store(c_mat, &c_tile[0][0], 8);\n"
-  ^ "  simdgroup_barrier(mem_flags::mem_threadgroup);\n\n"
-  ^ "  const uint idx0 = simd_lane * 2;\n"
-  ^ "  const uint idx1 = simd_lane * 2 + 1;\n"
-  ^ "  const uint r0 = idx0 / 8;\n"
-  ^ "  const uint c0 = idx0 % 8;\n"
-  ^ "  const uint r1 = idx1 / 8;\n"
-  ^ "  const uint c1 = idx1 % 8;\n\n"
-  ^ "  const uint out_m0 = m_block + r0;\n"
-  ^ "  const uint out_n0 = n_block + c0;\n"
-  ^ "  if (out_m0 < params.m && out_n0 < params.n) {\n"
-  ^ "    " ^ value_type ^ " acc = c_tile[r0][c0] * scale[out_n0];\n"
-  ^ "    if (params.has_bias) acc += bias[out_n0];\n"
-  ^ "    output[out_m0 * params.n + out_n0] = acc;\n"
-  ^ "  }\n\n"
-  ^ "  const uint out_m1 = m_block + r1;\n"
-  ^ "  const uint out_n1 = n_block + c1;\n"
-  ^ "  if (out_m1 < params.m && out_n1 < params.n) {\n"
-  ^ "    " ^ value_type ^ " acc = c_tile[r1][c1] * scale[out_n1];\n"
-  ^ "    if (params.has_bias) acc += bias[out_n1];\n"
-  ^ "    output[out_m1 * params.n + out_n1] = acc;\n"
-  ^ "  }\n"
-  ^ "}\n"
-
-let q8_gemm_simdgroup_source =
-  "\n"
-  ^ q8_gemm_simdgroup_kernel ~name:"llmopt_q8_gemm_simdgroup_f16"
-      ~value_type:"half" ~matrix_type:"simdgroup_half8x8" ~zero_lit:"0.0h"
-  ^ q8_gemm_simdgroup_kernel ~name:"llmopt_q8_gemm_simdgroup_f32"
-      ~value_type:"float" ~matrix_type:"simdgroup_float8x8" ~zero_lit:"0.0f"
-
-let q8_gemm_simdgroup_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
-      ~name:"llmopt_q8_gemm_simdgroup_f16"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
-      ~name:"llmopt_q8_gemm_simdgroup_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
-
-let q8_source = q8_source ^ "\n" ^ q8_dual_linear_source ^ "\n"
-  ^ q8_qkv_linear_source ^ "\n"
-  ^ q8_linear_add_norm_source ^ "\n"
-  ^ q8_lm_head_argmax_source ^ "\n"
-  ^ q8_fused_swiglu_ffn_source ^ "\n"
-  ^ q8_fused_short_conv_source ^ "\n"
-  ^ q8_fused_qkv_rope_source ^ "\n"
-  ^ q8_fused_attn_out_source ^ "\n"
-  ^ q8_gemm_simdgroup_source ^ "\n"
-  ^ q8_parameterized_source
-
-let q8_parameterized_entries =
-  q8_parameterized_tiles
-  |> List.map (fun (tile_m, tile_n, tile_k) ->
-         [ kernel_entry_with_threadgroup_and_tile
-             ~tile:(tile_m, tile_n, tile_k)
-             ~threadgroup:(tile_n, tile_m, 1)
-             ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k)
-             ~operation:Kernel_abi.Operation.Q8_linear
-             ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-           kernel_entry_with_threadgroup_and_tile
-             ~tile:(tile_m, tile_n, tile_k)
-             ~threadgroup:(tile_n, tile_m, 1)
-             ~name:(q8_parameterized_name ~tile_m ~tile_n ~tile_k ^ "_f32")
-             ~operation:Kernel_abi.Operation.Q8_linear
-             ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ])
-  |> List.flatten
-
-let q8_all_entries =
-  q8_gemm_simdgroup_entries @
-  [ kernel_entry_with_tile ~tile:(16, 16, 64) ~name:"llmopt_q8_linear"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16
-      ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_tile ~tile:(16, 16, 64) ~name:"llmopt_q8_linear_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32
-      ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_simd" ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_simd_f32" ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_pair_simd"
-      ~operation:Kernel_abi.Operation.Q8_linear ~input_dtype:Ir.Dtype.Float16
-      ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_pair_simd_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear ~input_dtype:Ir.Dtype.Float32
-      ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry ~name:"llmopt_q8_linear_silu"
-      ~operation:Kernel_abi.Operation.Q8_linear_silu
-      ~input_dtype:Ir.Dtype.Float16
-      ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry ~name:"llmopt_q8_linear_silu_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_silu
-      ~input_dtype:Ir.Dtype.Float32
-      ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_silu_simd"
-      ~operation:Kernel_abi.Operation.Q8_linear_silu
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_silu_simd_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_silu
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_silu_pair_simd"
-      ~operation:Kernel_abi.Operation.Q8_linear_silu
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_silu_pair_simd_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_silu
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry ~name:"llmopt_q8_linear_add"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float16
-      ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry ~name:"llmopt_q8_linear_add_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float32
-      ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_add_simd"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_add_simd_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_add_pair_simd"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_add_pair_simd_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry ~name:"llmopt_q8_linear_mul_add"
-      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
-      ~input_dtype:Ir.Dtype.Float16
-      ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry ~name:"llmopt_q8_linear_mul_add_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
-      ~input_dtype:Ir.Dtype.Float32
-      ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_mul_add_simd"
-      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_mul_add_simd_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_mul_add_pair_simd"
-      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_gemv_mul_add_pair_simd_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_mul_add
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry ~name:"llmopt_q8_dequantize"
-      ~operation:Kernel_abi.Operation.Q8_dequantize
-      ~input_dtype:Ir.Dtype.Int8
-      ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry ~name:"llmopt_q8_dequantize_f32"
-      ~operation:Kernel_abi.Operation.Q8_dequantize
-      ~input_dtype:Ir.Dtype.Int8
-      ~output_dtype:Ir.Dtype.Float32 ]
-  @ q8_parameterized_entries
-
-let q8_dual_entries =
+let w4a16_lm_head_argmax_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_f16"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_f16_bias"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_f32_bias"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_silu_f16"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_silu_f16_bias"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_silu_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_dual_linear_silu_f32_bias"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
-
-let q8_qkv_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_qkv_linear_f16"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_qkv_linear_f16_bias"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_qkv_linear_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_qkv_linear_f32_bias"
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
-
-let q8_linear_add_norm_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_linear_add_norm_f16"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_linear_add_norm_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_linear_add_norm_extra_f16"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_linear_add_norm_extra_f32"
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16 ]
-
-let q8_lm_head_argmax_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_f16"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_f16"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_f32"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_f32"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_extra_f16"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_extra_f16"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_extra_f32"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_extra_f32"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_stage1_f16"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_f16"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_stage1_f32"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_f32"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_stage1_extra_f16"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_extra_f16"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_argmax_stage1_extra_f32"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_argmax_stage1_extra_f32"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_lm_head_reduce"
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~name:"llmopt_w4a16_lm_head_reduce"
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Int32 ~output_dtype:Ir.Dtype.Int32 ]
-
-let q8_fused_swiglu_ffn_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_fused_swiglu_ffn_f16"
-      ~operation:Kernel_abi.Operation.Q8_fused_swiglu_ffn
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_fused_swiglu_ffn_f32"
-      ~operation:Kernel_abi.Operation.Q8_fused_swiglu_ffn
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
-
-let q8_fused_short_conv_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_fused_short_conv_f16"
-      ~operation:Kernel_abi.Operation.Q8_fused_short_conv
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_fused_short_conv_f32"
-      ~operation:Kernel_abi.Operation.Q8_fused_short_conv
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
-
-let q8_fused_qkv_rope_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
-      ~name:"llmopt_q8_fused_qkv_rope_f16"
-      ~operation:Kernel_abi.Operation.Q8_fused_qkv_rope
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
-      ~name:"llmopt_q8_fused_qkv_rope_f32"
-      ~operation:Kernel_abi.Operation.Q8_fused_qkv_rope
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
-
-let q8_fused_attn_out_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_fused_attn_out_f16"
-      ~operation:Kernel_abi.Operation.Q8_fused_attn_out
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_fused_attn_out_f32"
-      ~operation:Kernel_abi.Operation.Q8_fused_attn_out
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
 let cache_source =
   {|
@@ -2256,46 +398,6 @@ struct CheckpointCacheParams {
   uint checkpoint_groups;
   uint checkpoint_stride;
 };
-
-kernel void llmopt_cache_pack_attention_f16(
-    device const half* source [[buffer(0)]],
-    device const uint* slots [[buffer(1)]],
-    device uchar* pool [[buffer(2)]],
-    constant AttentionCacheParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]) {
-  const uint segment_elements = params.heads * params.head_dim;
-  if (gid >= params.items * segment_elements) return;
-  const uint item = gid / segment_elements;
-  const uint local = gid - item * segment_elements;
-  const uint head = local / params.head_dim;
-  const uint within_head = local - head * params.head_dim;
-  const uint source_index =
-      (head * params.source_items + params.source_offset + item)
-      * params.head_dim + within_head;
-  device half* destination = reinterpret_cast<device half*>(
-      pool + slots[item] * params.token_stride);
-  destination[params.segment * segment_elements + local] = source[source_index];
-}
-
-kernel void llmopt_cache_unpack_attention_f16(
-    device const uchar* pool [[buffer(0)]],
-    device const uint* slots [[buffer(1)]],
-    device half* destination [[buffer(2)]],
-    constant AttentionCacheParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]) {
-  const uint segment_elements = params.heads * params.head_dim;
-  if (gid >= params.items * segment_elements) return;
-  const uint item = gid / segment_elements;
-  const uint local = gid - item * segment_elements;
-  const uint head = local / params.head_dim;
-  const uint within_head = local - head * params.head_dim;
-  const uint destination_index =
-      (head * params.items + item) * params.head_dim + within_head;
-  device const half* source = reinterpret_cast<device const half*>(
-      pool + slots[item] * params.token_stride);
-  destination[destination_index] =
-      source[params.segment * segment_elements + local];
-}
 
 kernel void llmopt_cache_pack_attention_q8(
     device const half* source [[buffer(0)]],
@@ -2436,28 +538,6 @@ kernel void llmopt_cache_unpack_attention_q8_vec4(
       float(scales[params.segment * segment_groups + local_group]);
   *reinterpret_cast<device half4*>(destination + destination_index) =
       half4(float4(quantized) * scale);
-}
-
-kernel void llmopt_cache_pack_checkpoint_f16(
-    device const half* source [[buffer(0)]],
-    device uchar* pool [[buffer(1)]],
-    constant CheckpointCacheParams& params [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]) {
-  if (gid >= params.layer_elements) return;
-  device half* destination = reinterpret_cast<device half*>(
-      pool + params.checkpoint * params.checkpoint_stride);
-  destination[params.layer * params.layer_elements + gid] = source[gid];
-}
-
-kernel void llmopt_cache_unpack_checkpoint_f16(
-    device const uchar* pool [[buffer(0)]],
-    device half* destination [[buffer(1)]],
-    constant CheckpointCacheParams& params [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]) {
-  if (gid >= params.layer_elements) return;
-  device const half* source = reinterpret_cast<device const half*>(
-      pool + params.checkpoint * params.checkpoint_stride);
-  destination[gid] = source[params.layer * params.layer_elements + gid];
 }
 
 kernel void llmopt_cache_pack_checkpoint_q8(
@@ -2690,17 +770,7 @@ let cache_entry name input_dtype output_dtype =
   kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name
     ~operation:Kernel_abi.Operation.Cache ~input_dtype ~output_dtype
 
-let cache_f16_entries =
-  [ cache_entry "llmopt_cache_pack_attention_f16" Ir.Dtype.Float16
-      Ir.Dtype.Float16;
-    cache_entry "llmopt_cache_unpack_attention_f16" Ir.Dtype.Float16
-      Ir.Dtype.Float16;
-    cache_entry "llmopt_cache_pack_checkpoint_f16" Ir.Dtype.Float16
-      Ir.Dtype.Float16;
-    cache_entry "llmopt_cache_unpack_checkpoint_f16" Ir.Dtype.Float16
-      Ir.Dtype.Float16 ]
-
-let cache_q8_entries =
+let cache_entries =
   [ cache_entry "llmopt_cache_pack_attention_q8" Ir.Dtype.Float16
       Ir.Dtype.Int8;
     cache_entry "llmopt_cache_pack_attention_q8_simd" Ir.Dtype.Float16
@@ -2722,21 +792,9 @@ let cache_q8_entries =
       ~operation:Kernel_abi.Operation.Attention
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
-let add_cache_kernels ~formats program =
-  let has_f16 = List.mem Kv_cache.Format.f16 formats in
-  let has_q8 =
-    List.exists
-      (function Kv_cache.Format.Q8 _ -> true | Kv_cache.Format.F16 -> false)
-      formats
-  in
-  let entries =
-    (if has_f16 then cache_f16_entries else [])
-    @ if has_q8 then cache_q8_entries else []
-  in
-  if entries = [] then program
-  else
-    Program.make ~source:(Program.source program ^ cache_source)
-      ~kernels:(Program.kernels program @ entries)
+let add_cache_kernels program =
+  Program.make ~source:(Program.source program ^ cache_source)
+    ~kernels:(Program.kernels program @ cache_entries)
 
 let linear_f16_source =
   "\nconstant uint LINEAR_SIMD_WIDTH = 32;\n"
@@ -3844,13 +1902,6 @@ let has_materialized_movement graph =
         | Ir.Movement.Contiguous -> false)
     | _ -> false)
 
-let has_q8_linear graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_linear _ -> true
-         | _ -> false)
-
 let has_w4a16_linear graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -3858,137 +1909,12 @@ let has_w4a16_linear graph =
          | Ir.Op.W4a16_linear _ -> true
          | _ -> false)
 
-let has_q8_linear_silu graph =
+let has_w4a16_lm_head_argmax graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
          match Ir.node_op node with
-         | Ir.Op.Q8_linear_silu _ -> true
+         | Ir.Op.W4a16_lm_head_argmax _ -> true
          | _ -> false)
-
-let has_q8_linear_add graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_linear_add _ -> true
-         | _ -> false)
-
-let has_q8_linear_mul_add graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_linear_mul_add _ -> true
-         | _ -> false)
-
-let has_q8_linear_add_norm graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_linear_add_norm _ -> true
-         | _ -> false)
-
-let has_q8_lm_head_argmax graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_lm_head_argmax _ -> true
-         | _ -> false)
-
-let has_q8_dual_linear graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_dual_linear _ -> true
-         | _ -> false)
-
-let has_q8_qkv_linear graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_qkv_linear _ -> true
-         | _ -> false)
-
-let has_q8_fused_swiglu_ffn graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_fused_swiglu_ffn _ -> true
-         | _ -> false)
-
-let has_q8_fused_short_conv graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_fused_short_conv _ -> true
-         | _ -> false)
-
-let has_q8_fused_qkv_rope graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_fused_qkv_rope _ -> true
-         | _ -> false)
-
-let has_q8_fused_attn_out graph =
-  Ir.Graph.nodes graph
-  |> List.exists (fun node ->
-         match Ir.node_op node with
-         | Ir.Op.Q8_fused_attn_out _ -> true
-         | _ -> false)
-
-let has_q8 graph =
-  has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
-  || has_q8_linear_mul_add graph || has_q8_linear_add_norm graph
-  || has_q8_dual_linear graph || has_q8_qkv_linear graph
-  || has_q8_lm_head_argmax graph || has_q8_fused_swiglu_ffn graph
-  || has_q8_fused_short_conv graph || has_q8_fused_qkv_rope graph
-  || has_q8_fused_attn_out graph
-
-let q8_entries graph =
-  q8_all_entries
-  |> List.filter (fun entry ->
-         match Kernel_abi.Entry.operation entry with
-         | Kernel_abi.Operation.Q8_linear -> has_q8_linear graph
-         | Kernel_abi.Operation.Q8_linear_silu -> has_q8_linear_silu graph
-         | Kernel_abi.Operation.Q8_linear_add -> has_q8_linear_add graph
-         | Kernel_abi.Operation.Q8_linear_mul_add ->
-             has_q8_linear_mul_add graph
-         | Kernel_abi.Operation.Q8_dequantize -> has_q8 graph
-         | _ -> false)
-  |> fun entries ->
-  let entries =
-    if has_q8_dual_linear graph then entries @ q8_dual_entries else entries
-  in
-  let entries =
-    if has_q8_qkv_linear graph then entries @ q8_qkv_entries else entries
-  in
-  let entries =
-    if has_q8_linear_add_norm graph then
-      entries @ q8_linear_add_norm_entries
-    else entries
-  in
-  let entries =
-    if has_q8_fused_swiglu_ffn graph then
-      entries @ q8_fused_swiglu_ffn_entries
-    else entries
-  in
-  let entries =
-    if has_q8_fused_short_conv graph then
-      entries @ q8_fused_short_conv_entries
-    else entries
-  in
-  let entries =
-    if has_q8_fused_qkv_rope graph then
-      entries @ q8_fused_qkv_rope_entries
-    else entries
-  in
-  let entries =
-    if has_q8_fused_attn_out graph then
-      entries @ q8_fused_attn_out_entries
-    else entries
-  in
-  if has_q8_lm_head_argmax graph then
-    entries @ q8_lm_head_argmax_entries
-  else entries
 
 let has_f16_linear graph =
   Ir.Graph.nodes graph
@@ -4178,7 +2104,9 @@ let lower graph =
   in
   let components =
     [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
-      has_q8 graph, q8_source, q8_entries graph;
+      ( has_w4a16_lm_head_argmax graph,
+        w4a16_lm_head_argmax_source,
+        w4a16_lm_head_argmax_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;

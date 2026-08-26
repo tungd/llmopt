@@ -44,11 +44,6 @@ external buffer_set_int64_stub : buffer_handle -> int -> int64 -> unit
 external buffer_set_u32_array_stub : buffer_handle -> int -> int array -> unit
   = "caml_llmopt_metal_buffer_set_u32_array"
 
-external dispatch_q8_stub :
-  library_handle * string * buffer_handle * buffer_handle * buffer_handle
-  * buffer_handle * buffer_handle * int * int * int * bool -> unit
-  = "caml_llmopt_metal_dispatch_q8"
-
 external dispatch_stub :
   library_handle * string * buffer_handle list * bytes * int * int * int * int
   * int * int -> unit
@@ -403,135 +398,6 @@ let tensor runtime ~name =
                   (Weight_archive.Tensor.byte_length tensor),
                 tensor )))
 
-let q8_kernel ?name runtime ~operation dtype =
-  let entries = Serving_package.kernels runtime.package in
-  List.find_opt
-    (fun entry ->
-      Kernel_abi.Entry.operation entry = operation
-      && Kernel_abi.Entry.input_dtype entry = dtype
-      && Kernel_abi.Entry.output_dtype entry = dtype
-      &&
-      match name with
-      | None -> true
-      | Some expected -> Kernel_abi.Entry.name entry = expected)
-    entries
-
-type q8_epilogue = Identity | Silu | Add | Mul_add
-
-module Q8_decode_layout = struct
-  type t = Scalar | Simd_single | Simd_pair | Simdgroup_gemm
-end
-
-let q8_operation = function
-  | Identity -> Kernel_abi.Operation.Q8_linear
-  | Silu -> Kernel_abi.Operation.Q8_linear_silu
-  | Add -> Kernel_abi.Operation.Q8_linear_add
-  | Mul_add -> Kernel_abi.Operation.Q8_linear_mul_add
-
-let q8_kernel_name dtype ~m ~epilogue =
-  match dtype, m, epilogue with
-  | Ir.Dtype.Float16, 1, Identity -> Ok "llmopt_q8_gemv_simd"
-  | Ir.Dtype.Float32, 1, Identity -> Ok "llmopt_q8_gemv_simd_f32"
-  | Ir.Dtype.Float16, _, Identity -> Ok "llmopt_q8_linear"
-  | Ir.Dtype.Float32, _, Identity -> Ok "llmopt_q8_linear_f32"
-  | Ir.Dtype.Float16, 1, Silu -> Ok "llmopt_q8_gemv_silu_simd"
-  | Ir.Dtype.Float32, 1, Silu -> Ok "llmopt_q8_gemv_silu_simd_f32"
-  | Ir.Dtype.Float16, _, Silu -> Ok "llmopt_q8_linear_silu"
-  | Ir.Dtype.Float32, _, Silu -> Ok "llmopt_q8_linear_silu_f32"
-  | Ir.Dtype.Float16, 1, Add -> Ok "llmopt_q8_gemv_add_simd"
-  | Ir.Dtype.Float32, 1, Add -> Ok "llmopt_q8_gemv_add_simd_f32"
-  | Ir.Dtype.Float16, _, Add -> Ok "llmopt_q8_linear_add"
-  | Ir.Dtype.Float32, _, Add -> Ok "llmopt_q8_linear_add_f32"
-  | Ir.Dtype.Float16, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add_simd"
-  | Ir.Dtype.Float32, 1, Mul_add -> Ok "llmopt_q8_gemv_mul_add_simd_f32"
-  | Ir.Dtype.Float16, _, Mul_add -> Ok "llmopt_q8_linear_mul_add"
-  | Ir.Dtype.Float32, _, Mul_add -> Ok "llmopt_q8_linear_mul_add_f32"
-  | dtype, _, _ ->
-      Error
-        ("Q8 Metal dispatch requires f16 or f32 activations, got "
-        ^ Ir.Dtype.to_string dtype)
-
-let q8_pair_kernel_name dtype = function
-  | epilogue ->
-      let* suffix =
-        match dtype with
-        | Ir.Dtype.Float16 -> Ok ""
-        | Ir.Dtype.Float32 -> Ok "_f32"
-        | dtype ->
-            Error
-              ("paired Q8 Metal dispatch requires f16 or f32 activations, got "
-              ^ Ir.Dtype.to_string dtype)
-      in
-      let base =
-        match epilogue with
-        | Identity -> "llmopt_q8_gemv_pair_simd"
-        | Silu -> "llmopt_q8_gemv_silu_pair_simd"
-        | Add -> "llmopt_q8_gemv_add_pair_simd"
-        | Mul_add -> "llmopt_q8_gemv_mul_add_pair_simd"
-      in
-      Ok (base ^ suffix)
-
-let q8_legacy_gemv_name dtype = function
-  | Identity ->
-      (match dtype with
-      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv"
-      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_f32"
-      | _ -> None)
-  | Silu ->
-      (match dtype with
-      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv_silu"
-      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_silu_f32"
-      | _ -> None)
-  | Add ->
-      (match dtype with
-      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv_add"
-      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_add_f32"
-      | _ -> None)
-  | Mul_add ->
-      (match dtype with
-      | Ir.Dtype.Float16 -> Some "llmopt_q8_gemv_mul_add"
-      | Ir.Dtype.Float32 -> Some "llmopt_q8_gemv_mul_add_f32"
-      | _ -> None)
-
-let dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n
-    ~k =
-  match dtype with
-  | Ir.Dtype.Float16 | Ir.Dtype.Float32 ->
-      (match
-         q8_kernel runtime ~operation:Kernel_abi.Operation.Q8_linear dtype
-       with
-      | None ->
-          Error
-            ("serving package has no Q8 linear kernel for "
-            ^ Ir.Dtype.to_string dtype)
-      | Some entry ->
-          let bias_buffer, has_bias =
-            match bias with
-            | Some buffer -> buffer, true
-            | None -> scale, false
-          in
-          protect (fun () ->
-              dispatch_q8_stub
-                ( runtime.library,
-                  Kernel_abi.Entry.name entry,
-                  input,
-                  weight,
-                  scale,
-                  bias_buffer,
-                  output,
-                  m,
-                  n,
-                  k,
-                  has_bias );
-              Kernel_abi.Entry.name entry))
-  | dtype ->
-      Error
-        ("Q8 Metal dispatch requires f16 or f32 activations, got "
-        ^ Ir.Dtype.to_string dtype)
-
-let dispatch_q8_gemm runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n ~k =
-  dispatch_q8_linear runtime ~dtype ~input ~weight ~scale ~bias ~output ~m ~n ~k
-
 let kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype =
   Serving_package.kernels runtime.package
   |> List.find_opt (fun entry ->
@@ -605,50 +471,11 @@ module Parameters = struct
     Bytes.set_int32_le bytes 8 (Int32.bits_of_float epsilon);
     Ok bytes
 
-  let q8_linear_add_norm ~m ~n ~k ~epsilon =
+  let w4a16_lm_head_argmax ~m ~n ~k ~epsilon =
     let bytes = Bytes.make 16 '\000' in
     let* encoded = u32s [ m; n; k ] in
     Bytes.blit encoded 0 bytes 0 12;
     Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
-    Ok bytes
-
-  let q8_dual_linear ~m ~n1 ~n2 ~k = u32s [ m; n1; n2; k ]
-
-  let q8_qkv_linear ~m ~n_q ~n_kv ~k = u32s [ m; n_q; n_kv; k ]
-
-  let q8_lm_head_argmax ~m ~n ~k ~epsilon =
-    let bytes = Bytes.make 16 '\000' in
-    let* encoded = u32s [ m; n; k ] in
-    Bytes.blit encoded 0 bytes 0 12;
-    Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
-    Ok bytes
-
-  let q8_fused_swiglu_ffn ~m ~n ~k ~epsilon =
-    let bytes = Bytes.make 16 '\000' in
-    let* encoded = u32s [ m; n; k ] in
-    Bytes.blit encoded 0 bytes 0 12;
-    Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
-    Ok bytes
-
-  let q8_fused_short_conv ~m ~channels ~window ~k ~epsilon =
-    let bytes = Bytes.make 20 '\000' in
-    let* encoded = u32s [ m; channels; window; k ] in
-    Bytes.blit encoded 0 bytes 0 16;
-    Bytes.set_int32_le bytes 16 (Int32.bits_of_float epsilon);
-    Ok bytes
-
-  let q8_fused_qkv_rope ~m ~n_q ~n_kv ~k ~half_dimension ~epsilon =
-    let bytes = Bytes.make 24 '\000' in
-    let* encoded = u32s [ m; n_q; n_kv; k; half_dimension ] in
-    Bytes.blit encoded 0 bytes 0 20;
-    Bytes.set_int32_le bytes 20 (Int32.bits_of_float epsilon);
-    Ok bytes
-
-  let q8_fused_attn_out ~m ~heads ~head_dim ~k ~key_length ~scale =
-    let bytes = Bytes.make 24 '\000' in
-    let* encoded = u32s [ m; heads; head_dim; k; key_length ] in
-    Bytes.blit encoded 0 bytes 0 20;
-    Bytes.set_int32_le bytes 20 (Int32.bits_of_float scale);
     Ok bytes
 
   let rms_rope ~batches ~tokens ~heads ~width ~half_dimension ~trig_batches
@@ -1016,25 +843,15 @@ module Cache = struct
   let checkpoint_pool_bytes cache =
     Kv_cache.Config.checkpoint_pool_bytes cache.config
 
-  let kernel_names format =
-    let suffix =
-      match format with
-      | Kv_cache.Format.F16 -> "f16"
-      | Kv_cache.Format.Q8 _ -> "q8"
-    in
-    ( "llmopt_cache_pack_attention_" ^ suffix,
-      "llmopt_cache_unpack_attention_" ^ suffix,
-      "llmopt_cache_pack_checkpoint_" ^ suffix,
-      "llmopt_cache_unpack_checkpoint_" ^ suffix )
+  let kernel_names _format =
+    ( "llmopt_cache_pack_attention_q8",
+      "llmopt_cache_unpack_attention_q8",
+      "llmopt_cache_pack_checkpoint_q8",
+      "llmopt_cache_unpack_checkpoint_q8" )
 
-  let kernel_dtypes format =
-    match format with
-    | Kv_cache.Format.F16 ->
-        ( (Ir.Dtype.Float16, Ir.Dtype.Float16),
-          (Ir.Dtype.Float16, Ir.Dtype.Float16) )
-    | Kv_cache.Format.Q8 _ ->
-        ( (Ir.Dtype.Float16, Ir.Dtype.Int8),
-          (Ir.Dtype.Int8, Ir.Dtype.Float16) )
+  let kernel_dtypes _format =
+    ( (Ir.Dtype.Float16, Ir.Dtype.Int8),
+      (Ir.Dtype.Int8, Ir.Dtype.Float16) )
 
   let cache_entry runtime name (input_dtype, output_dtype) =
     kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Cache
@@ -1048,29 +865,19 @@ module Cache = struct
            && Kernel_abi.Entry.input_dtype entry = input_dtype
            && Kernel_abi.Entry.output_dtype entry = output_dtype)
 
-  let select_pack_kernel runtime format scalar_name dtypes =
-    match format with
-    | Kv_cache.Format.F16 ->
+  let select_pack_kernel runtime _format scalar_name dtypes =
+    let simd_name = scalar_name ^ "_simd" in
+    match cache_entry_opt runtime simd_name dtypes with
+    | Some entry -> Ok { entry; dispatch_layout = Pack_layout.Simdgroup }
+    | None ->
         let* entry = cache_entry runtime scalar_name dtypes in
         Ok { entry; dispatch_layout = Pack_layout.Scalar }
-    | Kv_cache.Format.Q8 _ ->
-        let simd_name = scalar_name ^ "_simd" in
-        (match cache_entry_opt runtime simd_name dtypes with
-        | Some entry -> Ok { entry; dispatch_layout = Pack_layout.Simdgroup }
-        | None ->
-            let* entry = cache_entry runtime scalar_name dtypes in
-            Ok { entry; dispatch_layout = Pack_layout.Scalar })
 
-  let select_unpack_kernel runtime format scalar_name dtypes =
-    match format with
-    | Kv_cache.Format.Q8 { group_size } when group_size mod 4 = 0 ->
-        let vector_name = scalar_name ^ "_vec4" in
-        (match cache_entry_opt runtime vector_name dtypes with
-        | Some entry -> Ok { entry; unpack_layout = Unpack_layout.Vec4 }
-        | None ->
-            let* entry = cache_entry runtime scalar_name dtypes in
-            Ok { entry; unpack_layout = Unpack_layout.Scalar })
-    | Kv_cache.Format.Q8 _ | Kv_cache.Format.F16 ->
+  let select_unpack_kernel runtime _format scalar_name dtypes =
+    let vector_name = scalar_name ^ "_vec4" in
+    match cache_entry_opt runtime vector_name dtypes with
+    | Some entry -> Ok { entry; unpack_layout = Unpack_layout.Vec4 }
+    | None ->
         let* entry = cache_entry runtime scalar_name dtypes in
         Ok { entry; unpack_layout = Unpack_layout.Scalar }
 
@@ -1080,16 +887,7 @@ module Cache = struct
     else
       let layout = Kv_cache.Config.layout config in
       let format = Kv_cache.Layout.format layout in
-      let supported =
-        runtime.package |> Serving_package.cache
-        |> Serving_package.Cache.supported_kv
-      in
-      if not (List.mem format supported) then
-        Error
-          ("serving package does not support physical cache format: "
-          ^ Kv_cache.Format.to_string format)
-      else
-        let pack_attention, unpack_attention, pack_checkpoint,
+      let pack_attention, unpack_attention, pack_checkpoint,
             unpack_checkpoint =
           kernel_names format
         in
@@ -1117,8 +915,8 @@ module Cache = struct
           Buffer.create ~runtime
             ~bytes:(max 32768 (Kv_cache.Config.token_capacity config * 4))
         in
-        Ok
-          {
+      Ok
+        {
             runtime;
             config;
             layout;
@@ -1132,7 +930,7 @@ module Cache = struct
                 pack_checkpoint;
                 unpack_checkpoint;
               };
-          }
+        }
 
   let checked_product left right label =
     if left < 0 || right < 0 || (right <> 0 && left > max_int / right) then
@@ -1220,12 +1018,7 @@ module Cache = struct
     let* elements =
       checked_product items segment_elements "attention transfer size"
     in
-    let groups =
-      match format cache with
-      | Kv_cache.Format.F16 -> elements
-      | Kv_cache.Format.Q8 { group_size } ->
-          elements / group_size
-    in
+    let groups = elements / Kv_cache.Format.q8_group_size in
     Ok (elements, groups)
 
   let attention ?batch cache ~pack ~layer ~kind ~slots ~source_items
@@ -1372,14 +1165,10 @@ module Cache = struct
         else [ cache.checkpoint_pool; buffer ]
       in
       let* grid =
-        match pack, format cache with
-        | true, Kv_cache.Format.Q8 { group_size } ->
-            pack_grid cache.kernels.pack_checkpoint
-              (layer_elements / group_size)
-        | true, Kv_cache.Format.F16 ->
-            pack_grid cache.kernels.pack_checkpoint layer_elements
-        | false, _ ->
-            Ok (unpack_grid cache.kernels.unpack_checkpoint layer_elements)
+        if pack then
+          pack_grid cache.kernels.pack_checkpoint
+            (layer_elements / Kv_cache.Format.q8_group_size)
+        else Ok (unpack_grid cache.kernels.unpack_checkpoint layer_elements)
       in
       let* kernel =
         dispatch ?batch:(Option.map (fun batch -> batch.commands) batch)
@@ -1404,14 +1193,10 @@ module Cache = struct
       destination
 
   let q8_attention_inputs cache ~slots =
-    match format cache with
-    | Kv_cache.Format.F16 ->
-        Error "direct paged attention requires a grouped-Q8 physical cache"
-    | Kv_cache.Format.Q8 _ ->
-        let* slots = slots_buffer cache slots in
-        Ok
-          [ Serving_schedule.Lfm25.q8_attention_pool_input, cache.token_pool;
-            Serving_schedule.Lfm25.q8_attention_slots_input, slots ]
+    let* slots = slots_buffer cache slots in
+    Ok
+      [ Serving_schedule.Lfm25.q8_attention_pool_input, cache.token_pool;
+        Serving_schedule.Lfm25.q8_attention_slots_input, slots ]
 end
 
 module Value_map = Map.Make (struct
@@ -1569,24 +1354,6 @@ let round_up value multiple =
     Error "Metal grid dimension overflows"
   else Ok (((value + multiple - 1) / multiple) * multiple)
 
-let q8_simd_grid ~outputs_per_simdgroup columns =
-  let simdgroups_per_threadgroup = 8 in
-  let simd_width = 32 in
-  let* rounded_columns = round_up columns outputs_per_simdgroup in
-  let simdgroups = rounded_columns / outputs_per_simdgroup in
-  let* rounded_simdgroups = round_up simdgroups simdgroups_per_threadgroup in
-  if rounded_simdgroups > max_int / simd_width then
-    Error "Metal Q8 decode grid dimension overflows"
-  else Ok (rounded_simdgroups * simd_width)
-
-let q8_decode_grid columns = function
-  | Q8_decode_layout.Scalar -> round_up columns 256
-  | Q8_decode_layout.Simd_single ->
-      q8_simd_grid ~outputs_per_simdgroup:1 columns
-  | Q8_decode_layout.Simd_pair ->
-      q8_simd_grid ~outputs_per_simdgroup:2 columns
-  | Q8_decode_layout.Simdgroup_gemm -> round_up columns 8
-
 let linear_f16_grid columns =
   let simdgroups_per_threadgroup = 8 in
   let simd_width = 32 in
@@ -1667,244 +1434,7 @@ let same_value_metadata left right =
        (Ir.Value.logical_shape left)
        (Ir.Value.logical_shape right)
 
-let dispatch_q8_linear_batched batch runtime ~selection ~epilogue ~dtype ~input_value
-    ~input_right_value ~weight_value ~input ~input_right ~weight ~scale ~bias
-    ~residual ~output_value ~output ~m ~n ~k =
-  let* () = validate_linear_shapes ~m ~n ~k input_value weight_value output_value in
-  let* () =
-    match input_right_value with
-    | None -> Ok ()
-    | Some right when same_value_metadata input_value right -> Ok ()
-    | Some _ -> Error "Q8 multiplied inputs have different metadata"
-  in
-  let operation = q8_operation epilogue in
-  let* preferred_name = q8_kernel_name dtype ~m ~epilogue in
-  let legacy_candidates =
-    if m = 1 then
-      let* pair_name = q8_pair_kernel_name dtype epilogue in
-      Ok
-        (match q8_legacy_gemv_name dtype epilogue with
-        | Some legacy ->
-            [ pair_name, Q8_decode_layout.Simd_pair, None;
-              preferred_name, Q8_decode_layout.Simd_single, None;
-              legacy, Q8_decode_layout.Scalar, None ]
-        | None ->
-            [ pair_name, Q8_decode_layout.Simd_pair, None;
-              preferred_name, Q8_decode_layout.Simd_single, None ])
-    else Ok [ preferred_name, Q8_decode_layout.Scalar, None ]
-  in
-  let selected_candidate =
-    match selection with
-    | None -> Ok None
-    | Some selected ->
-        let mode = Kernel_cost_model.mode selected in
-        let* name, layout, tile =
-          match mode with
-          | Kernel_cost_model.Gemv_pair ->
-              q8_pair_kernel_name dtype epilogue
-              |> Result.map (fun name ->
-                     (name, Q8_decode_layout.Simd_pair, None))
-          | Kernel_cost_model.Gemv_single ->
-              q8_kernel_name dtype ~m:1 ~epilogue
-              |> Result.map (fun name ->
-                     (name, Q8_decode_layout.Simd_single, None))
-          | Kernel_cost_model.Gemm ->
-              (match epilogue with
-              | Identity ->
-                  let name = Kernel_cost_model.kernel_name selected in
-                  let name =
-                    match dtype with
-                    | Ir.Dtype.Float32 -> name ^ "_f32"
-                    | Ir.Dtype.Float16 -> name
-                    | _ -> name
-                  in
-                  Ok
-                    ( name,
-                      Q8_decode_layout.Scalar,
-                      Some (Kernel_cost_model.tile selected) )
-              | (Silu | Add | Mul_add) ->
-                  q8_kernel_name dtype ~m ~epilogue
-                  |> Result.map (fun name ->
-                         (name, Q8_decode_layout.Scalar, None)))
-        in
-        Ok (Some (name, layout, tile))
-  in
-  let* selected_candidate = selected_candidate in
-  let* legacy_candidates = legacy_candidates in
-  let candidates =
-    let base_candidates =
-      match selected_candidate with
-      | None -> legacy_candidates
-      | Some selected -> selected :: legacy_candidates
-    in
-    if m >= 8 && m mod 8 = 0 && n mod 8 = 0 && k mod 8 = 0 && epilogue = Identity then
-      let simdgroup_gemm_name =
-        match dtype with
-        | Ir.Dtype.Float16 -> "llmopt_q8_gemm_simdgroup_f16"
-        | Ir.Dtype.Float32 -> "llmopt_q8_gemm_simdgroup_f32"
-        | _ -> preferred_name
-      in
-      (simdgroup_gemm_name, Q8_decode_layout.Simdgroup_gemm, Some (8, 8, 8))
-      :: base_candidates
-    else base_candidates
-  in
-  let rec select_kernel = function
-    | [] ->
-        Error
-          ("serving package has no Q8 linear kernel for "
-          ^ Ir.Dtype.to_string dtype)
-    | (name, layout, tile) :: rest ->
-        (match q8_kernel ~name runtime ~operation dtype with
-        | Some entry -> Ok (entry, layout, tile)
-        | None -> select_kernel rest)
-  in
-  let* entry, layout, tile = select_kernel candidates in
-  let bias_buffer, has_bias =
-    match bias with Some buffer -> buffer, true | None -> scale, false
-  in
-  let tile_m, tile_n =
-    match tile with
-    | Some (tile_m, tile_n, _) -> tile_m, tile_n
-    | None -> 16, 16
-  in
-  let* parameters = Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ] in
-  let* grid_x =
-    if m = 1 then q8_decode_grid n layout
-    else
-      match layout with
-      | Q8_decode_layout.Simdgroup_gemm ->
-          let* blocks_n = round_up n tile_n in
-          Ok ((blocks_n / tile_n) * 32)
-      | _ -> round_up n tile_n
-  in
-  let* grid_y =
-    if m = 1 then Ok 1
-    else
-      match layout with
-      | Q8_decode_layout.Simdgroup_gemm ->
-          let* blocks_m = round_up m tile_m in
-          Ok (blocks_m / tile_m)
-      | _ -> round_up m tile_m
-  in
-  let* buffers =
-    match epilogue, input_right, residual with
-    | (Identity | Silu), None, None ->
-        Ok [ input; weight; scale; bias_buffer; output ]
-    | Add, None, Some residual ->
-        Ok [ input; weight; scale; bias_buffer; residual; output ]
-    | Mul_add, Some right, Some residual ->
-        Ok [ input; right; weight; scale; bias_buffer; residual; output ]
-    | (Add | Mul_add), _, None ->
-        Error "Q8 residual epilogue has no residual buffer"
-    | Mul_add, None, _ -> Error "Q8 multiplied epilogue has no right input"
-    | (Identity | Silu | Add), Some _, _ ->
-        Error "Q8 non-multiplied epilogue received a right input"
-    | (Identity | Silu), None, Some _ ->
-        Error "Q8 non-residual epilogue received a residual buffer"
-  in
-  dispatch ~batch runtime entry ~buffers ~parameters
-    ~grid:(grid_x, grid_y, 1)
-
-let dispatch_q8_command batch runtime state ~selection ~epilogue ~m ~n ~k ~has_bias
-    values output =
-  let* values, residual_value =
-    match epilogue, List.rev values with
-    | (Add | Mul_add), residual :: reversed ->
-        Ok (List.rev reversed, Some residual)
-    | (Add | Mul_add), [] ->
-        Error "Q8 residual schedule command has no residual input"
-    | (Identity | Silu), _ -> Ok (values, None)
-  in
-  let* input_value, input_right_value, weight_value, input, input_right, weight,
-      scale, bias =
-    match epilogue, values, has_bias with
-    | (Identity | Silu | Add),
-      [ input_value; weight_value; scale_value ], false ->
-        let* input = find_value state input_value in
-        let* weight = find_value state weight_value in
-        let* scale = find_value state scale_value in
-        Ok
-          ( input_value,
-            None,
-            weight_value,
-            input,
-            None,
-            weight,
-            scale,
-            None )
-    | (Identity | Silu | Add),
-      [ input_value; weight_value; scale_value; bias_value ], true ->
-        let* input = find_value state input_value in
-        let* weight = find_value state weight_value in
-        let* scale = find_value state scale_value in
-        let* bias = find_value state bias_value in
-        Ok
-          ( input_value,
-            None,
-            weight_value,
-            input,
-            None,
-            weight,
-            scale,
-            Some bias )
-    | Mul_add,
-      [ input_value; right_value; weight_value; scale_value ], false ->
-        let* input = find_value state input_value in
-        let* right = find_value state right_value in
-        let* weight = find_value state weight_value in
-        let* scale = find_value state scale_value in
-        Ok
-          ( input_value,
-            Some right_value,
-            weight_value,
-            input,
-            Some right,
-            weight,
-            scale,
-            None )
-    | Mul_add,
-      [ input_value; right_value; weight_value; scale_value; bias_value ], true ->
-        let* input = find_value state input_value in
-        let* right = find_value state right_value in
-        let* weight = find_value state weight_value in
-        let* scale = find_value state scale_value in
-        let* bias = find_value state bias_value in
-        Ok
-          ( input_value,
-            Some right_value,
-            weight_value,
-            input,
-            Some right,
-            weight,
-            scale,
-            Some bias )
-    | _ -> Error "Q8 schedule command has inconsistent bias inputs"
-  in
-  let* residual =
-    match residual_value with
-    | None -> Ok None
-    | Some value ->
-        if
-          Ir.Value.dtype value <> Ir.Value.dtype output
-          || not
-               (Tensor_shape.equal
-                  (Ir.Value.logical_shape value)
-                  (Ir.Value.logical_shape output))
-        then Error "Q8 residual input metadata differs from its output"
-        else find_value state value |> Result.map Option.some
-  in
-  let* output_buffer = workspace_buffer state output in
-  let* kernel =
-    dispatch_q8_linear_batched batch runtime ~selection ~epilogue
-      ~dtype:(Ir.Value.dtype output) ~input_value ~input_right_value ~weight_value
-      ~input ~input_right ~weight ~scale ~bias ~residual ~output_value:output
-      ~output:output_buffer ~m ~n ~k
-  in
-  Ok (bind_value state output output_buffer, kernel)
-
-let dispatch_q8_gemm_command = dispatch_q8_command
-
-let q8_macro_kernel_name dtype ~base ~has_bias =
+let macro_kernel_name dtype ~base ~has_bias =
   match dtype with
   | Ir.Dtype.Float16 -> Ok (base ^ "_f16" ^ if has_bias then "_bias" else "")
   | Ir.Dtype.Float32 -> Ok (base ^ "_f32" ^ if has_bias then "_bias" else "")
@@ -1913,172 +1443,13 @@ let q8_macro_kernel_name dtype ~base ~has_bias =
         (Printf.sprintf "Q8 macro dispatch requires f16 or f32 activations, got %s"
            (Ir.Dtype.to_string dtype))
 
-let dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias ~silu_first
-    ~extra_outputs values output =
-  let* output2 =
-    match extra_outputs with
-    | [ output2 ] -> Ok output2
-    | _ -> Error "Q8 dual-linear command requires one secondary output"
-  in
-  let* input_value, weight1_value, scale1_value, bias1_value, weight2_value,
-      scale2_value, bias2_value =
-    match values, bias with
-    | [ input; weight1; scale1; weight2; scale2 ], false ->
-        Ok (input, weight1, scale1, None, weight2, scale2, None)
-    | [ input; weight1; scale1; bias1; weight2; scale2; bias2 ], true ->
-        Ok (input, weight1, scale1, Some bias1, weight2, scale2, Some bias2)
-    | _ -> Error "Q8 dual-linear command has inconsistent bias inputs"
-  in
-  let* input = find_value state input_value in
-  let* weight1 = find_value state weight1_value in
-  let* scale1 = find_value state scale1_value in
-  let* weight2 = find_value state weight2_value in
-  let* scale2 = find_value state scale2_value in
-  let* bias1 = Option.fold ~none:(Ok None)
-      ~some:(fun value -> find_value state value |> Result.map Option.some)
-      bias1_value
-  in
-  let* bias2 = Option.fold ~none:(Ok None)
-      ~some:(fun value -> find_value state value |> Result.map Option.some)
-      bias2_value
-  in
-  let* output_buffer = workspace_buffer state output in
-  let* output2_buffer = workspace_buffer state output2 in
-  let* () = validate_linear_shapes ~m ~n:n1 ~k input_value weight1_value output in
-  let* () = validate_linear_shapes ~m ~n:n2 ~k input_value weight2_value output2 in
-  let* kernel_name =
-    q8_macro_kernel_name (Ir.Value.dtype input_value)
-      ~base:(if silu_first then "llmopt_q8_dual_linear_silu"
-             else "llmopt_q8_dual_linear")
-      ~has_bias:bias
-  in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:(Ir.Value.dtype input_value)
-      ~output_dtype:(Ir.Value.dtype output)
-  in
-  let* parameters = Parameters.q8_dual_linear ~m ~n1 ~n2 ~k in
-  let* bias1 =
-    match bias1 with
-    | Some bias -> Ok bias
-    | None when not bias -> Ok scale1
-    | None -> Error "Q8 dual-linear command is missing bias1"
-  in
-  let* bias2 =
-    match bias2 with
-    | Some bias -> Ok bias
-    | None when not bias -> Ok scale2
-    | None -> Error "Q8 dual-linear command is missing bias2"
-  in
-  let buffers =
-    if bias then
-      [ input; weight1; scale1; bias1; weight2; scale2; bias2; output_buffer;
-        output2_buffer ]
-    else [ input; weight1; scale1; weight2; scale2; output_buffer; output2_buffer ]
-  in
-  let* kernel =
-    dispatch ~batch runtime entry ~buffers ~parameters
-      ~grid:(n1 + n2, m, 1)
-  in
-  Ok (bind_value (bind_value state output output_buffer) output2 output2_buffer, kernel)
-
-let dispatch_q8_qkv_command batch runtime state ~m ~n_q ~n_kv ~k ~bias
-    ~extra_outputs values output =
-  let* key_output, value_output =
-    match extra_outputs with
-    | [ key_output; value_output ] -> Ok (key_output, value_output)
-    | _ -> Error "Q8 QKV command requires key and value secondary outputs"
-  in
-  let* input_value, weight_q_value, scale_q_value, bias_q_value, weight_k_value,
-      scale_k_value, bias_k_value, weight_v_value, scale_v_value, bias_v_value =
-    match values, bias with
-    | [ input; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v ], false ->
-        Ok (input, weight_q, scale_q, None, weight_k, scale_k, None, weight_v,
-          scale_v, None)
-    | [ input; weight_q; scale_q; bias_q; weight_k; scale_k; bias_k; weight_v;
-        scale_v; bias_v ], true ->
-        Ok (input, weight_q, scale_q, Some bias_q, weight_k, scale_k, Some bias_k,
-          weight_v, scale_v, Some bias_v)
-    | _ -> Error "Q8 QKV command has inconsistent bias inputs"
-  in
-  let* input = find_value state input_value in
-  let* weight_q = find_value state weight_q_value in
-  let* scale_q = find_value state scale_q_value in
-  let* weight_k = find_value state weight_k_value in
-  let* scale_k = find_value state scale_k_value in
-  let* weight_v = find_value state weight_v_value in
-  let* scale_v = find_value state scale_v_value in
-  let* bias_q = Option.fold ~none:(Ok None)
-      ~some:(fun value -> find_value state value |> Result.map Option.some)
-      bias_q_value
-  in
-  let* bias_k = Option.fold ~none:(Ok None)
-      ~some:(fun value -> find_value state value |> Result.map Option.some)
-      bias_k_value
-  in
-  let* bias_v = Option.fold ~none:(Ok None)
-      ~some:(fun value -> find_value state value |> Result.map Option.some)
-      bias_v_value
-  in
-  let* output_buffer = workspace_buffer state output in
-  let* key_buffer = workspace_buffer state key_output in
-  let* value_buffer = workspace_buffer state value_output in
-  let* () = validate_linear_shapes ~m ~n:n_q ~k input_value weight_q_value output in
-  let* () = validate_linear_shapes ~m ~n:n_kv ~k input_value weight_k_value key_output in
-  let* () = validate_linear_shapes ~m ~n:n_kv ~k input_value weight_v_value value_output in
-  let* kernel_name =
-    q8_macro_kernel_name (Ir.Value.dtype input_value)
-      ~base:"llmopt_q8_qkv_linear" ~has_bias:bias
-  in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
-      ~operation:Kernel_abi.Operation.Q8_linear
-      ~input_dtype:(Ir.Value.dtype input_value)
-      ~output_dtype:(Ir.Value.dtype output)
-  in
-  let* parameters = Parameters.q8_qkv_linear ~m ~n_q ~n_kv ~k in
-  let* bias_q =
-    match bias_q with
-    | Some bias -> Ok bias
-    | None when not bias -> Ok scale_q
-    | None -> Error "Q8 QKV command is missing bias_q"
-  in
-  let* bias_k =
-    match bias_k with
-    | Some bias -> Ok bias
-    | None when not bias -> Ok scale_k
-    | None -> Error "Q8 QKV command is missing bias_k"
-  in
-  let* bias_v =
-    match bias_v with
-    | Some bias -> Ok bias
-    | None when not bias -> Ok scale_v
-    | None -> Error "Q8 QKV command is missing bias_v"
-  in
-  let buffers =
-    if bias then
-      [ input; weight_q; scale_q; bias_q; weight_k; scale_k; bias_k; weight_v;
-        scale_v; bias_v; output_buffer; key_buffer; value_buffer ]
-    else
-      [ input; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v;
-        output_buffer; key_buffer; value_buffer ]
-  in
-  let* kernel =
-    dispatch ~batch runtime entry ~buffers ~parameters
-      ~grid:(n_q + (2 * n_kv), m, 1)
-  in
-  let state = bind_value state output output_buffer in
-  let state = bind_value state key_output key_buffer in
-  Ok (bind_value state value_output value_buffer, kernel)
-
-let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
+let dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
     ~extra_outputs values output =
   let* input_value, norm_weight_value, weight_value, scale_value =
     match values with
     | [ input; norm_weight; weight; scale ] ->
         Ok (input, norm_weight, weight, scale)
-    | _ -> Error "Q8 LM-head argmax command has inconsistent inputs"
+    | _ -> Error "W4A16 LM-head argmax command has inconsistent inputs"
   in
   let* input = find_value state input_value in
   let* norm_weight = find_value state norm_weight_value in
@@ -2091,19 +1462,22 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
     | [ extra_output ] ->
         workspace_buffer state extra_output
         |> Result.map (fun buffer -> (Some extra_output, Some buffer))
-    | _ -> Error "Q8 LM-head argmax command has too many secondary outputs"
+    | _ -> Error "W4A16 LM-head argmax command has too many secondary outputs"
   in
   let* () =
     if
       Tensor_shape.numel (Ir.Value.logical_shape input_value) = m * k
       && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_value) = [ k ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape weight_value) = [ n; k ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape scale_value) = [ n ]
+      && k mod 64 = 0
+      && Tensor_shape.dimensions (Ir.Value.logical_shape weight_value) =
+         [ n; k / 2 ]
+      && Tensor_shape.dimensions (Ir.Value.logical_shape scale_value) =
+         [ n; k / 64 ]
       && Tensor_shape.dimensions (Ir.Value.logical_shape output) = [ m ]
       && (Ir.Value.dtype input_value = Ir.Dtype.Float16
           || Ir.Value.dtype input_value = Ir.Dtype.Float32)
       && Ir.Value.dtype norm_weight_value = Ir.Dtype.Float16
-      && Ir.Value.dtype weight_value = Ir.Dtype.Int8
+      && Ir.Value.dtype weight_value = Ir.Dtype.UInt8
       && Ir.Value.dtype scale_value = Ir.Dtype.Float16
       && Ir.Value.dtype output = Ir.Dtype.Int32
       && (match extra_outputs with
@@ -2118,26 +1492,26 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
              && Ir.Value.dtype logits = Ir.Dtype.Float16
          | _ -> false)
     then Ok ()
-    else Error "Q8 LM-head argmax input metadata is inconsistent"
+    else Error "W4A16 LM-head argmax input metadata is inconsistent"
   in
   let stage1_kernel_name =
-    q8_macro_kernel_name (Ir.Value.dtype input_value)
+    macro_kernel_name (Ir.Value.dtype input_value)
       ~base:
         (if Option.is_some extra_output then
-           "llmopt_q8_lm_head_argmax_stage1_extra"
-         else "llmopt_q8_lm_head_argmax_stage1")
+           "llmopt_w4a16_lm_head_argmax_stage1_extra"
+         else "llmopt_w4a16_lm_head_argmax_stage1")
       ~has_bias:false
   in
   let stage1_entry =
     let* name = stage1_kernel_name in
     kernel_entry ~name runtime
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:(Ir.Value.dtype input_value)
       ~output_dtype:Ir.Dtype.Int32
   in
   let reduce_entry =
-    kernel_entry ~name:"llmopt_q8_lm_head_reduce" runtime
-      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+    kernel_entry ~name:"llmopt_w4a16_lm_head_reduce" runtime
+      ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
       ~input_dtype:Ir.Dtype.Int32
       ~output_dtype:Ir.Dtype.Int32
   in
@@ -2145,7 +1519,7 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
   | Ok entry1, Ok entry2 ->
       let candidate_bytes = m * 256 * 8 in
       let* candidates_buffer = Buffer.create ~runtime ~bytes:candidate_bytes in
-      let* parameters1 = Parameters.q8_lm_head_argmax ~m ~n ~k ~epsilon in
+      let* parameters1 = Parameters.w4a16_lm_head_argmax ~m ~n ~k ~epsilon in
       let* parameters2 = Parameters.u32s [ m ] in
       let buffers1 =
         [ input; norm_weight; weight; scale; candidates_buffer ]
@@ -2176,20 +1550,20 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
       Ok (state, kernel1 ^ "+" ^ kernel2)
   | _ ->
       let* kernel_name =
-        q8_macro_kernel_name (Ir.Value.dtype input_value)
+        macro_kernel_name (Ir.Value.dtype input_value)
           ~base:
             (if Option.is_some extra_output then
-               "llmopt_q8_lm_head_argmax_extra"
-             else "llmopt_q8_lm_head_argmax")
+               "llmopt_w4a16_lm_head_argmax_extra"
+             else "llmopt_w4a16_lm_head_argmax")
           ~has_bias:false
       in
       let* entry =
         kernel_entry ~name:kernel_name runtime
-          ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+          ~operation:Kernel_abi.Operation.W4a16_lm_head_argmax
           ~input_dtype:(Ir.Value.dtype input_value)
           ~output_dtype:Ir.Dtype.Int32
       in
-      let* parameters = Parameters.q8_lm_head_argmax ~m ~n ~k ~epsilon in
+      let* parameters = Parameters.w4a16_lm_head_argmax ~m ~n ~k ~epsilon in
       let* grid =
         if m > max_int / 256 then Error "LM-head argmax grid dimension overflows"
         else Ok (m * 256, 1, 1)
@@ -2210,337 +1584,6 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
         | _ -> state
       in
       Ok (state, kernel)
-
-let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
-    ~extra_outputs values output =
-  let* input_value, weight_value, scale_value, residual_value, norm_weight_value =
-    match values with
-    | [ input; weight; scale; residual; norm_weight ] ->
-        Ok (input, weight, scale, residual, norm_weight)
-    | _ ->
-        Error "Q8 linear-add-norm schedule command has inconsistent inputs"
-  in
-  let* input = find_value state input_value in
-  let* weight = find_value state weight_value in
-  let* scale = find_value state scale_value in
-  let* residual = find_value state residual_value in
-  let* norm_weight = find_value state norm_weight_value in
-  let* output_buffer = workspace_buffer state output in
-  let* extra_output, extra_output_buffer =
-    match extra_outputs with
-    | [] -> Ok (None, None)
-    | [ extra_output ] ->
-        workspace_buffer state extra_output
-        |> Result.map (fun buffer -> (Some extra_output, Some buffer))
-    | _ -> Error "Q8 linear-add-norm command has too many secondary outputs"
-  in
-  let* kernel_name =
-    match Ir.Value.dtype input_value with
-    | Ir.Dtype.Float16 ->
-        Ok
-          (if Option.is_some extra_output then
-             "llmopt_q8_linear_add_norm_extra_f16"
-           else "llmopt_q8_linear_add_norm_f16")
-    | Ir.Dtype.Float32 ->
-        Ok
-          (if Option.is_some extra_output then
-             "llmopt_q8_linear_add_norm_extra_f32"
-           else "llmopt_q8_linear_add_norm_f32")
-    | dtype ->
-        Error
-          (Printf.sprintf "unsupported Q8 linear-add-norm input dtype: %s"
-             (Ir.Dtype.to_string dtype))
-  in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
-      ~operation:Kernel_abi.Operation.Q8_linear_add
-      ~input_dtype:(Ir.Value.dtype input_value)
-      ~output_dtype:(Ir.Value.dtype output)
-  in
-  let* parameters = Parameters.q8_linear_add_norm ~m ~n ~k ~epsilon in
-  let* () =
-    if
-      Ir.Value.dtype residual_value = Ir.Value.dtype input_value
-      && Tensor_shape.equal
-           (Ir.Value.logical_shape residual_value)
-           (Ir.Value.logical_shape output)
-      && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_value) = [ n ]
-    then Ok ()
-    else Error "Q8 linear-add-norm input metadata is inconsistent"
-  in
-  let* kernel =
-    let buffers =
-      [ input; weight; scale; residual; norm_weight; output_buffer ]
-      @ Option.to_list extra_output_buffer
-    in
-    dispatch ~batch runtime entry
-      ~buffers
-      ~parameters ~grid:(m, 1, 1)
-  in
-  let state = bind_value state output output_buffer in
-  let state =
-    match extra_output, extra_output_buffer with
-    | Some value, Some buffer -> bind_value state value buffer
-    | _ -> state
-  in
-  Ok (state, kernel)
-
-let dispatch_q8_fused_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
-    values output =
-  let* input_val, residual_val, weight1_val, scale1_val, weight3_val, scale3_val, weight2_val, scale2_val, norm_weight_val =
-    match values with
-    | [ x; r; w1; s1; w3; s3; w2; s2; nw ] -> Ok (x, r, w1, s1, w3, s3, w2, s2, nw)
-    | _ -> Error "Q8 fused SwiGLU FFN schedule command has inconsistent inputs"
-  in
-  let* input = find_value state input_val in
-  let* residual = find_value state residual_val in
-  let* weight1 = find_value state weight1_val in
-  let* scale1 = find_value state scale1_val in
-  let* weight3 = find_value state weight3_val in
-  let* scale3 = find_value state scale3_val in
-  let* weight2 = find_value state weight2_val in
-  let* scale2 = find_value state scale2_val in
-  let* norm_weight = find_value state norm_weight_val in
-  let* output_buffer = workspace_buffer state output in
-  let* kernel_name =
-    match Ir.Value.dtype input_val with
-    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_swiglu_ffn_f16"
-    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_swiglu_ffn_f32"
-    | dtype ->
-        Error
-          (Printf.sprintf "unsupported Q8 fused SwiGLU FFN input dtype: %s"
-             (Ir.Dtype.to_string dtype))
-  in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
-      ~operation:Kernel_abi.Operation.Q8_fused_swiglu_ffn
-      ~input_dtype:(Ir.Value.dtype input_val)
-      ~output_dtype:(Ir.Value.dtype output)
-  in
-  let* parameters = Parameters.q8_fused_swiglu_ffn ~m ~n ~k ~epsilon in
-  let* () =
-    if
-      Ir.Value.dtype residual_val = Ir.Value.dtype input_val
-      && Tensor_shape.equal
-           (Ir.Value.logical_shape residual_val)
-           (Ir.Value.logical_shape output)
-      && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_val) = [ k ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape weight1_val) = [ n; k ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape scale1_val) = [ n ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape weight3_val) = [ n; k ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape scale3_val) = [ n ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape weight2_val) = [ k; n ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape scale2_val) = [ k ]
-    then Ok ()
-    else Error "Q8 fused SwiGLU FFN input metadata is inconsistent"
-  in
-  let buffers =
-    [ input; residual; weight1; scale1; weight3; scale3; weight2; scale2; norm_weight; output_buffer ]
-  in
-  let* kernel =
-    dispatch ~batch runtime entry
-      ~buffers
-      ~parameters ~grid:(m * 256, 1, 1)
-  in
-  let state = bind_value state output output_buffer in
-  Ok (state, kernel)
-
-let dispatch_q8_fused_short_conv_command batch runtime state ~m ~channels ~window ~k
-    ~epsilon values output =
-  let* input_val, residual_val, weight_in_val, scale_in_val, conv_state_val, conv_weight_val, weight_out_val, scale_out_val, norm_weight_val =
-    match values with
-    | [ x; r; win; sin; cs; cw; wout; sout; nw ] ->
-        Ok (x, r, win, sin, cs, cw, wout, sout, nw)
-    | _ -> Error "Q8 fused ShortConv schedule command has inconsistent inputs"
-  in
-  let* input = find_value state input_val in
-  let* residual = find_value state residual_val in
-  let* weight_in = find_value state weight_in_val in
-  let* scale_in = find_value state scale_in_val in
-  let* conv_state = find_value state conv_state_val in
-  let* conv_weight = find_value state conv_weight_val in
-  let* weight_out = find_value state weight_out_val in
-  let* scale_out = find_value state scale_out_val in
-  let* norm_weight = find_value state norm_weight_val in
-  let* output_buffer = workspace_buffer state output in
-  let* kernel_name =
-    match Ir.Value.dtype input_val with
-    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_short_conv_f16"
-    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_short_conv_f32"
-    | dtype ->
-        Error
-          (Printf.sprintf "unsupported Q8 fused ShortConv input dtype: %s"
-             (Ir.Dtype.to_string dtype))
-  in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
-      ~operation:Kernel_abi.Operation.Q8_fused_short_conv
-      ~input_dtype:(Ir.Value.dtype input_val)
-      ~output_dtype:(Ir.Value.dtype output)
-  in
-  let* parameters =
-    Parameters.q8_fused_short_conv ~m ~channels ~window ~k ~epsilon
-  in
-  let* () =
-    if
-      Ir.Value.dtype residual_val = Ir.Value.dtype input_val
-      && Tensor_shape.equal
-           (Ir.Value.logical_shape residual_val)
-           (Ir.Value.logical_shape output)
-      && Tensor_shape.dimensions (Ir.Value.logical_shape norm_weight_val) = [ k ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape weight_in_val) = [ 3 * channels; k ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape scale_in_val) = [ 3 * channels ]
-      && Ir.Value.dtype conv_state_val = Ir.Dtype.Float16
-      && Ir.Value.dtype conv_weight_val = Ir.Dtype.Float16
-      && Tensor_shape.dimensions (Ir.Value.logical_shape weight_out_val) = [ k; channels ]
-      && Tensor_shape.dimensions (Ir.Value.logical_shape scale_out_val) = [ k ]
-    then Ok ()
-    else Error "Q8 fused ShortConv input metadata is inconsistent"
-  in
-  let buffers =
-    [
-      input;
-      residual;
-      weight_in;
-      scale_in;
-      conv_state;
-      conv_weight;
-      weight_out;
-      scale_out;
-      norm_weight;
-      output_buffer;
-    ]
-  in
-  let* kernel =
-    dispatch ~batch runtime entry
-      ~buffers
-      ~parameters ~grid:(m * 256, 1, 1)
-  in
-  let state = bind_value state output output_buffer in
-  Ok (state, kernel)
-
-let dispatch_q8_fused_qkv_rope_command batch runtime state ~m ~n_q ~n_kv ~k
-    ~half_dimension ~epsilon ~extra_outputs values output =
-  let* input_val, norm_weight_val, weight_q_val, scale_q_val, _weight_k_val, _scale_k_val, _weight_v_val, _scale_v_val, cosine_val, sine_val =
-    match values with
-    | [ x; nw; wq; sq; wk; sk; wv; sv; cos; sin ] ->
-        Ok (x, nw, wq, sq, wk, sk, wv, sv, cos, sin)
-    | _ -> Error "Q8 fused QKV RoPE schedule command has inconsistent inputs"
-  in
-  let* k_output_val, v_output_val =
-    match extra_outputs with
-    | [ k_out; v_out ] -> Ok (k_out, v_out)
-    | _ -> Error "Q8 fused QKV RoPE requires exactly 2 extra outputs (K and V)"
-  in
-  let* input = find_value state input_val in
-  let* norm_weight = find_value state norm_weight_val in
-  let* weight_q = find_value state weight_q_val in
-  let* scale_q = find_value state scale_q_val in
-  let* cosine = find_value state cosine_val in
-  let* sine = find_value state sine_val in
-  let* q_output_buffer = workspace_buffer state output in
-  let* k_output_buffer = workspace_buffer state k_output_val in
-  let* v_output_buffer = workspace_buffer state v_output_val in
-  let* kernel_name =
-    match Ir.Value.dtype input_val with
-    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_qkv_rope_f16"
-    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_qkv_rope_f32"
-    | dtype ->
-        Error
-          (Printf.sprintf "unsupported Q8 fused QKV RoPE input dtype: %s"
-             (Ir.Dtype.to_string dtype))
-  in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
-      ~operation:Kernel_abi.Operation.Q8_fused_qkv_rope
-      ~input_dtype:(Ir.Value.dtype input_val)
-      ~output_dtype:(Ir.Value.dtype output)
-  in
-  let* parameters =
-    Parameters.q8_fused_qkv_rope ~m ~n_q ~n_kv ~k ~half_dimension ~epsilon
-  in
-  let buffers =
-    [
-      input;
-      norm_weight;
-      weight_q;
-      scale_q;
-      cosine;
-      sine;
-      q_output_buffer;
-      k_output_buffer;
-      v_output_buffer;
-    ]
-  in
-  let total_pairs = (n_q / 2) + n_kv in
-  let tile =
-    Kernel_cost_model.Megakernel.select_qkv_rope_tile
-      ~device:Kernel_cost_model.Device.default ~total_pairs
-  in
-  let* kernel =
-    dispatch ~batch runtime entry
-      ~buffers
-      ~parameters ~grid:(tile.grid_threadgroups * tile.threads_per_threadgroup, m, 1)
-  in
-  let state = bind_value state output q_output_buffer in
-  let state = bind_value state k_output_val k_output_buffer in
-  let state = bind_value state v_output_val v_output_buffer in
-  Ok (state, kernel)
-
-let dispatch_q8_fused_attn_out_command batch runtime state ~m ~heads ~head_dim ~k
-    ~scale values output =
-  let* query_val, key_val, value_val, mask_val, out_weight_val, out_scale_val, residual_val =
-    match values with
-    | [ q; k_in; v_in; msk; wout; sout; r ] ->
-        Ok (q, k_in, v_in, msk, wout, sout, r)
-    | _ -> Error "Q8 fused Attn Out schedule command has inconsistent inputs"
-  in
-  let* query = find_value state query_val in
-  let* key = find_value state key_val in
-  let* value = find_value state value_val in
-  let* mask = find_value state mask_val in
-  let* out_weight = find_value state out_weight_val in
-  let* out_scale = find_value state out_scale_val in
-  let* residual = find_value state residual_val in
-  let* output_buffer = workspace_buffer state output in
-  let* kernel_name =
-    match Ir.Value.dtype query_val with
-    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_attn_out_f16"
-    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_attn_out_f32"
-    | dtype ->
-        Error
-          (Printf.sprintf "unsupported Q8 fused Attn Out input dtype: %s"
-             (Ir.Dtype.to_string dtype))
-  in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
-      ~operation:Kernel_abi.Operation.Q8_fused_attn_out
-      ~input_dtype:(Ir.Value.dtype query_val)
-      ~output_dtype:(Ir.Value.dtype output)
-  in
-  let key_length = 1 in
-  let* parameters =
-    Parameters.q8_fused_attn_out ~m ~heads ~head_dim ~k ~key_length ~scale
-  in
-  let buffers =
-    [
-      query;
-      key;
-      value;
-      mask;
-      out_weight;
-      out_scale;
-      residual;
-      output_buffer;
-    ]
-  in
-  let* kernel =
-    dispatch ~batch runtime entry
-      ~buffers
-      ~parameters ~grid:(m * 256, 1, 1)
-  in
-  let state = bind_value state output output_buffer in
-  Ok (state, kernel)
 
 let split_axis shape axis =
   let rec loop outer remaining = function
@@ -2716,9 +1759,6 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
           }
     | command :: rest ->
         let node_id = Serving_schedule.Command.node_id command in
-        let selection =
-          Serving_schedule.q8_selection schedule ~node_id
-        in
         let op = Serving_schedule.Command.op command in
         let command_inputs = Serving_schedule.Command.inputs command in
         let command_output = Serving_schedule.Command.output command in
@@ -3374,79 +2414,12 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                  ~input_dtype:Ir.Dtype.Float16
                  ~buffers:[ input; weight; scale; bias_buffer ] ~parameters
                  ~grid:(m * n, 1, 1))
-        | Ir.Op.Q8_linear { m; n; k; bias = has_bias }, values, Some output ->
-            dispatched
-              (dispatch_q8_gemm_command batch runtime state ~selection
-                 ~epilogue:Identity ~m ~n ~k ~has_bias values output)
-        | ( Ir.Op.Q8_linear_silu { m; n; k; bias = has_bias },
+        | ( Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs },
             values,
             Some output ) ->
             dispatched
-              (dispatch_q8_command batch runtime state ~selection ~epilogue:Silu
-                 ~m ~n ~k ~has_bias values output)
-        | ( Ir.Op.Q8_linear_add { m; n; k; bias = has_bias },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_command batch runtime state ~selection ~epilogue:Add
-                 ~m ~n ~k ~has_bias values output)
-        | ( Ir.Op.Q8_linear_mul_add { m; n; k; bias = has_bias },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_command batch runtime state ~selection
-                 ~epilogue:Mul_add ~m ~n ~k ~has_bias values output)
-        | ( Ir.Op.Q8_dual_linear
-              { m; n1; n2; k; bias; silu_first; extra_outputs },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_dual_command batch runtime state ~m ~n1 ~n2 ~k ~bias
-                 ~silu_first ~extra_outputs values output)
-        | ( Ir.Op.Q8_qkv_linear
-              { m; n_q; n_kv; k; bias; extra_outputs },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_qkv_command batch runtime state ~m ~n_q ~n_kv ~k ~bias
-                 ~extra_outputs values output)
-        | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon; extra_outputs },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k
+              (dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k
                  ~epsilon ~extra_outputs values output)
-        | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k
-                 ~epsilon ~extra_outputs values output)
-        | ( Ir.Op.Q8_fused_swiglu_ffn { m; n; k; epsilon },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_fused_swiglu_ffn_command batch runtime state ~m ~n ~k
-                 ~epsilon values output)
-        | ( Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_fused_short_conv_command batch runtime state ~m
-                 ~channels ~window ~k ~epsilon values output)
-        | ( Ir.Op.Q8_fused_qkv_rope
-              { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_fused_qkv_rope_command batch runtime state ~m ~n_q
-                 ~n_kv ~k ~half_dimension ~epsilon ~extra_outputs values output)
-        | ( Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale },
-            values,
-            Some output ) ->
-            dispatched
-              (dispatch_q8_fused_attn_out_command batch runtime state ~m
-                 ~heads ~head_dim ~k ~scale values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue
