@@ -1,0 +1,34 @@
+LFM2.5-350M Q8 cost-model repair audit
+Date: 2026-08-26
+Target: LiquidAI/LFM2.5-350M Q8 weight-only tile sweep
+
+Offline inputs:
+- Broad native sweep: `_artifacts/cost-model-sweep-2026-08-26/device-dataset-broad.jsonl`
+- Repair median set: `_artifacts/cost-model-repair-2026-08-26/device-dataset-broad-median.jsonl`
+- The broad sweep contains 8,960 rows over 224 `(M,N,K)` shapes, eight
+  parameterized tiles, and five samples per shape/tile. The median set has
+  1,792 rows.
+
+Independent holdout:
+- Shapes were sorted, shuffled with seed `23`, and the first 45 of 224 shapes
+  were held out. Every held-out shape retained all eight measured tile
+  candidates.
+- The current 24-tree/depth-2 absolute-latency model selected the measured
+  winner for `2/45` held-out shapes.
+- A fixed-`16x16x64`-relative target pilot with the same tree budget also
+  selected the measured winner for `2/45` held-out shapes. It was an offline
+  analysis only and was not installed in the runtime selector.
+
+Measured ceiling in this sweep:
+- Across all 224 shapes, the measured oracle sums to a
+  `0.007342222268607368` relative latency reduction over fixed `16x16x64`,
+  or `0.7342222268607368%`.
+- The existing 640-row validation artifact still records model `R2`
+  `0.9569819197141608`, portable max relative error
+  `1.4329246283350704e-07`, and measured-winner selection `1/16`.
+
+Boundary:
+The independent selector result and the measured oracle do not establish the
+LOOP's declared `>= 15%` Q8 linear speedup or a valid full-model comparison.
+The next action requires a revised measurement/model-selection plan; this
+audit does not issue another device probe.
