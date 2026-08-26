@@ -65,6 +65,14 @@ sources:
     title: post-cache-implementation pre-integration observation
 ---
 
+# Current role
+
+This suite is retained as the PyTorch MPS reference and historical ERS/needle
+record. The current external performance target is llama.cpp; its native
+throughput and same-trace HTTP protocol are documented in
+[the llama.cpp comparison benchmark](llama-cpp.md). The MPS measurements here
+remain separate from that target rather than being silently relabeled.
+
 # Scope
 
 The suite compares eager PyTorch MPS with the OCaml-planned llmopt backend on

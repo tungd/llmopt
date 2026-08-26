@@ -130,9 +130,9 @@ exact LFM depthwise ShortConv form also lowers to a typed command
 with a CPU reference and compiled scalar MSL. The masked prefill-attention form
 has typed shape/configuration checks, a CPU softmax reference, and compiled
 correctness-first fused MSL. Token embedding also has typed option checks,
-exact CPU gather behavior, and a compiled float16 Metal kernel. The current
-complete-model
-executable target is PyTorch MPS: the direct callable runs the
+exact CPU gather behavior, and a compiled float16 Metal kernel. The complete-model
+comparison target is now llama.cpp's official Q8_0 GGUF path; PyTorch MPS remains
+the reference measurement. The direct callable runs the
 captured FX GraphModule and lets each operation dispatch to MPS. Q8 graphs can
 also activate the generated tiled Metal library through the bridge; unsupported
 operations and inputs use the PyTorch MPS fallback. The intended serving stack
@@ -194,6 +194,8 @@ ninja -f ninja.build metal-runtime-differential
 ninja -f ninja.build capture-lfm25-prefill-decode
 ninja -f ninja.build bench-mps
 ninja -f ninja.build bench-suite
+ninja -f ninja.build bench-llama-cpp
+ninja -f ninja.build bench-llama-cpp-trace
 ```
 
 Compile the upstream tokenizer once into the binary serving format, then run
@@ -281,6 +283,12 @@ while measuring `max_abs=0.078125` and `mean_abs=0.014548537321388721`.
 `bench-suite` runs the racebench-shaped MPS trace/report contract, separate
 warmup artifacts, and the natural needle probe against `LiquidAI/LFM2.5-350M`.
 A Q8 run records its compact result at `bench/results/lfm25-350m-q8-racebench-baseline.json`.
+`bench-llama-cpp` runs native `llama-bench` against
+`LiquidAI/LFM2.5-350M-GGUF:Q8_0`; `bench-llama-cpp-trace` runs the same warmup
+and scored HTTP traces against `llama-server` and records ERS, TTFT, and TPOT.
+Use `bench/llama_cpp_server_bench.py --compare-base-url` to add an already
+running llmopt server as the side comparison; its deltas are labeled
+`llama.cpp - side`.
 The FX compiler executable is `_build/bin/llmopt-fx`.
 
 `q8-smoke` emits and compiles the model-shaped Q8 linear kernel. `metal-runtime`
@@ -604,9 +612,10 @@ graph capture remain separate interpreters of the effect vocabulary.
 
 ## Benchmark setup
 
-Use Python 3.13 for the PyTorch MPS benchmark environment. See
-[bench/README.md](bench/README.md) for the reproducible comparison protocol,
-ERS benchsuite, needle probe, and recorded measurements.
+Use Python 3.13 for the benchmark environment. See
+[bench/README.md](bench/README.md) for the llama.cpp target, reproducible
+comparison protocol, ERS benchsuite, side comparison, needle probe, and
+recorded measurements.
 
 ## Research record
 

@@ -1,10 +1,51 @@
 # Benchmark setup
 
 The comparison target is the `LiquidAI/LFM2.5-350M` checkpoint running on Apple
-Silicon. The baseline is eager PyTorch on MPS; the candidate is the
-OCaml-planned FX GraphModule with the first `fx-direct-execution` runtime pass.
-The benchmark is split into compiler work and runtime work so graph planning is
-not mixed with model execution.
+Silicon. The active external target is llama.cpp's official Q8_0 GGUF path;
+PyTorch MPS remains a reference measurement, and the native OCaml server is the
+llmopt candidate. The benchmark is split into compiler work and runtime work so
+graph planning is not mixed with model execution.
+
+## llama.cpp target
+
+The native throughput receipt uses the installed `llama-bench` binary and the
+official `LiquidAI/LFM2.5-350M-GGUF:Q8_0` asset. It records llama.cpp's JSON
+rows, build metadata, stderr, and the exact invocation without checking model
+weights into this repository:
+
+```sh
+ninja -f ninja.build bench-llama-cpp
+```
+
+The companion trace receipt starts `llama-server` with the same GGUF model,
+runs the shared warmup and scored traces through its OpenAI-compatible edge,
+and records ERS, TTFT, and TPOT:
+
+```sh
+ninja -f ninja.build bench-llama-cpp-trace
+```
+
+`llama-bench` is a native local benchmark and does not accept an HTTP serving
+URL. For a side-by-side ERS comparison, keep the prepared llmopt server alive
+on a separate port and pass its URL to the trace runner; the llama.cpp child is
+stopped before the side endpoint is measured:
+
+```sh
+_build/bin/llmopt-serve --port 18105 --kv q8 \
+  _artifacts/lfm25-350m-q8-prefill-decode-binary-v1-abi8-engine-2026-08-24/tokenizer.llmopt \
+  _artifacts/lfm25-350m-q8-relative-model-2026-08-26-v4/prefill \
+  _artifacts/lfm25-350m-q8-relative-model-2026-08-26-v4/decode
+
+PYTHONPATH=python:bench python3.13 bench/llama_cpp_server_bench.py \
+  --compare-base-url http://127.0.0.1:18105 \
+  --record-output _artifacts/llama-cpp-trace/llama-cpp-with-llmopt.json
+```
+
+The resulting `side_comparison.delta` fields are `llama.cpp - side` for ERS,
+median TTFT, and median TPOT. Both endpoints receive the same trace files and
+the same pinned output counts; llama-server SSE does not expose llmopt token
+IDs, so that receipt compares timing and visible streamed output rather than
+token-ID parity.
 
 ## Environments
 

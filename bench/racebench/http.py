@@ -248,8 +248,14 @@ async def run_trace(
     api_key: str = "",
     timeout_s: float = 120.0,
     max_workers: int | None = None,
+    reuse_connections: bool = True,
 ) -> tuple[list[RequestResult], float]:
-    """Run conversations concurrently and turns within each serially."""
+    """Run conversations concurrently and turns within each serially.
+
+    Some OpenAI-compatible servers finish a streamed response without leaving
+    an HTTP/1.1 connection reusable. Callers can disable connection reuse to
+    keep multi-turn traces compatible with those endpoints.
+    """
     if max_workers is not None and max_workers < 1:
         raise ValueError("max_workers must be positive")
     trace_started = time.perf_counter()
@@ -268,6 +274,9 @@ async def run_trace(
         )
         results: list[RequestResult] = []
         for turn, user_text in enumerate(trace.user_messages[conversation]):
+            if turn > 0 and not reuse_connections:
+                connection.close()
+                connection, path = _open_connection(base_url, timeout_s)
             if turn > 0 and trace.arrival.think_time_s:
                 await asyncio.sleep(trace.arrival.think_time_s)
             prefix = trace.conversation_prefixes[conversation] if turn == 0 else ""

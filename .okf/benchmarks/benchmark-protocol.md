@@ -1,14 +1,17 @@
 ---
 type: Benchmark Protocol
-title: 'LFM2.5-350M PyTorch MPS comparison protocol'
-description: 'Record compiler and runtime measurements separately when comparing llmopt with eager PyTorch MPS on the same host.'
-tags: [benchmark, lfm2.5, pytorch, mps, apple-silicon]
+title: 'LFM2.5-350M cross-runtime comparison protocol'
+description: 'Record llama.cpp as the primary external target, retain eager PyTorch MPS as a reference, and compare both with the native llmopt server on the same host.'
+tags: [benchmark, lfm2.5, llama.cpp, pytorch, mps, apple-silicon, ERS]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T09:57:58Z' }
+generated: { by: codex/gpt-5, at: '2026-08-26T06:34:31Z' }
 sources:
   - id: local-protocol
     resource: /bench/README.md
     title: repository benchmark setup
+  - id: llama-protocol
+    resource: /benchmarks/llama-cpp.md
+    title: llama.cpp native and ERS comparison protocol
   - id: 350m-q8-result
     resource: /bench/results/lfm25-350m-q8-racebench-baseline.json
     title: recorded LFM2.5-350M Q8 engine-pass and baseline result
@@ -25,10 +28,12 @@ sources:
 
 # Scope
 
-Compare eager PyTorch MPS, the OCaml-planned llmopt FX GraphModule, and the
-native OCaml generated-Metal server on the same LFM2.5-350M checkpoint and
-Apple Silicon host. Keep graph capture/planning, model loading, HTTP edge, and
-tensor execution as separately reported measurements.
+Compare llama.cpp, the native OCaml generated-Metal server, and eager PyTorch
+MPS as a reference on the same LFM2.5-350M workload and Apple Silicon host.
+The primary external target is the official llama.cpp Q8_0 GGUF path; the
+llmopt endpoint can be replayed as the same-trace side comparison, while MPS
+remains the historical reference. Keep graph capture/planning, model loading,
+HTTP edge, and tensor execution as separately reported measurements.
 
 # Run record
 
@@ -38,10 +43,12 @@ warm/cold state.
 
 # Measurements
 
-Record FX capture and OCaml planning time, prompt processing throughput,
-time-to-first-token, single-stream decode throughput, selected concurrency
-results, peak unified-memory use, model load time, and fixed-input exact output
-comparisons against eager PyTorch MPS.
+Record native llama.cpp prompt/generation throughput, prompt processing
+throughput, time-to-first-token, single-stream decode throughput, selected
+concurrency results, peak unified-memory use, model load time, and fixed-input
+exact output comparisons against eager PyTorch MPS where that reference applies.
+Record the same-trace ERS summaries separately for llama-server and the llmopt
+HTTP endpoint, including the explicit `llama.cpp - side` deltas.
 
 # ERS contract
 

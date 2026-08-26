@@ -17,12 +17,14 @@ okf_version: '0.2'
 * [Effect planning](decisions/effect-planning.md) - why OCaml effects own staging.
 * [Metal backend boundary](decisions/backend-boundary.md) - MSL execution and LLVM inspection.
 * [LFM2.5-350M ESR bandwidth target](decisions/target-lfm25-350m-bandwidth.md) - memory bandwidth physics and ERS feasibility on Apple Silicon.
+* [llama.cpp performance target](decisions/llama-cpp-target.md) - llama.cpp Q8_0 as the primary external comparison, with MPS retained as reference.
 
 ## Experiments and benchmarks
 
 * [FX linear smoke](experiments/exp-0001-fx-linear.md) - first cross-language probe.
-* [Benchmark protocol](benchmarks/benchmark-protocol.md) - eager PyTorch MPS comparison record format.
-* [MPS ERS benchsuite](benchmarks/bench-suite.md) - trace scoring, warmup artifacts, and needle validation.
+* [Cross-runtime benchmark protocol](benchmarks/benchmark-protocol.md) - llama.cpp target, native llmopt side comparison, and MPS reference record format.
+* [llama.cpp comparison benchmark](benchmarks/llama-cpp.md) - native llama-bench, llama-server ERS, and optional llmopt side replay.
+* [MPS ERS benchsuite](benchmarks/bench-suite.md) - retained PyTorch reference trace scoring, warmup artifacts, and needle validation.
 * [Semantic 5x3 result](experiments/exp-0004-lfm25-semantic-5x3.md) - isolated long-context comparison and raw latency evidence.
 * [Viettel AI Race benchsuite implementation](experiments/exp-0005-viettel-racebench-implementation.md) - runner adoption and current baseline status.
 * [LFM2.5-350M baseline](experiments/exp-0006-lfm25-350m-probe.md) - memory-safe engine-pass and baseline observation.
@@ -94,5 +96,4 @@ okf_version: '0.2'
 * [Direct paged-Q8 attention measurement](experiments/exp-0072-paged-q8-attention-measurement.md) - bounded 350M short and long-context evidence with exact tokens and mixed latency deltas.
 * [Fused RMSNorm and RoPE](experiments/exp-0073-rmsnorm-rope-fusion.md) - twelve 10-command query/key chains across 6 attention layers fuse into single SIMD Metal kernels.
 * [Fused RMSNorm-RoPE measurement](experiments/exp-0074-rmsnorm-rope-measurement.md) - bounded 350M trace and needle matrix for the fused RMSNorm-RoPE package.
-
 
