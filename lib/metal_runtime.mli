@@ -19,6 +19,8 @@ module Buffer : sig
   val contents : t -> (bytes, string) result
   val byte_length : t -> int
   val copy : source:t -> destination:t -> (unit, string) result
+  val set_int64 : t -> offset:int -> int64 -> (unit, string) result
+  val set_u32_array : t -> offset:int -> int array -> (unit, string) result
 end
 
 module Cache : sig
@@ -177,6 +179,16 @@ val execute_schedule :
   t ->
   schedule:Serving_schedule.t ->
   inputs:(string * Buffer.t) list ->
+  (Execution.t, string) result
+
+val execute_decode_step :
+  ?workspace:Buffer.t ->
+  ?memory_plan:Serving_memory_plan.t ->
+  t ->
+  cache:Cache.t ->
+  schedule:Serving_schedule.t ->
+  inputs:(string * Buffer.t) list ->
+  cache_pack:(Execution.t -> Cache.batch -> (unit, string) result) ->
   (Execution.t, string) result
 
 val tensor :

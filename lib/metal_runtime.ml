@@ -38,6 +38,12 @@ external buffer_length_stub : buffer_handle -> int
 external buffer_copy_stub : buffer_handle -> buffer_handle -> unit
   = "caml_llmopt_metal_buffer_copy"
 
+external buffer_set_int64_stub : buffer_handle -> int -> int64 -> unit
+  = "caml_llmopt_metal_buffer_set_int64"
+
+external buffer_set_u32_array_stub : buffer_handle -> int -> int array -> unit
+  = "caml_llmopt_metal_buffer_set_u32_array"
+
 external dispatch_q8_stub :
   library_handle * string * buffer_handle * buffer_handle * buffer_handle
   * buffer_handle * buffer_handle * int * int * int * bool -> unit
@@ -329,6 +335,12 @@ module Buffer = struct
 
   let copy ~source ~destination =
     protect (fun () -> buffer_copy_stub source destination)
+
+  let set_int64 buffer ~offset value =
+    protect (fun () -> buffer_set_int64_stub buffer offset value)
+
+  let set_u32_array buffer ~offset values =
+    protect (fun () -> buffer_set_u32_array_stub buffer offset values)
 end
 
 module Ring_queue = struct
@@ -940,6 +952,7 @@ module Cache = struct
     layout : Kv_cache.Layout.t;
     token_pool : Buffer.t;
     checkpoint_pool : Buffer.t;
+    slots_scratch : Buffer.t;
     kernels : kernels;
   }
 
@@ -1076,6 +1089,10 @@ module Cache = struct
           Buffer.create ~runtime
             ~bytes:(Kv_cache.Config.checkpoint_pool_bytes config)
         in
+        let* slots_scratch =
+          Buffer.create ~runtime
+            ~bytes:(max 32768 (Kv_cache.Config.token_capacity config * 4))
+        in
         Ok
           {
             runtime;
@@ -1083,6 +1100,7 @@ module Cache = struct
             layout;
             token_pool;
             checkpoint_pool;
+            slots_scratch;
             kernels =
               {
                 pack_attention;
@@ -1139,23 +1157,14 @@ module Cache = struct
     if count = 0 then Error "physical attention cache requires at least one slot"
     else
       let capacity = Kv_cache.Config.token_capacity cache.config in
-      let seen = Hashtbl.create count in
-      let rec validate index values =
-        if index = count then Parameters.u32s (List.rev values)
-        else
-          let slot = Kv_cache.Slot.to_int slots.(index) in
-          if slot < 0 || slot >= capacity then
-            Error
-              (Printf.sprintf "physical cache token slot %d is outside [0,%d)"
-                 slot capacity)
-          else if Hashtbl.mem seen slot then
-            Error (Printf.sprintf "physical cache token slot %d is duplicated" slot)
-          else (
-            Hashtbl.add seen slot ();
-            validate (index + 1) (slot :: values))
-      in
-      let* bytes = validate 0 [] in
-      Buffer.of_bytes ~runtime:cache.runtime bytes
+      if count > capacity then
+        Error
+          (Printf.sprintf "physical cache slots count %d exceeds capacity %d"
+             count capacity)
+      else
+        let int_slots = Array.map Kv_cache.Slot.to_int slots in
+        let* () = Buffer.set_u32_array cache.slots_scratch ~offset:0 int_slots in
+        Buffer.view ~parent:cache.slots_scratch ~offset:0 ~bytes:(count * 4)
 
   let attention_parameters cache ~layer ~kind ~items ~source_items
       ~source_offset =
@@ -3442,6 +3451,19 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
 let execute_schedule ?workspace ?memory_plan runtime ~schedule ~inputs =
   with_execution_batch runtime (fun batch ->
       encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs)
+
+let execute_decode_step ?workspace ?memory_plan runtime ~cache ~schedule ~inputs
+    ~cache_pack =
+  with_execution_batch runtime (fun batch ->
+      let* execution =
+        encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs
+      in
+      let cache_batch =
+        { Cache.cache; commands = batch.commands; resources = []; dispatches = 0 }
+      in
+      let* () = cache_pack execution cache_batch in
+      batch.resources <- cache_batch.resources @ batch.resources;
+      Ok execution)
 
 let execute runtime ~inputs =
   execute_schedule runtime

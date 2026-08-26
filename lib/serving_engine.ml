@@ -78,6 +78,7 @@ type t = {
   attention_cache : Attention_cache.t;
   contract : contract;
   decode_workspace : Metal_runtime.Buffer.t option;
+  decode_token_buffer : Metal_runtime.Buffer.t option;
 }
 
 let indexed_name base index =
@@ -396,6 +397,10 @@ let create ~config ~prefill ~decode =
       Metal_runtime.Buffer.create ~runtime:decode ~bytes:workspace_bytes
       |> Result.map Option.some
     in
+    let* decode_token_buffer =
+      Metal_runtime.Buffer.create ~runtime:decode ~bytes:8
+      |> Result.map Option.some
+    in
     Ok
       {
         config;
@@ -406,6 +411,7 @@ let create ~config ~prefill ~decode =
         attention_cache = Attention_cache.of_config config;
         contract;
         decode_workspace;
+        decode_token_buffer;
       }
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -748,19 +754,26 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           let* buffers =
             prepare_decode_buffers engine matched_slots source_checkpoint
           in
-          let* token_input = token_buffer engine.decode [| token |] in
+          let* token_input =
+            match engine.decode_token_buffer with
+            | Some buf ->
+                let* () =
+                  Metal_runtime.Buffer.set_int64 buf ~offset:0
+                    (Int64.of_int token)
+                in
+                Ok buf
+            | None -> token_buffer engine.decode [| token |]
+          in
           let* inputs =
             decode_inputs engine ~slots:matched_slots ~token_input buffers
-          in
-          let* execution =
-            Metal_runtime.execute_schedule ?workspace:engine.decode_workspace
-              engine.decode ~schedule ~inputs
           in
           let source_items, source_offset =
             attention_pack_slice engine ~past_tokens
           in
-          let* () =
-            Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+          let* execution =
+            Metal_runtime.execute_decode_step ?workspace:engine.decode_workspace
+              engine.decode ~cache:engine.physical_cache ~schedule ~inputs
+              ~cache_pack:(fun execution batch ->
                 let* () =
                   pack_decode_attention batch execution reservation.slots
                     ~source_items ~source_offset

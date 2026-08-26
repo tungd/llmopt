@@ -506,6 +506,45 @@ CAMLprim value caml_llmopt_metal_buffer_copy(value source_value,
   CAMLreturn(Val_unit);
 }
 
+CAMLprim value caml_llmopt_metal_buffer_set_int64(value buffer_value,
+                                                  value offset_value,
+                                                  value int64_value) {
+  CAMLparam3(buffer_value, offset_value, int64_value);
+  llmopt_metal_buffer *buffer = Buffer_val(buffer_value);
+  intnat offset = Long_val(offset_value);
+  if (buffer == NULL) {
+    caml_failwith("Metal buffer has been finalized");
+  }
+  if (offset < 0 || (NSUInteger)(offset + 8) > buffer->length) {
+    caml_invalid_argument("buffer offset out of bounds");
+  }
+  int64_t *ptr =
+      (int64_t *)((uint8_t *)buffer->buffer.contents + buffer->offset + offset);
+  *ptr = (int64_t)Int64_val(int64_value);
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_llmopt_metal_buffer_set_u32_array(value buffer_value,
+                                                      value offset_value,
+                                                      value array_value) {
+  CAMLparam3(buffer_value, offset_value, array_value);
+  llmopt_metal_buffer *buffer = Buffer_val(buffer_value);
+  intnat offset = Long_val(offset_value);
+  if (buffer == NULL) {
+    caml_failwith("Metal buffer has been finalized");
+  }
+  mlsize_t count = Wosize_val(array_value);
+  if (offset < 0 || (NSUInteger)(offset + count * 4) > buffer->length) {
+    caml_invalid_argument("buffer set_u32_array out of bounds");
+  }
+  uint32_t *ptr =
+      (uint32_t *)((uint8_t *)buffer->buffer.contents + buffer->offset + offset);
+  for (mlsize_t i = 0; i < count; i++) {
+    ptr[i] = (uint32_t)Long_val(Field(array_value, i));
+  }
+  CAMLreturn(Val_unit);
+}
+
 CAMLprim value caml_llmopt_metal_map_file(value context_value,
                                           value path_value) {
   CAMLparam2(context_value, path_value);
