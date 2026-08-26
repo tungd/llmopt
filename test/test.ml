@@ -1424,9 +1424,18 @@ let () =
            | Ir.Op.Q8_linear_add { m = 2; n = 3; k = 4; bias = false } -> true
            | _ -> false))
     "Q8 residual fusion produces its typed IR operation";
+  let q8_add_schedule_raw =
+    match Serving_schedule.of_graph q8_add_optimized with
+    | Error message -> fail ("q8 add schedule: " ^ message)
+    | Ok schedule -> schedule
+  in
   let q8_add_schedule =
-    q8_add_optimized |> Serving_schedule.of_graph |> expect_ok
-    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+    match
+      Serving_schedule.to_bytes q8_add_schedule_raw
+      |> Serving_schedule.of_bytes
+    with
+    | Error message -> fail ("q8 add schedule round trip: " ^ message)
+    | Ok schedule -> schedule
   in
   expect
     (Serving_schedule.commands q8_add_schedule
@@ -1435,6 +1444,43 @@ let () =
            | Ir.Op.Q8_linear_add { m = 2; n = 3; k = 4; bias = false } -> true
            | _ -> false))
     "binary schedule preserves fused Q8 residual add";
+  let q8_bad_residual_graph = Ir.Graph.create () in
+  let q8_bad_input =
+    Ir.Graph.tensor_input q8_bad_residual_graph ~name:"q8_bad_input"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_bad_weight =
+    Ir.Graph.tensor_input q8_bad_residual_graph ~name:"q8_bad_weight"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3; 4 ]) ~dtype:Ir.Dtype.Int8
+  in
+  let q8_bad_scale =
+    Ir.Graph.tensor_input q8_bad_residual_graph ~name:"q8_bad_scale"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_bad_residual =
+    Ir.Graph.tensor_input q8_bad_residual_graph ~name:"q8_bad_residual"
+      ~source:Ir.Input_source.Runtime
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let q8_bad_output =
+    Ir.Graph.fresh_tensor_value q8_bad_residual_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 3 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_bad_residual_graph
+    ~op:(Ir.Op.Q8_linear_add { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ q8_bad_input; q8_bad_weight; q8_bad_scale; q8_bad_residual ]
+    ~output:(Some q8_bad_output);
+  Ir.Graph.add_output q8_bad_residual_graph ~name:"q8_bad_output"
+    q8_bad_output;
+  (match Serving_schedule.of_graph q8_bad_residual_graph with
+  | Error message ->
+      expect
+        (contains_substring message "Q8 residual-add metadata")
+        "schedule rejects a residual whose metadata differs from its output"
+  | Ok _ -> fail "schedule accepted mismatched Q8 residual metadata");
   let q8_add_program = expect_ok (Metal.lower q8_add_optimized) in
   expect
     (contains_substring (Metal.Program.source q8_add_program)

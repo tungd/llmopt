@@ -83,3 +83,4 @@
 * [Macro-fusion full-package audit](exp-0082-macro-fusion-full-package-audit-2026-08-26.md) - fresh all-five Q8 package inventory, validation, and static command delta.
 * [XGBoost relative-target selector repair](exp-0083-xgboost-relative-target-repair-2026-08-26.md) - grouped holdout/cross-validation evidence for the repaired target and fresh static package replan.
 * [Macro-fusion relative-model replan](exp-0084-macro-fusion-relative-model-replan-2026-08-26.md) - fresh all-five package inventory and serving-pair validation after installing the repaired selector.
+* [Q8 residual/output metadata validation repair](exp-0085-q8-residual-metadata-validator-2026-08-26.md) - schedule-level rejection of runtime-invalid residual metadata and rebuilt v3 package evidence.

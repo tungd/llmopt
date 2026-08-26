@@ -104,6 +104,17 @@ let q8_activation_dtype = function
   | Ir.Dtype.Float16 | Ir.Dtype.Float32 -> true
   | _ -> false
 
+let same_value_metadata left right =
+  Ir.Value.dtype left = Ir.Value.dtype right
+  && Tensor_shape.equal
+       (Ir.Value.logical_shape left)
+       (Ir.Value.logical_shape right)
+
+let q8_residual_metadata_matches inputs output =
+  match List.rev inputs with
+  | residual :: _ -> same_value_metadata residual output
+  | [] -> false
+
 let fresh_outputs seen_values outputs =
   let ids = List.map value_id outputs in
   List.length ids = List.length (List.sort_uniq Int.compare ids)
@@ -155,6 +166,20 @@ let validate_command seen_values command =
             else Error "schedule copy tensor metadata is inconsistent"
         | Ir.Op.Copy _, _, _ ->
             Error "schedule copy must have source/destination dependencies and no result"
+        | (Ir.Op.Q8_linear_add _, inputs, Some output) ->
+            if q8_residual_metadata_matches inputs output then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Q8 residual-add metadata is inconsistent"
+                   command.Command.node_id)
+        | (Ir.Op.Q8_linear_mul_add _, inputs, Some output) ->
+            if q8_residual_metadata_matches inputs output then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Q8 multiplied-residual metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Q8_dual_linear
               { m; n1; n2; k; bias; silu_first = _; extra_outputs },
             inputs,

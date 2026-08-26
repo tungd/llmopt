@@ -1,0 +1,35 @@
+LFM2.5-350M Q8 residual/output metadata validation repair
+Date: 2026-08-26
+Target: generic Q8 residual epilogues in serving schedules
+
+Trigger:
+- The prior native token-only probe stopped before model execution with
+  `Q8 residual input metadata differs from its output` from
+  `lib/metal_runtime.ml`.
+- Offline inspection showed that `Serving_schedule.validate_command` did not
+  check the exact residual/output dtype and logical-shape invariant for
+  `Q8_linear_add` or `Q8_linear_mul_add`.
+
+Repair:
+- `lib/serving_schedule.ml` now rejects either generic residual epilogue when
+  its final residual input does not have exactly the output metadata.
+- `test/test.ml` adds a malformed `Q8_linear_add` schedule fixture and checks
+  rejection through `Serving_schedule.of_graph`.
+
+Offline gates:
+- `ninja -f ninja.build test all metal`: passed; OCaml tests report
+  `llmopt tests passed`, and the Python suite reports 43/43 tests passed.
+- Prefill package check: 92 kernels, 699 commands, 0 opaque commands,
+  tensor-store=243, workspace=315136/4217600 bytes, allocations=242.
+- Decode package check: 89 kernels, 719 commands, 0 opaque commands,
+  tensor-store=243, workspace=142080/1004032 bytes, allocations=244.
+- Q8 serving-pair check: ABI 14 on both stages, KV `q8-group-64`, page size 1,
+  six prefill templates, six decode-past templates, and specialized decode
+  metadata of 659 commands, 13 runtime inputs, and 6 paged-attention ops.
+- `git diff --check`: passed.
+
+Boundary:
+Evidence is that the malformed schedule is rejected and the current v3
+packages pass the rebuilt validators; the native token-id differential, fresh
+full-model token parity, and TPOT measurements remain unmeasured because no
+second device probe was issued under the repository one-attempt boundary.
