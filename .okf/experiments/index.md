@@ -80,3 +80,4 @@
 * [Macro fusion model integration](exp-0079-macro-fusion-model-integration-2026-08-26.md) - validated current full-model Q8 packages with dual-linear, QKV, and ShortConv-step fusions plus exact cross-process parity.
 * [XGBoost cost-model repair audit](exp-0080-xgboost-kernel-cost-model-repair-2026-08-26.md) - independent selector holdout and measured-oracle boundary after the broad Q8 tile sweep.
 * [XGBoost static-versus-dynamic audit](exp-0081-xgboost-static-dynamic-audit-2026-08-26.md) - paired-median comparison showing the existing artifact-selected tile policy against fixed `16x16x64`.
+* [Macro-fusion full-package audit](exp-0082-macro-fusion-full-package-audit-2026-08-26.md) - fresh all-five Q8 package inventory, validation, and static command delta.

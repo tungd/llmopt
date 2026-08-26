@@ -1,0 +1,42 @@
+LFM2.5-350M Q8 macro-fusion full-package audit
+Date: 2026-08-26
+Target: `LiquidAI/LFM2.5-350M`, Q8 weight-only, opt-in token-id output
+
+Inputs:
+- Prefill: `_artifacts/lfm25-350m-q8-lm-head-contract-2026-08-26/token-q8-prefill-v2`
+- Decode: `_artifacts/lfm25-350m-q8-lm-head-contract-2026-08-26/token-q8-decode-v2`
+- Audit receipt: `_artifacts/lfm25-350m-q8-lm-head-contract-2026-08-26/macro-final-audit.json`
+- Audit harness: `bench/audit_macro_packages.py`
+
+Full macro inventory:
+- Prefill selects 16 `q8-linear+add+rms-norm+residual-output`, 16
+  `q8-dual-linear+silu`, 6 `q8-qkv-linear`, and 1
+  `q8-lm-head-argmax` operation.
+- Decode selects the same operations plus 10 `short-conv-step-fused`
+  operations.
+
+Package checks:
+- Prefill: 92 kernels, 699 commands, 0 opaque commands, 243 tensor-store
+  inputs, workspace `315136/4217600` bytes, 242 allocations.
+- Decode: 89 kernels, 719 commands, 0 opaque commands, 243 tensor-store
+  inputs, workspace `142080/1004032` bytes, 244 allocations.
+- The serving-pair checker passes for Q8 KV, ABI 14, page size 1, all six
+  prefill templates, and all six decode-past templates.
+
+Command comparison:
+- Against the prior validated `795/815` prefill/decode package counts, the
+  fresh packages reduce prefill by 96 commands and decode by 96 commands,
+  or 192 commands combined. The static combined count therefore reaches the
+  checklist's declared 120-command arithmetic, but this is a package audit,
+  not a full model execution result.
+
+Timing and parity boundary:
+- The fresh token-output packages were not relaunched after the single native
+  token-only probe stopped before model execution at residual metadata
+  validation; no second device probe was issued.
+- The existing older-package bench artifact records exact 4/4 warmup and 4/4
+  scored token parity, but its one-run-per-candidate timing comparison is
+  explicitly `valid_for_relative_speed_claim=false` and it does not represent
+  these fresh all-five packages.
+- Fresh-package TPOT and fresh-package token parity are therefore unmeasured.
+  The declared full-model `>= 20%` TPOT condition is not established.
