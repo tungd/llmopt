@@ -3288,10 +3288,8 @@ let encode_schedule execution_batch ~schedule ~inputs =
             continue
               { state with outputs_rev = (name, buffer) :: state.outputs_rev }
         | Ir.Op.Barrier_create _, [], None
-        | Ir.Op.Barrier_arrive _, [], None ->
-            continue state
+        | Ir.Op.Barrier_arrive _, [], None
         | Ir.Op.Barrier_wait _, [], None ->
-            let* () = Batch.barrier batch in
             continue state
         | _ -> unsupported ())
   in

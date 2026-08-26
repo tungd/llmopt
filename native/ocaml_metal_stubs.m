@@ -23,11 +23,20 @@ typedef struct {
   id<MTLCommandQueue> queue;
 } llmopt_metal_context;
 
+#define LLMOPT_PIPELINE_CACHE_SIZE 64
+
+typedef struct {
+  const char *name;
+  id<MTLComputePipelineState> pipeline;
+} llmopt_pipeline_entry;
+
 typedef struct {
   id<MTLDevice> device;
   id<MTLLibrary> library;
   id<MTLCommandQueue> queue;
   NSMutableDictionary *pipelines;
+  llmopt_pipeline_entry cache[LLMOPT_PIPELINE_CACHE_SIZE];
+  uint32_t cache_count;
 } llmopt_metal_library;
 
 typedef struct {
@@ -80,6 +89,9 @@ static void finalize_library(value handle) {
   llmopt_metal_library **slot =
       (llmopt_metal_library **)Data_custom_val(handle);
   if (*slot != NULL) {
+    for (uint32_t i = 0; i < (*slot)->cache_count; i++) {
+      free((void *)(*slot)->cache[i].name);
+    }
     [(*slot)->pipelines release];
     [(*slot)->queue release];
     [(*slot)->library release];
@@ -513,26 +525,38 @@ static void require_buffer_size(llmopt_metal_buffer *buffer, uint64_t required,
 
 static id<MTLComputePipelineState>
 pipeline_for_name(llmopt_metal_library *library, const char *kernel_name) {
+  for (uint32_t i = 0; i < library->cache_count; i++) {
+    if (library->cache[i].name == kernel_name ||
+        strcmp(library->cache[i].name, kernel_name) == 0) {
+      return library->cache[i].pipeline;
+    }
+  }
+
   NSString *name = [NSString stringWithUTF8String:kernel_name];
   id<MTLComputePipelineState> pipeline =
       [library->pipelines objectForKey:name];
-  if (pipeline != nil) {
-    return pipeline;
-  }
-  id<MTLFunction> function = [library->library newFunctionWithName:name];
-  if (function == nil) {
-    caml_failwith("Metal library does not contain the selected kernel");
-  }
-  NSError *pipeline_error = nil;
-  pipeline = [library->device newComputePipelineStateWithFunction:function
-                                                             error:&pipeline_error];
-  [function release];
   if (pipeline == nil) {
-    fail_with_error("cannot create Metal compute pipeline", pipeline_error);
+    id<MTLFunction> function = [library->library newFunctionWithName:name];
+    if (function == nil) {
+      caml_failwith("Metal library does not contain the selected kernel");
+    }
+    NSError *pipeline_error = nil;
+    pipeline = [library->device newComputePipelineStateWithFunction:function
+                                                               error:&pipeline_error];
+    [function release];
+    if (pipeline == nil) {
+      fail_with_error("cannot create Metal compute pipeline", pipeline_error);
+    }
+    [library->pipelines setObject:pipeline forKey:name];
+    [pipeline release];
   }
-  [library->pipelines setObject:pipeline forKey:name];
-  [pipeline release];
-  return [library->pipelines objectForKey:name];
+
+  if (library->cache_count < LLMOPT_PIPELINE_CACHE_SIZE) {
+    library->cache[library->cache_count].name = strdup(kernel_name);
+    library->cache[library->cache_count].pipeline = pipeline;
+    library->cache_count++;
+  }
+  return pipeline;
 }
 
 static NSUInteger positive_size(value encoded, const char *name) {
@@ -611,38 +635,36 @@ CAMLprim value caml_llmopt_metal_batch_dispatch(value arguments) {
     caml_failwith("Metal library has been finalized");
   }
 
-  @autoreleasepool {
-    id<MTLComputePipelineState> pipeline =
-        pipeline_for_name(library, kernel_name);
-    if (group.width * group.height * group.depth >
-        pipeline.maxTotalThreadsPerThreadgroup) {
-      caml_invalid_argument("Metal threadgroup exceeds pipeline capacity");
-    }
-    id<MTLComputeCommandEncoder> encoder = batch_compute_encoder(batch);
-    [encoder setComputePipelineState:pipeline];
-
-    NSUInteger buffer_index = 0;
-    value remaining = buffers;
-    while (remaining != Val_emptylist) {
-      llmopt_metal_buffer *buffer = Buffer_val(Field(remaining, 0));
-      if (buffer == NULL) {
-        caml_failwith("Metal buffer has been finalized");
-      }
-      [encoder setBuffer:buffer->buffer
-                  offset:buffer->offset
-                 atIndex:buffer_index];
-      buffer_index += 1;
-      remaining = Field(remaining, 1);
-    }
-
-    mlsize_t parameter_length = caml_string_length(parameters);
-    if (parameter_length > 0) {
-      [encoder setBytes:Bytes_val(parameters)
-                 length:(NSUInteger)parameter_length
-                atIndex:buffer_index];
-    }
-    [encoder dispatchThreads:grid threadsPerThreadgroup:group];
+  id<MTLComputePipelineState> pipeline =
+      pipeline_for_name(library, kernel_name);
+  if (group.width * group.height * group.depth >
+      pipeline.maxTotalThreadsPerThreadgroup) {
+    caml_invalid_argument("Metal threadgroup exceeds pipeline capacity");
   }
+  id<MTLComputeCommandEncoder> encoder = batch_compute_encoder(batch);
+  [encoder setComputePipelineState:pipeline];
+
+  NSUInteger buffer_index = 0;
+  value remaining = buffers;
+  while (remaining != Val_emptylist) {
+    llmopt_metal_buffer *buffer = Buffer_val(Field(remaining, 0));
+    if (buffer == NULL) {
+      caml_failwith("Metal buffer has been finalized");
+    }
+    [encoder setBuffer:buffer->buffer
+                offset:buffer->offset
+               atIndex:buffer_index];
+    buffer_index += 1;
+    remaining = Field(remaining, 1);
+  }
+
+  mlsize_t parameter_length = caml_string_length(parameters);
+  if (parameter_length > 0) {
+    [encoder setBytes:Bytes_val(parameters)
+               length:(NSUInteger)parameter_length
+              atIndex:buffer_index];
+  }
+  [encoder dispatchThreads:grid threadsPerThreadgroup:group];
   CAMLreturn(Val_unit);
 }
 

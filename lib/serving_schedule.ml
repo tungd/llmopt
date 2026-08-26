@@ -1878,9 +1878,14 @@ module Lfm25 = struct
     in
     commands
     |> List.filter (fun command ->
-           match command.Command.output with
-           | None -> true
-           | Some output -> Value_map.mem (Ir.Value.id output) needed)
+           match command.Command.op with
+           | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _
+           | Ir.Op.Barrier_create _ ->
+               false
+           | _ -> (
+               match command.Command.output with
+               | None -> true
+               | Some output -> Value_map.mem (Ir.Value.id output) needed))
     |> List.mapi (fun node_id command -> { command with Command.node_id })
 
   let direct_q8_attention ~past_tokens ~cache schedule =
