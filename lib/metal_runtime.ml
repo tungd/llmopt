@@ -2534,15 +2534,25 @@ let update_slice_kernel destination source output =
            (Ir.Dtype.to_string source_dtype)
            (Ir.Dtype.to_string output_dtype))
 
-let encode_schedule execution_batch ~schedule ~inputs =
+let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
   let runtime = execution_batch.Execution_batch.runtime in
   let batch = execution_batch.commands in
   let* runtime_inputs = runtime_input_map inputs in
-  let* memory_plan = Serving_memory_plan.create schedule in
+  let* memory_plan =
+    match memory_plan with
+    | Some plan -> Ok plan
+    | None -> Serving_memory_plan.create schedule
+  in
   let workspace_bytes = Serving_memory_plan.workspace_bytes memory_plan in
   let* workspace =
-    if workspace_bytes = 0 then Ok None
-    else Buffer.create ~runtime ~bytes:workspace_bytes |> Result.map Option.some
+    match workspace with
+    | Some buf ->
+        if Buffer.byte_length buf < workspace_bytes then
+          Error "provided workspace buffer is too small for schedule"
+        else Ok (Some buf)
+    | None ->
+        if workspace_bytes = 0 then Ok None
+        else Buffer.create ~runtime ~bytes:workspace_bytes |> Result.map Option.some
   in
   execution_batch.resources <-
     List.map snd inputs @ Option.to_list workspace @ execution_batch.resources;
@@ -3315,9 +3325,9 @@ let encode_schedule execution_batch ~schedule ~inputs =
   execution_batch.schedules <- execution_batch.schedules + 1;
   Ok execution
 
-let execute_schedule runtime ~schedule ~inputs =
+let execute_schedule ?workspace ?memory_plan runtime ~schedule ~inputs =
   with_execution_batch runtime (fun batch ->
-      encode_schedule batch ~schedule ~inputs)
+      encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs)
 
 let execute runtime ~inputs =
   execute_schedule runtime

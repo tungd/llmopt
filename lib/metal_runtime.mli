@@ -142,6 +142,8 @@ val with_execution_batch :
   ('a, string) result
 
 val encode_schedule :
+  ?workspace:Buffer.t ->
+  ?memory_plan:Serving_memory_plan.t ->
   Execution_batch.t ->
   schedule:Serving_schedule.t ->
   inputs:(string * Buffer.t) list ->
@@ -170,6 +172,8 @@ val execute :
   t -> inputs:(string * Buffer.t) list -> (Execution.t, string) result
 
 val execute_schedule :
+  ?workspace:Buffer.t ->
+  ?memory_plan:Serving_memory_plan.t ->
   t ->
   schedule:Serving_schedule.t ->
   inputs:(string * Buffer.t) list ->

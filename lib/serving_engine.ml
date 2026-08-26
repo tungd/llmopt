@@ -77,6 +77,7 @@ type t = {
   physical_cache : Metal_runtime.Cache.t;
   attention_cache : Attention_cache.t;
   contract : contract;
+  decode_workspace : Metal_runtime.Buffer.t option;
 }
 
 let indexed_name base index =
@@ -386,6 +387,15 @@ let create ~config ~prefill ~decode =
       Metal_runtime.Cache.create ~runtime:decode
         ~config:(Serving_cache.Config.kv config)
     in
+    let* decode_workspace =
+      let decode_schedule = Serving_package.schedule decode_package in
+      let* decode_memory_plan = Serving_memory_plan.create decode_schedule in
+      let workspace_bytes =
+        max 262144 (Serving_memory_plan.workspace_bytes decode_memory_plan)
+      in
+      Metal_runtime.Buffer.create ~runtime:decode ~bytes:workspace_bytes
+      |> Result.map Option.some
+    in
     Ok
       {
         config;
@@ -395,6 +405,7 @@ let create ~config ~prefill ~decode =
         physical_cache;
         attention_cache = Attention_cache.of_config config;
         contract;
+        decode_workspace;
       }
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -742,7 +753,8 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
             decode_inputs engine ~slots:matched_slots ~token_input buffers
           in
           let* execution =
-            Metal_runtime.execute_schedule engine.decode ~schedule ~inputs
+            Metal_runtime.execute_schedule ?workspace:engine.decode_workspace
+              engine.decode ~schedule ~inputs
           in
           let source_items, source_offset =
             attention_pack_slice engine ~past_tokens
