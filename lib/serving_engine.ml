@@ -80,6 +80,9 @@ type t = {
   decode_workspace : Metal_runtime.Buffer.t option;
   decode_token_buffer : Metal_runtime.Buffer.t option;
   decode_schedules : (int, Serving_schedule.t) Hashtbl.t;
+  mutable prebaked_decode :
+    (Metal_runtime.Prebaked.t * Metal_runtime.Execution.t * Metal_runtime.Buffer.t option)
+    option;
 }
 
 let indexed_name base index =
@@ -414,6 +417,7 @@ let create ~config ~prefill ~decode =
         decode_workspace;
         decode_token_buffer;
         decode_schedules = Hashtbl.create 64;
+        prebaked_decode = None;
       }
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -779,14 +783,47 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           let source_items, source_offset =
             attention_pack_slice engine ~past_tokens
           in
-          let* execution =
-            Metal_runtime.execute_decode_step ?workspace:engine.decode_workspace
-              engine.decode ~cache:engine.physical_cache ~schedule ~inputs
-              ~cache_pack:(fun execution batch ->
+          let* execution, token_id_buffer =
+            match engine.prebaked_decode with
+            | Some (plan, execution, out_buf) ->
+                let* _ = Metal_runtime.Prebaked.execute plan ~token ~past_tokens in
+                Ok (execution, out_buf)
+            | None ->
+                let* (dispatches, execution) =
+                  Metal_runtime.precompile_decode_batch
+                    ?workspace:engine.decode_workspace engine.decode
+                    ~schedule ~inputs
+                in
+                let* token_id =
+                  optional_output execution engine.contract.decode_head.token_id
+                in
+                (match token_id, engine.decode_token_buffer with
+                | Some out_buf, Some in_buf ->
+                    let* plan =
+                      Metal_runtime.Prebaked.create ~runtime:engine.decode
+                        ~dispatches ~token_buffer:in_buf ~output_buffer:out_buf
+                    in
+                    engine.prebaked_decode <- Some (plan, execution, Some out_buf);
+                    let* _ =
+                      Metal_runtime.Prebaked.execute plan ~token ~past_tokens
+                    in
+                    Ok (execution, Some out_buf)
+                | _ ->
+                    let* execution =
+                      Metal_runtime.execute_schedule
+                        ?workspace:engine.decode_workspace engine.decode
+                        ~schedule ~inputs
+                    in
+                    let* token_id =
+                      optional_output execution engine.contract.decode_head.token_id
+                    in
+                    Ok (execution, token_id))
+          in
+          let* () =
+            Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
                 let* () =
                   pack_decode_attention batch execution reservation.slots
-                    ~source_items ~source_offset
-                    engine.contract.attentions
+                    ~source_items ~source_offset engine.contract.attentions
                 in
                 pack_decode_recurrent batch reservation.checkpoint
                   (Serving_replay.Decode_buffers.recurrent buffers))
@@ -794,9 +831,6 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           let tokens = Array.append prefix [| token |] in
           let slots = Array.append matched_slots reservation.slots in
           let* logits = optional_output execution engine.contract.decode_head.logits in
-          let* token_id =
-            optional_output execution engine.contract.decode_head.token_id
-          in
           let* cached_prefix =
             Serving_cache.insert engine.logical_cache ~tokens ~slots
               ~checkpoint:reservation.checkpoint ()
@@ -804,7 +838,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           Ok
             {
               Step.logits;
-              token_id;
+              token_id = token_id_buffer;
               tokens;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;

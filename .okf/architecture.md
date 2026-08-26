@@ -550,6 +550,16 @@ and SIMD kernels, one aggregate run measures ERS `0.23655514122115978`, median
 TTFT `136.7437920125667 ms`, and median TPOT `14.803701342316344 ms`; this
 observation cannot attribute the delta to one component.
 
+The native decode path can now pre-encode its specialized Metal dispatch list
+once and retain the pipeline states, buffers, offsets, launch geometry, and
+constant parameters in a `Prebaked` plan. Each later token updates only the
+shared token buffer and the paged-attention `past_tokens` field before encoding
+the retained records into one command buffer. Cache packing remains a separate
+ordered submission after decode completion. On the refreshed Q8 trace this
+changes the tracked llmopt observation from ERS `0.4793278474`, median TTFT
+`64.0418755 ms`, and median TPOT `5.7588818 ms` to ERS `0.5906046455`, median
+TTFT `53.6987090 ms`, and median TPOT `4.3660347 ms`.
+
 The following packed Q8 decode package keeps that schedule and cache behavior
 but processes four activation/weight elements per SIMD-lane iteration. One
 bounded 350M observation preserves all four eager-Q8 token sequences and

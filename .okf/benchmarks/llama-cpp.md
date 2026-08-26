@@ -1,10 +1,10 @@
 ---
 type: Benchmark Protocol
 title: 'LFM2.5-350M llama.cpp comparison and ERS side benchmark'
-description: 'Run native llama-bench throughput, llama-server ERS traces, and an optional same-trace comparison against the llmopt serving endpoint.'
-tags: [benchmark, llama.cpp, llama-bench, llama-server, lfm2.5, q8, ERS, metal]
+description: 'Run native llama-bench throughput, llama-server ERS traces, and an optional same-trace comparison against the llmopt serving endpoint at a recorded quantization.'
+tags: [benchmark, llama.cpp, llama-bench, llama-server, lfm2.5, q4, q8, ERS, metal]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-26T06:34:31Z' }
+generated: { by: codex/gpt-5.6, at: '2026-08-26T20:17:55Z' }
 sources:
   - id: native-runner
     resource: /bench/llama_cpp_bench.py
@@ -34,10 +34,10 @@ sources:
 
 # Target
 
-Use the official `LiquidAI/LFM2.5-350M-GGUF:Q8_0` model specification with the
-Metal-enabled llama.cpp build installed on the Apple Silicon host. The model is
-downloaded through llama.cpp's Hugging Face resolver into the local cache; no
-weight file is checked into the repository.
+Use the official `LiquidAI/LFM2.5-350M-GGUF:Q4_0` model specification for an
+llmopt W4 comparison and `Q8_0` for the historical llmopt Q8 comparison. The
+Metal-enabled llama.cpp build downloads the model through its Hugging Face
+resolver into the local cache; no weight file is checked into the repository.
 
 # Native throughput receipt
 
@@ -89,6 +89,13 @@ warmup and scored traces against the supplied endpoint. The receipt stores the
 side summaries and `side_comparison.delta` values as `llama.cpp - side` for
 ERS, median TTFT, and median TPOT; it does not terminate the supplied llmopt
 process.
+
+For an explicit Q4 target, invoke the runner with
+`--hf-repo LiquidAI/LFM2.5-350M-GGUF:Q4_0` and a distinct `--model-id`. The
+2026-08-27 receipt is
+`bench/results/lfm25-350m-llama-cpp-q4-with-llmopt-2026-08-27.json`. Its llmopt
+side was generated from the preserved Q8 capture inputs, so the receipt records
+cross-endpoint timing rather than claiming equal weight precision.
 
 # Reference path
 

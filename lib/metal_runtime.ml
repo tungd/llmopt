@@ -106,6 +106,19 @@ external ring_start_worker_stub :
 
 external ring_destroy_stub : ring_handle -> unit = "caml_llmopt_ring_destroy"
 
+type prebaked_handle
+
+external prebaked_create_stub :
+  library_handle ->
+  (string * buffer_handle list * bytes * int * int * int * int * int * int)
+  array ->
+  buffer_handle ->
+  buffer_handle ->
+  prebaked_handle = "caml_llmopt_prebaked_create"
+
+external prebaked_execute_stub :
+  prebaked_handle -> int -> int -> int = "caml_llmopt_prebaked_execute"
+
 let protect operation =
   try Ok (operation ()) with
   | Failure message -> Error message
@@ -365,6 +378,17 @@ module Ring_queue = struct
           output_buffer)
 
   let destroy ring = protect (fun () -> ring_destroy_stub ring)
+end
+
+module Prebaked = struct
+  type t = prebaked_handle
+
+  let create ~(runtime : runtime) ~dispatches ~token_buffer ~output_buffer =
+    protect (fun () ->
+        prebaked_create_stub runtime.library dispatches token_buffer output_buffer)
+
+  let execute plan ~token ~past_tokens =
+    protect (fun () -> prebaked_execute_stub plan token past_tokens)
 end
 
 let tensor runtime ~name =
@@ -3464,6 +3488,27 @@ let execute_decode_step ?workspace ?memory_plan runtime ~cache ~schedule ~inputs
       let* () = cache_pack execution cache_batch in
       batch.resources <- cache_batch.resources @ batch.resources;
       Ok execution)
+
+let precompile_decode_batch ?workspace ?memory_plan runtime ~schedule ~inputs =
+  let* commands = Batch.create runtime in
+  let batch =
+    { Execution_batch.runtime; commands; resources = []; schedules = 0 }
+  in
+  let* execution =
+    encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs
+  in
+  let items_rev = List.rev batch.commands.pending in
+  let dispatches =
+    Array.of_list
+      (List.map
+         (fun (_, it) ->
+            (it.Batch.name, it.Batch.buffers, it.Batch.parameters,
+             it.Batch.grid_x, it.Batch.grid_y, it.Batch.grid_z,
+             it.Batch.group_x, it.Batch.group_y, it.Batch.group_z))
+         items_rev)
+  in
+  ignore (Batch.abort commands);
+  Ok (dispatches, execution)
 
 let execute runtime ~inputs =
   execute_schedule runtime

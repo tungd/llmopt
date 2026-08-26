@@ -4,7 +4,7 @@ title: 'llama.cpp target setup and first LFM2.5-350M Q8 comparison'
 description: 'Add native llama-bench and same-trace llama-server receipts, then replay the trace against the prepared llmopt server as an ERS side comparison.'
 tags: [experiment, benchmark, llama.cpp, llama-bench, llama-server, lfm2.5, q8, ERS, metal]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-26T06:39:02Z' }
+generated: { by: codex/gpt-5.6, at: '2026-08-26T20:17:55Z' }
 sources:
   - id: native-receipt
     resource: /bench/results/lfm25-350m-llama-cpp-q8-2026-08-26.json
@@ -64,14 +64,14 @@ prepared v4 llmopt Q8 server on port 18105 after the llama.cpp child stopped.
 
 | Endpoint | Warmup ERS | Scored ERS | Scored median TTFT | Scored median TPOT | Scored requests |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| llama.cpp `llama-server` | 0.7444346873 | 0.7882335084 | 15.8908125 ms | 2.9836318 ms | 4/4 |
-| llmopt serving side | 0.1065868081 | 0.2113561232 | 359.5760835 ms | 33.4690485 ms | 4/4 |
+| llama.cpp `llama-server` | 0.7232593964 | 0.7583199938 | 18.6627500 ms | 3.2731805 ms | 4/4 |
+| llmopt serving side | 0.4168796410 | 0.5906046455 | 53.6987090 ms | 4.3660347 ms | 4/4 |
 
-The receipt stores `llama.cpp - side` deltas of `+0.5768773852` ERS,
-`-342.9666040 ms` median TTFT, and `-30.4854166 ms` median TPOT for the scored
+The refreshed receipt stores `llama.cpp - side` deltas of `+0.1677153483` ERS,
+`-35.0359590 ms` median TTFT, and `-1.0928542 ms` median TPOT for the scored
 trace. These are the observed values from one configured execution, not an
 additional benchmark requirement. The llmopt side preserved its own cached
-prompt accounting (`74/188` scored prompt tokens in the receipt), while
+prompt accounting (`74/186` scored prompt tokens in the receipt), while
 llama-server reported no cached prompt tokens through this path.
 
 # Measurement boundary

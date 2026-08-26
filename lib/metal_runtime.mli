@@ -191,6 +191,14 @@ val execute_decode_step :
   cache_pack:(Execution.t -> Cache.batch -> (unit, string) result) ->
   (Execution.t, string) result
 
+val precompile_decode_batch :
+  ?workspace:Buffer.t ->
+  ?memory_plan:Serving_memory_plan.t ->
+  t ->
+  schedule:Serving_schedule.t ->
+  inputs:(string * Buffer.t) list ->
+  ((string * Buffer.t list * bytes * int * int * int * int * int * int) array * Execution.t, string) result
+
 val tensor :
   t -> name:string -> (Buffer.t * Weight_archive.Tensor.t, string) result
 
@@ -246,5 +254,19 @@ module Ring_queue : sig
     (unit, string) result
 
   val destroy : t -> (unit, string) result
+end
+
+module Prebaked : sig
+  type t
+
+  val create :
+    runtime:runtime ->
+    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int)
+               array ->
+    token_buffer:Buffer.t ->
+    output_buffer:Buffer.t ->
+    (t, string) result
+
+  val execute : t -> token:int -> past_tokens:int -> (int, string) result
 end
 

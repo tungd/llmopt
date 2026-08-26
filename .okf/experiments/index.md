@@ -88,3 +88,4 @@
 * [Q8 v4 macro-fusion native execution](exp-0087-q8-macro-probe-v4-execution.md) - successful Apple M4 Pro supervised native execution with 4/4 warmup, 4/4 scored parity, and zero token mismatches.
 * [Q8 serving record breakthrough](exp-0088-q8-serving-record-breakthrough-2026-08-26.md) - decode-first scheduling fix and SIMD-pair kernels breaking repository all-time record with ERS 0.4290 (TPOT 6.81 ms).
 * [llama.cpp target benchmark setup](exp-0089-llama-cpp-target-2026-08-26.md) - native llama-bench throughput, same-trace llama-server ERS, and optional llmopt side comparison.
+* [Prebaked decode dispatch and Q4 target replay](exp-0090-prebaked-decode-q4-comparison-2026-08-27.md) - retained Metal decode records, refreshed Q8 side evidence, and the requested llama.cpp Q4_0 timing comparison.

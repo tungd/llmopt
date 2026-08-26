@@ -79,12 +79,13 @@ typedef struct {
 typedef struct {
   id<MTLComputePipelineState> pipeline;
   NSUInteger buffer_count;
-  id<MTLBuffer> buffers[12];
-  NSUInteger offsets[12];
-  uint8_t parameters[64];
+  id<MTLBuffer> buffers[16];
+  NSUInteger offsets[16];
+  uint8_t parameters[256];
   NSUInteger parameter_length;
   MTLSize grid;
   MTLSize group;
+  bool is_paged_attention;
 } llmopt_dispatch_record;
 
 typedef struct {
@@ -112,6 +113,21 @@ typedef struct {
   id<MTLBuffer> output_buffer;
   NSUInteger output_buffer_offset;
 } llmopt_ring_queue;
+
+typedef struct {
+  id<MTLCommandQueue> queue;
+  llmopt_metal_library *library;
+  llmopt_dispatch_record *records;
+  size_t record_count;
+  id<MTLBuffer> token_buffer;
+  NSUInteger token_buffer_offset;
+  id<MTLBuffer> output_buffer;
+  NSUInteger output_buffer_offset;
+} llmopt_prebaked_plan;
+
+static llmopt_prebaked_plan *Prebaked_val(value handle) {
+  return *((llmopt_prebaked_plan **)Data_custom_val(handle));
+}
 
 static llmopt_ring_queue *Ring_val(value handle) {
   return *((llmopt_ring_queue **)Data_custom_val(handle));
@@ -300,6 +316,43 @@ static struct custom_operations ring_operations = {
 static value alloc_ring(llmopt_ring_queue *ring) {
   value result = caml_alloc_custom(&ring_operations, sizeof(ring), 0, 1);
   *((llmopt_ring_queue **)Data_custom_val(result)) = ring;
+  return result;
+}
+
+static void finalize_prebaked(value v) {
+  llmopt_prebaked_plan **slot = (llmopt_prebaked_plan **)Data_custom_val(v);
+  llmopt_prebaked_plan *plan = *slot;
+  if (plan != NULL) {
+    if (plan->records != NULL) {
+      for (size_t i = 0; i < plan->record_count; i++) {
+        [plan->records[i].pipeline release];
+        for (NSUInteger b = 0; b < plan->records[i].buffer_count; b++) {
+          [plan->records[i].buffers[b] release];
+        }
+      }
+      free(plan->records);
+    }
+    [plan->queue release];
+    [plan->token_buffer release];
+    [plan->output_buffer release];
+    free(plan);
+    *slot = NULL;
+  }
+}
+
+static struct custom_operations prebaked_operations = {
+    "llmopt.prebaked.plan",
+    finalize_prebaked,
+    custom_compare_default,
+    custom_hash_default,
+    custom_serialize_default,
+    custom_deserialize_default,
+    custom_compare_ext_default,
+    custom_fixed_length_default};
+
+static value alloc_prebaked(llmopt_prebaked_plan *plan) {
+  value result = caml_alloc_custom(&prebaked_operations, sizeof(plan), 0, 1);
+  *((llmopt_prebaked_plan **)Data_custom_val(result)) = plan;
   return result;
 }
 
@@ -1149,6 +1202,9 @@ static void *llmopt_worker_loop(void *arg) {
           [enc setBuffer:r->buffers[b] offset:r->offsets[b] atIndex:b];
         }
         if (r->parameter_length > 0) {
+          if (r->is_paged_attention && r->parameter_length >= 16) {
+            *(uint32_t *)(&r->parameters[12]) = (uint32_t)entry.past_tokens;
+          }
           [enc setBytes:r->parameters length:r->parameter_length atIndex:r->buffer_count];
         }
         [enc dispatchThreads:r->grid threadsPerThreadgroup:r->group];
@@ -1310,10 +1366,11 @@ CAMLprim value caml_llmopt_ring_start_worker(value v_ring,
     q->records[i].grid = MTLSizeMake(Long_val(Field(item, 3)), Long_val(Field(item, 4)), Long_val(Field(item, 5)));
     q->records[i].group = MTLSizeMake(Long_val(Field(item, 6)), Long_val(Field(item, 7)), Long_val(Field(item, 8)));
     q->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
+    q->records[i].is_paged_attention = (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0);
 
     NSUInteger b_idx = 0;
     value rem = buffers;
-    while (rem != Val_emptylist && b_idx < 12) {
+    while (rem != Val_emptylist && b_idx < 16) {
       llmopt_metal_buffer *b = Buffer_val(Field(rem, 0));
       if (b != NULL) {
         q->records[i].buffers[b_idx] = [b->buffer retain];
@@ -1325,7 +1382,7 @@ CAMLprim value caml_llmopt_ring_start_worker(value v_ring,
     q->records[i].buffer_count = b_idx;
 
     mlsize_t plen = caml_string_length(params);
-    if (plen > 0 && plen <= 64) {
+    if (plen > 0 && plen <= 256) {
       memcpy(q->records[i].parameters, Bytes_val(params), plen);
       q->records[i].parameter_length = plen;
     }
@@ -1344,3 +1401,118 @@ CAMLprim value caml_llmopt_ring_destroy(value v_ring) {
   CAMLreturn(Val_unit);
 }
 
+CAMLprim value caml_llmopt_prebaked_create(value v_library,
+                                           value v_dispatches,
+                                           value v_token_buf,
+                                           value v_out_buf) {
+  CAMLparam4(v_library, v_dispatches, v_token_buf, v_out_buf);
+  llmopt_metal_library *lib = Library_val(v_library);
+  llmopt_metal_buffer *t_buf = Buffer_val(v_token_buf);
+  llmopt_metal_buffer *o_buf = Buffer_val(v_out_buf);
+
+  if (lib == NULL) {
+    caml_failwith("Metal library has been finalized");
+  }
+
+  llmopt_prebaked_plan *plan = calloc(1, sizeof(*plan));
+  if (plan == NULL) {
+    caml_raise_out_of_memory();
+  }
+
+  mlsize_t total = Wosize_val(v_dispatches);
+  plan->records = calloc(total, sizeof(llmopt_dispatch_record));
+  plan->record_count = total;
+  plan->library = lib;
+  plan->queue = [lib->queue retain];
+
+  if (t_buf != NULL) {
+    plan->token_buffer = [t_buf->buffer retain];
+    plan->token_buffer_offset = t_buf->offset;
+  }
+  if (o_buf != NULL) {
+    plan->output_buffer = [o_buf->buffer retain];
+    plan->output_buffer_offset = o_buf->offset;
+  }
+
+  for (mlsize_t i = 0; i < total; i++) {
+    value item = Field(v_dispatches, i);
+    const char *kname = String_val(Field(item, 0));
+    value buffers = Field(item, 1);
+    value params = Field(item, 2);
+    plan->records[i].grid = MTLSizeMake(Long_val(Field(item, 3)), Long_val(Field(item, 4)), Long_val(Field(item, 5)));
+    plan->records[i].group = MTLSizeMake(Long_val(Field(item, 6)), Long_val(Field(item, 7)), Long_val(Field(item, 8)));
+    plan->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
+    plan->records[i].is_paged_attention = (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0);
+
+    NSUInteger b_idx = 0;
+    value rem = buffers;
+    while (rem != Val_emptylist && b_idx < 16) {
+      llmopt_metal_buffer *b = Buffer_val(Field(rem, 0));
+      if (b != NULL) {
+        plan->records[i].buffers[b_idx] = [b->buffer retain];
+        plan->records[i].offsets[b_idx] = b->offset;
+      }
+      b_idx++;
+      rem = Field(rem, 1);
+    }
+    plan->records[i].buffer_count = b_idx;
+
+    mlsize_t plen = caml_string_length(params);
+    if (plen > 0 && plen <= 256) {
+      memcpy(plan->records[i].parameters, Bytes_val(params), plen);
+      plan->records[i].parameter_length = plen;
+    }
+  }
+
+  CAMLreturn(alloc_prebaked(plan));
+}
+
+CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v_past_tokens) {
+  CAMLparam3(v_plan, v_token, v_past_tokens);
+  llmopt_prebaked_plan *plan = Prebaked_val(v_plan);
+  int64_t token = (int64_t)Long_val(v_token);
+  int32_t past_tokens = (int32_t)Long_val(v_past_tokens);
+  if (plan->token_buffer != nil) {
+    int64_t *ptr = (int64_t *)((uint8_t *)[plan->token_buffer contents] + plan->token_buffer_offset);
+    *ptr = token;
+  }
+
+  @autoreleasepool {
+    id<MTLCommandBuffer> cmd = [plan->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+
+    for (size_t i = 0; i < plan->record_count; i++) {
+      llmopt_dispatch_record *r = &plan->records[i];
+      [enc setComputePipelineState:r->pipeline];
+      for (NSUInteger b = 0; b < r->buffer_count; b++) {
+        if (r->buffers[b] != nil) {
+          [enc setBuffer:r->buffers[b] offset:r->offsets[b] atIndex:b];
+        }
+      }
+      if (r->parameter_length > 0) {
+        if (r->is_paged_attention && r->parameter_length >= 16) {
+          *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
+        }
+        [enc setBytes:r->parameters length:r->parameter_length atIndex:r->buffer_count];
+      }
+      [enc dispatchThreads:r->grid threadsPerThreadgroup:r->group];
+    }
+
+    [enc endEncoding];
+    [cmd commit];
+    caml_enter_blocking_section();
+    [cmd waitUntilCompleted];
+    caml_leave_blocking_section();
+    if (cmd.status != MTLCommandBufferStatusCompleted) {
+      fail_with_error("Prebaked Metal batch failed", cmd.error);
+    }
+  }
+
+  int32_t next_token = 0;
+  if (plan->output_buffer != nil) {
+    int32_t *out_ptr = (int32_t *)((uint8_t *)[plan->output_buffer contents] + plan->output_buffer_offset);
+    next_token = *out_ptr;
+  }
+
+  CAMLreturn(Val_long(next_token));
+}
