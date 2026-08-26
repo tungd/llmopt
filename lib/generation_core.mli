@@ -52,6 +52,7 @@ module Make (Engine : Engine) : sig
     val result : t -> Result.t option
     val current_tokens : t -> int array
     val completion_tokens : t -> int list
+    val cached_prompt_tokens : t -> int
   end
 
   val run :

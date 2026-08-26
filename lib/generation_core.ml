@@ -86,6 +86,8 @@ module Make (Engine : Engine) = struct
     let completion_tokens state =
       List.rev state.completion_rev
 
+    let cached_prompt_tokens state = state.cached_prompt_tokens
+
     let init engine ~config ~is_stop ~prompt =
       let started = Unix.gettimeofday () in
       let* step, cached_prompt_tokens = Engine.prompt engine ~tokens:prompt in

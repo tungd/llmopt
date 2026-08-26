@@ -1,0 +1,36 @@
+# LFM2.5-350M Q8 v4 macro-fusion fast probe results (post-optimization)
+
+Date: 2026-08-26
+Target: `LiquidAI/LFM2.5-350M`, Q8 weight-only, full macro fusions with on-GPU token-id argmax
+
+## Optimizations Applied
+1. Caching normalized inputs in threadgroup SRAM (`threadgroup float cached_norm[2048]`) in `llmopt_q8_lm_head_argmax_f32`, eliminating 67,108,864 redundant DRAM transactions per token.
+2. Vectorizing inner dot products across all 4 macro kernels (`llmopt_q8_lm_head_argmax_f32`, `llmopt_q8_linear_add_norm_extra_f16`, `llmopt_q8_dual_linear_silu_f16`, and `llmopt_q8_qkv_linear_f16`) with 4-way `char4` loads and single outer scale multiplication.
+3. Intermediate activation caching in `llmopt_q8_linear_add_norm_extra_f16` to eliminate the redundant duplicate GEMV computation per layer.
+4. Threadgroup SRAM input caching in `llmopt_q8_dual_linear_silu_f16` and `llmopt_q8_qkv_linear_f16`.
+5. Removing barrier pipeline flushes in `native/ocaml_metal_stubs.m` under serial compute command encoding (`MTLDispatchTypeSerial`), eliminating 175 pipeline drain stalls per token.
+6. Correcting radix cache reporting in `bin/lfm_serve.ml` using `Generation.Driver.State.cached_prompt_tokens`.
+
+## Benchmark Results
+- Host: Apple M4 Pro, 24 GB unified memory
+- Packages: `_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v4/{prefill,decode}`
+- Server: `_build/bin/llmopt-serve` on port `18105` with Q8 KV cache
+
+### Warmup Trace (`bench/traces/lfm25-mps-warmup.json`):
+- 4/4 requests successful (100%), 0 failed, 0 output token mismatches.
+- Wall time: 0.798s (down from 1.957s -> 2.45x speedup).
+- Median TTFT: 203.958 ms (down from 405.065 ms -> 2.0x faster).
+- Median TPOT: 63.525 ms.
+- ERS: 0.142313 (up from 0.087973).
+
+### Scored Trace (`bench/traces/lfm25-mps-smoke.json`):
+- 4/4 requests successful (100%), 0 failed, 0 output token mismatches.
+- Wall time: 0.711s (down from 2.133s -> 3.0x speedup).
+- Median TTFT: 166.842 ms (down from 427.368 ms -> 2.56x faster; min TTFT: 58.426 ms).
+- Cached prompt tokens: 74 / 187 (39.57% cache hit ratio, restored from 0).
+- ERS: 0.209811 (doubled from 0.109047).
+
+### Native Serving Smoke (`llmopt-lfm-serving-smoke`):
+- Decode seconds (3 steps): 0.0425s (14.1 ms/step, down from 35.3 ms/step -> 2.5x speedup).
+- All 3 radix cache hits verified (radix-hits: 3, radix-misses: 0).
+- Clean exit, zero background orphans, port released.

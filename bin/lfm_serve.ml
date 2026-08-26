@@ -386,11 +386,7 @@ let serve service options =
                           Hashtbl.remove active_requests req.id
                       | Ok (driver_state, first_token) ->
                           active_req.driver_state <- Some driver_state;
-                          let cached_count =
-                            match Generation.Driver.State.result driver_state with
-                            | Some r -> Generation_core.Result.cached_prompt_tokens r
-                            | None -> 0
-                          in
+                          let cached_count = Generation.Driver.State.cached_prompt_tokens driver_state in
                           let active_req = { active_req with cached_prompt_tokens = cached_count } in
                           Hashtbl.replace active_requests req.id active_req;
                           let alloc_count = Array.length prompt_tokens + 1 in
