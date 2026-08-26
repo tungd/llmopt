@@ -1201,3 +1201,64 @@ let select_optimal_tile ~m ~n ~k ~device =
     let best = better ~m ~n ~k ~device Gemv_single Gemv_pair in
     Ok best
   else Ok (select_gemm ~m ~n ~k ~device)
+
+module Megakernel = struct
+  type qkv_rope_tile = {
+    threads_per_threadgroup : int;
+    simdgroups_per_threadgroup : int;
+    pairs_per_threadgroup : int;
+    grid_threadgroups : int;
+  }
+
+  type lm_head_tile = {
+    stage1_threadgroups : int;
+    stage1_threads : int;
+    columns_per_thread : int;
+  }
+
+  let select_qkv_rope_tile ~device ~total_pairs =
+    let cores = Device.gpu_core_count device in
+    if cores >= 16 then
+      let simdgroups = 4 in
+      let threads = simdgroups * 32 in
+      let pairs_per_tg = simdgroups in
+      let tgs = (total_pairs + pairs_per_tg - 1) / pairs_per_tg in
+      {
+        threads_per_threadgroup = threads;
+        simdgroups_per_threadgroup = simdgroups;
+        pairs_per_threadgroup = pairs_per_tg;
+        grid_threadgroups = tgs;
+      }
+    else
+      let simdgroups = 8 in
+      let threads = simdgroups * 32 in
+      let pairs_per_tg = simdgroups in
+      let tgs = (total_pairs + pairs_per_tg - 1) / pairs_per_tg in
+      {
+        threads_per_threadgroup = threads;
+        simdgroups_per_threadgroup = simdgroups;
+        pairs_per_threadgroup = pairs_per_tg;
+        grid_threadgroups = tgs;
+      }
+
+  let select_lm_head_tile ~device ~vocab_size =
+    let cores = Device.gpu_core_count device in
+    if cores >= 16 then
+      let tgs = 256 in
+      let threads = 256 in
+      let cols_per_thread = (vocab_size + (tgs * threads) - 1) / (tgs * threads) in
+      {
+        stage1_threadgroups = tgs;
+        stage1_threads = threads;
+        columns_per_thread = cols_per_thread;
+      }
+    else
+      let tgs = 128 in
+      let threads = 256 in
+      let cols_per_thread = (vocab_size + (tgs * threads) - 1) / (tgs * threads) in
+      {
+        stage1_threadgroups = tgs;
+        stage1_threads = threads;
+        columns_per_thread = cols_per_thread;
+      }
+end

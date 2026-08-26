@@ -42,3 +42,24 @@ val kernel_name : selection -> string
 
 val select_optimal_tile :
   m:int -> n:int -> k:int -> device:Device.t -> (selection, string) result
+
+module Megakernel : sig
+  type qkv_rope_tile = {
+    threads_per_threadgroup : int;
+    simdgroups_per_threadgroup : int;
+    pairs_per_threadgroup : int;
+    grid_threadgroups : int;
+  }
+
+  type lm_head_tile = {
+    stage1_threadgroups : int;
+    stage1_threads : int;
+    columns_per_thread : int;
+  }
+
+  val select_qkv_rope_tile :
+    device:Device.t -> total_pairs:int -> qkv_rope_tile
+
+  val select_lm_head_tile :
+    device:Device.t -> vocab_size:int -> lm_head_tile
+end

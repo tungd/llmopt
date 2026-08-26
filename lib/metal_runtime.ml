@@ -2004,10 +2004,14 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
         [ input; norm_weight; weight; scale; candidates_buffer ]
         @ Option.to_list extra_output_buffer
       in
+      let tile =
+        Kernel_cost_model.Megakernel.select_lm_head_tile
+          ~device:Kernel_cost_model.Device.default ~vocab_size:n
+      in
       let* kernel1 =
         dispatch ~batch runtime entry1
           ~buffers:buffers1 ~parameters:parameters1
-          ~grid:(256 * 256, m, 1)
+          ~grid:(tile.stage1_threadgroups * tile.stage1_threads, m, 1)
       in
       let buffers2 = [ candidates_buffer; output_buffer ] in
       let* kernel2 =
@@ -2322,11 +2326,14 @@ let dispatch_q8_fused_qkv_rope_command batch runtime state ~m ~n_q ~n_kv ~k
     ]
   in
   let total_pairs = (n_q / 2) + n_kv in
-  let threadgroups = (total_pairs + 3) / 4 in
+  let tile =
+    Kernel_cost_model.Megakernel.select_qkv_rope_tile
+      ~device:Kernel_cost_model.Device.default ~total_pairs
+  in
   let* kernel =
     dispatch ~batch runtime entry
       ~buffers
-      ~parameters ~grid:(threadgroups * 128, m, 1)
+      ~parameters ~grid:(tile.grid_threadgroups * tile.threads_per_threadgroup, m, 1)
   in
   let state = bind_value state output q_output_buffer in
   let state = bind_value state k_output_val k_output_buffer in
