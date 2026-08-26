@@ -98,7 +98,7 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `ATTEMPT-3`: The fresh full-Q8 decode plan contains 10 `short-conv-step-fused` operations and the generated decode package passes validation; prefill retains the separate multi-token ShortConv path.
   - `DONE`: `d73421c` (`test(macro): record fused model integration parity`). Each validated `llmopt` decode package contains 10 `short-conv-step-fused` operations; the full model benchsuite completes with exact cross-process FP16 logits and 4/4 warmup and 4/4 scored token parity. Evidence: `bench/results/lfm25-350m-q8-macro-fusion-integration-2026-08-26.txt`.
 
-- [ ] **ITEM-04**: Implement Fused Out-Projection + Residual Add + Post-RMSNorm
+- [x] **ITEM-04**: Implement Fused Out-Projection + Residual Add + Post-RMSNorm
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Layer epilogue fusion in compiler passes and MSL emitter.
   - `IMPORTANT FILES`:
@@ -118,7 +118,8 @@ Implement five macro-operator compiler fusion passes (`fuse_dual_linear_swiglu`,
   - `ATTEMPT-1`: `ninja -f ninja.build test` passed; the generated Metal source, OCaml runtime dispatch, native fixture, and FX executable compile. The fixture verifies the typed rewrite, epsilon and operand preservation, schedule round-trip, threadgroup RMS reduction source, and registered Q8 ABI entry.
   - `ATTEMPT-2`: `Passes.optimize` now invokes `fuse_linear_residual_norm`; `ninja -f ninja.build test`, `ninja -f ninja.build all`, and `ninja -f ninja.build q8-metal` pass, including the generated residual-norm Metal compile.
   - `ATTEMPT-3`: Generalized matching across the intervening f32 cast and preserved the fusion safety rule for external residual consumers. The captured full-Q8 graph has an external residual consumer, so its audit contains zero `Q8_linear_add_norm` nodes; the focused casted fixture and package gates pass.
-  - `NEEDS PLAN`: The captured residual has an external downstream consumer, so the safety rule correctly selects zero `Q8_linear_add_norm` nodes; closing this item requires a graph/output contract decision plus a fresh full-layer result, not a broader rewrite of the current matcher.
+  - `ATTEMPT-4`: Extended the typed secondary-output contract to retain the raw Q8 residual value for all downstream consumers while preserving the f32 cast when its branch remains live. The focused fixture, schedule v15 round-trip, generated extra-output Metal kernels, and full `ninja -f ninja.build test && ninja -f ninja.build metal` gates pass.
+  - `DONE`: `9053503` and `5b21594`. A fresh full-Q8 prefill/decode replan selects 16 `q8-linear+add+rms-norm+residual-output` operations in each stage; generated Metal compiles and both packages validate with 93/90 kernels, 701/721 commands, zero opaque commands, and reduced workspaces. Evidence: `_artifacts/lfm25-350m-q8-residual-contract-2026-08-26/{prefill,decode}/plan.txt`, `package.llmopt`, and `kernel.metallib`.
 
 - [ ] **ITEM-05**: Implement Fused Final RMSNorm + LM_Head + On-GPU Tree-Reduction Argmax
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
