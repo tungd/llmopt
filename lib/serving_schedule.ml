@@ -262,6 +262,60 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d Q8 fused ShortConv metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension = _; epsilon = _; extra_outputs },
+            inputs,
+            Some output ) ->
+            let secondary_matches =
+              match extra_outputs with
+              | [ key_output; value_output ] ->
+                  q8_output_matches ~rows:m ~columns:n_kv
+                    ~dtype:(Ir.Value.dtype output) key_output
+                  && q8_output_matches ~rows:m ~columns:n_kv
+                       ~dtype:(Ir.Value.dtype output) value_output
+              | _ -> false
+            in
+            let metadata_matches =
+              match inputs with
+              | [ input; norm_weight; weight_q; scale_q; weight_k; scale_k; weight_v; scale_v; _cosine; _sine ] ->
+                  q8_activation_dtype (Ir.Value.dtype input)
+                  && Ir.Value.dtype norm_weight = Ir.Dtype.Float16
+                  && q8_matrix_matches ~rows:n_q ~columns:k ~dtype:Ir.Dtype.Int8 weight_q
+                  && q8_vector_matches ~length:n_q ~dtype:Ir.Dtype.Float16 scale_q
+                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8 weight_k
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_k
+                  && q8_matrix_matches ~rows:n_kv ~columns:k ~dtype:Ir.Dtype.Int8 weight_v
+                  && q8_vector_matches ~length:n_kv ~dtype:Ir.Dtype.Float16 scale_v
+                  && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+                  && q8_output_matches ~rows:m ~columns:n_q ~dtype:(Ir.Value.dtype input) output
+              | _ -> false
+            in
+            if metadata_matches && secondary_matches
+               && fresh_outputs seen_values (output :: extra_outputs)
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Q8 fused QKV RoPE metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale = _ },
+            inputs,
+            Some output ) ->
+            let metadata_matches =
+              match inputs with
+              | [ query; _key; _value; _mask; out_weight; out_scale; residual ] ->
+                  q8_activation_dtype (Ir.Value.dtype query)
+                  && q8_matrix_matches ~rows:k ~columns:(heads * head_dim) ~dtype:Ir.Dtype.Int8 out_weight
+                  && q8_vector_matches ~length:k ~dtype:Ir.Dtype.Float16 out_scale
+                  && Ir.Value.dtype residual = Ir.Value.dtype output
+                  && q8_output_matches ~rows:m ~columns:k ~dtype:(Ir.Value.dtype query) output
+              | _ -> false
+            in
+            if metadata_matches then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Q8 fused Attn Out metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Q8_dual_linear
               { m; n1; n2; k; bias; silu_first = _; extra_outputs },
             inputs,
@@ -927,6 +981,26 @@ let q8_selection_for_command device command =
         | Error _ -> Kernel_cost_model.Gemm_16x16x64
       in
       Some (command.Command.node_id, selection)
+  | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; _ } ->
+      let selection =
+        match
+          Kernel_cost_model.select_optimal_tile ~m
+            ~n:(n_q + (2 * n_kv)) ~k ~device
+        with
+        | Ok selection -> selection
+        | Error _ -> Kernel_cost_model.Gemm_16x16x64
+      in
+      Some (command.Command.node_id, selection)
+  | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; _ } ->
+      let selection =
+        match
+          Kernel_cost_model.select_optimal_tile ~m
+            ~n:k ~k:(heads * head_dim) ~device
+        with
+        | Ok selection -> selection
+        | Error _ -> Kernel_cost_model.Gemm_16x16x64
+      in
+      Some (command.Command.node_id, selection)
   | _ -> None
 
 let create ?(device = Kernel_cost_model.Device.default) commands =
@@ -1205,6 +1279,28 @@ module Lfm25 = struct
                bias;
                extra_outputs;
              })
+    | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs } ->
+        Ok
+          (Ir.Op.Q8_fused_qkv_rope
+             {
+               m = substitute substitutions m;
+               n_q = substitute substitutions n_q;
+               n_kv = substitute substitutions n_kv;
+               k = substitute substitutions k;
+               half_dimension;
+               epsilon;
+               extra_outputs;
+             })
+    | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale } ->
+        Ok
+          (Ir.Op.Q8_fused_attn_out
+             {
+               m = substitute substitutions m;
+               heads;
+               head_dim;
+               k = substitute substitutions k;
+               scale;
+             })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
         Ok (Ir.Op.Primitive primitive)
@@ -1321,7 +1417,9 @@ module Lfm25 = struct
       | Ir.Op.Q8_linear _ | Ir.Op.Q8_linear_silu _ | Ir.Op.Q8_linear_add _
       | Ir.Op.Q8_linear_mul_add _ | Ir.Op.Q8_linear_add_norm _
       | Ir.Op.Q8_dual_linear _
-      | Ir.Op.Q8_qkv_linear _ ),
+      | Ir.Op.Q8_qkv_linear _
+      | Ir.Op.Q8_fused_qkv_rope _
+      | Ir.Op.Q8_fused_attn_out _ ),
       _ ->
         map_shape substitutions original
     | Ir.Op.Q8_lm_head_argmax { m; _ }, _ ->
@@ -1376,13 +1474,22 @@ module Lfm25 = struct
             value_output
         in
         Ok [ key_output; value_output ]
+    | Ir.Op.Q8_fused_qkv_rope { m; n_kv; _ }, [ key_output; value_output ] ->
+        let* key_output =
+          specialized_matrix_value substitutions ~rows:m ~columns:n_kv key_output
+        in
+        let* value_output =
+          specialized_matrix_value substitutions ~rows:m ~columns:n_kv
+            value_output
+        in
+        Ok [ key_output; value_output ]
     | Ir.Op.Q8_linear_add_norm { m; n; _ }, [ raw_output ] ->
         specialized_matrix_value substitutions ~rows:m ~columns:n raw_output
         |> Result.map (fun output -> [ output ])
     | Ir.Op.Q8_lm_head_argmax { m; n; _ }, [ logits_output ] ->
         specialized_matrix_value substitutions ~rows:m ~columns:n logits_output
         |> Result.map (fun output -> [ output ])
-    | (Ir.Op.Q8_dual_linear _ | Ir.Op.Q8_qkv_linear _), _ ->
+    | (Ir.Op.Q8_dual_linear _ | Ir.Op.Q8_qkv_linear _ | Ir.Op.Q8_fused_qkv_rope _), _ ->
         Error "multi-output Q8 operation has an inconsistent secondary-output table"
     | _, [] -> Ok []
     | _, _ -> Error "unexpected secondary outputs in specialized schedule"
@@ -1393,6 +1500,8 @@ module Lfm25 = struct
         Ir.Op.Q8_dual_linear { config with extra_outputs = outputs }
     | Ir.Op.Q8_qkv_linear config ->
         Ir.Op.Q8_qkv_linear { config with extra_outputs = outputs }
+    | Ir.Op.Q8_fused_qkv_rope config ->
+        Ir.Op.Q8_fused_qkv_rope { config with extra_outputs = outputs }
     | Ir.Op.Q8_linear_add_norm config ->
         Ir.Op.Q8_linear_add_norm { config with extra_outputs = outputs }
     | Ir.Op.Q8_lm_head_argmax config ->
@@ -2482,6 +2591,16 @@ let write_op writer = function
       Binary.Writer.u8 writer 36;
       List.iter (Binary.Writer.u64 writer) [ m; channels; window; k ];
       Binary.Writer.float64 writer epsilon
+  | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs } ->
+      Binary.Writer.u8 writer 37;
+      List.iter (Binary.Writer.u64 writer) [ m; n_q; n_kv; k; half_dimension ];
+      Binary.Writer.float64 writer epsilon;
+      Binary.Writer.u8 writer (List.length extra_outputs);
+      List.iter (write_value writer) extra_outputs
+  | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale } ->
+      Binary.Writer.u8 writer 38;
+      List.iter (Binary.Writer.u64 writer) [ m; heads; head_dim; k ];
+      Binary.Writer.float64 writer scale
   | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
       Binary.Writer.u8 writer (if extra_outputs = [] then 26 else 32);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
@@ -2551,6 +2670,14 @@ let read_four_dimensions reader =
   let* d2 = Binary.Reader.u64 reader in
   let* d3 = Binary.Reader.u64 reader in
   Ok (d0, d1, d2, d3)
+
+let read_five_dimensions reader =
+  let* d0 = Binary.Reader.u64 reader in
+  let* d1 = Binary.Reader.u64 reader in
+  let* d2 = Binary.Reader.u64 reader in
+  let* d3 = Binary.Reader.u64 reader in
+  let* d4 = Binary.Reader.u64 reader in
+  Ok (d0, d1, d2, d3, d4)
 
 let read_op values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2791,6 +2918,28 @@ let read_op values reader =
       if Float.is_finite epsilon && epsilon > 0.0 then
         Ok (Ir.Op.Q8_fused_short_conv { m; channels; window; k; epsilon })
       else Error "schedule contains a non-finite Q8 fused ShortConv epsilon"
+  | 37 ->
+      let* m, n_q, n_kv, k, half_dimension = read_five_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      if Float.is_finite epsilon && epsilon > 0.0 then
+        Ok
+          (Ir.Op.Q8_fused_qkv_rope
+             { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs })
+      else Error "schedule contains a non-finite Q8 fused QKV RoPE epsilon"
+  | 38 ->
+      let* m, heads, head_dim, k = read_four_dimensions reader in
+      let* scale = Binary.Reader.float64 reader in
+      if Float.is_finite scale && scale > 0.0 then
+        Ok (Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale })
+      else Error "schedule contains a non-finite Q8 fused Attn Out scale"
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

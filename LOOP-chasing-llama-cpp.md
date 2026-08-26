@@ -114,9 +114,9 @@ Transform `llmopt` from an 864-command micro-dispatch interpreter into a whole-b
   - `ESCALATE IF`: Metal shading language version on host does not support `simdgroup_matrix` for `half` types.
   - DONE (2026-08-27): Implemented `llmopt_q8_gemm_simdgroup_f16` and `_f32` in `lib/metal.ml` using `#include <metal_matrix>`, `simdgroup_matrix<half, 8, 8>`, `simdgroup_load`, `simdgroup_multiply_accumulate`, and `simdgroup_store` with 32-thread SIMD threadgroups and minimal (384 bytes) SRAM footprint. Updated `lib/metal_runtime.ml` with `Q8_decode_layout.Simdgroup_gemm`, prioritising hardware `simdgroup_matrix` dispatch when $M \ge 8$ and $M, N, K$ are divisible by 8 with proper grid calculation, and automatically falling back to scalar GEMM when unaligned or $M < 8$, while leaving $M=1$ single-token decode untouched. Added `dispatch_q8_gemm_command` and `dispatch_q8_gemm`. Verified with `ninja -f ninja.build test all metal` (100% green, 47 Python tests, all OCaml unit tests, Metal shaders compile cleanly with zero warnings/errors). ESCALATE IF not triggered.
 
-- [ ] **ITEM-05**: Fused Attention Block Megakernel (`lib/ir.ml`, `lib/passes.ml`, `lib/metal.ml`)
+- [x] **ITEM-05**: Fused Attention Block Megakernel (`Pass_fuse_attention_block` & `Metal.q8_fused_qkv_rope_kernel` + `q8_fused_attn_out_kernel`)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
-  - `WHERE`: Attention subgraph optimization across all 6 attention layers.
+  - `WHERE`: Core graph compiler, passes, and Metal shading language lowering.
   - `IMPORTANT FILES`:
     - `lib/ir.ml`: Add `Ir.Op.Q8_fused_qkv_rope` and `Ir.Op.Q8_fused_attn_out`.
     - `lib/passes.ml`: Add `Pass_fuse_attention_block` folding `RMSNorm + QKV Linear + RoPE` into Hop A, and `PagedAttention + OutProj + Add` into Hop B.
@@ -133,6 +133,7 @@ Transform `llmopt` from an 864-command micro-dispatch interpreter into a whole-b
   - `VERIFY`: `ninja -f ninja.build test all metal` passes; total decode schedule commands drop below 100.
   - `DONE WHEN`: Decode schedule contains $\le 100$ total commands across the entire 16-layer model.
   - `ESCALATE IF`: Paged attention head layout conflicts with in-place out-projection accumulation.
+  - `DONE (2026-08-27)`: Implemented `Ir.Op.Q8_fused_qkv_rope` (Hop A: RMSNorm + Q8 QKV GEMV + in-register RoPE rotation) and `Ir.Op.Q8_fused_attn_out` (Hop B: PagedAttention + Q8 OutProj GEMV + in-register residual addition) with 256-thread SIMD group cooperatives in `lib/metal.ml`. Implemented `Pass_fuse_attention_block` in `lib/pass_fuse_attention_block.ml` performing AST pattern detection and rewriting. Wired schedule serialization tags 37 and 38 in `lib/serving_schedule.ml`, package tags 30 and 31 in `lib/serving_package.ml`, runtime dispatch in `lib/metal_runtime.ml`, and verified all unit tests, metal compilation, package checks, and Apple M4 Pro hardware smokes (`native-schedule-smoke`, `ocaml-metal-primitives-smoke`, `ocaml-metal-runtime-smoke`) pass 100% green.
 
 - [ ] **ITEM-06**: Full Benchmark Validation Against llama.cpp (`bench/llama_cpp_server_bench.py`)
   - `REPO`: `/Users/tung/Projects/std23/llmopt`

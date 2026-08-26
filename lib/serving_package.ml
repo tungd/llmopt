@@ -184,6 +184,8 @@ let operation_tag = function
   | Kernel_abi.Operation.W4a16_linear -> 27
   | Kernel_abi.Operation.Q8_fused_swiglu_ffn -> 28
   | Kernel_abi.Operation.Q8_fused_short_conv -> 29
+  | Kernel_abi.Operation.Q8_fused_qkv_rope -> 30
+  | Kernel_abi.Operation.Q8_fused_attn_out -> 31
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -216,6 +218,8 @@ let operation_of_tag = function
   | 27 -> Ok Kernel_abi.Operation.W4a16_linear
   | 28 -> Ok Kernel_abi.Operation.Q8_fused_swiglu_ffn
   | 29 -> Ok Kernel_abi.Operation.Q8_fused_short_conv
+  | 30 -> Ok Kernel_abi.Operation.Q8_fused_qkv_rope
+  | 31 -> Ok Kernel_abi.Operation.Q8_fused_attn_out
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function

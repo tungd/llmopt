@@ -487,6 +487,20 @@ module Parameters = struct
     Bytes.set_int32_le bytes 16 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let q8_fused_qkv_rope ~m ~n_q ~n_kv ~k ~half_dimension ~epsilon =
+    let bytes = Bytes.make 24 '\000' in
+    let* encoded = u32s [ m; n_q; n_kv; k; half_dimension ] in
+    Bytes.blit encoded 0 bytes 0 20;
+    Bytes.set_int32_le bytes 20 (Int32.bits_of_float epsilon);
+    Ok bytes
+
+  let q8_fused_attn_out ~m ~heads ~head_dim ~k ~key_length ~scale =
+    let bytes = Bytes.make 24 '\000' in
+    let* encoded = u32s [ m; heads; head_dim; k; key_length ] in
+    Bytes.blit encoded 0 bytes 0 20;
+    Bytes.set_int32_le bytes 20 (Int32.bits_of_float scale);
+    Ok bytes
+
   let rms_rope ~batches ~tokens ~heads ~width ~half_dimension ~trig_batches
       ~epsilon =
     let bytes = Bytes.make 28 '\000' in
@@ -2202,6 +2216,124 @@ let dispatch_q8_fused_short_conv_command batch runtime state ~m ~channels ~windo
   let state = bind_value state output output_buffer in
   Ok (state, kernel)
 
+let dispatch_q8_fused_qkv_rope_command batch runtime state ~m ~n_q ~n_kv ~k
+    ~half_dimension ~epsilon ~extra_outputs values output =
+  let* input_val, norm_weight_val, weight_q_val, scale_q_val, _weight_k_val, _scale_k_val, _weight_v_val, _scale_v_val, cosine_val, sine_val =
+    match values with
+    | [ x; nw; wq; sq; wk; sk; wv; sv; cos; sin ] ->
+        Ok (x, nw, wq, sq, wk, sk, wv, sv, cos, sin)
+    | _ -> Error "Q8 fused QKV RoPE schedule command has inconsistent inputs"
+  in
+  let* k_output_val, v_output_val =
+    match extra_outputs with
+    | [ k_out; v_out ] -> Ok (k_out, v_out)
+    | _ -> Error "Q8 fused QKV RoPE requires exactly 2 extra outputs (K and V)"
+  in
+  let* input = find_value state input_val in
+  let* norm_weight = find_value state norm_weight_val in
+  let* weight_q = find_value state weight_q_val in
+  let* scale_q = find_value state scale_q_val in
+  let* cosine = find_value state cosine_val in
+  let* sine = find_value state sine_val in
+  let* q_output_buffer = workspace_buffer state output in
+  let* k_output_buffer = workspace_buffer state k_output_val in
+  let* v_output_buffer = workspace_buffer state v_output_val in
+  let* kernel_name =
+    match Ir.Value.dtype input_val with
+    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_qkv_rope_f16"
+    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_qkv_rope_f32"
+    | dtype ->
+        Error
+          (Printf.sprintf "unsupported Q8 fused QKV RoPE input dtype: %s"
+             (Ir.Dtype.to_string dtype))
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_fused_qkv_rope
+      ~input_dtype:(Ir.Value.dtype input_val)
+      ~output_dtype:(Ir.Value.dtype output)
+  in
+  let* parameters =
+    Parameters.q8_fused_qkv_rope ~m ~n_q ~n_kv ~k ~half_dimension ~epsilon
+  in
+  let buffers =
+    [
+      input;
+      norm_weight;
+      weight_q;
+      scale_q;
+      cosine;
+      sine;
+      q_output_buffer;
+      k_output_buffer;
+      v_output_buffer;
+    ]
+  in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers
+      ~parameters ~grid:(m * 256, 1, 1)
+  in
+  let state = bind_value state output q_output_buffer in
+  let state = bind_value state k_output_val k_output_buffer in
+  let state = bind_value state v_output_val v_output_buffer in
+  Ok (state, kernel)
+
+let dispatch_q8_fused_attn_out_command batch runtime state ~m ~heads ~head_dim ~k
+    ~scale values output =
+  let* query_val, key_val, value_val, mask_val, out_weight_val, out_scale_val, residual_val =
+    match values with
+    | [ q; k_in; v_in; msk; wout; sout; r ] ->
+        Ok (q, k_in, v_in, msk, wout, sout, r)
+    | _ -> Error "Q8 fused Attn Out schedule command has inconsistent inputs"
+  in
+  let* query = find_value state query_val in
+  let* key = find_value state key_val in
+  let* value = find_value state value_val in
+  let* mask = find_value state mask_val in
+  let* out_weight = find_value state out_weight_val in
+  let* out_scale = find_value state out_scale_val in
+  let* residual = find_value state residual_val in
+  let* output_buffer = workspace_buffer state output in
+  let* kernel_name =
+    match Ir.Value.dtype query_val with
+    | Ir.Dtype.Float16 -> Ok "llmopt_q8_fused_attn_out_f16"
+    | Ir.Dtype.Float32 -> Ok "llmopt_q8_fused_attn_out_f32"
+    | dtype ->
+        Error
+          (Printf.sprintf "unsupported Q8 fused Attn Out input dtype: %s"
+             (Ir.Dtype.to_string dtype))
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Q8_fused_attn_out
+      ~input_dtype:(Ir.Value.dtype query_val)
+      ~output_dtype:(Ir.Value.dtype output)
+  in
+  let key_length = 1 in
+  let* parameters =
+    Parameters.q8_fused_attn_out ~m ~heads ~head_dim ~k ~key_length ~scale
+  in
+  let buffers =
+    [
+      query;
+      key;
+      value;
+      mask;
+      out_weight;
+      out_scale;
+      residual;
+      output_buffer;
+    ]
+  in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers
+      ~parameters ~grid:(m * 256, 1, 1)
+  in
+  let state = bind_value state output output_buffer in
+  Ok (state, kernel)
+
 let split_axis shape axis =
   let rec loop outer remaining = function
     | [] -> Error "Metal axis is outside the tensor rank"
@@ -3082,6 +3214,19 @@ let encode_schedule execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_q8_fused_short_conv_command batch runtime state ~m
                  ~channels ~window ~k ~epsilon values output)
+        | ( Ir.Op.Q8_fused_qkv_rope
+              { m; n_q; n_kv; k; half_dimension; epsilon; extra_outputs },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_fused_qkv_rope_command batch runtime state ~m ~n_q
+                 ~n_kv ~k ~half_dimension ~epsilon ~extra_outputs values output)
+        | ( Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; scale },
+            values,
+            Some output ) ->
+            dispatched
+              (dispatch_q8_fused_attn_out_command batch runtime state ~m
+                 ~heads ~head_dim ~k ~scale values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue

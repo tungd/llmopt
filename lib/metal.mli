@@ -32,6 +32,18 @@ val q8_gemm_simdgroup_kernel :
   zero_lit:string ->
   string
 
+val q8_fused_qkv_rope_kernel :
+  name:string ->
+  value_type:string ->
+  weight_cast:string ->
+  string
+
+val q8_fused_attn_out_kernel :
+  name:string ->
+  value_type:string ->
+  weight_cast:string ->
+  string
+
 val lower : Ir.Graph.t -> (Program.t, string) result
 val add_cache_kernels : formats:Kv_cache.Format.t list -> Program.t -> Program.t
 val emit : Ir.Graph.t -> (string, string) result

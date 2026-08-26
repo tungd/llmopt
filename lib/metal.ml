@@ -1166,6 +1166,215 @@ let q8_fused_short_conv_source =
   ^ q8_fused_short_conv_kernel ~name:"llmopt_q8_fused_short_conv_f32"
       ~value_type:"float" ~weight_cast:"float"
 
+let q8_fused_qkv_rope_kernel ~name ~value_type ~weight_cast:_ =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* activation [[buffer(0)]],\n"
+  ^ "    device const " ^ value_type ^ "* norm_weight [[buffer(1)]],\n"
+  ^ "    device const char* qkv_weight [[buffer(2)]],\n"
+  ^ "    device const " ^ value_type ^ "* qkv_scale [[buffer(3)]],\n"
+  ^ "    device const " ^ value_type ^ "* cosine [[buffer(4)]],\n"
+  ^ "    device const " ^ value_type ^ "* sine [[buffer(5)]],\n"
+  ^ "    device " ^ value_type ^ "* q_output [[buffer(6)]],\n"
+  ^ "    device " ^ value_type ^ "* k_output [[buffer(7)]],\n"
+  ^ "    device " ^ value_type ^ "* v_output [[buffer(8)]],\n"
+  ^ "    constant Q8FusedQkvRopeParams& params [[buffer(9)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]]) {\n"
+  ^ "  const uint token_idx = threadgroup_position.x;\n"
+  ^ "  if (token_idx >= params.m) return;\n"
+  ^ "  const uint act_base = token_idx * params.k;\n"
+  ^ "  const uint q_base = token_idx * params.n_q;\n"
+  ^ "  const uint kv_base = token_idx * params.n_kv;\n\n"
+  ^ "  threadgroup " ^ value_type ^ " cached_norm[1024];\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  threadgroup " ^ value_type ^ " q_stage[1024];\n"
+  ^ "  threadgroup " ^ value_type ^ " k_stage[1024];\n\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
+  ^ "    const float val = float(activation[act_base + i]);\n"
+  ^ "    square_sum += val * val;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  if (lane == 0) {\n"
+  ^ "    partial_sums[simdgroup] = square_sum;\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  if (simdgroup == 0) {\n"
+  ^ "    float total = lane < 8 ? partial_sums[lane] : 0.0f;\n"
+  ^ "    total = simd_sum(total);\n"
+  ^ "    if (lane == 0) {\n"
+  ^ "      partial_sums[0] = rsqrt(total / float(params.k) + params.epsilon);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  const float inv_rms = partial_sums[0];\n\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
+  ^ "    cached_norm[i] = " ^ value_type ^ "(float(activation[act_base + i]) * inv_rms * float(norm_weight[i]));\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  const uint total_rows = params.n_q + 2 * params.n_kv;\n"
+  ^ "  const uint num_vec4 = params.k / 4;\n"
+  ^ "  for (uint row = tid; row < total_rows; row += 256) {\n"
+  ^ "    const uint weight_base = row * params.k;\n"
+  ^ "    device const char4* w_vec = (device const char4*)(qkv_weight + weight_base);\n"
+  ^ "    float acc = 0.0f;\n"
+  ^ "    for (uint v = 0; v < num_vec4; ++v) {\n"
+  ^ "      const char4 w = w_vec[v];\n"
+  ^ "      const uint base = v * 4;\n"
+  ^ "      acc += float(w.x) * float(cached_norm[base + 0])\n"
+  ^ "           + float(w.y) * float(cached_norm[base + 1])\n"
+  ^ "           + float(w.z) * float(cached_norm[base + 2])\n"
+  ^ "           + float(w.w) * float(cached_norm[base + 3]);\n"
+  ^ "    }\n"
+  ^ "    for (uint i = num_vec4 * 4; i < params.k; ++i) {\n"
+  ^ "      acc += float(qkv_weight[weight_base + i]) * float(cached_norm[i]);\n"
+  ^ "    }\n"
+  ^ "    const float val = acc * float(qkv_scale[row]);\n"
+  ^ "    if (row < params.n_q) {\n"
+  ^ "      q_stage[row] = " ^ value_type ^ "(val);\n"
+  ^ "    } else if (row < params.n_q + params.n_kv) {\n"
+  ^ "      k_stage[row - params.n_q] = " ^ value_type ^ "(val);\n"
+  ^ "    } else {\n"
+  ^ "      v_output[kv_base + (row - params.n_q - params.n_kv)] = " ^ value_type ^ "(val);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  const uint half_dim = params.half_dimension;\n"
+  ^ "  const uint head_dim = 2 * half_dim;\n"
+  ^ "  const uint q_pairs = params.n_q / 2;\n"
+  ^ "  for (uint p = tid; p < q_pairs; p += 256) {\n"
+  ^ "    const uint head = p / half_dim;\n"
+  ^ "    const uint d = p % half_dim;\n"
+  ^ "    const uint idx0 = head * head_dim + d;\n"
+  ^ "    const uint idx1 = idx0 + half_dim;\n"
+  ^ "    const float q0 = float(q_stage[idx0]);\n"
+  ^ "    const float q1 = float(q_stage[idx1]);\n"
+  ^ "    const float cos_v = float(cosine[d]);\n"
+  ^ "    const float sin_v = float(sine[d]);\n"
+  ^ "    q_output[q_base + idx0] = " ^ value_type ^ "(q0 * cos_v - q1 * sin_v);\n"
+  ^ "    q_output[q_base + idx1] = " ^ value_type ^ "(q1 * cos_v + q0 * sin_v);\n"
+  ^ "  }\n"
+  ^ "  const uint kv_pairs = params.n_kv / 2;\n"
+  ^ "  for (uint p = tid; p < kv_pairs; p += 256) {\n"
+  ^ "    const uint head = p / half_dim;\n"
+  ^ "    const uint d = p % half_dim;\n"
+  ^ "    const uint idx0 = head * head_dim + d;\n"
+  ^ "    const uint idx1 = idx0 + half_dim;\n"
+  ^ "    const float k0 = float(k_stage[idx0]);\n"
+  ^ "    const float k1 = float(k_stage[idx1]);\n"
+  ^ "    const float cos_v = float(cosine[d]);\n"
+  ^ "    const float sin_v = float(sine[d]);\n"
+  ^ "    k_output[kv_base + idx0] = " ^ value_type ^ "(k0 * cos_v - k1 * sin_v);\n"
+  ^ "    k_output[kv_base + idx1] = " ^ value_type ^ "(k1 * cos_v + k0 * sin_v);\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let q8_fused_qkv_rope_source =
+  "\nstruct Q8FusedQkvRopeParams { uint m; uint n_q; uint n_kv; uint k; uint half_dimension; float epsilon; };\n\n"
+  ^ q8_fused_qkv_rope_kernel ~name:"llmopt_q8_fused_qkv_rope_f16"
+      ~value_type:"half" ~weight_cast:"half"
+  ^ q8_fused_qkv_rope_kernel ~name:"llmopt_q8_fused_qkv_rope_f32"
+      ~value_type:"float" ~weight_cast:"float"
+
+let q8_fused_attn_out_kernel ~name ~value_type ~weight_cast:_ =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* query [[buffer(0)]],\n"
+  ^ "    device const " ^ value_type ^ "* key [[buffer(1)]],\n"
+  ^ "    device const " ^ value_type ^ "* value [[buffer(2)]],\n"
+  ^ "    device const uchar* mask [[buffer(3)]],\n"
+  ^ "    device const char* out_weight [[buffer(4)]],\n"
+  ^ "    device const " ^ value_type ^ "* out_scale [[buffer(5)]],\n"
+  ^ "    device const " ^ value_type ^ "* residual [[buffer(6)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(7)]],\n"
+  ^ "    constant Q8FusedAttnOutParams& params [[buffer(8)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]]) {\n"
+  ^ "  const uint token_idx = threadgroup_position.x;\n"
+  ^ "  if (token_idx >= params.m) return;\n"
+  ^ "  const uint out_base = token_idx * params.k;\n"
+  ^ "  const uint q_base = token_idx * (params.heads * params.head_dim);\n\n"
+  ^ "  threadgroup " ^ value_type ^ " cached_attn[1024];\n\n"
+  ^ "  const uint head = tid / 16;\n"
+  ^ "  const uint sub_lane = tid % 16;\n"
+  ^ "  if (head < params.heads) {\n"
+  ^ "    const uint q_head_base = q_base + head * params.head_dim;\n"
+  ^ "    float max_score = -INFINITY;\n"
+  ^ "    for (uint kp = 0; kp < params.key_length; ++kp) {\n"
+  ^ "      if (mask != nullptr && mask[kp] == 0) continue;\n"
+  ^ "      float score = 0.0f;\n"
+  ^ "      const uint k_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
+  ^ "                            + kp * params.head_dim;\n"
+  ^ "      for (uint d = sub_lane; d < params.head_dim; d += 16) {\n"
+  ^ "        score += float(query[q_head_base + d]) * float(key[k_pos_base + d]);\n"
+  ^ "      }\n"
+  ^ "      score = simd_sum(score) * params.scale;\n"
+  ^ "      max_score = max(max_score, score);\n"
+  ^ "    }\n"
+  ^ "    float denom = 0.0f;\n"
+  ^ "    for (uint kp = 0; kp < params.key_length; ++kp) {\n"
+  ^ "      if (mask != nullptr && mask[kp] == 0) continue;\n"
+  ^ "      float score = 0.0f;\n"
+  ^ "      const uint k_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
+  ^ "                            + kp * params.head_dim;\n"
+  ^ "      for (uint d = sub_lane; d < params.head_dim; d += 16) {\n"
+  ^ "        score += float(query[q_head_base + d]) * float(key[k_pos_base + d]);\n"
+  ^ "      }\n"
+  ^ "      score = simd_sum(score) * params.scale;\n"
+  ^ "      denom += exp(score - max_score);\n"
+  ^ "    }\n"
+  ^ "    const float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;\n"
+  ^ "    for (uint d = sub_lane; d < params.head_dim; d += 16) {\n"
+  ^ "      float ctx = 0.0f;\n"
+  ^ "      for (uint kp = 0; kp < params.key_length; ++kp) {\n"
+  ^ "        if (mask != nullptr && mask[kp] == 0) continue;\n"
+  ^ "        float score = 0.0f;\n"
+  ^ "        const uint k_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
+  ^ "                              + kp * params.head_dim;\n"
+  ^ "        for (uint kd = 0; kd < params.head_dim; ++kd) {\n"
+  ^ "          score += float(query[q_head_base + kd]) * float(key[k_pos_base + kd]);\n"
+  ^ "        }\n"
+  ^ "        const float weight = exp(score * params.scale - max_score) * inv_denom;\n"
+  ^ "        const uint v_pos_base = (token_idx * params.heads + head) * (params.key_length * params.head_dim)\n"
+  ^ "                              + kp * params.head_dim;\n"
+  ^ "        ctx += weight * float(value[v_pos_base + d]);\n"
+  ^ "      }\n"
+  ^ "      cached_attn[head * params.head_dim + d] = " ^ value_type ^ "(ctx);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n\n"
+  ^ "  const uint num_vec4 = params.k / 4;\n"
+  ^ "  for (uint row = tid; row < params.k; row += 256) {\n"
+  ^ "    const uint weight_base = row * params.k;\n"
+  ^ "    device const char4* w_vec = (device const char4*)(out_weight + weight_base);\n"
+  ^ "    float acc = 0.0f;\n"
+  ^ "    for (uint v = 0; v < num_vec4; ++v) {\n"
+  ^ "      const char4 w = w_vec[v];\n"
+  ^ "      const uint base = v * 4;\n"
+  ^ "      acc += float(w.x) * float(cached_attn[base + 0])\n"
+  ^ "           + float(w.y) * float(cached_attn[base + 1])\n"
+  ^ "           + float(w.z) * float(cached_attn[base + 2])\n"
+  ^ "           + float(w.w) * float(cached_attn[base + 3]);\n"
+  ^ "    }\n"
+  ^ "    for (uint i = num_vec4 * 4; i < params.k; ++i) {\n"
+  ^ "      acc += float(out_weight[weight_base + i]) * float(cached_attn[i]);\n"
+  ^ "    }\n"
+  ^ "    acc *= float(out_scale[row]);\n"
+  ^ "    acc += float(residual[out_base + row]);\n"
+  ^ "    output[out_base + row] = " ^ value_type ^ "(acc);\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let q8_fused_attn_out_source =
+  "\nstruct Q8FusedAttnOutParams { uint m; uint heads; uint head_dim; uint k; uint key_length; float scale; };\n\n"
+  ^ q8_fused_attn_out_kernel ~name:"llmopt_q8_fused_attn_out_f16"
+      ~value_type:"half" ~weight_cast:"half"
+  ^ q8_fused_attn_out_kernel ~name:"llmopt_q8_fused_attn_out_f32"
+      ~value_type:"float" ~weight_cast:"float"
+
 let q8_source =
   "\nconstant uint Q8_TILE = 64;\n\n"
   ^ "struct Q8Params { uint m; uint n; uint k; uint has_bias; };\n\n"
@@ -1590,6 +1799,8 @@ let q8_source = q8_source ^ "\n" ^ q8_dual_linear_source ^ "\n"
   ^ q8_lm_head_argmax_source ^ "\n"
   ^ q8_fused_swiglu_ffn_source ^ "\n"
   ^ q8_fused_short_conv_source ^ "\n"
+  ^ q8_fused_qkv_rope_source ^ "\n"
+  ^ q8_fused_attn_out_source ^ "\n"
   ^ q8_gemm_simdgroup_source ^ "\n"
   ^ q8_parameterized_source
 
@@ -1822,6 +2033,26 @@ let q8_fused_short_conv_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_fused_short_conv_f32"
       ~operation:Kernel_abi.Operation.Q8_fused_short_conv
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
+let q8_fused_qkv_rope_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_qkv_rope_f16"
+      ~operation:Kernel_abi.Operation.Q8_fused_qkv_rope
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_qkv_rope_f32"
+      ~operation:Kernel_abi.Operation.Q8_fused_qkv_rope
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
+let q8_fused_attn_out_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_attn_out_f16"
+      ~operation:Kernel_abi.Operation.Q8_fused_attn_out
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_fused_attn_out_f32"
+      ~operation:Kernel_abi.Operation.Q8_fused_attn_out
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
 let cache_source =
@@ -3514,12 +3745,27 @@ let has_q8_fused_short_conv graph =
          | Ir.Op.Q8_fused_short_conv _ -> true
          | _ -> false)
 
+let has_q8_fused_qkv_rope graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_fused_qkv_rope _ -> true
+         | _ -> false)
+
+let has_q8_fused_attn_out graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Q8_fused_attn_out _ -> true
+         | _ -> false)
+
 let has_q8 graph =
   has_q8_linear graph || has_q8_linear_silu graph || has_q8_linear_add graph
   || has_q8_linear_mul_add graph || has_q8_linear_add_norm graph
   || has_q8_dual_linear graph || has_q8_qkv_linear graph
   || has_q8_lm_head_argmax graph || has_q8_fused_swiglu_ffn graph
-  || has_q8_fused_short_conv graph
+  || has_q8_fused_short_conv graph || has_q8_fused_qkv_rope graph
+  || has_q8_fused_attn_out graph
 
 let q8_entries graph =
   q8_all_entries
@@ -3552,6 +3798,16 @@ let q8_entries graph =
   let entries =
     if has_q8_fused_short_conv graph then
       entries @ q8_fused_short_conv_entries
+    else entries
+  in
+  let entries =
+    if has_q8_fused_qkv_rope graph then
+      entries @ q8_fused_qkv_rope_entries
+    else entries
+  in
+  let entries =
+    if has_q8_fused_attn_out graph then
+      entries @ q8_fused_attn_out_entries
     else entries
   in
   if has_q8_lm_head_argmax graph then

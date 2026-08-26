@@ -88,6 +88,24 @@ module Resource_class = struct
           +. (Float.of_int (m * n) *. 2.0)
         in
         flops /. max 1.0 bytes
+    | Ir.Op.Q8_fused_qkv_rope { m; n_q; n_kv; k; _ } ->
+        let n = n_q + (2 * n_kv) in
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 2.0)
+          +. Float.of_int (n * k)
+          +. (Float.of_int (m * n) *. 2.0)
+        in
+        flops /. max 1.0 bytes
+    | Ir.Op.Q8_fused_attn_out { m; heads; head_dim; k; _ } ->
+        let flops =
+          4.0 *. Float.of_int (m * heads * head_dim * k)
+        in
+        let bytes =
+          (Float.of_int (m * k) *. 4.0)
+          +. Float.of_int (heads * head_dim * k)
+        in
+        flops /. max 1.0 bytes
     | Ir.Op.Matmul { m; n; k; _ }
     | Ir.Op.Fused_matmul_bias { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
@@ -113,6 +131,8 @@ module Resource_class = struct
     | Ir.Op.Q8_linear_mul_add _
     | Ir.Op.Q8_fused_swiglu_ffn _
     | Ir.Op.Q8_fused_short_conv _
+    | Ir.Op.Q8_fused_qkv_rope _
+    | Ir.Op.Q8_fused_attn_out _
     | Ir.Op.Q8_linear_add_norm _
     | Ir.Op.Q8_lm_head_argmax _
     | Ir.Op.Q8_dual_linear _

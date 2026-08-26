@@ -474,11 +474,28 @@ module Op = struct
         bias : bool;
         extra_outputs : Value.t list;
       }
+    | Q8_fused_qkv_rope of {
+        m : int;
+        n_q : int;
+        n_kv : int;
+        k : int;
+        half_dimension : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
+    | Q8_fused_attn_out of {
+        m : int;
+        heads : int;
+        head_dim : int;
+        k : int;
+        scale : float;
+      }
   let additional_outputs = function
     | Q8_linear_add_norm { extra_outputs; _ }
     | Q8_lm_head_argmax { extra_outputs; _ }
     | Q8_dual_linear { extra_outputs; _ }
-    | Q8_qkv_linear { extra_outputs; _ } -> extra_outputs
+    | Q8_qkv_linear { extra_outputs; _ }
+    | Q8_fused_qkv_rope { extra_outputs; _ } -> extra_outputs
     | _ -> []
 
   let to_string = function
@@ -559,6 +576,12 @@ module Op = struct
     | Q8_qkv_linear { m; n_q; n_kv; k; bias = true; _ } ->
         Printf.sprintf "q8-qkv-linear+bias[%dx(%d+%d+%d)x%d]" m n_q n_kv n_kv
           k
+    | Q8_fused_qkv_rope { m; n_q; n_kv; k; half_dimension; epsilon; _ } ->
+        Printf.sprintf "q8-fused-qkv-rope[%dx(%d+%d+%d)x%d,half=%d,eps=%.9g]"
+          m n_q n_kv n_kv k half_dimension epsilon
+    | Q8_fused_attn_out { m; heads; head_dim; k; scale } ->
+        Printf.sprintf "q8-fused-attn-out[%dx(h=%d,d=%d)x%d,scale=%.9g]"
+          m heads head_dim k scale
 end
 
 type node = {

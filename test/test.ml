@@ -5785,4 +5785,52 @@ let () =
   let opt_mem = expect_ok (Serving_memory_plan.plan_concurrent opt_sched) in
   expect (Serving_memory_plan.workspace_bytes opt_mem > 0)
     "optimized schedule produces valid 2D workspace memory plan";
+  (* ITEM-05: Fused Attention Block Megakernel unit test *)
+  let g_attn = Ir.Graph.create () in
+  let v_x = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_nw = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_norm = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_wq = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Int8 in
+  let v_sq = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_wk = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Int8 in
+  let v_sk = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_wv = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Int8 in
+  let v_sv = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_q = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_k = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_v = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+
+  let v_mask = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1; 1; 1 ] |> Result.get_ok) ~dtype:Ir.Dtype.Bool in
+  let v_attn_out = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_wout = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Int8 in
+  let v_sout = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_residual = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+  let v_out = Ir.Graph.fresh_tensor_value g_attn ~shape:(Tensor_shape.create [ 1; 1024 ] |> Result.get_ok) ~dtype:Ir.Dtype.Float16 in
+
+  let n_norm = Ir.node_create ~id:1 ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 }) ~inputs:[ v_x; v_nw ] ~output:(Some v_norm) in
+  let n_qkv = Ir.node_create ~id:2 ~op:(Ir.Op.Q8_qkv_linear { m = 1; n_q = 1024; n_kv = 1024; k = 1024; bias = false; extra_outputs = [ v_k; v_v ] })
+    ~inputs:[ v_norm; v_wq; v_sq; v_wk; v_sk; v_wv; v_sv ] ~output:(Some v_q) in
+  let n_attn = Ir.node_create ~id:3 ~op:(Ir.Op.Primitive (Ir.Primitive.Attention (Ir.Attention.create ~scale:0.125 ~causal:false |> Result.get_ok)))
+    ~inputs:[ v_q; v_k; v_v; v_mask ] ~output:(Some v_attn_out) in
+  let n_out = Ir.node_create ~id:4 ~op:(Ir.Op.Q8_linear_add { m = 1; n = 1024; k = 1024; bias = false })
+    ~inputs:[ v_attn_out; v_wout; v_sout; v_residual ] ~output:(Some v_out) in
+
+  let g_attn = Ir.Graph.with_nodes g_attn [ n_norm; n_qkv; n_attn; n_out ] in
+  let g_fused_attn = Passes.fuse_attention_block g_attn in
+  let fused_nodes = Ir.Graph.nodes g_fused_attn in
+  expect (List.length fused_nodes = 2) "fused attention block reduces 4 nodes down to 2 hops";
+  let hop_a = List.nth fused_nodes 0 in
+  let hop_b = List.nth fused_nodes 1 in
+  expect (match Ir.node_op hop_a with Ir.Op.Q8_fused_qkv_rope _ -> true | _ -> false)
+    "Hop A is fused into Q8_fused_qkv_rope";
+  expect (match Ir.node_op hop_b with Ir.Op.Q8_fused_attn_out _ -> true | _ -> false)
+    "Hop B is fused into Q8_fused_attn_out";
+
+  let prog_attn = expect_ok (Metal.lower g_fused_attn) in
+  let src_attn = Metal.Program.source prog_attn in
+  expect (contains_substring src_attn "kernel void llmopt_q8_fused_qkv_rope_f16")
+    "generated Metal program contains llmopt_q8_fused_qkv_rope_f16";
+  expect (contains_substring src_attn "kernel void llmopt_q8_fused_attn_out_f16")
+    "generated Metal program contains llmopt_q8_fused_attn_out_f16";
+
   print_endline "llmopt tests passed"

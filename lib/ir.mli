@@ -294,6 +294,22 @@ module Op : sig
         bias : bool;
         extra_outputs : Value.t list;
       }
+    | Q8_fused_qkv_rope of {
+        m : int;
+        n_q : int;
+        n_kv : int;
+        k : int;
+        half_dimension : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
+    | Q8_fused_attn_out of {
+        m : int;
+        heads : int;
+        head_dim : int;
+        k : int;
+        scale : float;
+      }
   val additional_outputs : t -> Value.t list
 
   val to_string : t -> string
