@@ -418,6 +418,7 @@ module Op = struct
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
     | W4a16_linear of { m : int; n : int; k : int; bias : bool }
+    | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
     | W4a16_lm_head_argmax of {
         m : int;
         n : int;
@@ -468,6 +469,9 @@ module Op = struct
         Printf.sprintf "w4a16-linear-g64[%dx%dx%d]" m n k
     | W4a16_linear { m; n; k; bias = true } ->
         Printf.sprintf "w4a16-linear-g64+bias[%dx%dx%d]" m n k
+    | W4a16_swiglu_ffn { m; n; k; epsilon } ->
+        Printf.sprintf "w4a16-swiglu-ffn-g64[%dx%dx%d,eps=%.9g]" m n k
+          epsilon
     | W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
         Printf.sprintf "w4a16-lm-head-argmax%s[%dx%dx%d,eps=%.9g]"
           (if extra_outputs = [] then "" else "+logits-output") m n k

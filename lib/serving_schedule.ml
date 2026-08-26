@@ -123,6 +123,36 @@ let w4a16_linear_metadata_matches ~m ~n ~k ~bias inputs output =
       && Ir.Value.dtype bias_value = Ir.Dtype.Float16
   | _ -> false
 
+let w4a16_swiglu_metadata_matches ~m ~n ~k ~epsilon inputs output =
+  let dimensions value =
+    Ir.Value.logical_shape value |> Tensor_shape.dimensions
+  in
+  let f16 value = Ir.Value.dtype value = Ir.Dtype.Float16 in
+  let u8 value = Ir.Value.dtype value = Ir.Dtype.UInt8 in
+  match inputs with
+  | [ activation; residual; gate_weight; gate_scale; up_weight; up_scale;
+      down_weight; down_scale; norm_weight ] ->
+      Float.is_finite epsilon && epsilon > 0.0
+      && m > 0 && n > 0 && k > 0 && n mod 64 = 0 && k mod 64 = 0
+      && k <= 2048 && n <= 8192
+      && (f16 activation || Ir.Value.dtype activation = Ir.Dtype.Float32)
+      && f16 residual && f16 output && f16 norm_weight
+      && u8 gate_weight && f16 gate_scale
+      && u8 up_weight && f16 up_scale
+      && u8 down_weight && f16 down_scale
+      && Tensor_shape.numel (Ir.Value.logical_shape activation) = m * k
+      && Tensor_shape.equal (Ir.Value.logical_shape residual)
+           (Ir.Value.logical_shape output)
+      && Tensor_shape.numel (Ir.Value.logical_shape output) = m * k
+      && dimensions gate_weight = [ n; k / 2 ]
+      && dimensions gate_scale = [ n; k / 64 ]
+      && dimensions up_weight = [ n; k / 2 ]
+      && dimensions up_scale = [ n; k / 64 ]
+      && dimensions down_weight = [ k; n / 2 ]
+      && dimensions down_scale = [ k; n / 64 ]
+      && dimensions norm_weight = [ k ]
+  | _ -> false
+
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
   && Tensor_shape.equal
@@ -182,6 +212,14 @@ let validate_command seen_values command =
               Error
                 (Printf.sprintf
                    "schedule node %d W4A16 linear metadata is inconsistent"
+                   command.Command.node_id)
+        | Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon }, inputs, Some output ->
+            if w4a16_swiglu_metadata_matches ~m ~n ~k ~epsilon inputs output then
+              Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d W4A16 SwiGLU metadata is inconsistent"
                    command.Command.node_id)
         | Ir.Op.Copy _, [ source; destination ], None ->
             if
@@ -872,6 +910,15 @@ module Lfm25 = struct
                k = substitute substitutions k;
                bias;
              })
+    | Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon } ->
+        Ok
+          (Ir.Op.W4a16_swiglu_ffn
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               epsilon;
+             })
     | Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
         Ok
           (Ir.Op.W4a16_lm_head_argmax
@@ -997,6 +1044,7 @@ module Lfm25 = struct
     | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
       | Ir.Op.W4a16_linear _ ), _ ->
         map_shape substitutions original
+    | Ir.Op.W4a16_swiglu_ffn _, _ -> map_shape substitutions original
     | Ir.Op.W4a16_lm_head_argmax { m; _ }, _ ->
         Tensor_shape.create [ substitute substitutions m ] |> shape_error
     | _ -> map_shape substitutions original
@@ -2093,6 +2141,10 @@ let write_op writer = function
       Binary.Writer.u8 writer 34;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
+  | Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon } ->
+      Binary.Writer.u8 writer 35;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
+      Binary.Writer.float64 writer epsilon
   | Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
       Binary.Writer.u8 writer (if extra_outputs = [] then 29 else 33);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
@@ -2186,6 +2238,12 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.W4a16_linear { m; n; k; bias })
+  | 35 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon && epsilon > 0.0 then
+        Ok (Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon })
+      else Error "schedule contains an invalid W4A16 SwiGLU epsilon"
   | 15 -> read_primitive values reader |> Result.map (fun value -> Ir.Op.Primitive value)
   | 16 ->
       let* epsilon = Binary.Reader.float64 reader in
@@ -2238,7 +2296,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 18;
+  Binary.Writer.u16 writer 19;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2258,7 +2316,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 18 then
+    if version <> 19 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

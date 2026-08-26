@@ -85,6 +85,134 @@ let w4a16_entries =
       ~operation:Kernel_abi.Operation.W4a16_linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let w4a16_swiglu_rms_kernel ~name ~input_type =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ input_type ^ "* input [[buffer(0)]],\n"
+  ^ "    device const half* norm_weight [[buffer(1)]],\n"
+  ^ "    device half* normalized [[buffer(2)]],\n"
+  ^ "    constant W4A16SwiGLUFFNParams& params [[buffer(3)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint row [[threadgroup_position_in_grid]]) {\n"
+  ^ "  if (row >= params.m) return;\n"
+  ^ "  const uint base = row * params.k;\n"
+  ^ "  float sum = 0.0f;\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256) {\n"
+  ^ "    const float value = float(input[base + i]);\n"
+  ^ "    sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  sum = simd_sum(sum);\n"
+  ^ "  threadgroup float partial[8];\n"
+  ^ "  if (lane == 0) partial[simdgroup] = sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint group = 0; group < 8; ++group) total += partial[group];\n"
+  ^ "    partial[0] = rsqrt(total / float(params.k) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  const float inverse = partial[0];\n"
+  ^ "  for (uint i = tid; i < params.k; i += 256)\n"
+  ^ "    normalized[base + i] = half(float(input[base + i]) * float(norm_weight[i]) * inverse);\n"
+  ^ "}\n"
+
+let w4a16_swiglu_parallel_source =
+  w4a16_swiglu_rms_kernel ~name:"llmopt_w4a16_swiglu_rms_f16_g64"
+    ~input_type:"half"
+  ^ w4a16_swiglu_rms_kernel ~name:"llmopt_w4a16_swiglu_rms_f32_g64"
+      ~input_type:"float"
+  ^ "kernel void llmopt_w4a16_dual_swiglu_f16_g64(\n"
+  ^ "    device const half* normalized [[buffer(0)]],\n"
+  ^ "    device const uchar* gate_weight [[buffer(1)]],\n"
+  ^ "    device const half* gate_scale [[buffer(2)]],\n"
+  ^ "    device const uchar* up_weight [[buffer(3)]],\n"
+  ^ "    device const half* up_scale [[buffer(4)]],\n"
+  ^ "    device half* product [[buffer(5)]],\n"
+  ^ "    constant W4A16SwiGLUFFNParams& params [[buffer(6)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.m * params.n;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint row = gid / params.n;\n"
+  ^ "  const uint column = gid - row * params.n;\n"
+  ^ "  const uint packed_base = column * (params.k >> 1);\n"
+  ^ "  const uint groups = params.k >> 6;\n"
+  ^ "  const uint scale_base = column * groups;\n"
+  ^ "  const uint input_base = row * params.k;\n"
+  ^ "  float gate = 0.0f;\n"
+  ^ "  float up = 0.0f;\n"
+  ^ "  for (uint group = 0; group < groups; ++group) {\n"
+  ^ "    const float gate_s = float(gate_scale[scale_base + group]);\n"
+  ^ "    const float up_s = float(up_scale[scale_base + group]);\n"
+  ^ "    for (uint pair = 0; pair < 32; ++pair) {\n"
+  ^ "      const uint packed_index = packed_base + group * 32 + pair;\n"
+  ^ "      const uchar gate_packed = gate_weight[packed_index];\n"
+  ^ "      const uchar up_packed = up_weight[packed_index];\n"
+  ^ "      const int gate_lo = int(gate_packed & 15u) - ((gate_packed & 8u) ? 16 : 0);\n"
+  ^ "      const int gate_hi = int(gate_packed >> 4) - ((gate_packed & 128u) ? 16 : 0);\n"
+  ^ "      const int up_lo = int(up_packed & 15u) - ((up_packed & 8u) ? 16 : 0);\n"
+  ^ "      const int up_hi = int(up_packed >> 4) - ((up_packed & 128u) ? 16 : 0);\n"
+  ^ "      const uint i = input_base + group * 64 + pair * 2;\n"
+  ^ "      const float x0 = float(normalized[i]);\n"
+  ^ "      const float x1 = float(normalized[i + 1]);\n"
+  ^ "      gate += (x0 * float(gate_lo) + x1 * float(gate_hi)) * gate_s;\n"
+  ^ "      up += (x0 * float(up_lo) + x1 * float(up_hi)) * up_s;\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  product[gid] = half((gate / (1.0f + exp(-gate))) * up);\n"
+  ^ "}\n"
+  ^ "kernel void llmopt_w4a16_down_add_f16_g64(\n"
+  ^ "    device const half* product [[buffer(0)]],\n"
+  ^ "    device const uchar* down_weight [[buffer(1)]],\n"
+  ^ "    device const half* down_scale [[buffer(2)]],\n"
+  ^ "    device const half* residual [[buffer(3)]],\n"
+  ^ "    device half* output [[buffer(4)]],\n"
+  ^ "    constant W4A16SwiGLUFFNParams& params [[buffer(5)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.m * params.k;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint row = gid / params.k;\n"
+  ^ "  const uint column = gid - row * params.k;\n"
+  ^ "  const uint packed_base = column * (params.n >> 1);\n"
+  ^ "  const uint groups = params.n >> 6;\n"
+  ^ "  const uint scale_base = column * groups;\n"
+  ^ "  const uint input_base = row * params.n;\n"
+  ^ "  float down = 0.0f;\n"
+  ^ "  for (uint group = 0; group < groups; ++group) {\n"
+  ^ "    const float scale = float(down_scale[scale_base + group]);\n"
+  ^ "    for (uint pair = 0; pair < 32; ++pair) {\n"
+  ^ "      const uchar packed = down_weight[packed_base + group * 32 + pair];\n"
+  ^ "      const int low = int(packed & 15u) - ((packed & 8u) ? 16 : 0);\n"
+  ^ "      const int high = int(packed >> 4) - ((packed & 128u) ? 16 : 0);\n"
+  ^ "      const uint i = input_base + group * 64 + pair * 2;\n"
+  ^ "      down += (float(product[i]) * float(low) + float(product[i + 1]) * float(high)) * scale;\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  output[gid] = half(down + float(residual[gid]));\n"
+  ^ "}\n"
+
+let w4a16_swiglu_ffn_source =
+  "\nstruct W4A16SwiGLUFFNParams { uint m; uint n; uint k; float epsilon; };\n\n"
+  ^ w4a16_swiglu_parallel_source
+
+let w4a16_swiglu_ffn_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_w4a16_swiglu_rms_f16_g64"
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_w4a16_swiglu_rms_f32_g64"
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_w4a16_dual_swiglu_f16_g64"
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_w4a16_down_add_f16_g64"
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let w4a16_lm_head_argmax_kernel ~name ~value_type ~extra_output =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ value_type ^ "* input [[buffer(0)]],\n"
@@ -1909,6 +2037,13 @@ let has_w4a16_linear graph =
          | Ir.Op.W4a16_linear _ -> true
          | _ -> false)
 
+let has_w4a16_swiglu_ffn graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.W4a16_swiglu_ffn _ -> true
+         | _ -> false)
+
 let has_w4a16_lm_head_argmax graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -2104,6 +2239,9 @@ let lower graph =
   in
   let components =
     [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
+      ( has_w4a16_swiglu_ffn graph,
+        w4a16_swiglu_ffn_source,
+        w4a16_swiglu_ffn_entries );
       ( has_w4a16_lm_head_argmax graph,
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );

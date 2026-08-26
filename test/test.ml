@@ -2,6 +2,78 @@ let fail message = raise (Failure message)
 let expect condition message = if not condition then fail message
 let expect_ok = function Ok value -> value | Error message -> fail message
 
+let expect_int_array actual expected message =
+  expect
+    (Array.length actual = Array.length expected
+    && Array.for_all2 ( = ) actual expected)
+    message
+
+module Generation_test_engine = struct
+  type t = {
+    mutable outputs : int list;
+    mutable prompt_calls : int array list;
+    mutable decode_calls : (int array * int) list;
+    cached_prompt_tokens : int;
+  }
+
+  type step = { engine : t; tokens : int array }
+
+  let create ~outputs ~cached_prompt_tokens =
+    { outputs; prompt_calls = []; decode_calls = []; cached_prompt_tokens }
+
+  let prompt engine ~tokens =
+    engine.prompt_calls <- Array.copy tokens :: engine.prompt_calls;
+    Ok ({ engine; tokens = Array.copy tokens }, engine.cached_prompt_tokens)
+
+  let decode engine ~prefix ~token =
+    engine.decode_calls <- (Array.copy prefix, token) :: engine.decode_calls;
+    Ok { engine; tokens = Array.append prefix [| token |] }
+
+  let tokens step = Array.copy step.tokens
+
+  let next_token step =
+    match step.engine.outputs with
+    | token :: rest ->
+        step.engine.outputs <- rest;
+        Ok token
+    | [] -> Error "synthetic generation engine exhausted"
+end
+
+module Generation_test = Generation_core.Make (Generation_test_engine)
+
+let tokenizer_fixture () =
+  let writer = Binary.Writer.create () in
+  let token id flags text =
+    Binary.Writer.u32 writer id;
+    Binary.Writer.u8 writer flags;
+    Binary.Writer.raw_bytes writer (Bytes.make 3 '\000');
+    Binary.Writer.u32 writer (String.length text);
+    Binary.Writer.raw_string writer text
+  in
+  let merge left right =
+    Binary.Writer.u32 writer (String.length left);
+    Binary.Writer.u32 writer (String.length right);
+    Binary.Writer.raw_string writer left;
+    Binary.Writer.raw_string writer right
+  in
+  let space = "\196\160" in
+  Binary.Writer.raw_string writer Tokenizer.binary_magic;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u32 writer 7;
+  Binary.Writer.u32 writer 2;
+  Binary.Writer.u32 writer 6;
+  token 0 3 "<|startoftext|>";
+  token 1 0 "a";
+  token 2 0 "b";
+  token 3 0 "ab";
+  token 4 0 space;
+  token 5 0 (space ^ "a");
+  token 6 1 "python";
+  merge "a" "b";
+  merge space "a";
+  Binary.Writer.contents writer
+
 let contains_substring source needle =
   let source_length = String.length source in
   let needle_length = String.length needle in
@@ -17,6 +89,171 @@ let tensor_input graph ~name ~source ~shape ~dtype =
     ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
 
 let () =
+  let replay_buffers =
+    Serving_replay.Decode_buffers.create
+      ~attention:[ "attention-0", ("key", 1), ("value", 2) ]
+      ~recurrent:[ "recurrent-0", ("state", 3) ]
+  in
+  let replay_buffers =
+    Serving_replay.Decode_buffers.update_attention replay_buffers ~f:(function
+      | "attention-0" -> Ok (4, 5)
+      | binding -> Error ("unexpected attention binding: " ^ binding))
+    |> expect_ok
+  in
+  expect
+    (Serving_replay.Decode_buffers.inputs replay_buffers
+    = [ "key", 4; "value", 5; "state", 3 ])
+    "decode replay preserves recurrent state while attention advances";
+
+  let generation_config =
+    Generation_core.Config.create ~max_new_tokens:5 |> expect_ok
+  in
+  let generation_engine =
+    Generation_test_engine.create ~outputs:[ 11; 12 ] ~cached_prompt_tokens:2
+  in
+  let emitted = ref [] in
+  let generated =
+    Generation_test.run
+      ~emit:(fun token -> emitted := token :: !emitted)
+      generation_engine ~config:generation_config
+      ~is_stop:(fun token -> token = 12) ~prompt:[| 1; 2; 3 |]
+    |> expect_ok
+  in
+  expect_int_array (Generation_core.Result.completion_tokens generated)
+    [| 11; 12 |] "generation emits through the stop token";
+  expect_int_array (Array.of_list (List.rev !emitted)) [| 11; 12 |]
+    "generation callback preserves token order";
+  expect
+    (Generation_core.Result.finish_reason generated
+    = Generation_core.Finish_reason.End_token)
+    "generation records the end-token finish reason";
+  let step_engine =
+    Generation_test_engine.create ~outputs:[ 101; 102; 103 ]
+      ~cached_prompt_tokens:1
+  in
+  let state, first =
+    Generation_test.State.init step_engine
+      ~config:(Generation_core.Config.create ~max_new_tokens:3 |> expect_ok)
+      ~is_stop:(fun token -> token = 103) ~prompt:[| 10; 20 |]
+    |> expect_ok
+  in
+  expect (first = 101) "stateful generation returns its first token";
+  ignore (Generation_test.State.step step_engine state |> expect_ok);
+  ignore (Generation_test.State.step step_engine state |> expect_ok);
+  expect
+    (Generation_test.State.completion_tokens state = [ 101; 102; 103 ])
+    "stateful generation preserves the interleaved token sequence";
+
+  let tokenizer_bytes = tokenizer_fixture () in
+  let tokenizer = Tokenizer.of_bytes tokenizer_bytes |> expect_ok in
+  expect_int_array (Tokenizer.encode tokenizer "ab" |> expect_ok) [| 0; 3 |]
+    "binary tokenizer performs ranked BPE and prepends BOS";
+  expect_int_array
+    (Tokenizer.encode ~add_bos:false tokenizer "python ab" |> expect_ok)
+    [| 6; 4; 3 |] "added-token matching composes with byte-level BPE";
+  expect
+    (Tokenizer.decode tokenizer [| 0; 5; 2 |] |> expect_ok = " ab")
+    "binary tokenizer decodes and skips special tokens";
+  (match
+     Tokenizer.of_bytes
+       (Bytes.sub tokenizer_bytes 0 (Bytes.length tokenizer_bytes - 1))
+   with
+  | Error _ -> ()
+  | Ok _ -> fail "tokenizer accepted a truncated archive");
+
+  let queue =
+    Serving_queue.create ~alpha_age:0.01 ~prefill_rate:100.0
+      ~decode_rate:10.0 ()
+  in
+  let short_id = Serving_queue.Request_id.create () in
+  let long_id = Serving_queue.Request_id.create () in
+  let decode_id = Serving_queue.Request_id.create () in
+  let short_request : Serving_queue.request =
+    {
+      id = short_id;
+      arrival_time = 0.0;
+      state =
+        Serving_queue.Pending_prefill
+          {
+            prompt_tokens = [| 1; 2; 3; 4 |];
+            cached_tokens = 0;
+            remaining_prefill = 4;
+            max_new_tokens = 2;
+            ignore_eos = false;
+          };
+      priority_score = 0.0;
+    }
+  in
+  let long_request : Serving_queue.request =
+    {
+      id = long_id;
+      arrival_time = 0.0;
+      state =
+        Serving_queue.Pending_prefill
+          {
+            prompt_tokens = Array.make 2048 1;
+            cached_tokens = 0;
+            remaining_prefill = 2048;
+            max_new_tokens = 100;
+            ignore_eos = false;
+          };
+      priority_score = 0.0;
+    }
+  in
+  let decode_request : Serving_queue.request =
+    {
+      id = decode_id;
+      arrival_time = 0.0;
+      state =
+        Serving_queue.Active_decode
+          {
+            prompt_length = 100;
+            generated_tokens = [ 1; 2 ];
+            max_new_tokens = 3;
+            ignore_eos = false;
+          };
+      priority_score = 0.0;
+    }
+  in
+  List.iter
+    (fun (request : Serving_queue.request) ->
+      request.priority_score <-
+        Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
+          ~current_time:0.0 ~arrival_time:request.arrival_time request.state)
+    [ short_request; long_request; decode_request ];
+  expect (short_request.priority_score > long_request.priority_score)
+    "SRPT prioritizes short prefill over long prefill";
+  expect (decode_request.priority_score > short_request.priority_score)
+    "SRPT prioritizes near-completion decode";
+  List.iter (Serving_queue.enqueue queue)
+    [ long_request; short_request; decode_request ];
+  let popped_ids =
+    List.init 3 (fun _ ->
+        Serving_queue.pop_next queue
+        |> Option.map (fun (request : Serving_queue.request) -> request.id))
+  in
+  expect
+    (match popped_ids with
+    | [ Some first; Some second; Some third ] ->
+        Serving_queue.Request_id.equal first decode_id
+        && Serving_queue.Request_id.equal second short_id
+        && Serving_queue.Request_id.equal third long_id
+    | _ -> false)
+    "serving queue pops decode, short prefill, then long prefill";
+  let capacity_queue =
+    Serving_queue.create ~token_capacity:1000 ~high_watermark_ratio:0.90
+      ~low_watermark_ratio:0.75 ()
+  in
+  Serving_queue.reserve_tokens capacity_queue 950 |> expect_ok;
+  expect (Serving_queue.is_congested capacity_queue)
+    "capacity accounting enters congestion at the configured high watermark";
+  Serving_queue.release_tokens capacity_queue 150;
+  expect (Serving_queue.is_congested capacity_queue)
+    "capacity accounting retains congestion above the low watermark";
+  Serving_queue.release_tokens capacity_queue 100;
+  expect (not (Serving_queue.is_congested capacity_queue))
+    "capacity accounting clears congestion below the low watermark";
+
   expect_ok (Lfm25.Config.validate Lfm25.Config.default);
   expect (Lfm25.Config.default.dtype = Ir.Dtype.Float16)
     "canonical model uses float16 activations";
@@ -100,6 +337,110 @@ let () =
              = Kernel_abi.Operation.W4a16_lm_head_argmax
            && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Int32))
     "W4A16 LM-head kernel has an Int32 ABI";
+
+  let ffn = Ir.Graph.create () in
+  let activation =
+    tensor_input ffn ~name:"activation" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let residual =
+    tensor_input ffn ~name:"residual" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let stored name shape dtype =
+    tensor_input ffn ~name
+      ~source:(Ir.Input_source.Tensor_store { key = name }) ~shape ~dtype
+  in
+  let gate_weight = stored "gate.weight" [ 128; 32 ] Ir.Dtype.UInt8 in
+  let gate_scale = stored "gate.scales" [ 128; 1 ] Ir.Dtype.Float16 in
+  let up_weight = stored "up.weight" [ 128; 32 ] Ir.Dtype.UInt8 in
+  let up_scale = stored "up.scales" [ 128; 1 ] Ir.Dtype.Float16 in
+  let down_weight = stored "down.weight" [ 64; 64 ] Ir.Dtype.UInt8 in
+  let down_scale = stored "down.scales" [ 64; 2 ] Ir.Dtype.Float16 in
+  let ffn_norm_weight = stored "ffn_norm.weight" [ 64 ] Ir.Dtype.Float16 in
+  let fresh shape =
+    Ir.Graph.fresh_tensor_value ffn ~shape:(Tensor_shape.of_ints_exn shape)
+      ~dtype:Ir.Dtype.Float16
+  in
+  let append op inputs shape =
+    let output = fresh shape in
+    Ir.Graph.append ffn ~op ~inputs ~output:(Some output);
+    output
+  in
+  let norm =
+    append (Ir.Op.Rms_norm { epsilon = 1e-5 })
+      [ activation; ffn_norm_weight ] [ 1; 64 ]
+  in
+  let gate_linear =
+    append (Ir.Op.W4a16_linear { m = 1; n = 128; k = 64; bias = false })
+      [ norm; gate_weight; gate_scale ] [ 1; 128 ]
+  in
+  let gate =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise (Ir.Pointwise.Unary (Ir.Pointwise.Silu, gate_linear))))
+      [ gate_linear ] [ 1; 128 ]
+  in
+  let up =
+    append (Ir.Op.W4a16_linear { m = 1; n = 128; k = 64; bias = false })
+      [ norm; up_weight; up_scale ] [ 1; 128 ]
+  in
+  let product =
+    append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               (Ir.Pointwise.Mul, Ir.Pointwise.Tensor gate, Ir.Pointwise.Tensor up))))
+      [ gate; up ] [ 1; 128 ]
+  in
+  let down =
+    append (Ir.Op.W4a16_linear { m = 1; n = 64; k = 128; bias = false })
+      [ product; down_weight; down_scale ] [ 1; 64 ]
+  in
+  let ffn_output = append (Ir.Op.Add { broadcast = Shape.Same }) [ residual; down ] [ 1; 64 ] in
+  Ir.Graph.add_output ffn ~name:"hidden" ffn_output;
+  let regions = Passes.discover_swiglu_ffn ffn |> expect_ok in
+  expect (List.length regions = 1) "rule engine discovers one W4A16 SwiGLU region";
+  let fused_ffn = Passes.fuse_swiglu_ffn ffn |> expect_ok in
+  expect
+    (Ir.Graph.nodes fused_ffn
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | Ir.Op.W4a16_swiglu_ffn { m = 1; n = 128; k = 64; epsilon },
+             inputs, Some output ->
+               List.length inputs = 9 && Ir.Value.equal output ffn_output
+               && Float.abs (epsilon -. 1e-5) < 1e-12
+           | _ -> false))
+    "rule engine rewrites W4A16 SwiGLU into one executable operation";
+  expect
+    (Ir.Graph.nodes fused_ffn
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.W4a16_linear _ | Ir.Op.Rms_norm _ -> false
+           | Ir.Op.Primitive (Ir.Primitive.Pointwise _) -> false
+           | _ -> true))
+    "W4A16 SwiGLU rewrite removes all matched intermediates";
+  let ffn_schedule =
+    fused_ffn |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands ffn_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.W4a16_swiglu_ffn { m = 1; n = 128; k = 64; _ } -> true
+           | _ -> false))
+    "W4A16 SwiGLU opcode survives schedule serialization";
+  let ffn_program = Metal.lower fused_ffn |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source ffn_program)
+       "kernel void llmopt_w4a16_dual_swiglu_f16_g64")
+    "Metal lowering emits the fused W4A16 SwiGLU kernel";
+  expect
+    (not
+       (contains_substring (Metal.Program.source ffn_program)
+          "kernel void llmopt_w4a16_swiglu_ffn_f16_g64"))
+    "Metal lowering excludes the retired serial W4A16 SwiGLU kernel";
 
   let layout =
     Kv_cache.Layout.create ~format:Kv_cache.Format.default

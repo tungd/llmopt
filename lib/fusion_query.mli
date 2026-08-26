@@ -92,4 +92,14 @@ module Rule : sig
     t
 
   val apply : t -> Ir.Graph.t -> (Kernel_ir.t list, string) result
+
+  (** Replace each non-overlapping match at its root node.  The callback maps
+      the validated match and emitted region to the executable operation and
+      its external inputs.  Rewriting fails if an intermediate result escapes
+      the matched region. *)
+  val rewrite :
+    t ->
+    lower:(Match.t -> Kernel_ir.t -> (Ir.Op.t * Ir.Value.t list, string) result) ->
+    Ir.Graph.t ->
+    (Ir.Graph.t, string) result
 end

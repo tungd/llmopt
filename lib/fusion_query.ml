@@ -560,6 +560,8 @@ let construct_region ~name ~match_ ~inputs ~bindings ~results ~effects ~resource
 module Rule = struct
   let ( let* ) = Result.bind
 
+  module Int_set = Set.Make (Int)
+
   type t = {
     pattern : pattern;
     result_captures : Capture.t list;
@@ -568,11 +570,11 @@ module Rule = struct
 
   let create ~pattern ~result_captures ~emit = { pattern; result_captures; emit }
 
-  let apply rule graph =
+  let applications rule graph =
     let matches = match_graph rule.pattern graph in
     List.fold_left
-      (fun regions match_ ->
-        let* regions = regions in
+      (fun applications match_ ->
+        let* applications = applications in
         match
           List.find_opt
             (fun capture -> Match.capture capture match_ = None)
@@ -584,7 +586,101 @@ module Rule = struct
                  (Capture.to_string capture))
         | None ->
             let* region = rule.emit match_ in
-            Ok (region :: regions))
+            Ok ((match_, region) :: applications))
       (Ok []) matches
     |> Result.map List.rev
+
+  let apply rule graph =
+    let* applications = applications rule graph in
+    Ok (List.map snd applications)
+
+  let value_is = Ir.Value.equal
+
+  let output_escapes graph member_ids root_id value =
+    List.exists (fun (_, output) -> value_is output value) (Ir.Graph.outputs graph)
+    ||
+    Ir.Graph.nodes graph
+    |> List.exists (fun node ->
+           let id = Ir.node_id node in
+           id <> root_id
+           && not (Int_set.mem id member_ids)
+           && List.exists (value_is value) (Ir.node_inputs node))
+
+  let validate_application graph occupied (match_, region) =
+    let member_ids =
+      Kernel_ir.member_node_ids region |> Int_set.of_list
+    in
+    let root_id = Ir.node_id (Match.root match_) in
+    if not (Int_set.mem root_id member_ids) then
+      Error "fusion rule region does not contain its root node"
+    else if not (Int_set.is_empty (Int_set.inter occupied member_ids)) then
+      Error "fusion rule produced overlapping matches"
+    else
+      let nodes = Ir.Graph.nodes graph in
+      let escaping =
+        nodes
+        |> List.find_map (fun node ->
+               let id = Ir.node_id node in
+               if id = root_id || not (Int_set.mem id member_ids) then None
+               else
+                 match Ir.node_output node with
+                 | Some value when output_escapes graph member_ids root_id value ->
+                     Some value
+                 | _ -> None)
+      in
+      match escaping with
+      | Some value ->
+          Error
+            (Printf.sprintf "fusion intermediate value %d escapes its matched region"
+               (Ir.Value.id value |> Ir.Value_id.to_int))
+      | None -> Ok (Int_set.union occupied member_ids)
+
+  let rewrite rule ~lower graph =
+    let* applications = applications rule graph in
+    let* _ =
+      List.fold_left
+        (fun occupied application ->
+          let* occupied = occupied in
+          validate_application graph occupied application)
+        (Ok Int_set.empty) applications
+    in
+    let* replacements =
+      List.fold_left
+        (fun replacements (match_, region) ->
+          let* replacements = replacements in
+          let* op, inputs = lower match_ region in
+          let member_ids = Kernel_ir.member_node_ids region |> Int_set.of_list in
+          let root_id = Ir.node_id (Match.root match_) in
+          let internal_outputs =
+            Ir.Graph.nodes graph
+            |> List.filter_map (fun node ->
+                   let id = Ir.node_id node in
+                   if id = root_id || not (Int_set.mem id member_ids) then None
+                   else Ir.node_output node)
+          in
+          if
+            List.exists
+              (fun input -> List.exists (value_is input) internal_outputs)
+              inputs
+          then Error "fusion lowering retained an internal intermediate input"
+          else Ok ((root_id, member_ids, op, inputs) :: replacements))
+        (Ok []) applications
+    in
+    let replacement_for id =
+      List.find_opt (fun (root_id, _, _, _) -> root_id = id) replacements
+    in
+    let removed id =
+      List.exists
+        (fun (root_id, member_ids, _, _) ->
+          id <> root_id && Int_set.mem id member_ids)
+        replacements
+    in
+    Ir.Graph.nodes graph
+    |> List.filter_map (fun node ->
+           let id = Ir.node_id node in
+           match replacement_for id with
+           | Some (_, _, op, inputs) -> Some (Ir.node_replace node ~op ~inputs)
+           | None when removed id -> None
+           | None -> Some node)
+    |> Ir.Graph.with_nodes graph |> Result.ok
 end

@@ -308,10 +308,26 @@ let region_of_match match_ =
       ~effects ~resource
     |> Result.map_error Kernel_ir.error_to_string
 
-let discover graph =
-  Fusion_query.match_graph pattern graph
-  |> List.filter_map (fun match_ ->
-         match region_of_match match_ with
-         | Ok region -> Some region
-         | Error _ -> None)
-  |> fun regions -> Ok regions
+let rule =
+  Fusion_query.Rule.create ~pattern ~result_captures:[ capture "output" ]
+    ~emit:region_of_match
+
+let discover graph = Fusion_query.Rule.apply rule graph
+
+let lower match_ region =
+  let* rms_node = node match_ "rms_node" in
+  let* gate_node = node match_ "gate_node" in
+  let* m, n, k, epsilon =
+    match Ir.node_op gate_node, Ir.node_op rms_node with
+    | ( Ir.Op.W4a16_linear { m; n; k; bias = false },
+        Ir.Op.Rms_norm { epsilon } ) ->
+        Ok (m, n, k, epsilon)
+    | _ -> Error "validated SwiGLU captures changed before lowering"
+  in
+  let inputs =
+    Kernel_ir.inputs region
+    |> List.map (fun (input : Kernel_ir.input) -> input.value)
+  in
+  Ok (Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon }, inputs)
+
+let run graph = Fusion_query.Rule.rewrite rule ~lower graph

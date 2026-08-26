@@ -478,6 +478,13 @@ module Parameters = struct
     Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let w4a16_swiglu_ffn ~m ~n ~k ~epsilon =
+    let bytes = Bytes.make 16 '\000' in
+    let* encoded = u32s [ m; n; k ] in
+    Bytes.blit encoded 0 bytes 0 12;
+    Bytes.set_int32_le bytes 12 (Int32.bits_of_float epsilon);
+    Ok bytes
+
   let rms_rope ~batches ~tokens ~heads ~width ~half_dimension ~trig_batches
       ~epsilon =
     let bytes = Bytes.make 28 '\000' in
@@ -1443,6 +1450,108 @@ let macro_kernel_name dtype ~base ~has_bias =
         (Printf.sprintf "Q8 macro dispatch requires f16 or f32 activations, got %s"
            (Ir.Dtype.to_string dtype))
 
+let dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
+    values output =
+  let* activation_value, residual_value, gate_weight_value, gate_scale_value,
+       up_weight_value, up_scale_value, down_weight_value, down_scale_value,
+       norm_weight_value =
+    match values with
+    | [ activation; residual; gate_weight; gate_scale; up_weight; up_scale;
+        down_weight; down_scale; norm_weight ] ->
+        Ok
+          ( activation, residual, gate_weight, gate_scale, up_weight, up_scale,
+            down_weight, down_scale, norm_weight )
+    | _ -> Error "W4A16 SwiGLU command has inconsistent inputs"
+  in
+  let* buffers = find_values state values in
+  let* activation, residual, gate_weight, gate_scale, up_weight, up_scale,
+       down_weight, down_scale, norm_weight =
+    match buffers with
+    | [ activation; residual; gate_weight; gate_scale; up_weight; up_scale;
+        down_weight; down_scale; norm_weight ] ->
+        Ok
+          ( activation, residual, gate_weight, gate_scale, up_weight, up_scale,
+            down_weight, down_scale, norm_weight )
+    | _ -> Error "W4A16 SwiGLU buffer binding is inconsistent"
+  in
+  let* output_buffer = workspace_buffer state output in
+  let dimensions value =
+    Ir.Value.logical_shape value |> Tensor_shape.dimensions
+  in
+  let* () =
+    if
+      Float.is_finite epsilon && epsilon > 0.0
+      && m > 0 && n > 0 && k > 0 && n mod 64 = 0 && k mod 64 = 0
+      && k <= 2048 && n <= 8192
+      && (Ir.Value.dtype activation_value = Ir.Dtype.Float16
+          || Ir.Value.dtype activation_value = Ir.Dtype.Float32)
+      && Ir.Value.dtype residual_value = Ir.Dtype.Float16
+      && Ir.Value.dtype gate_weight_value = Ir.Dtype.UInt8
+      && Ir.Value.dtype gate_scale_value = Ir.Dtype.Float16
+      && Ir.Value.dtype up_weight_value = Ir.Dtype.UInt8
+      && Ir.Value.dtype up_scale_value = Ir.Dtype.Float16
+      && Ir.Value.dtype down_weight_value = Ir.Dtype.UInt8
+      && Ir.Value.dtype down_scale_value = Ir.Dtype.Float16
+      && Ir.Value.dtype norm_weight_value = Ir.Dtype.Float16
+      && Ir.Value.dtype output = Ir.Dtype.Float16
+      && Tensor_shape.numel (Ir.Value.logical_shape activation_value) = m * k
+      && Tensor_shape.equal (Ir.Value.logical_shape residual_value)
+           (Ir.Value.logical_shape output)
+      && Tensor_shape.numel (Ir.Value.logical_shape output) = m * k
+      && dimensions gate_weight_value = [ n; k / 2 ]
+      && dimensions gate_scale_value = [ n; k / 64 ]
+      && dimensions up_weight_value = [ n; k / 2 ]
+      && dimensions up_scale_value = [ n; k / 64 ]
+      && dimensions down_weight_value = [ k; n / 2 ]
+      && dimensions down_scale_value = [ k; n / 64 ]
+      && dimensions norm_weight_value = [ k ]
+    then Ok ()
+    else Error "W4A16 SwiGLU input metadata is inconsistent"
+  in
+  let* rms_entry =
+    let* name =
+      match Ir.Value.dtype activation_value with
+      | Ir.Dtype.Float16 -> Ok "llmopt_w4a16_swiglu_rms_f16_g64"
+      | Ir.Dtype.Float32 -> Ok "llmopt_w4a16_swiglu_rms_f32_g64"
+      | _ -> Error "W4A16 SwiGLU activation must be float16 or float32"
+    in
+    kernel_entry ~name runtime
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:(Ir.Value.dtype activation_value)
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* dual_entry =
+    kernel_entry ~name:"llmopt_w4a16_dual_swiglu_f16_g64" runtime
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+  in
+  let* down_entry =
+    kernel_entry ~name:"llmopt_w4a16_down_add_f16_g64" runtime
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+  in
+  let* normalized = Buffer.create ~runtime ~bytes:(m * k * 2) in
+  let* product = Buffer.create ~runtime ~bytes:(m * n * 2) in
+  let* parameters = Parameters.w4a16_swiglu_ffn ~m ~n ~k ~epsilon in
+  let* rms_kernel =
+    dispatch ~batch runtime rms_entry
+      ~buffers:[ activation; norm_weight; normalized ] ~parameters
+      ~grid:(m * 256, 1, 1)
+  in
+  let* dual_kernel =
+    dispatch ~batch runtime dual_entry
+      ~buffers:[ normalized; gate_weight; gate_scale; up_weight; up_scale; product ]
+      ~parameters ~grid:(m * n, 1, 1)
+  in
+  let* down_kernel =
+    dispatch ~batch runtime down_entry
+      ~buffers:[ product; down_weight; down_scale; residual; output_buffer ]
+      ~parameters ~grid:(m * k, 1, 1)
+  in
+  let state = bind_value state output output_buffer in
+  let state = { state with resources = normalized :: product :: state.resources } in
+  Ok (state, [ rms_kernel; dual_kernel; down_kernel ])
+
 let dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
     ~extra_outputs values output =
   let* input_value, norm_weight_value, weight_value, scale_value =
@@ -1771,6 +1880,12 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
         let dispatched result =
           let* state, kernel = result in
           continue { state with kernels_rev = kernel :: state.kernels_rev }
+        in
+        let dispatched_many result =
+          let* state, kernels = result in
+          continue
+            { state with
+              kernels_rev = List.rev_append kernels state.kernels_rev }
         in
         (match op, command_inputs, command_output with
         | Ir.Op.Input { name; source = Ir.Input_source.Runtime }, [], Some output ->
@@ -2414,6 +2529,12 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                  ~input_dtype:Ir.Dtype.Float16
                  ~buffers:[ input; weight; scale; bias_buffer ] ~parameters
                  ~grid:(m * n, 1, 1))
+        | ( Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon },
+            values,
+            Some output ) ->
+            dispatched_many
+              (dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k
+                 ~epsilon values output)
         | ( Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs },
             values,
             Some output ) ->

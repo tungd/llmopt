@@ -111,7 +111,7 @@ sources:
 
 The canonical model contract is packed group-64 W4A16 for every linear module
 and grouped-Q8 for attention KV plus recurrent checkpoints. The current IR,
-kernel ABI, schedule ABI v18, package ABI v16, runtime, serving CLI, and Python
+kernel ABI, schedule ABI v19, package ABI v17, runtime, serving CLI, and Python
 capture surface expose no Q8-weight or FP16-KV alternative. Earlier Q8-weight
 and selectable-cache sections below describe superseded experiments only.
 
@@ -163,25 +163,22 @@ serves the HTTP/SSE benchmark without Python or PyTorch in its hot path.
 
 # Current scope
 
-The cross-language planner supports N-dimensional placeholders, W4A16
-`linear`, `mm`/`matmul`, pointwise arithmetic/comparison and common unary
-operators, mean, casts, views, reshape, transpose, unsqueeze, expand,
-contiguous, normalized static indexing, concat, `relu`, `gelu`, static integer
-ranges, prepended differences, boolean cumulative sums, scalar fills, and
-LFM's rank-two/two-index gather, and preserves other FX nodes as opaque plan
-nodes. A pure pass fuses the LFM RMSNorm chain into one typed command, and its
-float32-to-float16 and float16 Metal kernels compile with Xcode. The first
-runtime optimization pass returns the captured FX
-GraphModule directly, removing per-node `torch.fx.Interpreter` dispatch while
-the complete LFM2.5 forward still runs through PyTorch MPS. Short-convolution
-and GQA are therefore executed by PyTorch rather than custom OCaml effects in
-this slice. The model-shaped compiler fixture and model-level MPS loader now
-default to Q8 weight-only linear lowering. For graphs containing the generated
-Q8 library, the loader compiles MSL to AIR/metallib. `native` selects the
-float16/float32 Phase 2 tiled entry points; `exact` selects generated f16/f32
-dequantization and then the same PyTorch MPS `linear` operation used by the
-fallback, preserving model-logit parity. Unsupported dtypes or unavailable
-bridge builds use the PyTorch dequantizing operator as fallback.
+The cross-language planner supports the complete preserved LFM2.5 prefill and
+decode graphs with zero opaque schedule commands. It lowers packed group-64
+W4A16 linear operations, typed pointwise and movement primitives, ShortConv,
+attention, RMSNorm/RoPE, embedding, mask construction, casts, outputs, and the
+fixed grouped-Q8 cache boundary. The Python `torch.compile` path remains a
+capture and reference surface; the generated serving engine executes from
+OCaml and Metal without Python or PyTorch in the hot path.
+
+Fusion queries are tree-shaped descriptions over the producer DAG. Repeated
+captures preserve value identity, and `Fusion_query.Rule` verifies result
+captures, rejects overlapping matches, and prevents intermediate values from
+escaping before it rewrites the graph. The executable W4 FFN rule replaces
+seven semantic nodes with one `W4a16_swiglu_ffn` operation. Native lowering
+uses cooperative RMSNorm followed by parallel dual gate/up and parallel
+down-plus-residual dispatches; it does not use the measured-slower
+single-threadgroup output-channel loop.
 
 The OCaml serving cache is now a mandatory part of the intended runtime design,
 not an optional execution mode. It implements compressed radix edges, separate
@@ -192,40 +189,18 @@ state, so prefix matching falls back to the deepest valid checkpoint. This
 adapts the corresponding behavior from SGLang's radix and hybrid/Mamba cache
 implementations.[^sglang-radix-cache] [^sglang-mamba-radix-cache]
 
-The KV layout accepts FP16 or grouped Q8 and defaults to Q8 at the serving
-configuration boundary. Native OCaml owns physical token and recurrent
-checkpoint `MTLBuffer` pools. Current packages declare twelve cache entries:
-four FP16, four scalar Q8, two preferred SIMD-group Q8 pack kernels, and two
-preferred vec4 Q8 unpack kernels. The runtime models both dispatch layouts,
-assigns one SIMD group per Q8 quantization group, restores four adjacent values
-per vec4 thread, and falls back to scalar entries for older packages or
-non-divisible group sizes.
-Package ABI v8 added source slicing for decode append while retaining earlier
-reads. `Serving_engine` now coordinates model execution, slot/checkpoint
-reservation, physical packing, radix insertion, leased prefix reuse, state
-unpacking, and rollback. The current serial HTTP trace completes 4/4 warmup
-and 4/4 scored requests, reuses 80/194 prompt tokens, and matches all full-Q8
-eager output sequences.
+The KV layout is fixed to grouped Q8 at the serving configuration boundary.
+Native OCaml owns physical token and recurrent-checkpoint `MTLBuffer` pools,
+uses SIMD-group pack and vec4 unpack kernels, and coordinates slot reservation,
+radix insertion, leased prefix reuse, state restoration, and rollback. There
+is no FP16 cache selector or package branch in the current tree.
 
-The same paired full-Q8 package now has model-scale execution evidence for the
-selectable FP16 cache policy. A bounded `--kv fp16` trace completes 4/4 warmup
-and scored requests, retains all eager/Q8-cache IDs and 80/194 reuse, and
-observes median TTFT/TPOT `69.163/6.698 ms`. This verifies both physical
-formats through the native owner while retaining Q8-group-64 as the default.
-
-The subsequent Q8 package uses SIMD-group pack kernels and completes the same
-4/4 warmup and scored trace with exact IDs and 80/194 reuse. It observes ERS
-`0.4021550914067862` and median TTFT/TPOT `73.132/7.308 ms`. Relative to the
-preceding paired Q8-cache observation, those values change by `-0.004861`,
-`-2.093 ms`, and `+0.371 ms`; the separate FP16-cache median TPOT remains
-`0.609 ms` lower than this Q8 observation.
-
-Adding vec4 Q8 unpack preserves the same short-trace tokens and reuse while
-observing ERS `0.41665989463124997` and median TTFT/TPOT `68.590/6.900 ms`.
-Against SIMD-pack Q8, those values change by `+0.014505`, `-4.542 ms`, and
-`-0.408 ms`. Its separate 2,048/4,096-token matrix remains 6/6 for retrieval
-and 12-token parity, but median TTFT/TPOT is higher by
-`69.007/1.101 ms` and `233.848/1.843 ms` respectively.
+The current ABI-v17 packages carry 243 tensor-store bindings and zero opaque
+commands. Prefill has 752 commands and 58 kernel entries; decode has 771
+commands and 55 entries. Both contain 16 executable W4 FFN operations. The
+latest scored HTTP trace completes 4/4 requests, reuses 80/193 prompt tokens,
+and records LLMOpt ERS `0.2265464543`, median TTFT `143.1265835 ms`, and median
+TPOT `10.2498472 ms`.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed

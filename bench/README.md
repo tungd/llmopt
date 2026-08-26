@@ -60,3 +60,9 @@ configuration examples.
 
 Measurements are reported as observed deltas; they do not introduce an
 additional success threshold.
+
+The current rule-engine W4A16 FFN receipt is
+`results/lfm25-350m-w4a16-kvq8-fused-vs-llama-cpp-q4-2026-08-27.json`.
+It records LLMOpt ERS `0.2265464543`, median TTFT `143.1265835 ms`, and median
+TPOT `10.2498472 ms`; the adjacent llama.cpp Q4_0 run records ERS
+`0.8539192539`, median TTFT `16.2261670 ms`, and median TPOT `2.2051875 ms`.

@@ -11,6 +11,7 @@ val fuse_rms_norm : Ir.Graph.t -> Ir.Graph.t
 val fuse_rms_rope : Ir.Graph.t -> Ir.Graph.t
 val fuse_short_conv : Ir.Graph.t -> Ir.Graph.t
 val discover_swiglu_ffn : Ir.Graph.t -> (Kernel_ir.t list, string) result
+val fuse_swiglu_ffn : Ir.Graph.t -> (Ir.Graph.t, string) result
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
 val fuse_lm_head_argmax : Ir.Graph.t -> Ir.Graph.t
 val co_schedule : Ir.Graph.t -> Ir.Graph.t

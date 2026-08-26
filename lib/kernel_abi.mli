@@ -4,6 +4,7 @@ module Operation : sig
     | Fused_linear
     | Linear
     | W4a16_linear
+    | W4a16_swiglu_ffn
     | W4a16_lm_head_argmax
     | Rms_norm
     | Rms_rope

@@ -90,3 +90,4 @@
 * [llama.cpp target benchmark setup](exp-0089-llama-cpp-target-2026-08-26.md) - native llama-bench throughput, same-trace llama-server ERS, and optional llmopt side comparison.
 * [Prebaked decode dispatch and Q4 target replay](exp-0090-prebaked-decode-q4-comparison-2026-08-27.md) - retained Metal decode records, refreshed Q8 side evidence, and the requested llama.cpp Q4_0 timing comparison.
 * [Canonical W4A16/KVQ8 pipeline and Q4 comparison](exp-0091-canonical-w4a16-kvq8-pipeline-2026-08-27.md) - W4 LM-head repair, removal of superseded paths, ABI-v16 engine generation, and one native Q4_0 shared-trace measurement.
+* [Executable W4A16 SwiGLU fusion rule](exp-0092-w4a16-swiglu-rule-2026-08-27.md) - restores rule-driven FFN execution, generic regression coverage, package auditing, and measured parallel W4 lowering.

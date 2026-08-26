@@ -11,6 +11,7 @@ let fuse_rms_norm = Pass_fuse_rms_norm.run
 let fuse_rms_rope = Pass_fuse_rms_rope.run
 let fuse_short_conv = Pass_fuse_short_conv.run
 let discover_swiglu_ffn = Pass_fuse_swiglu_ffn.discover
+let fuse_swiglu_ffn = Pass_fuse_swiglu_ffn.run
 let fuse_short_conv_step = Pass_fuse_short_conv_step.run
 let fuse_lm_head_argmax = Pass_fuse_lm_head_argmax.run
 let co_schedule = Pass_co_schedule.run
@@ -56,9 +57,10 @@ let optimize graph =
       (match Pass_fuse_swiglu_ffn.discover semantic_graph with
       | Error _ as error -> error
       | Ok fusion_regions -> (
-          let lowered_graph =
-            Pass.Pipeline.run execution_pipeline semantic_graph
-          in
+          match Pass_fuse_swiglu_ffn.run semantic_graph with
+          | Error _ as error -> error
+          | Ok fused_graph ->
+          let lowered_graph = Pass.Pipeline.run execution_pipeline fused_graph in
           match Compute_plan.of_graph lowered_graph with
           | Error _ as error -> error
           | Ok execution_plan ->

@@ -21,8 +21,9 @@ The authoritative end state and requirement-level evidence are tracked in the
 
 | Slice | State | Evidence |
 |---|---|---|
-| Canonical W4A16/KVQ8 model-to-binary pipeline | implemented and model-executed | The preserved 93-linear W4 capture feeds the unified pipeline into ABI-v16/schedule-v18 packages: prefill has 928 commands/54 kernels, decode has 947 commands/51 kernels, both have 243 static bindings and zero opaque commands. The W4 LM-head emits an `i32` token, and one native shared-trace run completed 4/4 scored requests with ERS `0.0775578873`, median TTFT `266.1998955 ms`, median TPOT `17.1107082 ms`, and 80/193 cached prompt tokens. |
-| Canonical surface cleanup | implemented | Q8-weight IR/ABI/kernels/passes/bridges and FP16 weight/KV selectors were removed. Capture, package generation, serving, tests, and benchmark defaults now expose only W4A16/KVQ8. |
+| Canonical W4A16/KVQ8 model-to-binary pipeline | implemented and model-executed | The preserved 93-linear W4 capture feeds the unified pipeline into ABI-v17/schedule-v19 packages. Rule-driven FFN fusion emits 752 prefill commands/58 kernels and 771 decode commands/55 kernels, with 16 W4A16 SwiGLU operations per graph, 243 static bindings, and zero opaque commands. One shared trace records LLMOpt ERS `0.2265464543`, median TTFT `143.1265835 ms`, median TPOT `10.2498472 ms`, and 80/193 cached prompt tokens. |
+| Canonical surface cleanup and deletion audit | implemented for executable formats; reusable coverage restored | Q8-weight IR/ABI/kernels/passes/bridges and FP16 weight/KV selectors remain removed. Format-independent generation, tokenizer, replay, queue, schedule, and fusion regressions are active again, and `bench/audit_macro_packages.py` audits canonical packages without a synthetic threshold. Historical W4-unported optimization families remain listed as open work rather than being represented as deleted requirements. |
+| Rule-engine W4A16 SwiGLU fusion | implemented, compiled, and model-executed | `Fusion_query.Rule` now validates non-overlap and intermediate escape before replacing all seven matched FFN nodes with one executable operation. Runtime lowering uses three parallel stages rather than a one-threadgroup macro. The real capture selects 16 regions per graph and reduces each package by 176 commands; the two-token smoke remains `518,509`. |
 
 The rows below are the chronological research register. Entries for Q8 weights
 and selectable FP16 KV are retained as historical evidence and no longer map to
@@ -96,6 +97,9 @@ measurement into a release gate.
   latency distributions after the isolated profile is recorded?
 - Which W4A16 linear subgraphs should be fused without violating the packed
   group-64 contract?
+- How should paired-SIMD W4 GEMV, QKV/RoPE, residual-norm, attention-block, and
+  ShortConv-block optimizations be expressed as reusable rules and staged
+  kernels without reviving Q8-weight operators?
 - Which vocabulary-projection tile and reduction order best balance prefill and
   one-token decode before batched command-buffer submission?
 - Which symbolic-dimension representation should replace the current

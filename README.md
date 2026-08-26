@@ -16,6 +16,9 @@ There is one supported model/runtime format:
 - One shared binary tensor archive and separate prefill/decode schedules.
 - A fused W4A16 LM-head argmax writes the final token as `i32`; logits do not
   cross the native serving boundary.
+- A declarative rule recognizes each complete FFN and lowers it to staged
+  RMSNorm, parallel dual gate/up SwiGLU, and parallel down-plus-residual Metal
+  dispatches while preserving the packed group-64 contract.
 
 Q8 weight-only operators, FP16 weight selection, and FP16 KV selection are not
 part of the compiler, package ABI, runtime, CLI, or benchmark surface. Old Q8
@@ -68,7 +71,14 @@ kernel entries, static tensor bindings, and workspace plans:
 
 ```sh
 _build/bin/llmopt-package-check /path/to/package
+
+python3.13 bench/audit_macro_packages.py \
+  --engine /path/to/engine \
+  --baseline-prefill 928 --baseline-decode 947
 ```
+
+The current fused capture emits 752 prefill and 771 decode commands, including
+16 W4A16 SwiGLU regions in each graph, with zero opaque commands.
 
 ## Benchmark target
 
