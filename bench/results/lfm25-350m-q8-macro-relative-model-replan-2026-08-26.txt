@@ -1,0 +1,34 @@
+LFM2.5-350M Q8 macro-fusion replan after relative cost-model installation
+Date: 2026-08-26
+Target: LiquidAI/LFM2.5-350M Q8 weight-only, opt-in token-id output
+
+Inputs:
+- Cost model: `_artifacts/cost-model-repair-2026-08-26/model-relative-delta-16x3.json`
+- Prefill package: `_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v3/prefill`
+- Decode package: `_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v3/decode`
+- Audit receipt: `_artifacts/lfm25-350m-q8-relative-model-2026-08-26-v3/macro-audit.json`
+
+Macro inventory:
+- Prefill selects 16 `q8-linear+add+rms-norm+residual-output`, 16
+  `q8-dual-linear+silu`, 6 `q8-qkv-linear`, and 1 `q8-lm-head-argmax`.
+- Decode selects the same operations plus 10 `short-conv-step-fused`
+  operations.
+
+Static package gates:
+- Prefill: 92 kernels, 699 commands, 0 opaque commands, 243 tensor-store
+  inputs, workspace `315136/4217600` bytes, 242 allocations.
+- Decode: 89 kernels, 719 commands, 0 opaque commands, 243 tensor-store
+  inputs, workspace `142080/1004032` bytes, 244 allocations.
+- The Q8 serving-pair checker passes ABI 14, grouped-Q8 width 64, page size 1,
+  six prefill templates, six decode-past templates, and specialized decode
+  metadata `659` commands / `13` runtime inputs / `6` paged-attention ops.
+- Against the prior validated `795/815` package counts, the static reduction is
+  96 commands per stage and 192 combined.
+
+Timing and parity boundary:
+- This replan is static package evidence. It did not execute the model on the
+  device.
+- Fresh token parity and TPOT remain unmeasured because the single native
+  token-only probe stopped before model execution at residual metadata
+  validation; the repository one-attempt boundary forbids another probe in
+  this slice.

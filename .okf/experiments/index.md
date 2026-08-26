@@ -82,3 +82,4 @@
 * [XGBoost static-versus-dynamic audit](exp-0081-xgboost-static-dynamic-audit-2026-08-26.md) - paired-median comparison showing the existing artifact-selected tile policy against fixed `16x16x64`.
 * [Macro-fusion full-package audit](exp-0082-macro-fusion-full-package-audit-2026-08-26.md) - fresh all-five Q8 package inventory, validation, and static command delta.
 * [XGBoost relative-target selector repair](exp-0083-xgboost-relative-target-repair-2026-08-26.md) - grouped holdout/cross-validation evidence for the repaired target and fresh static package replan.
+* [Macro-fusion relative-model replan](exp-0084-macro-fusion-relative-model-replan-2026-08-26.md) - fresh all-five package inventory and serving-pair validation after installing the repaired selector.
