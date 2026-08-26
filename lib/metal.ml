@@ -655,7 +655,7 @@ let q8_qkv_linear_source =
       ~value_type:"float" ~weight_cast:"float" ~store_value:"accumulator"
       ~has_bias:true
 
-let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast =
+let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast ~extra_output =
   let value_name = name ^ "_value" in
   let weight_value =
     "float(" ^ weight_cast ^ "(weight[col * params.k + inner]) * "
@@ -679,7 +679,10 @@ let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast =
   ^ "    device const " ^ value_type ^ "* residual [[buffer(3)]],\n"
   ^ "    device const half* norm_weight [[buffer(4)]],\n"
   ^ "    device half* output [[buffer(5)]],\n"
-  ^ "    constant Q8LinearAddNormParams& params [[buffer(6)]],\n"
+  ^ (if extra_output then
+       "    device half* residual_output [[buffer(6)]],\n"
+       ^ "    constant Q8LinearAddNormParams& params [[buffer(7)]],\n"
+     else "    constant Q8LinearAddNormParams& params [[buffer(6)]],\n")
   ^ "    uint lane [[thread_index_in_simdgroup]],\n"
   ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
   ^ "    uint3 group_position [[threadgroup_position_in_grid]]) {\n"
@@ -707,6 +710,9 @@ let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast =
   ^ "  for (uint col = thread_index; col < params.n; col += 256) {\n"
   ^ "    const float value = " ^ value_name
   ^ "(row, col, input, weight, scale, residual, params);\n"
+  ^ (if extra_output then
+       "    residual_output[row * params.n + col] = half(value);\n"
+     else "")
   ^ "    output[row * params.n + col] = half(value * inverse * float(norm_weight[col]));\n"
   ^ "  }\n"
   ^ "}\n"
@@ -714,9 +720,13 @@ let q8_linear_add_norm_kernel ~name ~value_type ~weight_cast =
 let q8_linear_add_norm_source =
   "\nstruct Q8LinearAddNormParams { uint m; uint n; uint k; float epsilon; };\n\n"
   ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f16"
-      ~value_type:"half" ~weight_cast:"half"
+      ~value_type:"half" ~weight_cast:"half" ~extra_output:false
   ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_f32"
-      ~value_type:"float" ~weight_cast:"float"
+      ~value_type:"float" ~weight_cast:"float" ~extra_output:false
+  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_extra_f16"
+      ~value_type:"half" ~weight_cast:"half" ~extra_output:true
+  ^ q8_linear_add_norm_kernel ~name:"llmopt_q8_linear_add_norm_extra_f32"
+      ~value_type:"float" ~weight_cast:"float" ~extra_output:true
 
 let q8_lm_head_argmax_kernel ~name ~value_type ~weight_cast =
   "kernel void " ^ name ^ "(\n"
@@ -1309,6 +1319,14 @@ let q8_linear_add_norm_entries =
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_linear_add_norm_f32"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_linear_add_norm_extra_f16"
+      ~operation:Kernel_abi.Operation.Q8_linear_add
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_linear_add_norm_extra_f32"
       ~operation:Kernel_abi.Operation.Q8_linear_add
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16 ]
 

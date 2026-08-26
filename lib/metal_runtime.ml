@@ -1916,7 +1916,7 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
   Ok (bind_value state output output_buffer, kernel)
 
 let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
-    values output =
+    ~extra_outputs values output =
   let* input_value, weight_value, scale_value, residual_value, norm_weight_value =
     match values with
     | [ input; weight; scale; residual; norm_weight ] ->
@@ -1930,10 +1930,26 @@ let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
   let* residual = find_value state residual_value in
   let* norm_weight = find_value state norm_weight_value in
   let* output_buffer = workspace_buffer state output in
+  let* extra_output, extra_output_buffer =
+    match extra_outputs with
+    | [] -> Ok (None, None)
+    | [ extra_output ] ->
+        workspace_buffer state extra_output
+        |> Result.map (fun buffer -> (Some extra_output, Some buffer))
+    | _ -> Error "Q8 linear-add-norm command has too many secondary outputs"
+  in
   let* kernel_name =
     match Ir.Value.dtype input_value with
-    | Ir.Dtype.Float16 -> Ok "llmopt_q8_linear_add_norm_f16"
-    | Ir.Dtype.Float32 -> Ok "llmopt_q8_linear_add_norm_f32"
+    | Ir.Dtype.Float16 ->
+        Ok
+          (if Option.is_some extra_output then
+             "llmopt_q8_linear_add_norm_extra_f16"
+           else "llmopt_q8_linear_add_norm_f16")
+    | Ir.Dtype.Float32 ->
+        Ok
+          (if Option.is_some extra_output then
+             "llmopt_q8_linear_add_norm_extra_f32"
+           else "llmopt_q8_linear_add_norm_f32")
     | dtype ->
         Error
           (Printf.sprintf "unsupported Q8 linear-add-norm input dtype: %s"
@@ -1957,11 +1973,21 @@ let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
     else Error "Q8 linear-add-norm input metadata is inconsistent"
   in
   let* kernel =
+    let buffers =
+      [ input; weight; scale; residual; norm_weight; output_buffer ]
+      @ Option.to_list extra_output_buffer
+    in
     dispatch ~batch runtime entry
-      ~buffers:[ input; weight; scale; residual; norm_weight; output_buffer ]
+      ~buffers
       ~parameters ~grid:(m, 1, 1)
   in
-  Ok (bind_value state output output_buffer, kernel)
+  let state = bind_value state output output_buffer in
+  let state =
+    match extra_output, extra_output_buffer with
+    | Some value, Some buffer -> bind_value state value buffer
+    | _ -> state
+  in
+  Ok (state, kernel)
 
 let split_axis shape axis =
   let rec loop outer remaining = function
@@ -2798,12 +2824,12 @@ let encode_schedule execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k
                  ~epsilon values output)
-        | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon },
+        | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs },
             values,
             Some output ) ->
             dispatched
               (dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k
-                 ~epsilon values output)
+                 ~epsilon ~extra_outputs values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
             continue

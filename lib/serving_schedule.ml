@@ -261,6 +261,40 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d QKV metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs },
+            [ input; weight; scale; residual; norm_weight ],
+            Some output ) ->
+            let secondary_matches =
+              match extra_outputs with
+              | [] -> true
+              | [ raw_output ] ->
+                  q8_output_matches ~rows:m ~columns:n
+                    ~dtype:Ir.Dtype.Float16 raw_output
+              | _ -> false
+            in
+            if
+              Float.is_finite epsilon && epsilon > 0.0
+              && q8_activation_dtype (Ir.Value.dtype input)
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && q8_matrix_matches ~rows:n ~columns:k ~dtype:Ir.Dtype.Int8
+                   weight
+              && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 scale
+              && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+              && q8_output_matches ~rows:m ~columns:n
+                   ~dtype:Ir.Dtype.Float16 output
+              && Ir.Value.dtype residual = Ir.Dtype.Float16
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape residual)
+                   (Ir.Value.logical_shape output)
+              && q8_vector_matches ~length:n ~dtype:Ir.Dtype.Float16 norm_weight
+              && secondary_matches
+              && fresh_outputs seen_values (output :: extra_outputs)
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d linear-add-norm metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon },
             [ input; norm_weight; weight; scale ],
             Some output ) ->
@@ -995,7 +1029,7 @@ module Lfm25 = struct
                k = substitute substitutions k;
                bias;
              })
-    | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon } ->
+    | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
         Ok
           (Ir.Op.Q8_linear_add_norm
              {
@@ -1003,6 +1037,7 @@ module Lfm25 = struct
                n = substitute substitutions n;
                k = substitute substitutions k;
                epsilon;
+               extra_outputs;
              })
     | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon } ->
         Ok
@@ -1199,6 +1234,9 @@ module Lfm25 = struct
             value_output
         in
         Ok [ key_output; value_output ]
+    | Ir.Op.Q8_linear_add_norm { m; n; _ }, [ raw_output ] ->
+        specialized_matrix_value substitutions ~rows:m ~columns:n raw_output
+        |> Result.map (fun output -> [ output ])
     | (Ir.Op.Q8_dual_linear _ | Ir.Op.Q8_qkv_linear _), _ ->
         Error "multi-output Q8 operation has an inconsistent secondary-output table"
     | _, [] -> Ok []
@@ -1210,6 +1248,8 @@ module Lfm25 = struct
         Ir.Op.Q8_dual_linear { config with extra_outputs = outputs }
     | Ir.Op.Q8_qkv_linear config ->
         Ir.Op.Q8_qkv_linear { config with extra_outputs = outputs }
+    | Ir.Op.Q8_linear_add_norm config ->
+        Ir.Op.Q8_linear_add_norm { config with extra_outputs = outputs }
     | _ -> operation
 
   type last_token_projection = {
@@ -2277,10 +2317,14 @@ let write_op writer = function
       Binary.Writer.u8 writer 19;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
-  | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon } ->
-      Binary.Writer.u8 writer 26;
+  | Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
+      Binary.Writer.u8 writer (if extra_outputs = [] then 26 else 32);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
-      Binary.Writer.float64 writer epsilon
+      Binary.Writer.float64 writer epsilon;
+      if extra_outputs <> [] then begin
+        Binary.Writer.u8 writer (List.length extra_outputs);
+        List.iter (write_value writer) extra_outputs
+      end
   | Ir.Op.Q8_lm_head_argmax { m; n; k; epsilon } ->
       Binary.Writer.u8 writer 29;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
@@ -2416,8 +2460,22 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* epsilon = Binary.Reader.float64 reader in
       if Float.is_finite epsilon && epsilon > 0.0 then
-        Ok (Ir.Op.Q8_linear_add_norm { m; n; k; epsilon })
+        Ok (Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs = [] })
       else Error "schedule contains a non-finite linear-add-norm epsilon"
+  | 32 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      if Float.is_finite epsilon && epsilon > 0.0 && count = 1 then
+        Ok (Ir.Op.Q8_linear_add_norm { m; n; k; epsilon; extra_outputs })
+      else Error "schedule contains invalid linear-add-norm secondary outputs"
   | 29 ->
       let* m, n, k = read_three_dimensions reader in
       let* epsilon = Binary.Reader.float64 reader in
@@ -2534,8 +2592,17 @@ let magic = "LLMOSCH\000"
 
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
+  let extended =
+    List.exists
+      (fun command ->
+        match command.Command.op with
+        | Ir.Op.Q8_linear_add_norm { extra_outputs; _ } ->
+            extra_outputs <> []
+        | _ -> false)
+      schedule.commands
+  in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 14;
+  Binary.Writer.u16 writer (if extended then 15 else 14);
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2559,7 +2626,7 @@ let of_bytes ?device bytes =
       version <> 1 && version <> 2 && version <> 3 && version <> 4
       && version <> 5 && version <> 6 && version <> 7 && version <> 8
       && version <> 9 && version <> 10 && version <> 11 && version <> 12
-      && version <> 13 && version <> 14
+      && version <> 13 && version <> 14 && version <> 15
     then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
     else

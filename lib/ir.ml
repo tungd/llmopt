@@ -425,7 +425,13 @@ module Op = struct
     | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_add_norm of { m : int; n : int; k : int; epsilon : float }
+    | Q8_linear_add_norm of {
+        m : int;
+        n : int;
+        k : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
     | Q8_lm_head_argmax of { m : int; n : int; k : int; epsilon : float }
     | Q8_dual_linear of {
         m : int;
@@ -446,6 +452,7 @@ module Op = struct
       }
 
   let additional_outputs = function
+    | Q8_linear_add_norm { extra_outputs; _ }
     | Q8_dual_linear { extra_outputs; _ }
     | Q8_qkv_linear { extra_outputs; _ } -> extra_outputs
     | _ -> []
@@ -501,8 +508,9 @@ module Op = struct
         Printf.sprintf "q8-linear+mul+add[%dx%dx%d]" m n k
     | Q8_linear_mul_add { m; n; k; bias = true } ->
         Printf.sprintf "q8-linear+bias+mul+add[%dx%dx%d]" m n k
-    | Q8_linear_add_norm { m; n; k; epsilon } ->
-        Printf.sprintf "q8-linear+add+rms-norm[%dx%dx%d,eps=%.9g]" m n k
+    | Q8_linear_add_norm { m; n; k; epsilon; extra_outputs } ->
+        Printf.sprintf "q8-linear+add+rms-norm%s[%dx%dx%d,eps=%.9g]"
+          (if extra_outputs = [] then "" else "+residual-output") m n k
           epsilon
     | Q8_lm_head_argmax { m; n; k; epsilon } ->
         Printf.sprintf "q8-lm-head-argmax[%dx%dx%d,eps=%.9g]" m n k epsilon

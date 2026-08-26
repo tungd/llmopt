@@ -32,6 +32,8 @@ type match_info = {
   rms_node : Ir.node;
   norm_weight : Ir.Value.t;
   norm_output : Ir.Value.t;
+  extra_outputs : Ir.Value.t list;
+  keep_cast : bool;
 }
 
 let candidate nodes q8_node =
@@ -39,52 +41,73 @@ let candidate nodes q8_node =
   | Some (_m, _n, _k, _q8_inputs, q8_output), Some _ ->
       let rms_for input =
         consumers nodes input
-        |> List.find_map (fun node ->
+        |> List.filter_map (fun node ->
                match rms_norm_info node with
                | Some (_epsilon, rms_input, norm_weight, norm_output)
                  when value_is input rms_input ->
                    Some (node, norm_weight, norm_output)
                | _ -> None)
+        |> function
+        | [ match_info ] -> Some match_info
+        | _ -> None
       in
       let cast_match =
         consumers nodes q8_output
-        |> List.find_map (fun cast_node ->
-               match
-                 Ir.node_op cast_node,
-                 Ir.node_inputs cast_node,
-                 Ir.node_output cast_node
-               with
-               | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32),
-                 [ cast_input ], Some cast_output
-                 when value_is q8_output cast_input
-                      && only_consumer nodes q8_output
-                      && only_consumer nodes cast_output ->
-                   Option.map
-                     (fun (rms_node, norm_weight, norm_output) ->
-                       (Some cast_node, rms_node, norm_weight, norm_output))
-                     (rms_for cast_output)
-               | _ -> None)
+        |> function
+        | [ cast_node ] -> (
+            match
+              Ir.node_op cast_node,
+              Ir.node_inputs cast_node,
+              Ir.node_output cast_node
+            with
+            | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32),
+              [ cast_input ], Some cast_output
+              when value_is q8_output cast_input
+                   && only_consumer nodes q8_output ->
+                Option.map
+                  (fun (rms_node, norm_weight, norm_output) ->
+                    let keep_cast =
+                      List.length (consumers nodes cast_output) > 1
+                    in
+                    ( Some cast_node,
+                      rms_node,
+                      norm_weight,
+                      norm_output,
+                      (if keep_cast then [ q8_output ] else []),
+                      keep_cast ))
+                  (rms_for cast_output)
+            | _ -> None)
+        | _ -> None
       in
       let direct_match =
-        match consumers nodes q8_output with
-        | [ rms_node ] ->
-            Option.map
-              (fun (_rms_node, norm_weight, norm_output) ->
-                (None, rms_node, norm_weight, norm_output))
-              (rms_for q8_output)
+        match rms_for q8_output with
+        | Some (rms_node, norm_weight, norm_output) ->
+            let extra_outputs =
+              if List.length (consumers nodes q8_output) > 1 then [ q8_output ]
+              else []
+            in
+            Some (None, rms_node, norm_weight, norm_output, extra_outputs, false)
         | _ -> None
       in
       let selected =
         match cast_match with Some _ -> cast_match | None -> direct_match
       in
       Option.map
-        (fun (cast_node, rms_node, norm_weight, norm_output) ->
+        (fun
+          ( cast_node,
+            rms_node,
+            norm_weight,
+            norm_output,
+            extra_outputs,
+            keep_cast ) ->
           {
             q8_node;
             cast_node;
             rms_node;
             norm_weight;
             norm_output;
+            extra_outputs;
+            keep_cast;
           })
         selected
   | _ -> None
@@ -112,13 +135,24 @@ let valid_match info =
       && Ir.Value.dtype info.norm_weight = Ir.Dtype.Float16
       && Ir.Value.dtype q8_output = Ir.Dtype.Float16
       && Ir.Value.dtype norm_output = Ir.Dtype.Float16
+      && (match info.extra_outputs with
+         | [] -> true
+         | [ raw_output ] ->
+             value_is raw_output q8_output
+             && Tensor_shape.equal
+                  (Ir.Value.logical_shape raw_output)
+                  (Ir.Value.logical_shape q8_output)
+             && Ir.Value.dtype raw_output = Ir.Value.dtype q8_output
+         | _ -> false)
   | _ -> false
 
 let fused_node info =
   match q8_linear_add_info info.q8_node, rms_norm_info info.rms_node with
   | Some (m, n, k, q8_inputs, _), Some (epsilon, _, _, _) ->
       Ir.node_create ~id:(Ir.node_id info.q8_node)
-        ~op:(Ir.Op.Q8_linear_add_norm { m; n; k; epsilon })
+        ~op:
+          (Ir.Op.Q8_linear_add_norm
+             { m; n; k; epsilon; extra_outputs = info.extra_outputs })
         ~inputs:(q8_inputs @ [ info.norm_weight ])
         ~output:(Some info.norm_output)
   | _ -> invalid_arg "invalid residual-norm fusion candidate"
@@ -133,7 +167,9 @@ let run graph =
   in
   let is_removed info node =
     Ir.node_id node = Ir.node_id info.rms_node
-    || Option.exists (fun cast -> Ir.node_id node = Ir.node_id cast) info.cast_node
+    ||
+    (not info.keep_cast
+    && Option.exists (fun cast -> Ir.node_id node = Ir.node_id cast) info.cast_node)
   in
   let replacement node =
     List.find_map

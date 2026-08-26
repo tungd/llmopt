@@ -1526,7 +1526,8 @@ let () =
     (Ir.Graph.nodes q8_add_norm_optimized
     |> List.exists (fun node ->
            match Ir.node_op node, Ir.node_inputs node with
-           | Ir.Op.Q8_linear_add_norm { m = 2; n = 3; k = 4; epsilon },
+           | Ir.Op.Q8_linear_add_norm
+               { m = 2; n = 3; k = 4; epsilon; extra_outputs = [] },
              [ input; weight; scale; residual; norm_weight ] ->
                Float.abs (epsilon -. 1e-5) < 1e-12
                && Ir.Value.equal input q8_add_norm_input
@@ -1544,7 +1545,8 @@ let () =
     (Serving_schedule.commands q8_add_norm_schedule
     |> List.exists (fun command ->
            match Serving_schedule.Command.op command with
-           | Ir.Op.Q8_linear_add_norm { m = 2; n = 3; k = 4; epsilon } ->
+           | Ir.Op.Q8_linear_add_norm
+               { m = 2; n = 3; k = 4; epsilon; extra_outputs = [] } ->
                Float.abs (epsilon -. 1e-5) < 1e-12
            | _ -> false))
     "binary schedule preserves fused linear-residual-norm";
@@ -1563,6 +1565,68 @@ let () =
            Kernel_abi.Entry.name entry = "llmopt_q8_linear_add_norm_f16"
            && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Q8_linear_add))
     "fused linear-residual-norm retains a registered Q8 runtime ABI";
+
+  Ir.Graph.add_output q8_add_norm_graph ~name:"q8_add_norm_residual_branch"
+    q8_add_norm_cast_output;
+  let q8_add_norm_external_optimized =
+    Passes.fuse_linear_residual_norm q8_add_norm_graph
+  in
+  expect (List.length (Ir.Graph.nodes q8_add_norm_external_optimized) = 9)
+    "linear-residual-norm keeps a cast for an external residual consumer";
+  expect
+    (Ir.Graph.nodes q8_add_norm_external_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Q8_linear_add_norm { extra_outputs = [ raw_output ]; _ },
+             [ input; weight; scale; residual; norm_weight ] ->
+               Ir.Value.equal raw_output q8_add_norm_add_output
+               && Ir.Value.equal input q8_add_norm_input
+               && Ir.Value.equal weight q8_add_norm_weight
+               && Ir.Value.equal scale q8_add_norm_scale
+               && Ir.Value.equal residual q8_add_norm_residual
+               && Ir.Value.equal norm_weight q8_add_norm_rms_weight
+           | _ -> false))
+    "linear-residual-norm exposes the raw Q8 result as a typed secondary output";
+  expect
+    (Ir.Graph.nodes q8_add_norm_external_optimized
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32), [ input ] ->
+               Ir.Value.equal input q8_add_norm_add_output
+           | _ -> false))
+    "external residual consumers retain the post-add cast";
+  let q8_add_norm_external_schedule =
+    q8_add_norm_external_optimized |> Serving_schedule.of_graph |> expect_ok
+  in
+  let q8_add_norm_external_bytes =
+    Serving_schedule.to_bytes q8_add_norm_external_schedule
+  in
+  expect (Bytes.get_uint16_le q8_add_norm_external_bytes 8 = 15)
+    "secondary residual output uses the extended schedule version";
+  let q8_add_norm_external_round_trip =
+    q8_add_norm_external_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands q8_add_norm_external_round_trip
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Q8_linear_add_norm { extra_outputs = [ raw_output ]; _ } ->
+               Ir.Value.equal raw_output q8_add_norm_add_output
+           | _ -> false))
+    "binary schedule preserves the secondary residual output";
+  let q8_add_norm_external_program =
+    Metal.lower q8_add_norm_external_optimized |> expect_ok
+  in
+  let q8_add_norm_external_source =
+    Metal.Program.source q8_add_norm_external_program
+  in
+  expect
+    (contains_substring q8_add_norm_external_source
+       "kernel void llmopt_q8_linear_add_norm_extra_f16")
+    "Metal lowering emits the residual-preserving norm kernel";
+  expect
+    (contains_substring q8_add_norm_external_source "residual_output")
+    "residual-preserving norm kernel writes its secondary output";
 
   let q8_broadcast_graph = Ir.Graph.create () in
   let broadcast_input =

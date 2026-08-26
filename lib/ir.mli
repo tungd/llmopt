@@ -249,7 +249,13 @@ module Op : sig
     | Q8_linear_silu of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_add of { m : int; n : int; k : int; bias : bool }
     | Q8_linear_mul_add of { m : int; n : int; k : int; bias : bool }
-    | Q8_linear_add_norm of { m : int; n : int; k : int; epsilon : float }
+    | Q8_linear_add_norm of {
+        m : int;
+        n : int;
+        k : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
     | Q8_lm_head_argmax of { m : int; n : int; k : int; epsilon : float }
     | Q8_dual_linear of {
         m : int;
