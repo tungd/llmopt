@@ -14,8 +14,8 @@ from llmopt_backend.tensor_archive import ALIGNMENT, MAGIC, VERSION, write_archi
 class TensorArchiveTests(unittest.TestCase):
     def test_streaming_archive_has_binary_index_and_exact_payloads(self) -> None:
         tensors = {
-            "weight_q8": torch.tensor([[1, -2], [3, 4]], dtype=torch.int8),
-            "scale": torch.tensor([0.5, 1.0], dtype=torch.float16),
+            "weight_w4": torch.arange(64, dtype=torch.uint8).reshape(2, 32),
+            "scale": torch.tensor([[0.5], [1.0]], dtype=torch.float16),
             "counter": torch.tensor([7], dtype=torch.int64),
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -38,6 +38,7 @@ class TensorArchiveTests(unittest.TestCase):
                 4: torch.int32,
                 5: torch.int8,
                 6: torch.bool,
+                7: torch.uint8,
             }
             for _ in range(count):
                 name_length, dtype_tag, rank, reserved = struct.unpack_from(

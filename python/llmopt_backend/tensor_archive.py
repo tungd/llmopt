@@ -31,6 +31,7 @@ _DTYPES = {
     "torch.int32": 4,
     "torch.int8": 5,
     "torch.bool": 6,
+    "torch.uint8": 7,
 }
 
 

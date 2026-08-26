@@ -61,7 +61,7 @@ class FxGraphBinaryTest(unittest.TestCase):
                     "target": "test.mixed",
                     "inputs": ["x"],
                     "shape": None,
-                    "dtype": "bool",
+                    "dtype": "uint8",
                     "binding": {"kind": "computed"},
                     "arguments": {
                         "args": [

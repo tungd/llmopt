@@ -9,18 +9,15 @@ from llmopt_backend.tensor_archive import write_archive
 
 
 def write_fixture(output: Path) -> None:
+    packed_weight = torch.arange(3 * 32, dtype=torch.uint8).reshape(3, 32)
+    packed_weight[0, 0] = 0x78  # K=0 -> -8, K=1 -> +7 at scale 0.125.
     write_archive(
         {
-            "weight_q8": torch.tensor(
-                [
-                    [1, 0, 2, -1],
-                    [0, 1, -1, 2],
-                    [2, -2, 0, 1],
-                ],
-                dtype=torch.int8,
+            "packed_weight": packed_weight,
+            "scale": torch.tensor(
+                [[0.125], [0.25], [0.5]], dtype=torch.float16
             ),
-            "weight_scale": torch.ones((1, 3), dtype=torch.float16),
-            "bias": torch.tensor([[0.5, 1.0, -1.0]], dtype=torch.float16),
+            "bias": torch.tensor([0.5, 1.0, -1.0], dtype=torch.float16),
         },
         output,
     )

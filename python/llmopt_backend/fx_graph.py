@@ -32,6 +32,7 @@ _DTYPE_TO_TAG = {
     "int32": 4,
     "int8": 5,
     "bool": 6,
+    "uint8": 7,
 }
 _TAG_TO_DTYPE = {tag: dtype for dtype, tag in _DTYPE_TO_TAG.items()}
 

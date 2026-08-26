@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from examples.write_q8_weight_fixture import write_fixture
+from examples.write_w4a16_weight_fixture import write_fixture
 from llmopt_backend.tensor_archive import ALIGNMENT, MAGIC, VERSION
 
 
@@ -40,16 +40,16 @@ def read_index(path: Path) -> dict[str, tuple[int, tuple[int, ...], int, int]]:
 
 
 class WeightArchiveFixtureTests(unittest.TestCase):
-    def test_q8_fixture_is_one_binary_tensor_archive(self) -> None:
+    def test_w4a16_fixture_is_one_binary_tensor_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "weights.llmopt"
             write_fixture(output)
             tensors = read_index(output)
 
-            self.assertEqual(set(tensors), {"weight_q8", "weight_scale", "bias"})
-            self.assertEqual(tensors["weight_q8"][:2], (5, (3, 4)))
-            self.assertEqual(tensors["weight_scale"][:2], (1, (1, 3)))
-            self.assertEqual(tensors["bias"][:2], (1, (1, 3)))
+            self.assertEqual(set(tensors), {"packed_weight", "scale", "bias"})
+            self.assertEqual(tensors["packed_weight"][:2], (7, (3, 32)))
+            self.assertEqual(tensors["scale"][:2], (1, (3, 1)))
+            self.assertEqual(tensors["bias"][:2], (1, (3,)))
             for _dtype, _shape, offset, byte_length in tensors.values():
                 self.assertEqual(offset % ALIGNMENT, 0)
                 self.assertGreater(byte_length, 0)

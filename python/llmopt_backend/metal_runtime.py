@@ -1,4 +1,4 @@
-"""Native loading and dispatch for OCaml-generated Q8 Metal libraries.
+"""Native loading and dispatch for OCaml-generated Metal libraries.
 
 The Python layer owns library lifetime and fallback selection; the small
 PyTorch C++ bridge binds MPS tensor storage to the generated kernel.
@@ -20,6 +20,7 @@ _active_library: ContextVar[Path | None] = ContextVar(
 )
 _native_module: Any | None = None
 _dispatches = 0
+_compiled_runtime_kind = "generated-metal-native"
 
 # The Xcode Metal compiler defaults to aggressive fast-math.  The generated
 # Q8 reduction is deliberately kept in source order so that its numerical
@@ -81,14 +82,9 @@ def dispatch_count() -> int:
 
 
 def runtime_kind() -> str:
-    mode = _mode()
-    if mode == "exact":
-        return "generated-metal-q8-exact-mps"
-    if mode == "native":
-        return "generated-metal-q8-native"
-    if mode == "off":
+    if _mode() == "off":
         return "pytorch-mps-fallback"
-    return "generated-metal-q8-native"
+    return _compiled_runtime_kind
 
 
 def _run(command: list[str]) -> None:
@@ -96,14 +92,28 @@ def _run(command: list[str]) -> None:
 
 
 def compile_library(source: Path) -> Path | None:
-    """Compile one generated MSL source into a cached metallib when Q8 is present."""
+    """Compile a generated W4A16 or legacy Q8 MSL source into a metallib."""
 
-    if _mode() == "off" or not source.exists() or "llmopt_q8_linear" not in source.read_text(
-        encoding="utf-8"
+    if _mode() == "off" or not source.exists():
+        return None
+    generated_source = source.read_text(encoding="utf-8")
+    if (
+        "llmopt_q8_linear" not in generated_source
+        and "llmopt_w4a16_linear_f16_g64" not in generated_source
     ):
         return None
     if _native() is None:
         return None
+
+    has_w4a16 = "llmopt_w4a16_linear_f16_g64" in generated_source
+    has_q8_linear = "kernel void llmopt_q8_linear(" in generated_source
+    global _compiled_runtime_kind
+    if has_w4a16 and has_q8_linear:
+        _compiled_runtime_kind = "generated-metal-w4a16+q8"
+    elif has_w4a16:
+        _compiled_runtime_kind = "generated-metal-w4a16-f16-g64"
+    else:
+        _compiled_runtime_kind = "generated-metal-q8"
 
     air = source.with_suffix(".air")
     library = source.with_suffix(".metallib")
@@ -185,6 +195,44 @@ def dispatch_q8_linear(
         tile_m,
         tile_n,
         tile_k,
+    )
+    _dispatches += 1
+    return output
+
+
+def dispatch_w4a16_linear(
+    input: Any,
+    packed_weight: Any,
+    scale: Any,
+    bias: Any | None,
+) -> Any | None:
+    """Dispatch the fixed packed-W4/group-64, FP16-activation kernel."""
+
+    library = _active_library.get()
+    if library is None or _mode() == "off":
+        return None
+    tensors = (input, packed_weight, scale)
+    if any(getattr(tensor, "device", None) is None for tensor in tensors):
+        return None
+    if any(tensor.device.type != "mps" for tensor in tensors):
+        return None
+    if str(input.dtype) != "torch.float16":
+        return None
+    if str(packed_weight.dtype) != "torch.uint8":
+        return None
+    if str(scale.dtype) != "torch.float16":
+        return None
+    if bias is not None:
+        if getattr(bias, "device", None) is None or bias.device.type != "mps":
+            return None
+        if str(bias.dtype) != "torch.float16":
+            return None
+    module = _native()
+    if module is None:
+        return None
+    global _dispatches
+    output = module.w4a16_linear(
+        input, packed_weight, scale, bias, str(library)
     )
     _dispatches += 1
     return output

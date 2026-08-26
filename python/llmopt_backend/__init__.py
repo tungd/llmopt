@@ -102,7 +102,10 @@ class CaptureSession:
                     raise ValueError(
                         f"FX tensor binding {source_key} has no captured static tensor"
                     )
-                node = {**node, "binding": {"kind": "tensor-store", "key": canonical_key}}
+                node = {
+                    **node,
+                    "binding": {**binding, "kind": "tensor-store", "key": canonical_key},
+                }
             nodes.append(node)
         manifest = {**captured.manifest, "nodes": nodes}
         tensors = {canonical[key]: tensor for key, tensor in captured.tensors.items()}
@@ -153,12 +156,12 @@ class NaiveMpsExecutable:
 
 
 class DirectMpsExecutable:
-    """Run the generated FX forward directly, with optional generated Metal Q8.
+    """Run the generated FX forward directly, with optional generated Metal.
 
     This is the first executable optimization pass: graph capture and OCaml
     planning stay unchanged, while the runtime removes the Python
-    ``torch.fx.Interpreter`` loop from the hot path.  When a generated Q8
-    ``metallib`` is available, the Q8 operator dispatches through it while the
+    ``torch.fx.Interpreter`` loop from the hot path.  When a generated
+    ``metallib`` is available, the packed-W4 operator dispatches through it while the
     GraphModule remains the graph semantics authority.
     """
 
@@ -522,7 +525,7 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
             json.dumps(captured.manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    quantization = os.environ.get("LLMOPT_QUANTIZATION", "q8")
+    quantization = os.environ.get("LLMOPT_QUANTIZATION", "w4a16-q8kv")
     metal_library: Path | None = None
     try:
         compiler_command = [str(compiler)]
