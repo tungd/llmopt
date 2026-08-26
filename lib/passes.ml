@@ -44,14 +44,13 @@ let default_pipeline = Pass.Pipeline.of_list semantic_passes
 let execution_passes =
   [
     Pass_fuse_qkv_linear.pass;
-    Pass_fuse_dual_linear_swiglu.pass;
     Pass_fuse_q8_epilogues.pass_silu;
+    Pass_fuse_dual_linear_swiglu.pass;
     Pass_fuse_q8_epilogues.pass_add;
     Pass_fuse_q8_epilogues.pass_mul_add;
     Pass_fuse_short_conv_step.pass;
     Pass_fuse_lm_head_argmax.pass;
     Pass_fuse_attention_block.pass;
-    Pass_fuse_linear_residual_norm.pass;
   ]
 
 let execution_pipeline = Pass.Pipeline.of_list execution_passes

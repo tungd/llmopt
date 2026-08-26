@@ -1359,6 +1359,7 @@ type execution_state = {
   kernels_rev : string list;
   memory_plan : Serving_memory_plan.t;
   workspace : Buffer.t option;
+  resources : Buffer.t list;
 }
 
 let value_byte_length = Serving_memory_plan.value_bytes
@@ -1972,41 +1973,92 @@ let dispatch_q8_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
     then Ok ()
     else Error "Q8 LM-head argmax input metadata is inconsistent"
   in
-  let* kernel_name =
+  let stage1_kernel_name =
     q8_macro_kernel_name (Ir.Value.dtype input_value)
       ~base:
         (if Option.is_some extra_output then
-           "llmopt_q8_lm_head_argmax_extra"
-         else "llmopt_q8_lm_head_argmax")
+           "llmopt_q8_lm_head_argmax_stage1_extra"
+         else "llmopt_q8_lm_head_argmax_stage1")
       ~has_bias:false
   in
-  let* entry =
-    kernel_entry ~name:kernel_name runtime
+  let stage1_entry =
+    let* name = stage1_kernel_name in
+    kernel_entry ~name runtime
       ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
       ~input_dtype:(Ir.Value.dtype input_value)
       ~output_dtype:Ir.Dtype.Int32
   in
-  let* parameters = Parameters.q8_lm_head_argmax ~m ~n ~k ~epsilon in
-  let* grid =
-    if m > max_int / 256 then Error "LM-head argmax grid dimension overflows"
-    else Ok (m * 256, 1, 1)
+  let reduce_entry =
+    kernel_entry ~name:"llmopt_q8_lm_head_reduce" runtime
+      ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+      ~input_dtype:Ir.Dtype.Int32
+      ~output_dtype:Ir.Dtype.Int32
   in
-  let* kernel =
-    let buffers =
-      [ input; norm_weight; weight; scale; output_buffer ]
-      @ Option.to_list extra_output_buffer
-    in
-    dispatch ~batch runtime entry
-      ~buffers
-      ~parameters ~grid
-  in
-  let state = bind_value state output output_buffer in
-  let state =
-    match extra_output, extra_output_buffer with
-    | Some value, Some buffer -> bind_value state value buffer
-    | _ -> state
-  in
-  Ok (state, kernel)
+  match stage1_entry, reduce_entry with
+  | Ok entry1, Ok entry2 ->
+      let candidate_bytes = m * 256 * 8 in
+      let* candidates_buffer = Buffer.create ~runtime ~bytes:candidate_bytes in
+      let* parameters1 = Parameters.q8_lm_head_argmax ~m ~n ~k ~epsilon in
+      let* parameters2 = Parameters.u32s [ m ] in
+      let buffers1 =
+        [ input; norm_weight; weight; scale; candidates_buffer ]
+        @ Option.to_list extra_output_buffer
+      in
+      let* kernel1 =
+        dispatch ~batch runtime entry1
+          ~buffers:buffers1 ~parameters:parameters1
+          ~grid:(256 * 256, m, 1)
+      in
+      let buffers2 = [ candidates_buffer; output_buffer ] in
+      let* kernel2 =
+        dispatch ~batch runtime entry2
+          ~buffers:buffers2 ~parameters:parameters2
+          ~grid:(m * 256, 1, 1)
+      in
+      let state = bind_value state output output_buffer in
+      let state =
+        match extra_output, extra_output_buffer with
+        | Some value, Some buffer -> bind_value state value buffer
+        | _ -> state
+      in
+      let state = { state with resources = candidates_buffer :: state.resources } in
+      Ok (state, kernel1 ^ "+" ^ kernel2)
+  | _ ->
+      let* kernel_name =
+        q8_macro_kernel_name (Ir.Value.dtype input_value)
+          ~base:
+            (if Option.is_some extra_output then
+               "llmopt_q8_lm_head_argmax_extra"
+             else "llmopt_q8_lm_head_argmax")
+          ~has_bias:false
+      in
+      let* entry =
+        kernel_entry ~name:kernel_name runtime
+          ~operation:Kernel_abi.Operation.Q8_lm_head_argmax
+          ~input_dtype:(Ir.Value.dtype input_value)
+          ~output_dtype:Ir.Dtype.Int32
+      in
+      let* parameters = Parameters.q8_lm_head_argmax ~m ~n ~k ~epsilon in
+      let* grid =
+        if m > max_int / 256 then Error "LM-head argmax grid dimension overflows"
+        else Ok (m * 256, 1, 1)
+      in
+      let buffers =
+        [ input; norm_weight; weight; scale; output_buffer ]
+        @ Option.to_list extra_output_buffer
+      in
+      let* kernel =
+        dispatch ~batch runtime entry
+          ~buffers
+          ~parameters ~grid
+      in
+      let state = bind_value state output output_buffer in
+      let state =
+        match extra_output, extra_output_buffer with
+        | Some value, Some buffer -> bind_value state value buffer
+        | _ -> state
+      in
+      Ok (state, kernel)
 
 let dispatch_q8_linear_add_norm_command batch runtime state ~m ~n ~k ~epsilon
     ~extra_outputs values output =
@@ -2269,10 +2321,12 @@ let dispatch_q8_fused_qkv_rope_command batch runtime state ~m ~n_q ~n_kv ~k
       v_output_buffer;
     ]
   in
+  let total_pairs = (n_q / 2) + n_kv in
+  let threadgroups = (total_pairs + 3) / 4 in
   let* kernel =
     dispatch ~batch runtime entry
       ~buffers
-      ~parameters ~grid:(m * 256, 1, 1)
+      ~parameters ~grid:(threadgroups * 128, m, 1)
   in
   let state = bind_value state output q_output_buffer in
   let state = bind_value state k_output_val k_output_buffer in
@@ -2488,6 +2542,8 @@ let encode_schedule execution_batch ~schedule ~inputs =
   let dispatch_output ?name = dispatch_output ?name ~batch in
   let rec run state = function
     | [] ->
+        execution_batch.resources <-
+          state.resources @ execution_batch.resources;
         Ok
           {
             Execution.outputs = List.rev state.outputs_rev;
@@ -3247,6 +3303,7 @@ let encode_schedule execution_batch ~schedule ~inputs =
         kernels_rev = [];
         memory_plan;
         workspace;
+        resources = [];
       }
       (Serving_schedule.commands schedule)
   in
