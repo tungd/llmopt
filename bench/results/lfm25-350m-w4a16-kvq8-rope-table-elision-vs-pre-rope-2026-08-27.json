@@ -1,0 +1,457 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-27T03:57:35.842406+00:00",
+  "benchmark": "racebench-http",
+  "target": "LLMOpt W4A16/KVQ8 decode scheduler",
+  "comparison": "pre-RoPE-elision scheduler vs CPU-precomputed RoPE table scheduler",
+  "engine": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-engine-2026-08-27-rope",
+  "trace": "/Users/tung/Projects/std23/llmopt/bench/traces/lfm25-mps-smoke.json",
+  "warmup_trace": "/Users/tung/Projects/std23/llmopt/bench/traces/lfm25-mps-warmup.json",
+  "max_workers": 1,
+  "reuse_connections": false,
+  "order": [
+    "pre-rope",
+    "rope-table"
+  ],
+  "baseline": {
+    "label": "pre-rope",
+    "binary": "/tmp/llmopt-pre-rope/_build/bin/llmopt-serve",
+    "command": [
+      "/tmp/llmopt-pre-rope/_build/bin/llmopt-serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "18108",
+      "/Users/tung/Projects/std23/llmopt/_artifacts/w4-engine-2026-08-27-rope"
+    ],
+    "base_url": "http://127.0.0.1:18108",
+    "warmup": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/pre-rope-warmup.json",
+      "wall_time_s": 0.3725278330020956,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.5498963944089214,
+        "ttft_ms": {
+          "mean": 80.35062499948253,
+          "median": 74.06064600036188,
+          "p95": 113.64953754982706,
+          "min": 55.04983299761079,
+          "max": 118.23137499959557
+        },
+        "tpot_ms": {
+          "mean": 4.17721183324223,
+          "median": 3.8947638331592316,
+          "p95": 5.095563382868325,
+          "min": 3.630958333815215,
+          "max": 5.288361332835241
+        },
+        "request_score": {
+          "mean": 0.5498963944089214,
+          "median": 0.5860602357327669,
+          "p95": 0.6269970803949849,
+          "min": 0.39802550596363884,
+          "max": 0.629439600206513
+        },
+        "prompt_tokens": 191,
+        "cached_prompt_tokens": 81,
+        "cached_prompt_token_ratio": 0.42408376963350786,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.5055908203799824,
+            "ttft_ms": {
+              "mean": 86.64060399860318,
+              "median": 86.64060399860318,
+              "p95": 115.07229789949633,
+              "min": 55.04983299761079,
+              "max": 118.23137499959557
+            },
+            "tpot_ms": {
+              "mean": 4.645701499612187,
+              "median": 4.645701499612187,
+              "p95": 5.224095349512936,
+              "min": 4.003041666389133,
+              "max": 5.288361332835241
+            },
+            "request_score": {
+              "mean": 0.5055908203799824,
+              "median": 0.5055908203799824,
+              "p95": 0.6023996033546917,
+              "min": 0.39802550596363884,
+              "max": 0.613156134796326
+            },
+            "prompt_tokens": 76,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.5942019684378603,
+            "ttft_ms": {
+              "mean": 74.06064600036188,
+              "median": 74.06064600036188,
+              "p95": 86.3232774010612,
+              "min": 60.43549999958486,
+              "max": 87.6857920011389
+            },
+            "tpot_ms": {
+              "mean": 3.708722166872273,
+              "median": 3.708722166872273,
+              "p95": 3.7787096166236247,
+              "min": 3.630958333815215,
+              "max": 3.7864859999293308
+            },
+            "request_score": {
+              "mean": 0.5942019684378603,
+              "median": 0.5942019684378603,
+              "p95": 0.6259158370296477,
+              "min": 0.5589643366692076,
+              "max": 0.629439600206513
+            },
+            "prompt_tokens": 115,
+            "cached_prompt_tokens": 81,
+            "cached_prompt_token_ratio": 0.7043478260869566
+          }
+        }
+      }
+    },
+    "scored": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/pre-rope-report.json",
+      "wall_time_s": 0.2970113749979646,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.6021973648998928,
+        "ttft_ms": {
+          "mean": 62.278208500174514,
+          "median": 61.79599999995844,
+          "p95": 69.83182940093684,
+          "min": 54.78591700011748,
+          "max": 70.7349170006637
+        },
+        "tpot_ms": {
+          "mean": 3.9456909162254306,
+          "median": 3.8912359990111627,
+          "p95": 4.435122316196309,
+          "min": 3.4973610005787727,
+          "max": 4.502930666300624
+        },
+        "request_score": {
+          "mean": 0.6021973648998928,
+          "median": 0.6045858392199248,
+          "p95": 0.6421553268159594,
+          "min": 0.5560773762624139,
+          "max": 0.6435404048973079
+        },
+        "prompt_tokens": 193,
+        "cached_prompt_tokens": 80,
+        "cached_prompt_token_ratio": 0.41450777202072536,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.6389234779594797,
+            "ttft_ms": {
+              "mean": 56.83179199877486,
+              "median": 56.83179199877486,
+              "p95": 58.673079497566505,
+              "min": 54.78591700011748,
+              "max": 58.87766699743224
+            },
+            "tpot_ms": {
+              "mean": 3.6144789998312867,
+              "median": 3.6144789998312867,
+              "p95": 3.7198851991585493,
+              "min": 3.4973610005787727,
+              "max": 3.7315969990838007
+            },
+            "request_score": {
+              "mean": 0.6389234779594797,
+              "median": 0.6389234779594797,
+              "p95": 0.6430787122035251,
+              "min": 0.6343065510216515,
+              "max": 0.6435404048973079
+            },
+            "prompt_tokens": 74,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.565471251840306,
+            "ttft_ms": {
+              "mean": 67.72462500157417,
+              "median": 67.72462500157417,
+              "p95": 70.43388780075475,
+              "min": 64.71433300248464,
+              "max": 70.7349170006637
+            },
+            "tpot_ms": {
+              "mean": 4.276902832619575,
+              "median": 4.276902832619575,
+              "p95": 4.480327882932518,
+              "min": 4.050874998938525,
+              "max": 4.502930666300624
+            },
+            "request_score": {
+              "mean": 0.565471251840306,
+              "median": 0.565471251840306,
+              "p95": 0.573925739860409,
+              "min": 0.5560773762624139,
+              "max": 0.5748651274181982
+            },
+            "prompt_tokens": 119,
+            "cached_prompt_tokens": 80,
+            "cached_prompt_token_ratio": 0.6722689075630253
+          }
+        }
+      }
+    },
+    "stdout_path": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/pre-rope.stdout",
+    "stderr_path": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/pre-rope.stderr"
+  },
+  "candidate": {
+    "label": "rope-table",
+    "binary": "/Users/tung/Projects/std23/llmopt/_build/bin/llmopt-serve",
+    "command": [
+      "/Users/tung/Projects/std23/llmopt/_build/bin/llmopt-serve",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "18109",
+      "/Users/tung/Projects/std23/llmopt/_artifacts/w4-engine-2026-08-27-rope"
+    ],
+    "base_url": "http://127.0.0.1:18109",
+    "warmup": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/rope-table-warmup.json",
+      "wall_time_s": 0.34742070799984504,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.5424852877502474,
+        "ttft_ms": {
+          "mean": 73.1132395003442,
+          "median": 70.35195800017391,
+          "p95": 93.97974544990575,
+          "min": 55.9345840010792,
+          "max": 95.81445799994981
+        },
+        "tpot_ms": {
+          "mean": 4.522270833452542,
+          "median": 4.245930666608425,
+          "p95": 5.745329784137236,
+          "min": 3.6647776663206364,
+          "max": 5.932444334272684
+        },
+        "request_score": {
+          "mean": 0.5424852877502474,
+          "median": 0.563369006026782,
+          "p95": 0.6348524786212644,
+          "min": 0.4063007704513976,
+          "max": 0.636902368496028
+        },
+        "prompt_tokens": 191,
+        "cached_prompt_tokens": 81,
+        "cached_prompt_token_ratio": 0.42408376963350786,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.5147686032245008,
+            "ttft_ms": {
+              "mean": 76.46766650032077,
+              "median": 76.46766650032077,
+              "p95": 93.8797788499869,
+              "min": 57.12087500069174,
+              "max": 95.81445799994981
+            },
+            "tpot_ms": {
+              "mean": 4.869645833726585,
+              "median": 4.869645833726585,
+              "p95": 5.826164484218073,
+              "min": 3.8068473331804853,
+              "max": 5.932444334272684
+            },
+            "request_score": {
+              "mean": 0.5147686032245008,
+              "median": 0.5147686032245008,
+              "p95": 0.6123896527202936,
+              "min": 0.4063007704513976,
+              "max": 0.6232364359976039
+            },
+            "prompt_tokens": 76,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.570201972275994,
+            "ttft_ms": {
+              "mean": 69.75881250036764,
+              "median": 69.75881250036764,
+              "p95": 82.20061814972723,
+              "min": 55.9345840010792,
+              "max": 83.58304099965608
+            },
+            "tpot_ms": {
+              "mean": 4.174895833178501,
+              "median": 4.174895833178501,
+              "p95": 4.634002183350579,
+              "min": 3.6647776663206364,
+              "max": 4.685014000036365
+            },
+            "request_score": {
+              "mean": 0.570201972275994,
+              "median": 0.570201972275994,
+              "p95": 0.6302323288740246,
+              "min": 0.50350157605596,
+              "max": 0.636902368496028
+            },
+            "prompt_tokens": 115,
+            "cached_prompt_tokens": 81,
+            "cached_prompt_token_ratio": 0.7043478260869566
+          }
+        }
+      }
+    },
+    "scored": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/rope-table-report.json",
+      "wall_time_s": 0.29388625000137836,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.5944044399619656,
+        "ttft_ms": {
+          "mean": 61.08769799902802,
+          "median": 60.96877099844278,
+          "p95": 69.21847499943397,
+          "min": 52.42662499949802,
+          "max": 69.98662499972852
+        },
+        "tpot_ms": {
+          "mean": 4.08587841654177,
+          "median": 4.1506179998881025,
+          "p95": 4.4416797330995905,
+          "min": 3.589333333366085,
+          "max": 4.452944333024789
+        },
+        "request_score": {
+          "mean": 0.5944044399619656,
+          "median": 0.5993841977940471,
+          "p95": 0.614097052414413,
+          "min": 0.5643293364539156,
+          "max": 0.6145200278058525
+        },
+        "prompt_tokens": 193,
+        "cached_prompt_tokens": 80,
+        "cached_prompt_token_ratio": 0.41450777202072536,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.600794115765512,
+            "ttft_ms": {
+              "mean": 54.749270999309374,
+              "median": 54.749270999309374,
+              "p95": 56.839652399139595,
+              "min": 52.42662499949802,
+              "max": 57.07191699912073
+            },
+            "tpot_ms": {
+              "mean": 4.18816666630543,
+              "median": 4.18816666630543,
+              "p95": 4.426466566352853,
+              "min": 3.9233889995860713,
+              "max": 4.452944333024789
+            },
+            "request_score": {
+              "mean": 0.600794115765512,
+              "median": 0.600794115765512,
+              "p95": 0.6131474366018184,
+              "min": 0.5870682037251715,
+              "max": 0.6145200278058525
+            },
+            "prompt_tokens": 74,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.588014764158419,
+            "ttft_ms": {
+              "mean": 67.42612499874667,
+              "median": 67.42612499874667,
+              "p95": 69.73057499963033,
+              "min": 64.86562499776483,
+              "max": 69.98662499972852
+            },
+            "tpot_ms": {
+              "mean": 3.9835901667781095,
+              "median": 3.9835901667781095,
+              "p95": 4.338421316848931,
+              "min": 3.589333333366085,
+              "max": 4.377847000190134
+            },
+            "request_score": {
+              "mean": 0.588014764158419,
+              "median": 0.588014764158419,
+              "p95": 0.6093316490924723,
+              "min": 0.5643293364539156,
+              "max": 0.6117001918629226
+            },
+            "prompt_tokens": 119,
+            "cached_prompt_tokens": 80,
+            "cached_prompt_token_ratio": 0.6722689075630253
+          }
+        }
+      }
+    },
+    "stdout_path": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/rope-table.stdout",
+    "stderr_path": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-rope-bench-2026-08-27/rope-table.stderr"
+  },
+  "delta": {
+    "candidate_minus_pre_rope_ers": -0.00779292493792727,
+    "candidate_minus_pre_rope_ttft_median_ms": -0.8272290015156614,
+    "candidate_minus_pre_rope_tpot_median_ms": 0.25938200087693986,
+    "candidate_minus_pre_rope_scored_wall_time_s": -0.003125124996586237
+  },
+  "token_ids": "not exposed by racebench HTTP SSE; smoke probe matched 518,509,7,708 for both schedulers",
+  "dispatch_probe": {
+    "pre_rope_specialized_decode_commands": 479,
+    "rope_table_specialized_decode_commands": 448,
+    "pre_rope_decode_dispatches_three_steps": 567,
+    "rope_table_decode_dispatches_three_steps": 522,
+    "decode_dispatch_delta_three_steps": -45,
+    "decode_dispatch_delta_per_token": -15
+  }
+}

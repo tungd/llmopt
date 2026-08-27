@@ -41,8 +41,16 @@ module Lfm25 : sig
   val specialize_prefill :
     captured_tokens:int -> tokens:int -> t -> (t, string) result
 
+  val rope_cosine_input : string
+  val rope_sine_input : string
+
   val q8_attention_pool_input : string
   val q8_attention_slots_input : string
+
+  (** Specialize one-token decode and replace the captured RoPE tables with
+      canonical runtime bindings. *)
+  val specialize_decode :
+    captured_past:int -> past_tokens:int -> t -> (t, string) result
 
   (** Specialize one-token decode and replace each materialized GQA cache
       expansion with direct reads from the grouped-Q8 token pool. The rewritten

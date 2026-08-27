@@ -358,6 +358,13 @@ let () =
   let down_weight = stored "down.weight" [ 64; 64 ] Ir.Dtype.UInt8 in
   let down_scale = stored "down.scales" [ 64; 2 ] Ir.Dtype.Float16 in
   let ffn_norm_weight = stored "ffn_norm.weight" [ 64 ] Ir.Dtype.Float16 in
+  let activation_f32 =
+    Ir.Graph.fresh_tensor_value ffn
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float32
+  in
+  Ir.Graph.append ffn
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+    ~inputs:[ activation ] ~output:(Some activation_f32);
   let fresh shape =
     Ir.Graph.fresh_tensor_value ffn ~shape:(Tensor_shape.of_ints_exn shape)
       ~dtype:Ir.Dtype.Float16
@@ -369,7 +376,7 @@ let () =
   in
   let norm =
     append (Ir.Op.Rms_norm { epsilon = 1e-5 })
-      [ activation; ffn_norm_weight ] [ 1; 64 ]
+      [ activation_f32; ffn_norm_weight ] [ 1; 64 ]
   in
   let gate_linear =
     append (Ir.Op.W4a16_linear { m = 1; n = 128; k = 64; bias = false })
@@ -401,6 +408,13 @@ let () =
   Ir.Graph.add_output ffn ~name:"hidden" ffn_output;
   let regions = Passes.discover_swiglu_ffn ffn |> expect_ok in
   expect (List.length regions = 1) "rule engine discovers one W4A16 SwiGLU region";
+  let region = List.hd regions in
+  expect
+    (List.length (Kernel_ir.member_node_ids region) = 8
+    && match Kernel_ir.inputs region with
+       | { Kernel_ir.value; _ } :: _ -> Ir.Value.equal value activation
+       | _ -> false)
+    "SwiGLU rule absorbs a preceding f16-to-f32 activation cast";
   let fused_ffn = Passes.fuse_swiglu_ffn ffn |> expect_ok in
   expect
     (Ir.Graph.nodes fused_ffn
@@ -408,7 +422,11 @@ let () =
            match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
            | Ir.Op.W4a16_swiglu_ffn { m = 1; n = 128; k = 64; epsilon },
              inputs, Some output ->
-               List.length inputs = 9 && Ir.Value.equal output ffn_output
+               List.length inputs = 9
+               && (match inputs with
+                  | input :: _ -> Ir.Value.equal input activation
+                  | _ -> false)
+               && Ir.Value.equal output ffn_output
                && Float.abs (epsilon -. 1e-5) < 1e-12
            | _ -> false))
     "rule engine rewrites W4A16 SwiGLU into one executable operation";
@@ -416,10 +434,26 @@ let () =
     (Ir.Graph.nodes fused_ffn
     |> List.for_all (fun node ->
            match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32) -> false
            | Ir.Op.W4a16_linear _ | Ir.Op.Rms_norm _ -> false
            | Ir.Op.Primitive (Ir.Primitive.Pointwise _) -> false
            | _ -> true))
     "W4A16 SwiGLU rewrite removes all matched intermediates";
+  let rms_absorbed = Passes.fuse_rms_norm ffn in
+  expect
+    (Ir.Graph.nodes rms_absorbed
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Rms_norm _, [ input; _ ] -> Ir.Value.equal input activation
+           | _ -> false))
+    "RMSNorm pass rewrites its input to the original f16 activation";
+  expect
+    (Ir.Graph.nodes rms_absorbed
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32) -> false
+           | _ -> true))
+    "RMSNorm pass removes the single-use widening cast";
   let ffn_schedule =
     fused_ffn |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
@@ -441,6 +475,80 @@ let () =
        (contains_substring (Metal.Program.source ffn_program)
           "kernel void llmopt_w4a16_swiglu_ffn_f16_g64"))
     "Metal lowering excludes the retired serial W4A16 SwiGLU kernel";
+
+  let rope_graph = Ir.Graph.create () in
+  let rope_input =
+    tensor_input rope_graph ~name:"rope_input" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let rope_weight =
+    tensor_input rope_graph ~name:"rope_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "rope_weight" })
+      ~shape:[ 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let rope_cosine =
+    tensor_input rope_graph ~name:"captured_cosine"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 1; 1; 64 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let rope_sine =
+    tensor_input rope_graph ~name:"captured_sine"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 1; 1; 64 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let rope_output =
+    Ir.Graph.fresh_tensor_value rope_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let rope_config =
+    Ir.Rms_rope.create ~epsilon:1e-5 ~half_dimension:32 |> expect_ok
+  in
+  Ir.Graph.append rope_graph ~op:(Ir.Op.Rms_rope rope_config)
+    ~inputs:[ rope_input; rope_weight; rope_cosine; rope_sine ]
+    ~output:(Some rope_output);
+  Ir.Graph.add_output rope_graph ~name:"rope" rope_output;
+  let rope_schedule =
+    rope_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.Lfm25.specialize_decode ~captured_past:1 ~past_tokens:1
+    |> expect_ok
+  in
+  let rope_runtime_names =
+    Serving_schedule.runtime_inputs rope_schedule |> List.map fst
+    |> List.sort String.compare
+  in
+  expect
+    (rope_runtime_names
+    = [ "__llmopt_rope_cosine"; "__llmopt_rope_sine"; "rope_input" ])
+    "decode RoPE specialization replaces captured trigonometric inputs";
+  expect
+    (Serving_schedule.commands rope_schedule
+    |> List.for_all (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Input { name = "captured_cosine"; _ }
+           | Ir.Op.Input { name = "captured_sine"; _ } -> false
+           | _ -> true))
+    "decode RoPE specialization prunes captured trigonometric producers";
+  expect
+    (Serving_schedule.commands rope_schedule
+    |> List.exists (fun command ->
+           match
+             Serving_schedule.Command.op command,
+             Serving_schedule.Command.inputs command
+           with
+           | Ir.Op.Rms_rope _, [ _; _; cosine; sine ] ->
+               let names =
+                 Serving_schedule.runtime_inputs rope_schedule
+                 |> List.filter_map (fun (name, value) ->
+                        if Ir.Value.equal value cosine then Some name else None)
+               in
+               names = [ "__llmopt_rope_cosine" ]
+               &&
+               (Serving_schedule.runtime_inputs rope_schedule
+               |> List.filter_map (fun (name, value) ->
+                      if Ir.Value.equal value sine then Some name else None))
+                  = [ "__llmopt_rope_sine" ]
+           | _ -> false))
+    "decode RoPE operations bind canonical runtime tables";
 
   let layout =
     Kv_cache.Layout.create ~format:Kv_cache.Format.default

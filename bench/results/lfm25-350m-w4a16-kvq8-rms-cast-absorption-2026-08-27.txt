@@ -1,0 +1,70 @@
+LFM2.5-350M W4A16/KVQ8 redundant RMSNorm/SwiGLU cast absorption
+==================================================================
+
+Date: 2026-08-27
+Scope: offline compiler replan of the preserved prefill/decode capture
+
+Inputs
+------
+
+- Prefill graph: `_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/graphs/graph-0000/graph.llmopt`
+- Decode graph: `_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/graphs/graph-0001/graph.llmopt`
+- Shared weights: `_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/graphs/weights.llmopt`
+- Candidate engine: `_artifacts/w4-engine-2026-08-27-rms-cast`
+- Baseline engine: `_artifacts/w4-engine-2026-08-27-restored`
+
+Compiler change
+---------------
+
+`Pass_fuse_rms_norm` now unwraps a single-use f16-to-f32 input cast after
+forming `Rms_norm`; `Pass_fuse_swiglu_ffn` expresses the same optional cast in
+the declarative rule and carries the original f16 activation into the fused
+region. `Fusion_query` therefore has typed `cast` and input-level `or`
+patterns. `Pass_fuse_rms_rope` accepts the direct f16 RMSNorm form as well as
+the legacy casted form so the existing rope fusion remains selected.
+
+Static package result
+---------------------
+
+| Stage | Baseline commands | Candidate commands | Delta | Baseline f16->f32 casts | Candidate f16->f32 casts | W4A16 SwiGLU ops |
+|---|---:|---:|---:|---:|---:|---:|
+| Prefill | 752 | 692 | -60 | 33 | 0 | 16 |
+| Decode | 771 | 708 | -63 | 33 | 0 | 16 |
+
+The 33 cast dispatches are absent from each candidate plan. The larger command
+delta also removes the barrier commands that surrounded those dispatches. The
+remaining five `cast(f32)` lines in each plan are f32/i64 position and mask
+conversions, not f16 widening casts.
+
+Package checks
+--------------
+
+- Candidate prefill: ABI 17, 58 kernel entries, 692 commands, zero opaque,
+  243 tensor-store bindings.
+- Candidate decode: ABI 17, 55 kernel entries, 708 commands, zero opaque,
+  243 tensor-store bindings.
+- `llmopt-lfm-serving-check` passes for the candidate pair: KV `q8-group-64`,
+  page size 1, prefill templates 6/13/128/4096, decode templates 6/1/127/4095,
+  and six paged-Q8 attention commands. Specialized decode is 479 commands
+  versus 512 for the baseline pair.
+- `ninja -f ninja.build all test` passes 42 Python tests and the OCaml
+  canonical W4A16/KVQ8 suite.
+
+Native comparison
+-----------------
+
+One fresh supervised HTTP trace ran the restored engine and the candidate
+sequentially on the same host, with four warmup and four scored requests per
+engine. Both completed 4/4 scored requests with zero output-token mismatches
+and 80 cached prompt tokens. The full JSON receipt is
+`bench/results/lfm25-350m-w4a16-kvq8-rms-cast-absorption-vs-restored-2026-08-27.json`.
+
+| Engine | ERS | median TTFT | median TPOT |
+|---|---:|---:|---:|
+| Restored baseline | 0.6029898047 | 65.8663335 ms | 3.8495070 ms |
+| Cast absorption | 0.5858433138 | 61.8422705 ms | 4.1920208 ms |
+| Candidate minus baseline | -0.0171464909 | -4.0240630 ms | +0.3425138 ms |
+
+This is one sequential sample per engine rather than repeated or
+counterbalanced sampling; it records a mixed latency result, with lower TTFT
+but higher TPOT and lower aggregate ERS for the candidate.

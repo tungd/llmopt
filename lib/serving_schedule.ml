@@ -1331,23 +1331,10 @@ module Lfm25 = struct
       let* projection = last_token_projection schedule in
       specialize ?projection [ captured_tokens, tokens ] schedule
 
-  let specialize_decode ~captured_past ~past_tokens schedule =
-    if captured_past <= 0 then Error "captured decode past length must be positive"
-    else if past_tokens <= 0 then Error "decode past length must be positive"
-    else if captured_past = max_int || past_tokens = max_int then
-      Error "decode total length overflows"
-    else
-      specialize
-        [ captured_past, past_tokens; captured_past + 1, past_tokens + 1 ]
-        schedule
-
   let q8_attention_pool_input = "__llmopt_q8_attention_pool"
   let q8_attention_slots_input = "__llmopt_q8_attention_slots"
-
-  type cache_chain = {
-    materialized : Ir.Value.t;
-    current : Ir.Value.t;
-  }
+  let rope_cosine_input = "__llmopt_rope_cosine"
+  let rope_sine_input = "__llmopt_rope_sine"
 
   let producer_map commands =
     List.fold_left
@@ -1356,53 +1343,6 @@ module Lfm25 = struct
         | None -> producers
         | Some output -> Value_map.add (Ir.Value.id output) command producers)
       Value_map.empty commands
-
-  let runtime_input producers value =
-    match Value_map.find_opt (Ir.Value.id value) producers with
-    | Some
-        {
-          Command.op =
-            Ir.Op.Input { source = Ir.Input_source.Runtime; name = _ };
-          inputs = [];
-          output = Some _;
-          _;
-        } ->
-        true
-    | _ -> false
-
-  let cache_chain producers value =
-    let rec find value =
-      match Value_map.find_opt (Ir.Value.id value) producers with
-      | Some
-          {
-            Command.op =
-              Ir.Op.Primitive
-                (Ir.Primitive.Movement
-                  (Ir.Movement.Reshape | Ir.Movement.Expand
-                  | Ir.Movement.Contiguous | Ir.Movement.View
-                  | Ir.Movement.Index _));
-            inputs = [ input ];
-            _;
-          } ->
-          find input
-      | Some
-          {
-            Command.op =
-              Ir.Op.Primitive
-                (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 2 }));
-            inputs = [ left; right ];
-            output = Some materialized;
-            _;
-          } ->
-          if runtime_input producers left && not (runtime_input producers right)
-          then Ok { materialized; current = right }
-          else if
-            runtime_input producers right && not (runtime_input producers left)
-          then Ok { materialized; current = left }
-          else Error "paged Q8 attention concat has no unique runtime cache input"
-      | _ -> Error "paged Q8 attention does not have the expected GQA cache chain"
-    in
-    find value
 
   let max_value_id commands =
     List.fold_left
@@ -1450,6 +1390,147 @@ module Lfm25 = struct
                | None -> true
                | Some output -> Value_map.mem (Ir.Value.id output) needed))
     |> List.mapi (fun node_id command -> { command with Command.node_id })
+
+  let specialize_rope schedule =
+    let commands = schedule.commands in
+    let ropes =
+      List.filter_map
+        (fun command ->
+          match command.Command.op, command.Command.inputs with
+          | Ir.Op.Rms_rope config, [ input; weight; cosine; sine ] ->
+              Some (config, input, weight, cosine, sine)
+          | _ -> None)
+        commands
+    in
+    match ropes with
+    | [] -> Ok schedule
+    | (first_config, _, _, first_cosine, first_sine) :: rest ->
+        let half_dimension = Ir.Rms_rope.half_dimension first_config in
+        if half_dimension > max_int / 2 then
+          Error "LFM decode RoPE width overflows"
+        else
+          let width = 2 * half_dimension in
+          let expected_shape = [ 1; 1; 1; width ] in
+          let valid_trig value =
+            Ir.Value.dtype value = Ir.Dtype.Float16
+            && Tensor_shape.dimensions (Ir.Value.logical_shape value)
+               = expected_shape
+          in
+          if not (valid_trig first_cosine && valid_trig first_sine) then
+            Error "LFM decode RoPE trigonometric input has unexpected metadata"
+          else if
+            List.exists
+              (fun (config, _, _, cosine, sine) ->
+                Ir.Rms_rope.half_dimension config <> half_dimension
+                || not (valid_trig cosine && valid_trig sine))
+              rest
+          then Error "LFM decode RoPE commands disagree on trigonometric metadata"
+          else
+            let maximum = max_value_id commands in
+            if maximum > max_int - 2 then
+              Error "LFM decode RoPE value ids overflow"
+            else
+              let* shape =
+                Tensor_shape.create expected_shape
+                |> Result.map_error Tensor_shape.error_to_string
+              in
+              let cosine =
+                Ir.Value.make_tensor ~id:(maximum + 1) ~shape
+                  ~dtype:Ir.Dtype.Float16
+              in
+              let sine =
+                Ir.Value.make_tensor ~id:(maximum + 2) ~shape
+                  ~dtype:Ir.Dtype.Float16
+              in
+              let rewrite command =
+                match command.Command.op, command.Command.inputs with
+                | Ir.Op.Rms_rope _, [ input; weight; _; _ ] ->
+                    { command with Command.inputs = [ input; weight; cosine; sine ] }
+                | _ -> command
+              in
+              let commands = List.map rewrite commands in
+              let inputs =
+                [ { Command.node_id = 0;
+                    op =
+                      Ir.Op.Input
+                        { name = rope_cosine_input;
+                          source = Ir.Input_source.Runtime };
+                    inputs = [];
+                    output = Some cosine };
+                  { Command.node_id = 1;
+                    op =
+                      Ir.Op.Input
+                        { name = rope_sine_input;
+                          source = Ir.Input_source.Runtime };
+                    inputs = [];
+                    output = Some sine } ]
+              in
+              create (prune (inputs @ commands))
+
+  let specialize_decode ~captured_past ~past_tokens schedule =
+    if captured_past <= 0 then Error "captured decode past length must be positive"
+    else if past_tokens <= 0 then Error "decode past length must be positive"
+    else if captured_past = max_int || past_tokens = max_int then
+      Error "decode total length overflows"
+    else
+      let* schedule =
+        specialize
+          [ captured_past, past_tokens; captured_past + 1, past_tokens + 1 ]
+          schedule
+      in
+      specialize_rope schedule
+
+  type cache_chain = {
+    materialized : Ir.Value.t;
+    current : Ir.Value.t;
+  }
+
+  let runtime_input producers value =
+    match Value_map.find_opt (Ir.Value.id value) producers with
+    | Some
+        {
+          Command.op =
+            Ir.Op.Input { source = Ir.Input_source.Runtime; name = _ };
+          inputs = [];
+          output = Some _;
+          _;
+        } ->
+        true
+    | _ -> false
+
+  let cache_chain producers value =
+    let rec find value =
+      match Value_map.find_opt (Ir.Value.id value) producers with
+      | Some
+          {
+            Command.op =
+              Ir.Op.Primitive
+                (Ir.Primitive.Movement
+                  (Ir.Movement.Reshape | Ir.Movement.Expand
+                  | Ir.Movement.Contiguous | Ir.Movement.View
+                  | Ir.Movement.Index _));
+            inputs = [ input ];
+            _;
+          } ->
+          find input
+      | Some
+          {
+            Command.op =
+              Ir.Op.Primitive
+                (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 2 }));
+            inputs = [ left; right ];
+            output = Some materialized;
+            _;
+          } ->
+          if runtime_input producers left && not (runtime_input producers right)
+          then Ok { materialized; current = right }
+          else if
+            runtime_input producers right && not (runtime_input producers left)
+          then Ok { materialized; current = left }
+          else Error "paged Q8 attention concat has no unique runtime cache input"
+      | _ -> Error "paged Q8 attention does not have the expected GQA cache chain"
+    in
+    find value
 
   let direct_q8_attention ~past_tokens ~cache schedule =
     let layout = Kv_cache.Config.layout cache in

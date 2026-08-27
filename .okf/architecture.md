@@ -69,6 +69,12 @@ sources:
   - id: rms-rope-result
     resource: /bench/results/lfm25-350m-q8-rms-rope-compiler-2026-08-25.txt
     title: RMSNorm-RoPE compiler fusion evidence
+  - id: rope-table-engine
+    resource: /lib/serving_engine.ml
+    title: CPU-precomputed RoPE table and position binding
+  - id: rope-table-measurement
+    resource: /bench/results/lfm25-350m-w4a16-kvq8-rope-table-elision-vs-pre-rope-2026-08-27.json
+    title: W4A16 decode RoPE table comparison
   - id: local-radix-cache
     resource: /lib/radix_cache.ml
     title: OCaml compressed radix prefix cache
@@ -203,6 +209,32 @@ and records LLMOpt ERS `0.6024965413`, median TTFT `62.6631460 ms`, and median
 TPOT `3.9542290 ms`. Ordinary W4 and fused FFN projections assign one 32-lane
 SIMD group to each output and reduce with `simd_sum`; the W4 LM head uses
 `uchar4` packed loads.
+
+The cast-absorption replan is a separate static candidate built from the same
+preserved W4A16/KVQ8 capture and archive. It removes the 33 single-use
+Float16-to-Float32 widening casts from each graph while retaining 16 fused W4
+FFNs, 243 bindings, and zero opaque commands: prefill/decode become 692/708
+commands, and specialized decode becomes 479 commands. A fresh sequential
+4/4 scored trace is recorded in
+`bench/results/lfm25-350m-w4a16-kvq8-rms-cast-absorption-vs-restored-2026-08-27.json`:
+candidate minus restored changes ERS by `-0.0171464909`, median TTFT by
+`-4.0240630 ms`, and median TPOT by `+0.3425138 ms`, with 80 cached prompt
+tokens for both. The earlier restored-vs-llama.cpp receipt remains the latest
+Q4 comparison; this new trace is a single sequential engine comparison.
+
+Decode specialization also owns the position-dependent RoPE inputs. The
+captured scalar arange/index/matmul/trigonometric branch is replaced with two
+canonical runtime values, `__llmopt_rope_cosine` and `__llmopt_rope_sine`.
+`Serving_engine.Rope_table` computes the full 128,000-position FP16 table from
+the archived float32 inverse frequencies once at engine load, then binds a
+row view for each decode position. Ordinary decode copies that row into fixed
+slots; replay binds distinct row views for each encoded position. On the fresh
+W4A16/KVQ8 pair, specialized decode drops from 479 to 448 commands and the
+three-token native smoke drops from 567 to 522 decode kernel records, while
+token IDs remain `518,509,7,708`. The sequential HTTP comparison is recorded in
+`bench/results/lfm25-350m-w4a16-kvq8-rope-table-elision-vs-pre-rope-2026-08-27.json`;
+its table-minus-pre-RoPE changes are ERS `-0.0077929249`, median TTFT
+`-0.8272290 ms`, and median TPOT `+0.2593820 ms`.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed

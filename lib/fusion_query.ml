@@ -20,7 +20,7 @@ module Shape = struct
   type t = Any_shape | Rank of int | Dims of dim list
 end
 
-type operation = Any_operation | W4a16_linear | Rms_norm | Silu | Mul | Add
+type operation = Any_operation | W4a16_linear | Rms_norm | Cast | Silu | Mul | Add
 type effect_kind = Pure | Stateful | Synchronizing | Opaque | Any_effect
 type use_count = Exactly of int | At_most of int | At_least of int
 
@@ -44,7 +44,11 @@ and node_pattern = {
   capture : Capture.t option;
 }
 
-and input_pattern = Any_input | Capture_input of Capture.t | Produced_by of pattern
+and input_pattern =
+  | Any_input
+  | Capture_input of Capture.t
+  | Produced_by of pattern
+  | Or_input of input_pattern list
 and output_pattern = Ignore_output | Capture_output of Capture.t
 
 module Reader = struct
@@ -123,6 +127,7 @@ module Parser = struct
     | "any" | "*" -> Ok Any_operation
     | "w4a16-linear" | "w4a16_linear" | "w4a16-linear-g64" -> Ok W4a16_linear
     | "rms-norm" | "rms_norm" -> Ok Rms_norm
+    | "cast" -> Ok Cast
     | "silu" -> Ok Silu
     | "mul" -> Ok Mul
     | "add" -> Ok Add
@@ -199,6 +204,8 @@ module Parser = struct
         capture value |> Result.map (fun value -> Capture_input value)
     | List [ Atom "produced-by"; pattern ] ->
         parse_pattern pattern |> Result.map (fun pattern -> Produced_by pattern)
+    | List (Atom "or" :: patterns) ->
+        parse_list value_pattern patterns |> Result.map (fun patterns -> Or_input patterns)
     | List (Atom "node" :: _) as value ->
         parse_pattern value |> Result.map (fun pattern -> Produced_by pattern)
     | _ -> Error "invalid fusion-query input pattern"
@@ -312,6 +319,7 @@ let contains text needle =
 let operation_of_node node =
   match Ir.node_op node with
   | Ir.Op.Rms_norm _ -> Rms_norm
+  | Ir.Op.Primitive (Ir.Primitive.Cast _) -> Cast
   | Ir.Op.Add _ -> Add
   | Ir.Op.Primitive (Ir.Primitive.Pointwise (Ir.Pointwise.Unary (Ir.Pointwise.Silu, _))) -> Silu
   | Ir.Op.Primitive (Ir.Primitive.Pointwise (Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _))) -> Mul
@@ -534,10 +542,12 @@ and match_input graph nodes pattern value state =
   | Any_input -> [ state ]
   | Capture_input capture ->
       Option.to_list (bind_capture capture (Match.Tensor value) state)
-  | Produced_by pattern ->
+  | Produced_by pattern -> (
       match producer nodes value with
       | Some node -> match_pattern graph nodes pattern (Some node) state
-      | None -> match_pattern graph nodes pattern None state
+      | None -> match_pattern graph nodes pattern None state)
+  | Or_input patterns ->
+      List.concat_map (fun pattern -> match_input graph nodes pattern value state) patterns
 
 let match_graph pattern graph =
   let nodes = Ir.Graph.nodes graph in

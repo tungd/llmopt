@@ -1,0 +1,78 @@
+LFM2.5-350M W4A16/KVQ8 decode RoPE table elision
+==================================================
+
+Date: 2026-08-27
+Scope: CPU-precompute position-dependent RoPE rows and bind them directly in
+the native decode scheduler
+
+Inputs
+------
+
+- Prefill graph: `_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/graphs/graph-0000/graph.llmopt`
+- Decode graph: `_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/graphs/graph-0001/graph.llmopt`
+- Shared weights: `_artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/graphs/weights.llmopt`
+- Candidate engine: `_artifacts/w4-engine-2026-08-27-rope`
+- Candidate archive: 322,667,136 bytes
+- Pre-RoPE runtime binary: `/tmp/llmopt-pre-rope/_build/bin/llmopt-serve`
+- Pre-RoPE binary source: clean commit `9652c81e62db1133b9acad4ee8452dd2338413e0`
+
+Compiler/runtime change
+-----------------------
+
+`Serving_schedule.Lfm25.specialize_decode` replaces every captured
+`[1;1;1;64]` cosine/sine input with canonical runtime values
+`__llmopt_rope_cosine` and `__llmopt_rope_sine`, then liveness-prunes the
+captured scalar position/trigonometric branch. `Serving_engine.Rope_table`
+reads the archived float32 inverse frequencies at engine load, computes all
+128,000 LFM2 position rows in float32, stores the duplicated half-dimension
+values as FP16, and binds one row per decode position. Replay uses independent
+row views; ordinary decode uses fixed slots copied from the selected row.
+
+Static serving schedule
+-----------------------
+
+| Decode specialization | Commands | Runtime inputs | Paged-Q8 attention |
+|---|---:|---:|---:|
+| Pre-RoPE scheduler | 479 | 13 | 6 |
+| RoPE table scheduler | 448 | 15 | 6 |
+| Delta | -31 | +2 | 0 |
+
+The captured scalar branch contains 22 graph nodes. The native smoke records
+567 decode kernel entries over three generated tokens with the pre-RoPE binary
+and 522 with the table scheduler: -45 total, or -15 executable dispatches per
+token. Both runs return `518,509,7,708`.
+
+Package/runtime checks
+----------------------
+
+- Candidate prefill: ABI 17, 58 kernel entries, 692 commands, zero opaque,
+  243 tensor-store bindings.
+- Candidate decode: ABI 17, 55 kernel entries, 708 commands, zero opaque,
+  243 tensor-store bindings.
+- `llmopt-lfm-serving-check` passes with grouped Q8 KV, page size 1, six
+  paged-Q8 attention commands, and specialized decode at 448 commands.
+- `ninja -f ninja.build all test` passes 42 Python tests and the OCaml
+  canonical W4A16/KVQ8 suite.
+- `llmopt-lfm-serving-smoke` passes on Apple M4 Pro for both scheduler
+  binaries with identical token IDs and released ports.
+
+Native HTTP comparison
+----------------------
+
+The shared `lfm25-mps-warmup.json` and `lfm25-mps-smoke.json` traces ran
+sequentially with four warmup and four scored requests per engine,
+`max_workers=1`, and fresh HTTP connections. The pre-RoPE binary ran first;
+both engines completed 4/4 scored requests with zero output-token mismatches
+and 80 cached prompt tokens. Full request reports are under
+`_artifacts/w4-rope-bench-2026-08-27/` and the JSON receipt is
+`bench/results/lfm25-350m-w4a16-kvq8-rope-table-elision-vs-pre-rope-2026-08-27.json`.
+
+| Engine | ERS | median TTFT | median TPOT |
+|---|---:|---:|---:|
+| Pre-RoPE scheduler | 0.6021973649 | 61.7960000 ms | 3.8912360 ms |
+| RoPE table | 0.5944044400 | 60.9687710 ms | 4.1506180 ms |
+| Table minus pre-RoPE | -0.0077929249 | -0.8272290 ms | +0.2593820 ms |
+
+This is one sequential sample per engine; timing is a mixed observation, while
+the command/dispatch deltas and token-ID equality are direct execution
+evidence.

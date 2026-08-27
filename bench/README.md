@@ -6,6 +6,12 @@ official `LiquidAI/LFM2.5-350M-GGUF:Q4_0` asset for four-bit weight parity.
 
 ## llama.cpp
 
+The `lfm25-mps-*` trace filenames are retained historical names for the shared
+request workload; they do not select PyTorch or MPS execution. Headline parity
+receipts compare the native `llmopt-serve` binary with `llama-server` using the
+official Q4_0 asset. Native-vs-native receipts are used only to isolate one
+compiler or serving change before refreshing that target comparison.
+
 Record native prompt/generation throughput:
 
 ```sh
@@ -66,3 +72,23 @@ The current restored-SIMD W4A16 receipt is
 It records LLMOpt ERS `0.6024965413`, median TTFT `62.6631460 ms`, and median
 TPOT `3.9542290 ms`; the adjacent llama.cpp Q4_0 run records ERS
 `0.7863400008`, median TTFT `20.8065835 ms`, and median TPOT `2.9179583 ms`.
+The separate static cast-absorption replan is recorded in
+`results/lfm25-350m-w4a16-kvq8-rms-cast-absorption-2026-08-27.txt`; it has no
+new device latency measurement. A fresh sequential native comparison of that
+candidate against the restored engine is recorded in
+`results/lfm25-350m-w4a16-kvq8-rms-cast-absorption-vs-restored-2026-08-27.json`:
+candidate-minus-restored ERS `-0.0171464909`, median TTFT `-4.0240630 ms`, and
+median TPOT `+0.3425138 ms`, with 4/4 scored requests and 80 cached prompt
+tokens for each engine.
+
+The decode RoPE-table-elision replan is recorded in
+`results/lfm25-350m-w4a16-kvq8-rope-table-elision-2026-08-27.txt`. It binds
+precomputed FP16 cosine/sine rows for each position and prunes the captured 22
+node scalar RoPE branch. Specialized decode changes from 479 to 448 commands;
+the native three-token smoke records 567 to 522 decode kernel records (15
+fewer executable dispatches per token) with identical `518,509,7,708` token
+IDs. Its fresh sequential comparison is
+`results/lfm25-350m-w4a16-kvq8-rope-table-elision-vs-pre-rope-2026-08-27.json`:
+table-minus-pre-RoPE ERS `-0.0077929249`, median TTFT `-0.8272290 ms`, and
+median TPOT `+0.2593820 ms`, with 4/4 scored requests and 80 cached prompt
+tokens for each engine.

@@ -36,9 +36,23 @@ let swiglu_query =
                  (node
                   (op rms-norm)
                   (capture $rms_node)
-                  (in (tensor $activation) (tensor $norm_weight))
+                  (in
+                   (or
+                    (tensor $activation)
+                    (produced-by
+                     (node
+                      (op cast)
+                      (capture $activation_cast_node)
+                      (in (tensor $activation))
+                      (out (tensor $activation_cast))
+                      (where
+                       (dtype $activation f16)
+                       (dtype $activation_cast f32)
+                       (uses $activation_cast exactly 1)))))
+                   (tensor $norm_weight))
                   (out (tensor $norm))
                   (where (effect pure)
+                         (dtype $activation f16)
                          (dtype $norm f16)
                          (uses $norm exactly 2))))
                 (tensor $weight_gate)

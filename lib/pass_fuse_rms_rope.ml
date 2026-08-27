@@ -138,10 +138,10 @@ type direct_term = {
 type rms_chain = {
   transpose_node : Ir.node;
   rms_node : Ir.node;
-  cast_node : Ir.node;
+  cast_node : Ir.node option;
   input : Ir.Value.t;
   weight : Ir.Value.t;
-  cast : Ir.Value.t;
+  cast : Ir.Value.t option;
   normalized : Ir.Value.t;
   epsilon : float;
 }
@@ -224,22 +224,42 @@ let match_rms_chain producers transposed =
       [ normalized ] ) ->
       let* rms_node = producer producers normalized in
       (match Ir.node_op rms_node, Ir.node_inputs rms_node with
-      | Ir.Op.Rms_norm { epsilon }, [ cast; weight ] ->
-          let* cast_node = producer producers cast in
-          (match Ir.node_op cast_node, Ir.node_inputs cast_node with
-          | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32), [ input ] ->
+      | Ir.Op.Rms_norm { epsilon }, [ norm_input; weight ] ->
+          let direct () =
+            if Ir.Value.dtype norm_input = Ir.Dtype.Float16 then
               Some
                 {
                   transpose_node;
                   rms_node;
-                  cast_node;
-                  input;
+                  cast_node = None;
+                  input = norm_input;
                   weight;
-                  cast;
+                  cast = None;
                   normalized;
                   epsilon;
                 }
-          | _ -> None)
+            else None
+          in
+          (match producer producers norm_input with
+          | Some cast_node ->
+              (match Ir.node_op cast_node, Ir.node_inputs cast_node with
+              | ( Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32),
+                  [ input ] )
+                when Ir.Value.dtype input = Ir.Dtype.Float16
+                     && Ir.Value.dtype norm_input = Ir.Dtype.Float32 ->
+                  Some
+                    {
+                      transpose_node;
+                      rms_node;
+                      cast_node = Some cast_node;
+                      input;
+                      weight;
+                      cast = Some norm_input;
+                      normalized;
+                      epsilon;
+                    }
+              | _ -> direct ())
+          | None -> direct ())
       | _ -> None)
   | _ -> None
 
@@ -270,7 +290,6 @@ let rms_rope_metadata_matches chain direct rope output =
   in
   shapes_match
   && Ir.Value.dtype chain.input = Ir.Dtype.Float16
-  && Ir.Value.dtype chain.cast = Ir.Dtype.Float32
   && Ir.Value.dtype chain.weight = Ir.Dtype.Float16
   && Ir.Value.dtype chain.normalized = Ir.Dtype.Float16
   && Ir.Value.dtype rope.transposed = Ir.Dtype.Float16
@@ -284,7 +303,9 @@ let rms_rope_metadata_matches chain direct rope output =
        (Ir.Value.logical_shape rope.transposed)
 
 let rms_rope_uses_match nodes chain direct rope final_node =
-  used_only_by nodes chain.cast [ chain.rms_node ]
+  (match chain.cast with
+  | None -> true
+  | Some cast -> used_only_by nodes cast [ chain.rms_node ])
   && used_only_by nodes chain.normalized [ chain.transpose_node ]
   && used_only_by nodes rope.transposed
        [ direct.node; rope.low_node; rope.high_node ]
@@ -315,9 +336,10 @@ let match_rms_rope nodes producers final_node =
       in
       let removed =
         node_ids
-          [ chain.cast_node; chain.rms_node; chain.transpose_node; direct.node;
-            rope.low_node; rope.high_node; rope.neg_node; rope.concat_node;
-            rope.multiply_node; final_node ]
+          (Option.to_list chain.cast_node
+          @ [ chain.rms_node; chain.transpose_node; direct.node; rope.low_node;
+              rope.high_node; rope.neg_node; rope.concat_node;
+              rope.multiply_node; final_node ])
       in
       Some
         {

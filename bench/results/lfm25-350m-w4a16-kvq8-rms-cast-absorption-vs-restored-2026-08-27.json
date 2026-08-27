@@ -1,0 +1,440 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-27T03:29:53.835300+00:00",
+  "benchmark": "racebench-http",
+  "target": "llmopt",
+  "runtime": "llmopt-serve",
+  "model_id": "LiquidAI/LFM2.5-350M",
+  "trace": "bench/traces/lfm25-mps-smoke.json",
+  "warmup_trace": "bench/traces/lfm25-mps-warmup.json",
+  "max_workers": 1,
+  "reuse_connections": false,
+  "baseline": {
+    "engine": "_artifacts/w4-engine-2026-08-27-restored",
+    "port": 18106,
+    "command": [
+      "_build/bin/llmopt-serve",
+      "/Users/tung/Projects/std23/llmopt/_artifacts/w4-engine-2026-08-27-restored",
+      "--port",
+      "18106"
+    ],
+    "memory_before": "The system has 25769803776 (1572864 pages with a page size of 16384).\nSystem-wide memory free percentage: 69%",
+    "memory_after": "The system has 25769803776 (1572864 pages with a page size of 16384).\nSystem-wide memory free percentage: 67%",
+    "base_url": "http://127.0.0.1:18106",
+    "warmup": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-q4-bench-2026-08-27-r5-cast/restored/restored-warmup.json",
+      "wall_time_s": 0.5458978330025275,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.4773521380011686,
+        "ttft_ms": {
+          "mean": 122.61198975011212,
+          "median": 73.09033349883975,
+          "p95": 254.85428750125712,
+          "min": 59.248417001072085,
+          "max": 285.01887500169687
+        },
+        "tpot_ms": {
+          "mean": 4.540086666565912,
+          "median": 3.826603999793103,
+          "p95": 6.4305422499577,
+          "min": 3.6471526667204066,
+          "max": 6.859985999957037
+        },
+        "request_score": {
+          "mean": 0.4773521380011686,
+          "median": 0.5874853702543741,
+          "p95": 0.6292140114372426,
+          "min": 0.10432268895052627,
+          "max": 0.6301151225454001
+        },
+        "prompt_tokens": 191,
+        "cached_prompt_tokens": 81,
+        "cached_prompt_token_ratio": 0.42408376963350786,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.36721890574796323,
+            "ttft_ms": {
+              "mean": 172.13364600138448,
+              "median": 172.13364600138448,
+              "p95": 273.73035210166563,
+              "min": 59.248417001072085,
+              "max": 285.01887500169687
+            },
+            "tpot_ms": {
+              "mean": 5.258083166457557,
+              "median": 5.258083166457557,
+              "p95": 6.699795716607089,
+              "min": 3.6561803329580775,
+              "max": 6.859985999957037
+            },
+            "request_score": {
+              "mean": 0.36721890574796323,
+              "median": 0.36721890574796323,
+              "p95": 0.6038255008656565,
+              "min": 0.10432268895052627,
+              "max": 0.6301151225454001
+            },
+            "prompt_tokens": 76,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.5874853702543741,
+            "ttft_ms": {
+              "mean": 73.09033349883975,
+              "median": 73.09033349883975,
+              "p95": 82.83849584877316,
+              "min": 62.259041998913744,
+              "max": 83.92162499876576
+            },
+            "tpot_ms": {
+              "mean": 3.8220901666742675,
+              "median": 3.8220901666742675,
+              "p95": 3.979533916632742,
+              "min": 3.6471526667204066,
+              "max": 3.997027666628128
+            },
+            "request_score": {
+              "mean": 0.5874853702543741,
+              "median": 0.5874853702543741,
+              "p95": 0.620445480667353,
+              "min": 0.550863025351064,
+              "max": 0.624107715157684
+            },
+            "prompt_tokens": 115,
+            "cached_prompt_tokens": 81,
+            "cached_prompt_token_ratio": 0.7043478260869566
+          }
+        }
+      }
+    },
+    "scored": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-q4-bench-2026-08-27-r5-cast/restored/restored-report.json",
+      "wall_time_s": 0.30809612500161165,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.6029898046847153,
+        "ttft_ms": {
+          "mean": 65.33385424972948,
+          "median": 65.8663334997982,
+          "p95": 76.37231875123689,
+          "min": 52.80099999799859,
+          "max": 76.80175000132294
+        },
+        "tpot_ms": {
+          "mean": 3.848874999979065,
+          "median": 3.8495069996618745,
+          "p95": 4.312573550487286,
+          "min": 3.3292499999030647,
+          "max": 4.367236000689445
+        },
+        "request_score": {
+          "mean": 0.6029898046847153,
+          "median": 0.6034842244076994,
+          "p95": 0.6569344355977382,
+          "min": 0.5453453235143524,
+          "max": 0.6596454464091098
+        },
+        "prompt_tokens": 193,
+        "cached_prompt_tokens": 80,
+        "cached_prompt_token_ratio": 0.41450777202072536,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.6506087437045378,
+            "ttft_ms": {
+              "mean": 55.29739599842287,
+              "median": 55.29739599842287,
+              "p95": 57.54415239880473,
+              "min": 52.80099999799859,
+              "max": 57.793791998847155
+            },
+            "tpot_ms": {
+              "mean": 3.5127221666092128,
+              "median": 3.5127221666092128,
+              "p95": 3.6778471166447466,
+              "min": 3.3292499999030647,
+              "max": 3.6961943333153613
+            },
+            "request_score": {
+              "mean": 0.6506087437045378,
+              "median": 0.6506087437045378,
+              "p95": 0.6587417761386527,
+              "min": 0.6415720409999659,
+              "max": 0.6596454464091098
+            },
+            "prompt_tokens": 74,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.5553708656648927,
+            "ttft_ms": {
+              "mean": 75.3703125010361,
+              "median": 75.3703125010361,
+              "p95": 76.65860625129426,
+              "min": 73.93887500074925,
+              "max": 76.80175000132294
+            },
+            "tpot_ms": {
+              "mean": 4.185027833348917,
+              "median": 4.185027833348917,
+              "p95": 4.349015183955393,
+              "min": 4.002819666008388,
+              "max": 4.367236000689445
+            },
+            "request_score": {
+              "mean": 0.5553708656648927,
+              "median": 0.5553708656648927,
+              "p95": 0.564393853600379,
+              "min": 0.5453453235143524,
+              "max": 0.565396407815433
+            },
+            "prompt_tokens": 119,
+            "cached_prompt_tokens": 80,
+            "cached_prompt_token_ratio": 0.6722689075630253
+          }
+        }
+      }
+    }
+  },
+  "candidate": {
+    "engine": "_artifacts/w4-engine-2026-08-27-rms-cast",
+    "port": 18107,
+    "command": [
+      "_build/bin/llmopt-serve",
+      "/Users/tung/Projects/std23/llmopt/_artifacts/w4-engine-2026-08-27-rms-cast",
+      "--port",
+      "18107"
+    ],
+    "memory_before": "The system has 25769803776 (1572864 pages with a page size of 16384).\nSystem-wide memory free percentage: 67%",
+    "memory_after": "The system has 25769803776 (1572864 pages with a page size of 16384).\nSystem-wide memory free percentage: 67%",
+    "base_url": "http://127.0.0.1:18107",
+    "warmup": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-q4-bench-2026-08-27-r5-cast/cast_absorption/cast_absorption-warmup.json",
+      "wall_time_s": 0.41894725000020117,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.5140401890426929,
+        "ttft_ms": {
+          "mean": 91.28591650005546,
+          "median": 69.42022900148004,
+          "p95": 156.15045799859215,
+          "min": 56.83162499917671,
+          "max": 169.47158299808507
+        },
+        "tpot_ms": {
+          "mean": 4.42224308335426,
+          "median": 4.461881999911081,
+          "p95": 5.033577083183142,
+          "min": 3.6602500003937166,
+          "max": 5.104958333201163
+        },
+        "request_score": {
+          "mean": 0.5140401890426929,
+          "median": 0.5506749870437633,
+          "p95": 0.6255804885024339,
+          "min": 0.32260880113651613,
+          "max": 0.632201980946729
+        },
+        "prompt_tokens": 191,
+        "cached_prompt_tokens": 81,
+        "cached_prompt_token_ratio": 0.42408376963350786,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.47740539104162255,
+            "ttft_ms": {
+              "mean": 113.82397899978969,
+              "median": 113.82397899978969,
+              "p95": 163.90682259825553,
+              "min": 58.17637500149431,
+              "max": 169.47158299808507
+            },
+            "tpot_ms": {
+              "mean": 4.3826041667974405,
+              "median": 4.3826041667974405,
+              "p95": 5.0327229165607905,
+              "min": 3.6602500003937166,
+              "max": 5.104958333201163
+            },
+            "request_score": {
+              "mean": 0.47740539104162255,
+              "median": 0.47740539104162255,
+              "p95": 0.6167223219562183,
+              "min": 0.32260880113651613,
+              "max": 0.632201980946729
+            },
+            "prompt_tokens": 76,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.5506749870437633,
+            "ttft_ms": {
+              "mean": 68.74785400032124,
+              "median": 68.74785400032124,
+              "p95": 79.47246010135132,
+              "min": 56.83162499917671,
+              "max": 80.66408300146577
+            },
+            "tpot_ms": {
+              "mean": 4.461881999911081,
+              "median": 4.461881999911081,
+              "p95": 4.612363199764029,
+              "min": 4.294680666741139,
+              "max": 4.629083333081023
+            },
+            "request_score": {
+              "mean": 0.5506749870437633,
+              "median": 0.5506749870437633,
+              "p95": 0.5843203268906616,
+              "min": 0.5132912761027653,
+              "max": 0.5880586979847614
+            },
+            "prompt_tokens": 115,
+            "cached_prompt_tokens": 81,
+            "cached_prompt_token_ratio": 0.7043478260869566
+          }
+        }
+      }
+    },
+    "scored": {
+      "report": "/Users/tung/Projects/std23/llmopt/_artifacts/w4-q4-bench-2026-08-27-r5-cast/cast_absorption/cast_absorption-report.json",
+      "wall_time_s": 0.3001618340022105,
+      "summary": {
+        "requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "output_token_mismatches": 0,
+        "ers": 0.5858433137510083,
+        "ttft_ms": {
+          "mean": 62.37302050067228,
+          "median": 61.84227050107438,
+          "p95": 72.7491937494051,
+          "min": 52.210041001671925,
+          "max": 73.59749999886844
+        },
+        "tpot_ms": {
+          "mean": 4.172847166349432,
+          "median": 4.192020833215793,
+          "p95": 4.6981026825960726,
+          "min": 3.563027666435422,
+          "max": 4.744319332530722
+        },
+        "request_score": {
+          "mean": 0.5858433137510083,
+          "median": 0.5973529162763143,
+          "p95": 0.6142384574218487,
+          "min": 0.5329741839930435,
+          "max": 0.6156932384583609
+        },
+        "prompt_tokens": 193,
+        "cached_prompt_tokens": 80,
+        "cached_prompt_token_ratio": 0.41450777202072536,
+        "by_turn": {
+          "0": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.6022021863980218,
+            "ttft_ms": {
+              "mean": 53.976228500687284,
+              "median": 53.976228500687284,
+              "p95": 55.56579724980111,
+              "min": 52.210041001671925,
+              "max": 55.742415999702644
+            },
+            "tpot_ms": {
+              "mean": 4.192020833215793,
+              "median": 4.192020833215793,
+              "p95": 4.411789582991332,
+              "min": 3.947833333465193,
+              "max": 4.436208332966392
+            },
+            "request_score": {
+              "mean": 0.6022021863980218,
+              "median": 0.6022021863980218,
+              "p95": 0.614344133252327,
+              "min": 0.5887111343376826,
+              "max": 0.6156932384583609
+            },
+            "prompt_tokens": 74,
+            "cached_prompt_tokens": 0,
+            "cached_prompt_token_ratio": 0.0
+          },
+          "1": {
+            "requests": 2,
+            "successful_requests": 2,
+            "failed_requests": 0,
+            "output_token_mismatches": 0,
+            "ers": 0.5694844411039948,
+            "ttft_ms": {
+              "mean": 70.76981250065728,
+              "median": 70.76981250065728,
+              "p95": 73.31473124904733,
+              "min": 67.94212500244612,
+              "max": 73.59749999886844
+            },
+            "tpot_ms": {
+              "mean": 4.153673499483072,
+              "median": 4.153673499483072,
+              "p95": 4.685254749225957,
+              "min": 3.563027666435422,
+              "max": 4.744319332530722
+            },
+            "request_score": {
+              "mean": 0.5694844411039948,
+              "median": 0.5694844411039948,
+              "p95": 0.6023436725038509,
+              "min": 0.5329741839930435,
+              "max": 0.605994698214946
+            },
+            "prompt_tokens": 119,
+            "cached_prompt_tokens": 80,
+            "cached_prompt_token_ratio": 0.6722689075630253
+          }
+        }
+      }
+    }
+  },
+  "delta": {
+    "ers_candidate_minus_baseline": -0.017146490933707015,
+    "ttft_median_ms_candidate_minus_baseline": -4.024062998723821,
+    "tpot_median_ms_candidate_minus_baseline": 0.3425138335539182
+  },
+  "scope": "one sequential warmup+scored trace per engine; candidate and baseline share the same host and trace"
+}

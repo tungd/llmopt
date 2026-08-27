@@ -22,6 +22,7 @@ type operation =
   | Any_operation
   | W4a16_linear
   | Rms_norm
+  | Cast
   | Silu
   | Mul
   | Add
@@ -54,6 +55,7 @@ and input_pattern =
   | Any_input
   | Capture_input of Capture.t
   | Produced_by of pattern
+  | Or_input of input_pattern list
 
 and output_pattern = Ignore_output | Capture_output of Capture.t
 

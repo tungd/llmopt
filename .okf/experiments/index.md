@@ -92,3 +92,5 @@
 * [Canonical W4A16/KVQ8 pipeline and Q4 comparison](exp-0091-canonical-w4a16-kvq8-pipeline-2026-08-27.md) - W4 LM-head repair, removal of superseded paths, ABI-v16 engine generation, and one native Q4_0 shared-trace measurement.
 * [Executable W4A16 SwiGLU fusion rule](exp-0092-w4a16-swiglu-rule-2026-08-27.md) - restores rule-driven FFN execution, generic regression coverage, package auditing, and measured parallel W4 lowering.
 * [Restored W4 SIMD execution and corrective rerun](exp-0093-restored-w4-simd-rerun-2026-08-27.md) - ports the retained SIMD/vector execution strategy into canonical W4 kernels and records the cleanup failure and corrected Q4 comparison.
+* [W4A16 RMSNorm/SwiGLU cast absorption](exp-0094-w4a16-rms-cast-absorption-2026-08-27.md) - removes the 33 single-use f16-to-f32 widening casts from each preserved graph and records the static package delta.
+* [W4A16 decode RoPE table elision](exp-0095-w4a16-rope-table-elision-2026-08-27.md) - precomputes all position rows, binds canonical runtime cosine/sine inputs, prunes the scalar branch, and records the native dispatch/timing comparison.

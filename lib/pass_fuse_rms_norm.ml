@@ -56,6 +56,33 @@ let used_in nodes value =
     (fun node -> List.exists (value_is value) (Ir.node_inputs node))
     nodes
 
+let producer nodes value =
+  List.find_opt
+    (fun node ->
+      match Ir.node_output node with
+      | Some output -> value_is output value
+      | None -> false)
+    nodes
+
+let consumers nodes value =
+  List.filter
+    (fun node -> List.exists (value_is value) (Ir.node_inputs node))
+    nodes
+
+let only_consumer nodes value expected =
+  match consumers nodes value with
+  | [ node ] -> Ir.node_id node = Ir.node_id expected
+  | _ -> false
+
+let float32_cast_info node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32), [ input ],
+    Some output
+    when Ir.Value.dtype input = Ir.Dtype.Float16
+         && Ir.Value.dtype output = Ir.Dtype.Float32 ->
+      Some (input, output)
+  | _ -> None
+
 let rms_norm_replacement nodes =
   match nodes with
   | pow_node :: mean_node :: add_node :: rsqrt_node :: normalize_node
@@ -123,6 +150,48 @@ let rms_norm_replacement nodes =
       | _ -> None)
   | _ -> None
 
+(* A traced RMSNorm starts with [x.float()] even though the Metal kernel reads
+   half input and performs the reduction in float registers.  The sequence
+   matcher above intentionally starts at [pow], so absorb that widening cast
+   after the semantic replacement, while requiring it to feed this RMSNorm
+   and nothing else. *)
+let absorb_preceding_casts graph =
+  let nodes = Ir.Graph.nodes graph in
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) node ->
+        match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+        | Ir.Op.Rms_norm _, [ norm_input; weight ], Some output
+          when Ir.Value.dtype output = Ir.Dtype.Float16 ->
+            (match producer nodes norm_input with
+            | Some cast_node ->
+                (match float32_cast_info cast_node with
+                | Some (input, cast_output)
+                  when value_is cast_output norm_input
+                       && only_consumer nodes cast_output node
+                       && not
+                            (List.exists
+                               (fun (_, value) -> value_is value cast_output)
+                               (Ir.Graph.outputs graph)) ->
+                    ((Ir.node_id node, [ input; weight ]) :: replacements,
+                     Ir.node_id cast_node :: removed)
+                | _ -> replacements, removed)
+            | None -> replacements, removed)
+        | _ -> replacements, removed)
+      ([], []) nodes
+  in
+  let rewritten =
+    List.filter_map
+      (fun node ->
+        match List.assoc_opt (Ir.node_id node) replacements with
+        | Some inputs ->
+            Some (Ir.node_replace node ~op:(Ir.node_op node) ~inputs)
+        | None when List.mem (Ir.node_id node) removed -> None
+        | None -> Some node)
+      nodes
+  in
+  Ir.Graph.with_nodes graph rewritten
+
 let run graph =
   let rec rewrite prefix remaining =
     match rms_norm_replacement remaining with
@@ -132,6 +201,7 @@ let run graph =
         | node :: rest -> rewrite (node :: prefix) rest
         | [] -> List.rev prefix)
   in
-  Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph))
+  let graph = Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph)) in
+  absorb_preceding_casts graph
 
 let pass = Pass.create ~name ~description ~run
