@@ -572,4 +572,182 @@ let () =
   expect (Kv_cache.Config.checkpoint_pool_bytes cache = 253_440)
     "Q8 KV checkpoint pool byte count";
 
+  (* Suffix prefill schedule specialization: a captured prefill graph with one
+     short-conv layer and one attention layer is rewritten so the suffix run
+     continues the recurrent checkpoint, attends over the cached prefix through
+     the paged Q8 pool, and replaces the causal mask with an all-ones fill. *)
+  let suffix_cache =
+    Kv_cache.Layout.create ~format:Kv_cache.Format.default
+      ~attention_layers:1 ~kv_heads:1 ~head_dim:64 ~recurrent_layers:1
+      ~recurrent_width:64 ~recurrent_window:3
+    |> expect_ok
+    |> fun layout ->
+    Kv_cache.Config.create ~layout ~token_capacity:2 ~checkpoint_capacity:1
+    |> expect_ok
+  in
+  let conv_channels = 64 and conv_window = 3 in
+  let captured_tokens = 8 and suffix_tokens = 4 and past_tokens = 6 in
+  let suffix_graph = Ir.Graph.create () in
+  let conv_in_proj =
+    tensor_input suffix_graph ~name:"in_proj"
+      ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; captured_tokens; 3 * conv_channels ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let conv_weight =
+    tensor_input suffix_graph ~name:"conv_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "conv_weight" })
+      ~shape:[ conv_channels; conv_window ] ~dtype:Ir.Dtype.Float16
+  in
+  let conv_initial_state =
+    tensor_input suffix_graph ~name:"conv_state"
+      ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; conv_channels; conv_window ] ~dtype:Ir.Dtype.Float16
+  in
+  let conv_output =
+    Ir.Graph.fresh_tensor_value suffix_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; captured_tokens; conv_channels ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let conv_config =
+    Ir.Short_conv_prefill.create ~channels:conv_channels ~window:conv_window
+    |> expect_ok
+  in
+  Ir.Graph.append suffix_graph
+    ~op:(Ir.Op.Short_conv_prefill conv_config)
+    ~inputs:[ conv_in_proj; conv_weight; conv_initial_state ]
+    ~output:(Some conv_output);
+  let attention_query =
+    tensor_input suffix_graph ~name:"attention_query"
+      ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; captured_tokens; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let attention_key =
+    tensor_input suffix_graph ~name:"attention_key"
+      ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; captured_tokens; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let attention_value =
+    tensor_input suffix_graph ~name:"attention_value"
+      ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; captured_tokens; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let attention_mask =
+    tensor_input suffix_graph ~name:"graph_mask"
+      ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; captured_tokens; captured_tokens ]
+      ~dtype:Ir.Dtype.Bool
+  in
+  let attention_output =
+    Ir.Graph.fresh_tensor_value suffix_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; captured_tokens; 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let attention_config =
+    Ir.Attention.create ~scale:1.0 ~causal:true |> expect_ok
+  in
+  Ir.Graph.append suffix_graph
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Attention attention_config))
+    ~inputs:
+      [ attention_query; attention_key; attention_value; attention_mask ]
+    ~output:(Some attention_output);
+  Ir.Graph.add_output suffix_graph ~name:"conv" conv_output;
+  Ir.Graph.add_output suffix_graph ~name:"attention" attention_output;
+  let base_schedule = suffix_graph |> Serving_schedule.of_graph |> expect_ok in
+  let suffix_schedule =
+    Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+      ~captured_tokens ~tokens:suffix_tokens ~past_tokens
+      ~cache:suffix_cache base_schedule
+    |> expect_ok
+  in
+  let runtime_shape name =
+    Serving_schedule.runtime_inputs suffix_schedule
+    |> List.find_map (fun (input_name, value) ->
+           if input_name = name then
+             Some (Tensor_shape.dimensions (Ir.Value.logical_shape value))
+           else None)
+  in
+  expect
+    (runtime_shape "__llmopt_q8_attention_pool" = Some [ 264 ])
+    "suffix prefill binds the Q8 attention pool runtime input";
+  expect
+    (runtime_shape "__llmopt_q8_attention_slots" = Some [ past_tokens ])
+    "suffix prefill binds prefix slots sized by the past token count";
+  expect
+    (runtime_shape "__llmopt_recurrent_in_0"
+    = Some [ 1; conv_channels; conv_window ])
+    "suffix prefill binds a recurrent checkpoint per conv layer";
+  expect
+    (runtime_shape "in_proj" = Some [ 1; suffix_tokens; 3 * conv_channels ])
+    "suffix prefill resizes conv input to the suffix token count";
+  expect
+    (runtime_shape "graph_mask" = None)
+    "suffix prefill prunes the captured graph mask";
+  expect
+    (Serving_schedule.commands suffix_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Fill (Ir.Scalar.Bool true)) -> true
+           | _ -> false))
+    "suffix prefill emits an all-ones mask fill";
+  expect
+    (Serving_schedule.commands suffix_schedule
+    |> List.exists (fun command ->
+           match
+             Serving_schedule.Command.op command,
+             Serving_schedule.Command.inputs command
+           with
+           | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config),
+               [ _; _; _; pool; slots; mask ] ) ->
+               let pool_shape =
+                 Tensor_shape.dimensions (Ir.Value.logical_shape pool)
+               in
+               let slots_shape =
+                 Tensor_shape.dimensions (Ir.Value.logical_shape slots)
+               in
+               let mask_shape =
+                 Tensor_shape.dimensions (Ir.Value.logical_shape mask)
+               in
+               Ir.Paged_attention_q8.cache_layer config = 0
+               && Ir.Paged_attention_q8.kv_heads config = 1
+               && pool_shape = [ 264 ] && slots_shape = [ past_tokens ]
+               && mask_shape = [ 1; 1; suffix_tokens; past_tokens + suffix_tokens ]
+           | _ -> false))
+    "suffix prefill attends over cached prefix through the paged Q8 pool";
+  expect
+    (Serving_schedule.commands suffix_schedule
+    |> List.for_all (fun command ->
+           match Serving_schedule.Command.op command,
+                 Serving_schedule.Command.inputs command with
+           | Ir.Op.Short_conv_prefill _, inputs -> List.length inputs = 4
+           | _ -> true))
+    "suffix prefill continues each conv layer from its checkpoint input";
+  expect
+    (match
+       Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+         ~captured_tokens ~tokens:suffix_tokens ~past_tokens:0
+         ~cache:suffix_cache base_schedule
+     with
+    | Error _ -> true
+    | Ok _ -> false)
+    "suffix prefill rejects a zero past length";
+  expect
+    (match
+       Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+         ~captured_tokens ~tokens:2 ~past_tokens
+         ~cache:suffix_cache base_schedule
+     with
+    | Error _ -> true
+    | Ok _ -> false)
+    "suffix prefill rejects a suffix shorter than the recurrent window";
+  expect
+    (match
+       Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+         ~captured_tokens:0 ~tokens:suffix_tokens ~past_tokens
+         ~cache:suffix_cache base_schedule
+     with
+    | Error _ -> true
+    | Ok _ -> false)
+    "suffix prefill rejects a zero captured prefill length";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
