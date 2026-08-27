@@ -972,16 +972,30 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           let source_items, source_offset =
             attention_pack_slice engine ~past_tokens
           in
+          let* () =
+            Metal_runtime.Cache.update_pack_slot engine.physical_cache
+              reservation.slots.(0)
+          in
           let* execution, token_id_buffer =
             match engine.prebaked_decode with
             | Some (plan, execution, out_buf) ->
-                let* _ = Metal_runtime.Prebaked.execute plan ~token ~past_tokens in
+                let* _ =
+                  Metal_runtime.Prebaked.execute plan ~token ~past_tokens
+                    ~checkpoint:(Kv_cache.Checkpoint.to_int reservation.checkpoint)
+                in
                 Ok (execution, out_buf)
             | None ->
                 let* (dispatches, execution) =
                   Metal_runtime.precompile_decode_batch
                     ?workspace:engine.decode_workspace engine.decode
-                    ~schedule ~inputs
+                    ~schedule ~inputs ~cache:engine.physical_cache
+                    ~cache_pack:(fun execution batch ->
+                      let* () =
+                        pack_decode_attention batch execution reservation.slots
+                          ~source_items ~source_offset engine.contract.attentions
+                      in
+                      pack_decode_recurrent batch reservation.checkpoint
+                        (Serving_replay.Decode_buffers.recurrent buffers))
                 in
                 let* token_id =
                   optional_output execution engine.contract.decode_head.token_id
@@ -995,27 +1009,26 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
                     engine.prebaked_decode <- Some (plan, execution, Some out_buf);
                     let* _ =
                       Metal_runtime.Prebaked.execute plan ~token ~past_tokens
+                        ~checkpoint:(Kv_cache.Checkpoint.to_int reservation.checkpoint)
                     in
                     Ok (execution, Some out_buf)
                 | _ ->
                     let* execution =
-                      Metal_runtime.execute_schedule
+                      Metal_runtime.execute_decode_step
                         ?workspace:engine.decode_workspace engine.decode
-                        ~schedule ~inputs
+                        ~cache:engine.physical_cache ~schedule ~inputs
+                        ~cache_pack:(fun execution batch ->
+                          let* () =
+                            pack_decode_attention batch execution reservation.slots
+                              ~source_items ~source_offset engine.contract.attentions
+                          in
+                          pack_decode_recurrent batch reservation.checkpoint
+                            (Serving_replay.Decode_buffers.recurrent buffers))
                     in
                     let* token_id =
                       optional_output execution engine.contract.decode_head.token_id
                     in
                     Ok (execution, token_id))
-          in
-          let* () =
-            Metal_runtime.Cache.with_batch_async engine.physical_cache (fun batch ->
-                let* () =
-                  pack_decode_attention batch execution reservation.slots
-                    ~source_items ~source_offset engine.contract.attentions
-                in
-                pack_decode_recurrent batch reservation.checkpoint
-                  (Serving_replay.Decode_buffers.recurrent buffers))
           in
           let tokens = Array.append prefix [| token |] in
           let slots = Array.append matched_slots reservation.slots in

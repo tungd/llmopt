@@ -126,6 +126,8 @@ module Cache : sig
     t ->
     slots:Kv_cache.Slot.t array ->
     ((string * Buffer.t) list, string) result
+
+  val update_pack_slot : t -> Kv_cache.Slot.t -> (unit, string) result
 end
 
 module Execution : sig
@@ -197,6 +199,8 @@ val execute_decode_step :
 val precompile_decode_batch :
   ?workspace:Buffer.t ->
   ?memory_plan:Serving_memory_plan.t ->
+  ?cache:Cache.t ->
+  ?cache_pack:(Execution.t -> Cache.batch -> (unit, string) result) ->
   t ->
   schedule:Serving_schedule.t ->
   inputs:(string * Buffer.t) list ->
@@ -244,5 +248,6 @@ module Prebaked : sig
     output_buffer:Buffer.t ->
     (t, string) result
 
-  val execute : t -> token:int -> past_tokens:int -> (int, string) result
+  val execute :
+    t -> token:int -> past_tokens:int -> checkpoint:int -> (int, string) result
 end

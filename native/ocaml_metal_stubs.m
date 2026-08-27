@@ -87,6 +87,7 @@ typedef struct {
   MTLSize grid;
   MTLSize group;
   bool is_paged_attention;
+  bool is_checkpoint_pack;
 } llmopt_dispatch_record;
 
 typedef struct {
@@ -1384,6 +1385,7 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     plan->records[i].group = MTLSizeMake(Long_val(Field(item, 6)), Long_val(Field(item, 7)), Long_val(Field(item, 8)));
     plan->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
     plan->records[i].is_paged_attention = (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0);
+    plan->records[i].is_checkpoint_pack = (strcmp(kname, "llmopt_cache_pack_checkpoint_q8_simd") == 0);
 
     NSUInteger b_idx = 0;
     value rem = buffers;
@@ -1408,11 +1410,12 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
   CAMLreturn(alloc_prebaked(plan));
 }
 
-CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v_past_tokens) {
-  CAMLparam3(v_plan, v_token, v_past_tokens);
+CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v_past_tokens, value v_checkpoint) {
+  CAMLparam4(v_plan, v_token, v_past_tokens, v_checkpoint);
   llmopt_prebaked_plan *plan = Prebaked_val(v_plan);
   int64_t token = (int64_t)Long_val(v_token);
   int32_t past_tokens = (int32_t)Long_val(v_past_tokens);
+  int32_t checkpoint = (int32_t)Long_val(v_checkpoint);
   if (plan->token_buffer != nil) {
     int64_t *ptr = (int64_t *)((uint8_t *)[plan->token_buffer contents] + plan->token_buffer_offset);
     *ptr = token;
@@ -1433,6 +1436,9 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
       if (r->parameter_length > 0) {
         if (r->is_paged_attention && r->parameter_length >= 16) {
           *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
+        }
+        if (r->is_checkpoint_pack && r->parameter_length >= 4) {
+          *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
         }
         [enc setBytes:r->parameters length:r->parameter_length atIndex:r->buffer_count];
       }

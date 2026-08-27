@@ -115,7 +115,7 @@ external prebaked_create_stub :
   prebaked_handle = "caml_llmopt_prebaked_create"
 
 external prebaked_execute_stub :
-  prebaked_handle -> int -> int -> int = "caml_llmopt_prebaked_execute"
+  prebaked_handle -> int -> int -> int -> int = "caml_llmopt_prebaked_execute"
 
 let protect operation =
   try Ok (operation ()) with
@@ -389,8 +389,8 @@ module Prebaked = struct
     protect (fun () ->
         prebaked_create_stub runtime.library dispatches token_buffer output_buffer)
 
-  let execute plan ~token ~past_tokens =
-    protect (fun () -> prebaked_execute_stub plan token past_tokens)
+  let execute plan ~token ~past_tokens ~checkpoint =
+    protect (fun () -> prebaked_execute_stub plan token past_tokens checkpoint)
 end
 
 let tensor runtime ~name =
@@ -821,6 +821,7 @@ module Cache = struct
     token_pool : Buffer.t;
     checkpoint_pool : Buffer.t;
     slots_scratch : Buffer.t;
+    pack_slots_scratch : Buffer.t;
     kernels : kernels;
   }
 
@@ -953,6 +954,10 @@ module Cache = struct
           Buffer.create ~runtime
             ~bytes:(max 32768 (Kv_cache.Config.token_capacity config * 4))
         in
+        let* pack_slots_scratch =
+          Buffer.create ~runtime
+            ~bytes:(max 32768 (Kv_cache.Config.token_capacity config * 4))
+        in
       Ok
         {
             runtime;
@@ -961,6 +966,7 @@ module Cache = struct
             token_pool;
             checkpoint_pool;
             slots_scratch;
+            pack_slots_scratch;
             kernels =
               {
                 pack_attention;
@@ -1012,7 +1018,7 @@ module Cache = struct
   let group_size format =
     Kv_cache.Format.group_size format |> Option.value ~default:1
 
-  let slots_buffer cache slots =
+  let slots_buffer ?(pack = false) cache slots =
     let count = Array.length slots in
     if count = 0 then Error "physical attention cache requires at least one slot"
     else
@@ -1022,9 +1028,12 @@ module Cache = struct
           (Printf.sprintf "physical cache slots count %d exceeds capacity %d"
              count capacity)
       else
+        let scratch =
+          if pack then cache.pack_slots_scratch else cache.slots_scratch
+        in
         let int_slots = Array.map Kv_cache.Slot.to_int slots in
-        let* () = Buffer.set_u32_array cache.slots_scratch ~offset:0 int_slots in
-        Buffer.view ~parent:cache.slots_scratch ~offset:0 ~bytes:(count * 4)
+        let* () = Buffer.set_u32_array scratch ~offset:0 int_slots in
+        Buffer.view ~parent:scratch ~offset:0 ~bytes:(count * 4)
 
   let attention_parameters cache ~layer ~kind ~items ~source_items
       ~source_offset =
@@ -1090,7 +1099,7 @@ module Cache = struct
       exact_buffer_length buffer expected_bytes
         (if pack then "attention source" else "attention destination")
     in
-    let* slots_buffer = slots_buffer cache slots in
+    let* slots_buffer = slots_buffer ~pack cache slots in
     let* parameters =
       attention_parameters cache ~layer ~kind ~items ~source_items
         ~source_offset
@@ -1235,6 +1244,10 @@ module Cache = struct
     Ok
       [ Serving_schedule.Lfm25.q8_attention_pool_input, cache.token_pool;
         Serving_schedule.Lfm25.q8_attention_slots_input, slots ]
+
+  let update_pack_slot cache slot =
+    Buffer.set_u32_array cache.pack_slots_scratch ~offset:0
+      [| Kv_cache.Slot.to_int slot |]
 end
 
 module Value_map = Map.Make (struct
@@ -2759,7 +2772,8 @@ let execute_decode_step ?workspace ?memory_plan runtime ~cache ~schedule ~inputs
       batch.resources <- cache_batch.resources @ batch.resources;
       Ok execution)
 
-let precompile_decode_batch ?workspace ?memory_plan runtime ~schedule ~inputs =
+let precompile_decode_batch ?workspace ?memory_plan ?cache ?cache_pack runtime
+    ~schedule ~inputs =
   let* commands = Batch.create runtime in
   let batch =
     {
@@ -2774,6 +2788,17 @@ let precompile_decode_batch ?workspace ?memory_plan runtime ~schedule ~inputs =
   in
   let* execution =
     encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs
+  in
+  let* () =
+    match cache, cache_pack with
+    | Some cache, Some pack_fn ->
+        let cache_batch =
+          { Cache.cache; commands = batch.commands; resources = []; dispatches = 0 }
+        in
+        let* () = pack_fn execution cache_batch in
+        batch.resources <- cache_batch.resources @ batch.resources;
+        Ok ()
+    | _ -> Ok ()
   in
   let items_rev = List.rev batch.commands.pending in
   let dispatches =
