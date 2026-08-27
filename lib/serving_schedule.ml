@@ -119,7 +119,8 @@ let w4a16_linear_metadata_matches ~m ~n ~k ~bias inputs output =
   | [ input; weight; scale ], false -> common input weight scale
   | [ input; weight; scale; bias_value ], true ->
       common input weight scale
-      && (dimensions bias_value = [ n ] || dimensions bias_value = [ 1; n ])
+      && (dimensions bias_value = [ n ] || dimensions bias_value = [ 1; n ]
+          || Tensor_shape.numel (Ir.Value.logical_shape bias_value) = m * n)
       && Ir.Value.dtype bias_value = Ir.Dtype.Float16
   | _ -> false
 

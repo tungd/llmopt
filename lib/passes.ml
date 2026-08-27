@@ -60,7 +60,12 @@ let optimize graph =
           match Pass_fuse_swiglu_ffn.run semantic_graph with
           | Error _ as error -> error
           | Ok fused_graph ->
-          let lowered_graph = Pass.Pipeline.run execution_pipeline fused_graph in
+          let linear_add_graph =
+            Pass_fuse_linear_bias.fuse_w4a16_linear_add fused_graph
+          in
+          let lowered_graph =
+            Pass.Pipeline.run execution_pipeline linear_add_graph
+          in
           match Compute_plan.of_graph lowered_graph with
           | Error _ as error -> error
           | Ok execution_plan ->

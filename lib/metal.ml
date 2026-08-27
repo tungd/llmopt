@@ -84,7 +84,7 @@ let w4a16_source =
   ^ "  }\n"
   ^ "  acc = simd_sum(acc);\n"
   ^ "  if (lane == 0) {\n"
-  ^ "    if (params.has_bias != 0u) acc += float(bias_or_scale[col]);\n"
+  ^ "    if (params.has_bias != 0u) acc += float(bias_or_scale[row * params.n + col]);\n"
   ^ "    output[row * params.n + col] = half(acc);\n"
   ^ "  }\n"
   ^ "}\n"
