@@ -240,4 +240,79 @@ let fuse_w4a16_qkv graph =
     in
     Ir.Graph.with_nodes graph rewritten_nodes
 
+let eliminate_attention_transpose graph =
+  let nodes = Ir.Graph.nodes graph in
+  let consumers node_val =
+    List.filter
+      (fun node -> List.exists (value_is node_val) (Ir.node_inputs node))
+      nodes
+  in
+  let elim_chain =
+    List.filter_map
+      (fun trans_node ->
+        match Ir.node_op trans_node, Ir.node_inputs trans_node, Ir.node_output trans_node with
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })),
+            [ trans_in ],
+            Some trans_out ) ->
+            let in_dims = Tensor_shape.dimensions (Ir.Value.logical_shape trans_in) in
+            (match in_dims with
+            | [ 1; 16; 1; 64 ] ->
+                (match consumers trans_out with
+                | [ cont_node ] ->
+                    (match Ir.node_op cont_node, Ir.node_inputs cont_node, Ir.node_output cont_node with
+                    | ( Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous),
+                        [ cont_in ],
+                        Some cont_out ) when value_is cont_in trans_out ->
+                        (match consumers cont_out with
+                        | [ reshape_node ] ->
+                            (match Ir.node_op reshape_node, Ir.node_inputs reshape_node, Ir.node_output reshape_node with
+                            | ( Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape),
+                                [ r_in ],
+                                Some r_out ) when value_is r_in cont_out ->
+                                let r_dims = Tensor_shape.dimensions (Ir.Value.logical_shape r_out) in
+                                if r_dims = [ 1; 1; 1024 ] then
+                                  Some (trans_node, cont_node, reshape_node, trans_in)
+                                else None
+                            | _ -> None)
+                        | _ -> None)
+                    | _ -> None)
+                | _ -> None)
+            | _ -> None)
+        | _ -> None)
+      nodes
+  in
+  if elim_chain = [] then graph
+  else
+    let elim_set =
+      List.fold_left
+        (fun set (trans_node, cont_node, _reshape_node, _) ->
+          set |> Node_id_set.add (Ir.node_id trans_node)
+              |> Node_id_set.add (Ir.node_id cont_node))
+        Node_id_set.empty elim_chain
+    in
+    let replacements =
+      List.fold_left
+        (fun map (_trans_node, _cont_node, reshape_node, trans_in) ->
+          let new_reshape =
+            Ir.node_replace reshape_node
+              ~op:(Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape))
+              ~inputs:[ trans_in ]
+          in
+          Node_id_map.add (Ir.node_id reshape_node) new_reshape map)
+        Node_id_map.empty elim_chain
+    in
+    let rewritten_nodes =
+      List.filter_map
+        (fun node ->
+          let id = Ir.node_id node in
+          if Node_id_set.mem id elim_set then None
+          else
+            match Node_id_map.find_opt id replacements with
+            | Some fused -> Some fused
+            | None -> Some node)
+        nodes
+    in
+    Ir.Graph.with_nodes graph rewritten_nodes
+
 let pass = Pass.create ~name ~description ~run

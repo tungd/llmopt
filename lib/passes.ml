@@ -63,8 +63,11 @@ let optimize graph =
           let qkv_fused_graph =
             Pass_fuse_linear_bias.fuse_w4a16_qkv fused_graph
           in
+          let no_trans_graph =
+            Pass_fuse_linear_bias.eliminate_attention_transpose qkv_fused_graph
+          in
           let linear_add_graph =
-            Pass_fuse_linear_bias.fuse_w4a16_linear_add qkv_fused_graph
+            Pass_fuse_linear_bias.fuse_w4a16_linear_add no_trans_graph
           in
           let lowered_graph =
             Pass.Pipeline.run execution_pipeline linear_add_graph
