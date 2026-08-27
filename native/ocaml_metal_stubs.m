@@ -1424,14 +1424,16 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
   @autoreleasepool {
     id<MTLCommandBuffer> cmd = [plan->queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+    id<MTLComputePipelineState> current_pipeline = nil;
 
     for (size_t i = 0; i < plan->record_count; i++) {
       llmopt_dispatch_record *r = &plan->records[i];
-      [enc setComputePipelineState:r->pipeline];
-      for (NSUInteger b = 0; b < r->buffer_count; b++) {
-        if (r->buffers[b] != nil) {
-          [enc setBuffer:r->buffers[b] offset:r->offsets[b] atIndex:b];
-        }
+      if (r->pipeline != current_pipeline) {
+        [enc setComputePipelineState:r->pipeline];
+        current_pipeline = r->pipeline;
+      }
+      if (r->buffer_count > 0) {
+        [enc setBuffers:r->buffers offsets:r->offsets withRange:NSMakeRange(0, r->buffer_count)];
       }
       if (r->parameter_length > 0) {
         if (r->is_paged_attention && r->parameter_length >= 16) {
