@@ -77,6 +77,7 @@ type t = {
   decode_token_buffer : Metal_runtime.Buffer.t option;
   rope_table : rope_table option;
   decode_schedules : (int, Serving_schedule.t) Hashtbl.t;
+  prefill_schedules : (int, Serving_schedule.t * Serving_memory_plan.t) Hashtbl.t;
   mutable prebaked_decode :
     (Metal_runtime.Prebaked.t * Metal_runtime.Execution.t * Metal_runtime.Buffer.t option)
     option;
@@ -607,6 +608,7 @@ let create ~config ~prefill ~decode =
         decode_token_buffer;
         rope_table;
         decode_schedules = Hashtbl.create 64;
+        prefill_schedules = Hashtbl.create 64;
         prebaked_decode = None;
       }
 
@@ -614,9 +616,19 @@ let prefill_tokens engine = engine.contract.prefill_tokens
 let past_tokens engine = engine.contract.past_tokens
 
 let prefill_schedule engine tokens =
-  Serving_schedule.Lfm25.specialize_prefill
-    ~captured_tokens:engine.contract.prefill_tokens ~tokens
-    (engine.prefill |> Metal_runtime.package |> Serving_package.schedule)
+  match Hashtbl.find_opt engine.prefill_schedules tokens with
+  | Some entry -> Ok entry
+  | None ->
+      let base_schedule =
+        engine.prefill |> Metal_runtime.package |> Serving_package.schedule
+      in
+      let* schedule =
+        Serving_schedule.Lfm25.specialize_prefill
+          ~captured_tokens:engine.contract.prefill_tokens ~tokens base_schedule
+      in
+      let* memory_plan = Serving_memory_plan.create schedule in
+      Hashtbl.add engine.prefill_schedules tokens (schedule, memory_plan);
+      Ok (schedule, memory_plan)
 
 let decode_schedule engine past_tokens =
   match Hashtbl.find_opt engine.decode_schedules past_tokens with
@@ -727,10 +739,10 @@ let rec pack_prefill_recurrent batch execution checkpoint
 let prefill engine ~tokens =
   let* () = validate_tokens engine tokens in
   let token_count = Array.length tokens in
-  let* schedule = prefill_schedule engine token_count in
+  let* schedule, memory_plan = prefill_schedule engine token_count in
   let* input = token_buffer engine.prefill tokens in
   let* execution =
-    Metal_runtime.execute_schedule engine.prefill ~schedule
+    Metal_runtime.execute_schedule engine.prefill ~schedule ~memory_plan
       ~inputs:[ engine.contract.input_ids, input ]
   in
   let* reservation = reserve engine.logical_cache token_count in
