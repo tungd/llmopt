@@ -81,6 +81,11 @@ type t = {
   mutable prebaked_decode :
     (Metal_runtime.Prebaked.t * Metal_runtime.Execution.t * Metal_runtime.Buffer.t option)
     option;
+  mutable decode_recurrent_buffers :
+    (attention_binding, recurrent_binding, Metal_runtime.Buffer.t)
+    Serving_replay.Decode_buffers.t
+    option;
+  mutable decode_checkpoint : Kv_cache.Checkpoint.t option;
 }
 
 let indexed_name base index =
@@ -610,6 +615,8 @@ let create ~config ~prefill ~decode =
         decode_schedules = Hashtbl.create 64;
         prefill_schedules = Hashtbl.create 64;
         prebaked_decode = None;
+        decode_recurrent_buffers = None;
+        decode_checkpoint = None;
       }
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -929,7 +936,16 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
         let result =
           let matched_slots = Serving_cache.Match.slots match_ in
           let* buffers =
-            prepare_decode_buffers engine matched_slots source_checkpoint
+            match engine.decode_recurrent_buffers, engine.decode_checkpoint with
+            | Some buffers, Some cp
+              when Kv_cache.Checkpoint.to_int cp = Kv_cache.Checkpoint.to_int source_checkpoint ->
+                Ok buffers
+            | _ ->
+                let* bufs =
+                  prepare_decode_buffers engine matched_slots source_checkpoint
+                in
+                engine.decode_recurrent_buffers <- Some bufs;
+                Ok bufs
           in
           let* token_input =
             match engine.decode_token_buffer with
@@ -992,7 +1008,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
                     Ok (execution, token_id))
           in
           let* () =
-            Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+            Metal_runtime.Cache.with_batch_async engine.physical_cache (fun batch ->
                 let* () =
                   pack_decode_attention batch execution reservation.slots
                     ~source_items ~source_offset engine.contract.attentions
@@ -1007,6 +1023,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
             Serving_cache.insert engine.logical_cache ~tokens ~slots
               ~checkpoint:reservation.checkpoint ()
           in
+          engine.decode_checkpoint <- Some reservation.checkpoint;
           Ok
             {
               Step.logits;

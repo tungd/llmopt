@@ -73,6 +73,9 @@ external batch_barrier_stub : batch_handle -> unit
 external commit_batch_stub : batch_handle -> unit
   = "caml_llmopt_metal_commit_batch"
 
+external commit_batch_async_stub : batch_handle -> unit
+  = "caml_llmopt_metal_commit_batch_async"
+
 external abort_batch_stub : batch_handle -> unit
   = "caml_llmopt_metal_abort_batch"
 
@@ -225,6 +228,10 @@ module Batch = struct
   let commit batch =
     let* () = flush batch in
     protect (fun () -> commit_batch_stub batch.handle)
+
+  let commit_async batch =
+    let* () = flush batch in
+    protect (fun () -> commit_batch_async_stub batch.handle)
 
   let abort batch =
     batch.pending <- [];
@@ -835,6 +842,27 @@ module Cache = struct
         let completion =
           if batch.dispatches = 0 then Batch.abort commands
           else Batch.commit commands
+        in
+        release_batch_resources batch;
+        let* () = completion in
+        Ok value
+    | exception exception_value ->
+        ignore (Batch.abort commands);
+        release_batch_resources batch;
+        raise exception_value
+
+  let with_batch_async cache operation =
+    let* commands = Batch.create cache.runtime in
+    let batch = { cache; commands; resources = []; dispatches = 0 } in
+    match operation batch with
+    | Error message ->
+        ignore (Batch.abort commands);
+        release_batch_resources batch;
+        Error message
+    | Ok value ->
+        let completion =
+          if batch.dispatches = 0 then Batch.abort commands
+          else Batch.commit_async commands
         in
         release_batch_resources batch;
         let* () = completion in
@@ -1565,17 +1593,41 @@ let dispatch_w4a16_swiglu_ffn_command execution_batch batch runtime state ~m ~n 
       ~buffers:[ activation; norm_weight; normalized ] ~parameters
       ~grid:(m * 256, 1, 1)
   in
-  let* dual_grid_x = linear_f16_grid (m * n) in
-  let* down_grid_x = linear_f16_grid (m * k) in
   let* dual_kernel =
-    dispatch ~batch runtime dual_entry
-      ~buffers:[ normalized; gate_weight; gate_scale; up_weight; up_scale; product ]
-      ~parameters ~grid:(dual_grid_x, 1, 1)
+    if m = 1 then
+      let* dual_grid_x = linear_f16_grid (m * n) in
+      dispatch ~batch runtime dual_entry
+        ~buffers:[ normalized; gate_weight; gate_scale; up_weight; up_scale; product ]
+        ~parameters ~grid:(dual_grid_x, 1, 1)
+    else
+      let m_blocks = (m + 3) / 4 in
+      let* dual_entry_m4 =
+        kernel_entry ~name:"llmopt_w4a16_dual_swiglu_f16_g64_m4" runtime
+          ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+          ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+      in
+      let* dual_grid_x = linear_f16_grid (m_blocks * n) in
+      dispatch ~batch runtime dual_entry_m4
+        ~buffers:[ normalized; gate_weight; gate_scale; up_weight; up_scale; product ]
+        ~parameters ~grid:(dual_grid_x, 1, 1)
   in
   let* down_kernel =
-    dispatch ~batch runtime down_entry
-      ~buffers:[ product; down_weight; down_scale; residual; output_buffer ]
-      ~parameters ~grid:(down_grid_x, 1, 1)
+    if m = 1 then
+      let* down_grid_x = linear_f16_grid (m * k) in
+      dispatch ~batch runtime down_entry
+        ~buffers:[ product; down_weight; down_scale; residual; output_buffer ]
+        ~parameters ~grid:(down_grid_x, 1, 1)
+    else
+      let m_blocks = (m + 3) / 4 in
+      let* down_entry_m4 =
+        kernel_entry ~name:"llmopt_w4a16_down_add_f16_g64_m4" runtime
+          ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+          ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+      in
+      let* down_grid_x = linear_f16_grid (m_blocks * k) in
+      dispatch ~batch runtime down_entry_m4
+        ~buffers:[ product; down_weight; down_scale; residual; output_buffer ]
+        ~parameters ~grid:(down_grid_x, 1, 1)
   in
   let state = bind_value state output output_buffer in
   Ok (state, [ rms_kernel; dual_kernel; down_kernel ])

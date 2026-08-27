@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <mach/mach_time.h>
 
 typedef struct {
   id<MTLDevice> device;
@@ -989,6 +990,19 @@ CAMLprim value caml_llmopt_metal_commit_batch(value batch_value) {
       fail_with_error("Metal batch failed", command_error);
     }
     [command_error release];
+  }
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_llmopt_metal_commit_batch_async(value batch_value) {
+  CAMLparam1(batch_value);
+  llmopt_metal_batch *batch = require_active_batch(batch_value);
+  @autoreleasepool {
+    end_batch_compute(batch);
+    [batch->command commit];
+    batch->finished = YES;
+    [batch->command release];
+    batch->command = nil;
   }
   CAMLreturn(Val_unit);
 }

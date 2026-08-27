@@ -39,6 +39,9 @@ module Cache : sig
   val with_batch :
     t -> (batch -> ('a, string) result) -> ('a, string) result
 
+  val with_batch_async :
+    t -> (batch -> ('a, string) result) -> ('a, string) result
+
   val pack_attention :
     t ->
     layer:int ->
