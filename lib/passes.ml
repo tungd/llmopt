@@ -68,6 +68,7 @@ let optimize graph =
           in
           let no_trans_graph =
             Pass_fuse_linear_bias.eliminate_attention_transpose gqa_elim_graph
+            |> Pass_fuse_linear_bias.eliminate_kv_transpose
           in
           let linear_add_graph =
             Pass_fuse_linear_bias.fuse_w4a16_linear_add no_trans_graph

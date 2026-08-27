@@ -315,6 +315,73 @@ let eliminate_attention_transpose graph =
     in
     Ir.Graph.with_nodes graph rewritten_nodes
 
+let eliminate_kv_transpose graph =
+  let nodes = Ir.Graph.nodes graph in
+  let producers =
+    List.fold_left
+      (fun map node ->
+        match Ir.node_output node with
+        | Some out_val ->
+            Node_id_map.add (Ir.Value_id.to_int (Ir.Value.id out_val)) node map
+        | None -> map)
+      Node_id_map.empty nodes
+  in
+  let elim_chain =
+    List.filter_map
+      (fun trans_node ->
+        match Ir.node_op trans_node, Ir.node_inputs trans_node, Ir.node_output trans_node with
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Movement (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })),
+            [ trans_in ],
+            Some trans_out ) ->
+            let in_dims = Tensor_shape.dimensions (Ir.Value.logical_shape trans_in) in
+            let out_dims = Tensor_shape.dimensions (Ir.Value.logical_shape trans_out) in
+            (match in_dims, out_dims with
+            | [ 1; 1; heads; dim ], [ 1; heads'; 1; dim' ] when heads = heads' && dim = dim' ->
+                (match Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id trans_in)) producers with
+                | Some view_node ->
+                    (match Ir.node_op view_node, Ir.node_inputs view_node with
+                    | Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.View | Ir.Movement.Reshape)),
+                      [ orig_in ] ->
+                        Some (trans_node, view_node, orig_in)
+                    | _ -> None)
+                | None -> None)
+            | _ -> None)
+        | _ -> None)
+      nodes
+  in
+  if elim_chain = [] then graph
+  else
+    let elim_set =
+      List.fold_left
+        (fun set (_, view_node, _) ->
+          Node_id_set.add (Ir.node_id view_node) set)
+        Node_id_set.empty elim_chain
+    in
+    let replacements =
+      List.fold_left
+        (fun map (trans_node, _view_node, orig_in) ->
+          let new_node =
+            Ir.node_replace trans_node
+              ~op:(Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.View))
+              ~inputs:[ orig_in ]
+          in
+          Node_id_map.add (Ir.node_id trans_node) new_node map)
+        Node_id_map.empty elim_chain
+    in
+    let rewritten_nodes =
+      List.filter_map
+        (fun node ->
+          let id = Ir.node_id node in
+          if Node_id_set.mem id elim_set then None
+          else
+            match Node_id_map.find_opt id replacements with
+            | Some repl -> Some repl
+            | None -> Some node)
+        nodes
+    in
+    Ir.Graph.with_nodes graph rewritten_nodes
+
 let eliminate_gqa_expansion graph =
   let nodes = Ir.Graph.nodes graph in
   let producers =
