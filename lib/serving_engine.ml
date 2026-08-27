@@ -780,7 +780,6 @@ let rec pack_prefill_recurrent batch execution checkpoint
       pack_prefill_recurrent batch execution checkpoint rest
 
 let prefill engine ~tokens =
-  engine.prebaked_decode <- None;
   let* () = validate_tokens engine tokens in
   let token_count = Array.length tokens in
   let* schedule, memory_plan = prefill_schedule engine token_count in
@@ -983,12 +982,25 @@ let with_match engine match_ operation =
   | Error message, Error release ->
       Error (message ^ "; radix lease release failed: " ^ release)
 
+let unpack_decode_checkpoint engine checkpoint buffers =
+  Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+      let rec unpack = function
+        | [] -> Ok ()
+        | (binding, state) :: rest ->
+            let* _ =
+              Metal_runtime.Cache.batch_unpack_checkpoint batch
+                ~layer:binding.cache_layer ~checkpoint ~destination:state
+            in
+            unpack rest
+      in
+      unpack (Serving_replay.Decode_buffers.recurrent buffers))
+
 let decode_matched engine match_ ~schedule ~prefix ~token =
   let past_tokens = Array.length prefix in
   let matched = Serving_cache.Match.tokens match_ in
   if matched <> past_tokens then
     Error
-      (Printf.sprintf "decode cache miss: requested %d tokens; matched %d"
+      (Printf.sprintf "decode prefix tokens %d does not match cached prefix %d"
          past_tokens matched)
   else
     match Serving_cache.Match.checkpoint match_ with
@@ -1002,7 +1014,10 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
             | Some buffers, Some cp
               when Kv_cache.Checkpoint.to_int cp = Kv_cache.Checkpoint.to_int source_checkpoint ->
                 Ok buffers
-            | _ ->
+            | Some buffers, _ ->
+                let* () = unpack_decode_checkpoint engine source_checkpoint buffers in
+                Ok buffers
+            | None, _ ->
                 let* bufs =
                   prepare_decode_buffers engine matched_slots source_checkpoint
                 in
@@ -1421,7 +1436,6 @@ let decode engine ~prefix ~token =
       decode_matched engine match_ ~schedule ~prefix ~token)
 
 let prompt engine ~tokens =
-  engine.prebaked_decode <- None;
   let* () = validate_tokens engine tokens in
   let match_ =
     Serving_cache.match_prefix engine.logical_cache ~reserve_tail:1 tokens

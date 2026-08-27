@@ -1035,7 +1035,8 @@ module Cache = struct
         in
         let int_slots = Array.map Kv_cache.Slot.to_int slots in
         let* () = Buffer.set_u32_array scratch ~offset:0 int_slots in
-        Buffer.view ~parent:scratch ~offset:0 ~bytes:(count * 4)
+        if pack then Buffer.view ~parent:scratch ~offset:0 ~bytes:(count * 4)
+        else Ok scratch
 
   let attention_parameters cache ~layer ~kind ~items ~source_items
       ~source_offset =
@@ -1363,7 +1364,7 @@ let value_byte_length = Serving_memory_plan.value_bytes
 let validate_buffer value buffer =
   let* expected = value_byte_length value in
   let actual = Buffer.byte_length buffer in
-  if actual = expected then Ok ()
+  if actual >= expected then Ok ()
   else
     Error
       (Printf.sprintf "runtime value %d requires %d bytes but received %d"
