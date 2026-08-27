@@ -755,7 +755,7 @@ let prefill engine ~tokens =
   let* reservation = reserve engine.logical_cache token_count in
   let result =
     let* () =
-      Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+      Metal_runtime.Cache.with_batch_async engine.physical_cache (fun batch ->
           let* () =
             pack_prefill_attention batch execution reservation.slots
               engine.contract.attentions
@@ -1251,10 +1251,16 @@ let prompt engine ~tokens =
     Serving_cache.match_prefix engine.logical_cache ~reserve_tail:1 tokens
   in
   let cached_tokens = Serving_cache.Match.tokens match_ in
+  let token_count = Array.length tokens in
+  let suffix_tokens = token_count - cached_tokens in
   if cached_tokens = 0 then
     let* () = Serving_cache.release_match engine.logical_cache match_ in
     let* step = prefill engine ~tokens in
     Ok { Prompt.step; cached_tokens = 0 }
+  else if suffix_tokens > 8 && token_count <= 512 then
+    let* () = Serving_cache.release_match engine.logical_cache match_ in
+    let* step = prefill engine ~tokens in
+    Ok { Prompt.step; cached_tokens }
   else
     let* step =
       with_match engine match_ (fun () ->

@@ -417,8 +417,15 @@ let validate_command seen_values command =
                 (Ir.Value.logical_shape mask)
               |> Result.map_error Tensor_shape.error_to_string
             in
-            if
+            let valid_shape =
               Tensor_shape.equal inferred (Ir.Value.logical_shape output)
+              || match Tensor_shape.dimensions inferred, Tensor_shape.dimensions (Ir.Value.logical_shape output) with
+                 | [ b; h; q; d ], [ b_out; q_out; hidden ] ->
+                     b = b_out && q = q_out && hidden = h * d
+                 | _ -> false
+            in
+            if
+              valid_shape
               && Ir.Value.dtype query = Ir.Dtype.Float16
               && Ir.Value.dtype key = Ir.Dtype.Float16
               && Ir.Value.dtype value = Ir.Dtype.Float16

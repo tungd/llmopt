@@ -306,8 +306,8 @@ let scaled_dot_product_attention query key value mask =
       else if key_length <= 0 then invalid "key length must be positive"
       else if key_batches <> batches || value_batches <> batches then
         invalid "query, key, and value batch dimensions differ"
-      else if key_heads <> heads || value_heads <> heads then
-        invalid "query, key, and value head dimensions differ"
+      else if key_heads <> value_heads || heads mod key_heads <> 0 then
+        invalid "query, key, and value head dimensions must match or be a valid GQA ratio"
       else if key_length <> value_length then
         invalid "key and value sequence lengths differ"
       else if key_dimension <> head_dimension
