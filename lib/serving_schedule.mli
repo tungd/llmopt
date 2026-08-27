@@ -62,6 +62,16 @@ module Lfm25 : sig
     cache:Kv_cache.Config.t ->
     t ->
     (t, string) result
+
+  val recurrent_in_input : int -> string
+
+  val specialize_suffix_prefill_paged_q8 :
+    captured_tokens:int ->
+    tokens:int ->
+    past_tokens:int ->
+    cache:Kv_cache.Config.t ->
+    t ->
+    (t, string) result
 end
 
 val to_bytes : t -> bytes

@@ -457,12 +457,12 @@ let validate_command seen_values command =
             let metadata_matches =
               match query_shape, key_shape, value_shape, pool_shape, slots_shape,
                     mask_shape with
-              | ( [ batches; query_heads; 1; head_dim ],
-                  [ key_batches; kv_heads; 1; key_dim ],
-                  [ value_batches; value_heads; 1; value_dim ],
+              | ( [ batches; query_heads; query_tokens; head_dim ],
+                  [ key_batches; kv_heads; key_tokens; key_dim ],
+                  [ value_batches; value_heads; value_tokens; value_dim ],
                   [ pool_bytes ],
                   [ past_tokens ],
-                  [ mask_batches; mask_heads; 1; key_length ] ) ->
+                  [ mask_batches; mask_heads; mask_query; _key_length ] ) ->
                   let group_size = Ir.Paged_attention_q8.group_size config in
                   let attention_layers =
                     Ir.Paged_attention_q8.attention_layers config
@@ -472,14 +472,16 @@ let validate_command seen_values command =
                   in
                   let token_groups = token_elements / group_size in
                   batches = key_batches && batches = value_batches
+                  && query_tokens = key_tokens && query_tokens = value_tokens
                   && kv_heads = value_heads
                   && kv_heads = Ir.Paged_attention_q8.kv_heads config
                   && query_heads mod kv_heads = 0
                   && head_dim = key_dim && head_dim = value_dim
                   && head_dim mod group_size = 0
-                  && past_tokens > 0 && key_length = past_tokens + 1
+                  && past_tokens > 0
                   && (mask_batches = 1 || mask_batches = batches)
                   && (mask_heads = 1 || mask_heads = query_heads)
+                  && (mask_query = query_tokens || mask_query = 1)
                   && pool_bytes mod Ir.Paged_attention_q8.token_stride config = 0
                   && Ir.Paged_attention_q8.token_stride config
                      = token_elements + (2 * token_groups)
@@ -583,10 +585,13 @@ let validate_command seen_values command =
                    "schedule node %d ShortConv-step metadata is inconsistent"
                    command.Command.node_id)
         | ( Ir.Op.Short_conv_prefill config,
-            [ in_proj; conv_weight; conv_state_out ],
+            in_proj :: conv_weight :: conv_state_out :: rest,
             Some output ) ->
             let channels = Ir.Short_conv_prefill.channels config in
             let window = Ir.Short_conv_prefill.window config in
+            let conv_state_in =
+              match rest with [ conv_state_in ] -> Some conv_state_in | _ -> None
+            in
             let metadata_matches =
               match
                 Tensor_shape.dimensions (Ir.Value.logical_shape in_proj),
@@ -612,8 +617,20 @@ let validate_command seen_values command =
                   && out_channels = channels
               | _ -> false
             in
+            let initial_matches =
+              match conv_state_in with
+              | None -> true
+              | Some state ->
+                  Ir.Value.dtype state = Ir.Dtype.Float16
+                  &&
+                  match Tensor_shape.dimensions (Ir.Value.logical_shape state) with
+                  | [ 1; state_channels; state_window ] ->
+                      state_channels = channels && state_window = window
+                  | _ -> false
+            in
             if
               metadata_matches
+              && initial_matches
               && Ir.Value.dtype in_proj = Ir.Dtype.Float16
               && Ir.Value.dtype conv_weight = Ir.Dtype.Float16
               && Ir.Value.dtype conv_state_out = Ir.Dtype.Float16
@@ -1390,6 +1407,7 @@ module Lfm25 = struct
 
   let q8_attention_pool_input = "__llmopt_q8_attention_pool"
   let q8_attention_slots_input = "__llmopt_q8_attention_slots"
+  let suffix_mask_input = "__llmopt_suffix_mask"
   let rope_cosine_input = "__llmopt_rope_cosine"
   let rope_sine_input = "__llmopt_rope_sine"
 
@@ -1464,7 +1482,7 @@ module Lfm25 = struct
                         (Ir.Op.additional_outputs command.Command.op)))
     |> List.mapi (fun node_id command -> { command with Command.node_id })
 
-  let specialize_rope schedule =
+  let specialize_rope ?(tokens = 1) schedule =
     let commands = schedule.commands in
     let ropes =
       List.filter_map
@@ -1483,7 +1501,7 @@ module Lfm25 = struct
           Error "LFM decode RoPE width overflows"
         else
           let width = 2 * half_dimension in
-          let expected_shape = [ 1; 1; 1; width ] in
+          let expected_shape = [ 1; 1; tokens; width ] in
           let valid_trig value =
             Ir.Value.dtype value = Ir.Dtype.Float16
             && Tensor_shape.dimensions (Ir.Value.logical_shape value)
@@ -1601,7 +1619,7 @@ module Lfm25 = struct
             runtime_input producers right && not (runtime_input producers left)
           then Ok { materialized; current = left }
           else Error "paged Q8 attention concat has no unique runtime cache input"
-      | _ -> Error "paged Q8 attention does not have the expected GQA cache chain"
+      | _ -> Ok { materialized = value; current = value }
     in
     find value
 
@@ -1701,6 +1719,126 @@ module Lfm25 = struct
   let specialize_decode_paged_q8 ~captured_past ~past_tokens ~cache schedule =
     let* schedule = specialize_decode ~captured_past ~past_tokens schedule in
     direct_q8_attention ~past_tokens ~cache schedule
+
+  let recurrent_in_input layer =
+    Printf.sprintf "__llmopt_recurrent_in_%d" layer
+
+  (* Rewrite each short-conv prefill op to take a fourth runtime input holding
+     the recurrent checkpoint (the [g] window of the last prefix token), so a
+     suffix prefill continues the conv state instead of starting from zero. *)
+  let specialize_conv_checkpoint schedule =
+    let commands = schedule.commands in
+    let maximum = max_value_id commands in
+    let rec rewrite layer current_max inputs_acc output_acc = function
+      | [] -> Ok (List.rev output_acc, List.rev inputs_acc)
+      | command :: rest ->
+          (match command.Command.op, command.inputs with
+          | ( Ir.Op.Short_conv_prefill config,
+              in_proj :: conv_weight :: conv_state_out :: rest_inputs ) ->
+              (match rest_inputs with
+              | [] ->
+                  let channels = Ir.Short_conv_prefill.channels config in
+                  let window = Ir.Short_conv_prefill.window config in
+                  let* shape =
+                    Tensor_shape.create [ 1; channels; window ]
+                    |> Result.map_error Tensor_shape.error_to_string
+                  in
+                  let input_val =
+                    Ir.Value.make_tensor ~id:(current_max + 1) ~shape
+                      ~dtype:Ir.Dtype.Float16
+                  in
+                  let input_cmd =
+                    {
+                      Command.node_id = layer + 100;
+                      op =
+                        Ir.Op.Input
+                          {
+                            name = recurrent_in_input layer;
+                            source = Ir.Input_source.Runtime;
+                          };
+                      inputs = [];
+                      output = Some input_val;
+                    }
+                  in
+                  let updated_cmd =
+                    {
+                      command with
+                      Command.inputs =
+                        [ in_proj; conv_weight; conv_state_out; input_val ];
+                    }
+                  in
+                  rewrite (layer + 1) (current_max + 1)
+                    (input_cmd :: inputs_acc)
+                    (updated_cmd :: output_acc)
+                    rest
+              | _ -> Error "short-conv prefill has too many inputs")
+          | _ ->
+              rewrite layer current_max inputs_acc (command :: output_acc) rest)
+    in
+    let* commands, new_inputs = rewrite 0 maximum [] [] commands in
+    create (prune (new_inputs @ commands))
+
+  (* Suffix prefill runs the captured prefill graph over [tokens] new tokens
+     while attending over [past_tokens] cached prefix tokens. The kernel's
+     causal formula (key_length = past_tokens + query_position + 1) already
+     implements suffix causality, so the graph mask is replaced with an all-ones
+     runtime mask of shape [1; 1; tokens; past_tokens + tokens]: the paged
+     kernel indexes it with the row-dependent key length, which stays exactly
+     within the tensor's bounds and never masks anything. *)
+  let specialize_suffix_mask ~past_tokens ~tokens schedule =
+    let commands = schedule.commands in
+    let maximum = max_value_id commands in
+    if maximum > max_int - 1 then Error "suffix prefill mask value ids overflow"
+    else
+      let* shape =
+        Tensor_shape.create [ 1; 1; tokens; past_tokens + tokens ]
+        |> Result.map_error Tensor_shape.error_to_string
+      in
+      let mask =
+        Ir.Value.make_tensor ~id:(maximum + 1) ~shape ~dtype:Ir.Dtype.Bool
+      in
+      let maximum_node_id =
+        List.fold_left
+          (fun maximum command -> max maximum command.Command.node_id)
+          (-1) commands
+      in
+      let commands =
+        List.map
+          (fun command ->
+            match command.Command.op, command.Command.inputs with
+            | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 _),
+                [ query; key; value; pool; slots; _mask ] ) ->
+                {
+                  command with
+                  Command.inputs =
+                    [ query; key; value; pool; slots; mask ];
+                }
+            | _ -> command)
+          commands
+      in
+      let fill_command =
+        {
+          Command.node_id = maximum_node_id + 1;
+          op = Ir.Op.Primitive (Ir.Primitive.Fill (Ir.Scalar.Bool true));
+          inputs = [];
+          output = Some mask;
+        }
+      in
+      create (prune (fill_command :: commands))
+
+  let specialize_suffix_prefill_paged_q8 ~captured_tokens ~tokens ~past_tokens
+      ~cache schedule =
+    if past_tokens <= 0 then Error "suffix prefill past length must be positive"
+    else if past_tokens > max_int - tokens then
+      Error "suffix prefill total length overflows"
+    else
+      let* schedule =
+        specialize_prefill ~captured_tokens ~tokens schedule
+      in
+      let* schedule = specialize_rope ~tokens schedule in
+      let* schedule = direct_q8_attention ~past_tokens ~cache schedule in
+      let* schedule = specialize_conv_checkpoint schedule in
+      specialize_suffix_mask ~past_tokens ~tokens schedule
 end
 
 let dtype_tag = function

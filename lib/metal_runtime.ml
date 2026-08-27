@@ -522,8 +522,8 @@ module Parameters = struct
 
   let attention ~batches ~heads ~query_length ~key_length ~head_dimension
       ~mask_batches ~mask_heads ~causal ~scale ?(kv_heads = heads)
-      ?(token_first_output = 0) () =
-    let bytes = Bytes.make 44 '\000' in
+      ?(token_first_output = 0) ?(past_length = 0) () =
+    let bytes = Bytes.make 48 '\000' in
     let values =
       [ batches; heads; query_length; key_length; head_dimension; mask_batches;
         mask_heads; (if causal then 1 else 0) ]
@@ -538,12 +538,13 @@ module Parameters = struct
     Bytes.set_int32_le bytes 32 (Int32.bits_of_float scale);
     let* () = set_u32 bytes 36 kv_heads in
     let* () = set_u32 bytes 40 token_first_output in
+    let* () = set_u32 bytes 44 past_length in
     Ok bytes
 
   let paged_attention_q8 ~batches ~query_heads ~kv_heads ~past_length
       ~head_dimension ~mask_batches ~mask_heads ~cache_layer ~attention_layers
-      ~group_size ~token_stride ~scale =
-    let bytes = Bytes.make 48 '\000' in
+      ~group_size ~token_stride ~scale ?(query_length = 1) () =
+    let bytes = Bytes.make 52 '\000' in
     let values =
       [ batches; query_heads; kv_heads; past_length; head_dimension; mask_batches;
         mask_heads; cache_layer; attention_layers; group_size; token_stride ]
@@ -556,6 +557,7 @@ module Parameters = struct
     in
     let* () = write 0 values in
     Bytes.set_int32_le bytes 44 (Int32.bits_of_float scale);
+    let* () = set_u32 bytes 48 query_length in
     Ok bytes
 
   let scalar_i64 = function
@@ -2415,7 +2417,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             in
             dispatched (Ok (bind_value state output output_buf, kernel))
         | ( Ir.Op.Short_conv_prefill config,
-            [ in_proj; conv_weight; conv_state_out ],
+            (in_proj :: conv_weight :: conv_state_out :: rest),
             Some output ) ->
             let channels = Ir.Short_conv_prefill.channels config in
             let* tokens =
@@ -2430,15 +2432,28 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* weight_buf = find_value state conv_weight in
             let* output_buf = workspace_buffer state output in
             let* state_out_buf = find_value state conv_state_out in
-            let* parameters = Parameters.u32s [ tokens; channels ] in
+            let* (has_initial_state, extra_buffers) =
+              match rest with
+              | [ conv_state_in ] ->
+                  let* state_in_buf = find_value state conv_state_in in
+                  Ok (1, [ state_in_buf ])
+              | [] -> Ok (0, [])
+              | _ -> Error "Metal ShortConv prefill has too many inputs"
+            in
+            let* parameters = Parameters.u32s [ tokens; channels; has_initial_state ] in
             let* entry =
-              kernel_entry ~name:"llmopt_short_conv_prefill_f16" runtime
+              kernel_entry
+                ~name:
+                  (if has_initial_state = 1 then
+                     "llmopt_short_conv_prefill_init_f16"
+                   else "llmopt_short_conv_prefill_f16")
+                runtime
                 ~operation:Kernel_abi.Operation.Short_conv_prefill
                 ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
             in
             let* kernel =
               dispatch ~batch runtime entry
-                ~buffers:[ in_proj_buf; weight_buf; output_buf; state_out_buf ]
+                ~buffers:([ in_proj_buf; weight_buf; output_buf; state_out_buf ] @ extra_buffers)
                 ~parameters ~grid:(channels, 1, 1)
             in
             dispatched (Ok (bind_value state output output_buf, kernel))
@@ -2540,12 +2555,13 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | _ -> 0
             in
             let* buffers = find_values state [ query; key; value; mask ] in
+            let past_length = max 0 (key_length - query_length) in
             let* parameters =
               Parameters.attention ~batches ~heads ~query_length ~key_length
                 ~head_dimension ~mask_batches ~mask_heads
                 ~causal:(Ir.Attention.causal config)
                 ~scale:(Ir.Attention.scale config)
-                ~kv_heads ~token_first_output ()
+                ~kv_heads ~token_first_output ~past_length ()
             in
             let rows = batches * heads * query_length in
             let input_dtype = Ir.Value.dtype query in
@@ -2563,17 +2579,18 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
         | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config),
             [ query; current_key; current_value; pool; slots; mask ],
             Some output ) ->
-            let* batches, query_heads, head_dimension =
+            let* batches, query_heads, query_length, head_dimension =
               match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
-              | [ batches; query_heads; 1; head_dimension ] ->
-                  Ok (batches, query_heads, head_dimension)
-              | _ -> Error "paged Q8 attention query must have shape [b,h,1,d]"
+              | [ batches; query_heads; query_length; head_dimension ] ->
+                  Ok (batches, query_heads, query_length, head_dimension)
+              | _ -> Error "paged Q8 attention query must have shape [b,h,q,d]"
             in
             let* kv_heads =
               match Tensor_shape.dimensions (Ir.Value.logical_shape current_key) with
-              | [ _batches; kv_heads; 1; _head_dimension ] -> Ok kv_heads
+              | [ _batches; kv_heads; key_tokens; _head_dimension ]
+                when key_tokens = query_length -> Ok kv_heads
               | _ ->
-                  Error "paged Q8 attention current key must have shape [b,h,1,d]"
+                  Error "paged Q8 attention current key must match query tokens"
             in
             let* past_length =
               match Tensor_shape.dimensions (Ir.Value.logical_shape slots) with
@@ -2582,7 +2599,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             in
             let* mask_batches, mask_heads =
               match Tensor_shape.dimensions (Ir.Value.logical_shape mask) with
-              | [ mask_batches; mask_heads; 1; _key_length ] ->
+              | [ mask_batches; mask_heads; mask_query; _key_length ]
+                when mask_query = query_length || mask_query = 1 ->
                   Ok (mask_batches, mask_heads)
               | _ -> Error "paged Q8 attention mask must have rank four"
             in
@@ -2599,6 +2617,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~group_size:(Ir.Paged_attention_q8.group_size config)
                 ~token_stride:(Ir.Paged_attention_q8.token_stride config)
                 ~scale:(Ir.Paged_attention_q8.scale config)
+                ~query_length ()
             in
             let* entry =
               kernel_entry ~name:"llmopt_attention_q8_paged_simd_h64" runtime
@@ -2606,7 +2625,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~input_dtype:Ir.Dtype.Float16
                 ~output_dtype:(Ir.Value.dtype output)
             in
-            let* grid_x = simd_rows_grid (batches * query_heads) in
+            let* grid_x = simd_rows_grid (batches * query_heads * query_length) in
             let* output_buffer = workspace_buffer state output in
             let* kernel =
               dispatch ~batch runtime entry

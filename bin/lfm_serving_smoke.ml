@@ -148,9 +148,11 @@ let run () =
   let page_size =
     prefill_package |> Serving_package.cache |> Serving_package.Cache.page_size
   in
+  let token_capacity = max 512 (arguments.generated_tokens * 2 + 64) in
+  let checkpoint_capacity = max 128 (arguments.generated_tokens + 16) in
   let* config =
     Serving_cache.Config.create ~model:Lfm25.Config.default
-      ~token_capacity:64 ~checkpoint_capacity:8 ~page_size ()
+      ~token_capacity ~checkpoint_capacity ~page_size ()
   in
   let* () =
     Serving_engine.validate_packages ~config ~prefill:prefill_package

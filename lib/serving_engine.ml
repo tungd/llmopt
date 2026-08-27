@@ -78,6 +78,7 @@ type t = {
   rope_table : rope_table option;
   decode_schedules : (int, Serving_schedule.t) Hashtbl.t;
   prefill_schedules : (int, Serving_schedule.t * Serving_memory_plan.t) Hashtbl.t;
+  suffix_prefill_schedules : (int * int, Serving_schedule.t * Serving_memory_plan.t) Hashtbl.t;
   mutable prebaked_decode :
     (Metal_runtime.Prebaked.t * Metal_runtime.Execution.t * Metal_runtime.Buffer.t option)
     option;
@@ -560,6 +561,22 @@ module Rope_table = struct
       in
       Ok (cosine, sine)
 
+  let slice table ~position ~length =
+    if position < 0 || length <= 0 || position + length > table.positions then
+      Error
+        (Printf.sprintf "LFM RoPE slice [%d,%d) is outside [0,%d)" position
+           (position + length) table.positions)
+    else
+      let offset = position * table.row_bytes in
+      let bytes = length * table.row_bytes in
+      let* cosine =
+        Metal_runtime.Buffer.view ~parent:table.cosine ~offset ~bytes
+      in
+      let* sine =
+        Metal_runtime.Buffer.view ~parent:table.sine ~offset ~bytes
+      in
+      Ok (cosine, sine)
+
   let slot_for_position table ~position =
     let* cosine, sine = row table ~position in
     let* () =
@@ -614,6 +631,7 @@ let create ~config ~prefill ~decode =
         rope_table;
         decode_schedules = Hashtbl.create 64;
         prefill_schedules = Hashtbl.create 64;
+        suffix_prefill_schedules = Hashtbl.create 64;
         prebaked_decode = None;
         decode_recurrent_buffers = None;
         decode_checkpoint = None;
@@ -635,6 +653,24 @@ let prefill_schedule engine tokens =
       in
       let* memory_plan = Serving_memory_plan.create schedule in
       Hashtbl.add engine.prefill_schedules tokens (schedule, memory_plan);
+      Ok (schedule, memory_plan)
+
+let suffix_prefill_schedule engine ~tokens ~past_tokens =
+  match Hashtbl.find_opt engine.suffix_prefill_schedules (tokens, past_tokens) with
+  | Some entry -> Ok entry
+  | None ->
+      let base_schedule =
+        engine.prefill |> Metal_runtime.package |> Serving_package.schedule
+      in
+      let* schedule =
+        Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+          ~captured_tokens:engine.contract.prefill_tokens
+          ~tokens ~past_tokens
+          ~cache:(Serving_cache.Config.kv engine.config)
+          base_schedule
+      in
+      let* memory_plan = Serving_memory_plan.create schedule in
+      Hashtbl.add engine.suffix_prefill_schedules (tokens, past_tokens) (schedule, memory_plan);
       Ok (schedule, memory_plan)
 
 let decode_schedule engine past_tokens =
@@ -822,6 +858,31 @@ let prepare_decode_buffers engine _slots checkpoint =
   Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
       let* recurrent = recurrent batch [] engine.contract.recurrents in
       Ok (Serving_replay.Decode_buffers.create ~attention:[] ~recurrent))
+
+let unpack_recurrent_states engine checkpoint =
+  let layout =
+    engine.config |> Serving_cache.Config.kv |> Kv_cache.Config.layout
+  in
+  let* recurrent_bytes =
+    checked_bytes "prefill recurrent cache"
+      [ 2; Kv_cache.Layout.recurrent_width layout;
+        Kv_cache.Layout.recurrent_window layout ]
+  in
+  let rec recurrent batch buffers (bindings : recurrent_binding list) =
+    match bindings with
+    | [] -> Ok (List.rev buffers)
+    | binding :: rest ->
+        let* state =
+          Metal_runtime.Buffer.create ~runtime:engine.prefill ~bytes:recurrent_bytes
+        in
+        let* _ =
+          Metal_runtime.Cache.batch_unpack_checkpoint batch
+            ~layer:binding.cache_layer ~checkpoint ~destination:state
+        in
+        recurrent batch ((binding, state) :: buffers) rest
+  in
+  Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
+      recurrent batch [] engine.contract.recurrents)
 
 let decode_buffers_from_execution execution buffers =
   Serving_replay.Decode_buffers.update_attention buffers ~f:(fun binding ->
@@ -1250,6 +1311,106 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
         | Error (inserted, message) ->
             abort_replay engine.logical_cache reservation inserted message)
 
+type suffix_prefill_reservation = {
+  slots : Kv_cache.Slot.t array;
+  checkpoint : Kv_cache.Checkpoint.t;
+}
+
+let reserve_suffix_prefill cache token_count =
+  match Serving_cache.reserve_tokens cache token_count with
+  | Error error -> Error (Kv_cache.error_to_string error)
+  | Ok slots ->
+      match Serving_cache.reserve_checkpoint cache with
+      | Ok checkpoint -> Ok { slots; checkpoint }
+      | Error error ->
+          let message = Kv_cache.error_to_string error in
+          let _ = Serving_cache.release_tokens cache slots in
+          Error message
+
+let abort_suffix_prefill cache (reservation : suffix_prefill_reservation) message =
+  let _ = Serving_cache.release_tokens cache reservation.slots in
+  let _ = Serving_cache.release_checkpoint cache reservation.checkpoint in
+  Error message
+
+let suffix_prefill engine match_ ~tokens ~cached_tokens =
+  let token_count = Array.length tokens in
+  let suffix_tokens = token_count - cached_tokens in
+  if suffix_tokens < 3 then
+    replay_matched engine match_ ~tokens ~cached_tokens
+  else
+    match Serving_cache.Match.checkpoint match_ with
+    | None -> Error "prompt cache match has no recurrent checkpoint"
+    | Some source_checkpoint ->
+        let matched_slots = Serving_cache.Match.slots match_ in
+        let* reservation = reserve_suffix_prefill engine.logical_cache suffix_tokens in
+        let result =
+          let* schedule, memory_plan =
+            suffix_prefill_schedule engine ~tokens:suffix_tokens ~past_tokens:cached_tokens
+          in
+          let suffix_sub_tokens = Array.sub tokens cached_tokens suffix_tokens in
+          let* token_input = token_buffer engine.prefill suffix_sub_tokens in
+          let* attention_inputs =
+            Metal_runtime.Cache.q8_attention_inputs engine.physical_cache ~slots:matched_slots
+          in
+          let* rope_inputs =
+            match engine.rope_table with
+            | None -> Ok []
+            | Some table ->
+                let* cosine, sine =
+                  Rope_table.slice table ~position:cached_tokens ~length:suffix_tokens
+                in
+                Ok
+                  [ Serving_schedule.Lfm25.rope_cosine_input, cosine;
+                    Serving_schedule.Lfm25.rope_sine_input, sine ]
+          in
+          let* recurrent_buffers = unpack_recurrent_states engine source_checkpoint in
+          let recurrent_inputs =
+            List.map
+              (fun (binding, state) ->
+                (Serving_schedule.Lfm25.recurrent_in_input binding.cache_layer, state))
+              recurrent_buffers
+          in
+          let inputs =
+            (engine.contract.input_ids, token_input)
+            :: (rope_inputs @ attention_inputs @ recurrent_inputs)
+          in
+          let* execution =
+            Metal_runtime.execute_schedule engine.prefill ~schedule ~memory_plan ~inputs
+          in
+          let* () =
+            Metal_runtime.Cache.with_batch_async engine.physical_cache (fun batch ->
+                let* () =
+                  pack_prefill_attention batch execution reservation.slots
+                    engine.contract.attentions
+                in
+                pack_prefill_recurrent batch execution reservation.checkpoint
+                  engine.contract.recurrents)
+          in
+          let* logits =
+            optional_output execution engine.contract.prefill_head.logits
+          in
+          let* token_id =
+            optional_output execution engine.contract.prefill_head.token_id
+          in
+          let all_slots = Array.append matched_slots reservation.slots in
+          let* cached_prefix =
+            Serving_cache.insert engine.logical_cache ~tokens
+              ~slots:all_slots ~checkpoint:reservation.checkpoint ()
+          in
+          Ok
+            {
+              Step.logits;
+              token_id;
+              tokens = Array.copy tokens;
+              cached_prefix;
+              kernels = Metal_runtime.Execution.kernels execution;
+            }
+        in
+        match result with
+        | Ok _ as result -> result
+        | Error message ->
+            abort_suffix_prefill engine.logical_cache reservation message
+
 let decode engine ~prefix ~token =
   let* () = validate_tokens engine [| token |] in
   let match_ =
@@ -1266,20 +1427,14 @@ let prompt engine ~tokens =
     Serving_cache.match_prefix engine.logical_cache ~reserve_tail:1 tokens
   in
   let cached_tokens = Serving_cache.Match.tokens match_ in
-  let token_count = Array.length tokens in
-  let suffix_tokens = token_count - cached_tokens in
   if cached_tokens = 0 then
     let* () = Serving_cache.release_match engine.logical_cache match_ in
     let* step = prefill engine ~tokens in
     Ok { Prompt.step; cached_tokens = 0 }
-  else if suffix_tokens > 8 && token_count <= 512 then
-    let* () = Serving_cache.release_match engine.logical_cache match_ in
-    let* step = prefill engine ~tokens in
-    Ok { Prompt.step; cached_tokens }
   else
     let* step =
       with_match engine match_ (fun () ->
-          replay_matched engine match_ ~tokens ~cached_tokens)
+          suffix_prefill engine match_ ~tokens ~cached_tokens)
     in
     Ok { Prompt.step; cached_tokens }
 

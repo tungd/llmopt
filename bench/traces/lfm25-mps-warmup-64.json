@@ -1,0 +1,36 @@
+{
+  "name": "lfm25-mps-warmup-64",
+  "model": "LiquidAI/LFM2.5-350M",
+  "shared_system_prefix": "You are a concise assistant in a local MPS benchmark.",
+  "conversation_prefixes": [
+    "Warmup A: ",
+    "Warmup B: "
+  ],
+  "user_messages": [
+    [
+      "State one fact about the solar system.",
+      "State another fact in more detail."
+    ],
+    [
+      "Name one planet in our solar system.",
+      "Describe its main features in a complete sentence."
+    ]
+  ],
+  "output_tokens_per_turn": 64,
+  "num_conversations": 2,
+  "user_turns_per_conversation": 2,
+  "total_requests": 4,
+  "arrival": {
+    "initial_offsets_s": [0.0, 0.0],
+    "think_time_s": 0.0
+  },
+  "request": {
+    "temperature": 0.0
+  },
+  "declared_tokens": {
+    "shared_system_prefix_tokens": "tokenizer-derived",
+    "per_conversation_prefix_tokens": "tokenizer-derived",
+    "new_user_tokens_per_turn": "tokenizer-derived",
+    "output_tokens_per_turn_pinned": 64
+  }
+}

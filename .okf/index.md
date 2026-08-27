@@ -22,6 +22,7 @@ available compiler, package, runtime, CLI, or benchmark configuration.
 * [Metal backend boundary](decisions/backend-boundary.md) - MSL execution and LLVM inspection.
 * [LFM2.5-350M ESR bandwidth target](decisions/target-lfm25-350m-bandwidth.md) - memory bandwidth physics and ERS feasibility on Apple Silicon.
 * [llama.cpp performance target](decisions/llama-cpp-target.md) - llama.cpp Q4_0 as the W4 parity comparison, with MPS retained as reference.
+* [Model Program boundary](decisions/model-program-boundary.md) - root execution contract joining PyTorch capture, compiled entrypoints, state, and serving assets.
 
 ## Experiments and benchmarks
 

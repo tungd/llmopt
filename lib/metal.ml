@@ -1716,6 +1716,7 @@ struct Q8PagedAttentionParams {
   uint group_size;
   uint token_stride;
   float scale;
+  uint query_length;
 };
 
 inline float llmopt_q8_paged_value(
@@ -1738,8 +1739,8 @@ inline float llmopt_q8_paged_value(
   const uint value_index = segment * params.kv_heads * params.head_dim
       + kv_head * params.head_dim + dimension;
   const uint scale_index = segment * segment_groups
-      + kv_head * groups_per_head + dimension / params.group_size;
-  return float(half(float(values[value_index]) * float(scales[scale_index])));
+      + kv_head * groups_per_head + (dimension / params.group_size);
+  return float(values[value_index]) * float(scales[scale_index]);
 }
 
 kernel void llmopt_attention_q8_paged_simd_h64(
@@ -1756,17 +1757,19 @@ kernel void llmopt_attention_q8_paged_simd_h64(
     uint lane [[thread_index_in_simdgroup]]) {
   const uint row = threadgroup_position.x
       * Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP + simdgroup;
-  const uint rows = params.batches * params.query_heads;
+  const uint q_len = params.query_length == 0 ? 1 : params.query_length;
+  const uint rows = params.batches * params.query_heads * q_len;
   if (row >= rows) return;
-  const uint head = row % params.query_heads;
-  const uint batch = row / params.query_heads;
+  const uint q_pos = row % q_len;
+  const uint head = (row / q_len) % params.query_heads;
+  const uint batch = row / (q_len * params.query_heads);
   const uint heads_per_kv = params.query_heads / params.kv_heads;
   const uint kv_head = head / heads_per_kv;
   const uint query_base =
-      (batch * params.query_heads + head) * params.head_dim;
+      ((batch * params.query_heads + head) * q_len + q_pos) * params.head_dim;
   const uint current_base =
-      (batch * params.kv_heads + kv_head) * params.head_dim;
-  const uint key_length = params.past_length + 1;
+      (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
+  const uint key_length = params.past_length + q_pos + 1;
   const uint key_segment = params.cache_layer * 2;
   const uint value_segment = key_segment + 1;
   float maximum = -INFINITY;
@@ -1774,18 +1777,21 @@ kernel void llmopt_attention_q8_paged_simd_h64(
   float result_low = 0.0f;
   float result_high = 0.0f;
   for (uint key_position = 0; key_position < key_length; ++key_position) {
-    const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
-    const uint mask_head = params.mask_heads == 1 ? 0 : head;
-    const uint mask_index =
-        (mask_batch * params.mask_heads + mask_head) * key_length + key_position;
-    if (mask[mask_index] == 0) continue;
+    if (mask != nullptr && params.mask_batches > 0) {
+      const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
+      const uint mask_head = params.mask_heads == 1 ? 0 : head;
+      const uint mask_index =
+          ((mask_batch * params.mask_heads + mask_head) * q_len + q_pos)
+              * key_length + key_position;
+      if (mask[mask_index] == 0) continue;
+    }
     float partial_score = 0.0f;
     for (uint dimension = lane; dimension < params.head_dim;
          dimension += Q8_PAGED_ATTENTION_SIMD_WIDTH) {
       const float key_value = key_position < params.past_length
           ? llmopt_q8_paged_value(pool, slots, params, key_position,
                 key_segment, kv_head, dimension)
-          : float(current_key[current_base + dimension]);
+          : float(current_key[current_base + (key_position - params.past_length) * params.head_dim + dimension]);
       partial_score += float(query[query_base + dimension]) * key_value;
     }
     const float score = simd_sum(partial_score) * params.scale;
@@ -1797,7 +1803,7 @@ kernel void llmopt_attention_q8_paged_simd_h64(
       const float value = key_position < params.past_length
           ? llmopt_q8_paged_value(pool, slots, params, key_position,
                 value_segment, kv_head, lane)
-          : float(current_value[current_base + lane]);
+          : float(current_value[current_base + (key_position - params.past_length) * params.head_dim + lane]);
       result_low = result_low * previous_scale + current_scale * value;
     }
     const uint high_dimension = lane + Q8_PAGED_ATTENTION_SIMD_WIDTH;
@@ -1805,13 +1811,14 @@ kernel void llmopt_attention_q8_paged_simd_h64(
       const float value = key_position < params.past_length
           ? llmopt_q8_paged_value(pool, slots, params, key_position,
                 value_segment, kv_head, high_dimension)
-          : float(current_value[current_base + high_dimension]);
+          : float(current_value[current_base + (key_position - params.past_length) * params.head_dim + high_dimension]);
       result_high = result_high * previous_scale + current_scale * value;
     }
     denominator = denominator * previous_scale + current_scale;
     maximum = next_maximum;
   }
-  const uint output_base = row * params.head_dim;
+  const uint output_base =
+      ((batch * params.query_heads + head) * q_len + q_pos) * params.head_dim;
   if (lane < params.head_dim)
     output[output_base + lane] = half(
         denominator == 0.0f ? 0.0f : result_low / denominator);
@@ -2138,16 +2145,21 @@ let short_conv_step_fused_entries =
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
 let short_conv_prefill_source =
-  "\nstruct ShortConvPrefillParams {\n"
+  "\n#ifndef LLMOPT_SHORT_CONV_PREFILL_PARAMS\n"
+  ^ "#define LLMOPT_SHORT_CONV_PREFILL_PARAMS\n"
+  ^ "struct ShortConvPrefillParams {\n"
   ^ "  uint tokens;\n"
   ^ "  uint channels;\n"
-  ^ "};\n\n"
+  ^ "  uint has_initial_state;\n"
+  ^ "};\n"
+  ^ "#endif\n\n"
   ^ "kernel void llmopt_short_conv_prefill_f16(\n"
   ^ "    device const half* in_proj [[buffer(0)]],\n"
   ^ "    device const half* conv_weight [[buffer(1)]],\n"
   ^ "    device half* output [[buffer(2)]],\n"
   ^ "    device half* conv_state_out [[buffer(3)]],\n"
   ^ "    constant ShortConvPrefillParams& params [[buffer(4)]],\n"
+  ^ "    device const half* conv_state_in [[buffer(5)]],\n"
   ^ "    uint gid [[thread_position_in_grid]]) {\n"
   ^ "  if (gid >= params.channels) return;\n"
   ^ "  const uint c = gid;\n"
@@ -2157,9 +2169,15 @@ let short_conv_prefill_source =
   ^ "  const float w0 = float(conv_weight[weight_base + 0]);\n"
   ^ "  const float w1 = float(conv_weight[weight_base + 1]);\n"
   ^ "  const float w2 = float(conv_weight[weight_base + 2]);\n"
+  ^ "  const uint state_base = c * 3;\n"
   ^ "  float g_prev3 = 0.0f;\n"
   ^ "  float g_prev2 = 0.0f;\n"
   ^ "  float g_prev1 = 0.0f;\n"
+  ^ "  if (params.has_initial_state != 0 && conv_state_in != nullptr) {\n"
+  ^ "    g_prev3 = float(conv_state_in[state_base + 0]);\n"
+  ^ "    g_prev2 = float(conv_state_in[state_base + 1]);\n"
+  ^ "    g_prev1 = float(conv_state_in[state_base + 2]);\n"
+  ^ "  }\n"
   ^ "  for (uint t = 0; t < tokens; ++t) {\n"
   ^ "    const uint in_offset = t * (3 * channels) + c;\n"
   ^ "    const float x0 = float(in_proj[in_offset]);\n"
@@ -2172,7 +2190,6 @@ let short_conv_prefill_source =
   ^ "    g_prev2 = g_prev1;\n"
   ^ "    g_prev1 = g_curr;\n"
   ^ "  }\n"
-  ^ "  const uint state_base = c * 3;\n"
   ^ "  conv_state_out[state_base + 0] = half(g_prev3);\n"
   ^ "  conv_state_out[state_base + 1] = half(g_prev2);\n"
   ^ "  conv_state_out[state_base + 2] = half(g_prev1);\n"
@@ -2184,6 +2201,24 @@ let short_conv_prefill_entries =
       ~operation:Kernel_abi.Operation.Short_conv_prefill
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+(* Suffix prefill feeds the recurrent checkpoint through a fourth input. The
+   dispatch binds that buffer at index 4 and the constant parameters at index
+   5, so the init variant swaps the two annotations of the base kernel. *)
+let short_conv_prefill_init_source =
+  short_conv_prefill_source
+  |> replace_first ~needle:"llmopt_short_conv_prefill_f16"
+       ~replacement:"llmopt_short_conv_prefill_init_f16"
+  |> replace_first ~needle:"params [[buffer(4)]]"
+       ~replacement:"params [[buffer(5)]]"
+  |> replace_first ~needle:"conv_state_in [[buffer(5)]]"
+       ~replacement:"conv_state_in [[buffer(4)]]"
+
+let short_conv_prefill_init_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_prefill_init_f16"
+      ~operation:Kernel_abi.Operation.Short_conv_prefill
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let attention_source =
   "\nconstant uint ATTENTION_SIMD_WIDTH = 32;\n"
   ^ "constant uint ATTENTION_ROWS_PER_THREADGROUP = 8;\n\n"
@@ -2191,17 +2226,23 @@ let attention_source =
   ^ "  uint batches; uint heads; uint query_length; uint key_length;\n"
   ^ "  uint head_dimension; uint mask_batches; uint mask_heads; uint causal;\n"
   ^ "  float scale; uint kv_heads; uint token_first_output;\n"
+  ^ "  uint past_length;\n"
   ^ "};\n\n"
   ^ "inline bool llmopt_attention_allowed(\n"
   ^ "    device const uchar* mask, constant AttentionParams& params,\n"
   ^ "    uint batch, uint head, uint query_position, uint key_position) {\n"
+  ^ "  if (params.causal != 0 && key_position > (params.past_length + query_position)) {\n"
+  ^ "    return false;\n"
+  ^ "  }\n"
+  ^ "  if (params.mask_batches == 0 || mask == nullptr) {\n"
+  ^ "    return true;\n"
+  ^ "  }\n"
   ^ "  const uint mask_batch = params.mask_batches == 1 ? 0 : batch;\n"
   ^ "  const uint mask_head = params.mask_heads == 1 ? 0 : head;\n"
   ^ "  const uint mask_index = (((mask_batch * params.mask_heads + mask_head)\n"
   ^ "      * params.query_length + query_position) * params.key_length)\n"
   ^ "      + key_position;\n"
-  ^ "  return mask[mask_index] != 0\n"
-  ^ "      && (params.causal == 0 || key_position <= query_position);\n"
+  ^ "  return mask[mask_index] != 0;\n"
   ^ "}\n\n"
   ^ "inline float llmopt_attention_score(\n"
   ^ "    device const half* query, device const half* key,\n"
@@ -3196,6 +3237,9 @@ let lower graph =
         short_conv_step_fused_source,
         short_conv_step_fused_entries );
       has_short_conv_prefill graph, short_conv_prefill_source, short_conv_prefill_entries;
+      ( has_short_conv_prefill graph,
+        short_conv_prefill_init_source,
+        short_conv_prefill_init_entries );
       has_attention graph, attention_source, attention_entries;
       has_embedding graph, embedding_source, embedding_entries;
       ( has_primitive graph (function Ir.Primitive.Arange _ -> true | _ -> false),
