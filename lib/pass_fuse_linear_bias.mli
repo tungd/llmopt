@@ -8,4 +8,4 @@ val fuse_w4a16_qkv : Ir.Graph.t -> Ir.Graph.t
 
 val eliminate_attention_transpose : Ir.Graph.t -> Ir.Graph.t
 
-
+val eliminate_gqa_expansion : Ir.Graph.t -> Ir.Graph.t

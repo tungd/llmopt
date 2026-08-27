@@ -744,6 +744,7 @@ let rec pack_prefill_recurrent batch execution checkpoint
       pack_prefill_recurrent batch execution checkpoint rest
 
 let prefill engine ~tokens =
+  engine.prebaked_decode <- None;
   let* () = validate_tokens engine tokens in
   let token_count = Array.length tokens in
   let* schedule, memory_plan = prefill_schedule engine token_count in
@@ -1246,6 +1247,7 @@ let decode engine ~prefix ~token =
       decode_matched engine match_ ~schedule ~prefix ~token)
 
 let prompt engine ~tokens =
+  engine.prebaked_decode <- None;
   let* () = validate_tokens engine tokens in
   let match_ =
     Serving_cache.match_prefix engine.logical_cache ~reserve_tail:1 tokens

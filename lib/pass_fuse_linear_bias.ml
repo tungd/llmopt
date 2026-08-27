@@ -315,4 +315,98 @@ let eliminate_attention_transpose graph =
     in
     Ir.Graph.with_nodes graph rewritten_nodes
 
+let eliminate_gqa_expansion graph =
+  let nodes = Ir.Graph.nodes graph in
+  let producers =
+    List.fold_left
+      (fun map node ->
+        match Ir.node_output node with
+        | Some out_val ->
+            Node_id_map.add (Ir.Value_id.to_int (Ir.Value.id out_val)) node map
+        | None -> map)
+      Node_id_map.empty nodes
+  in
+  let consumers node_val =
+    List.filter
+      (fun node -> List.exists (value_is node_val) (Ir.node_inputs node))
+      nodes
+  in
+  let find_gqa_source tensor =
+    match Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id tensor)) producers with
+    | Some reshape_node -> (
+        match Ir.node_op reshape_node, Ir.node_inputs reshape_node with
+        | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape), [ expand_out ] -> (
+            match Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id expand_out)) producers with
+            | Some expand_node -> (
+                match Ir.node_op expand_node, Ir.node_inputs expand_node with
+                | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Expand), [ index_out ] -> (
+                    match Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id index_out)) producers with
+                    | Some index_node -> (
+                        match Ir.node_op index_node, Ir.node_inputs index_node with
+                        | Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.Index _)), [ raw_tensor ] ->
+                            let raw_dims = Tensor_shape.dimensions (Ir.Value.logical_shape raw_tensor) in
+                            let final_dims = Tensor_shape.dimensions (Ir.Value.logical_shape tensor) in
+                            (match raw_dims, final_dims with
+                            | [ 1; kv_heads; tokens; 64 ], [ 1; heads; tokens2; 64 ]
+                              when tokens = tokens2 && kv_heads = 8 && heads = 16 ->
+                                Some (raw_tensor, [ reshape_node; expand_node; index_node ])
+                            | _ -> None)
+                        | _ -> None)
+                    | None -> None)
+                | _ -> None)
+            | None -> None)
+        | _ -> None)
+    | None -> None
+  in
+  let rewrites =
+    List.filter_map
+      (fun attn_node ->
+        match Ir.node_op attn_node, Ir.node_inputs attn_node with
+        | Ir.Op.Primitive (Ir.Primitive.Attention config), [ query; key; value; mask ] -> (
+            match find_gqa_source key, find_gqa_source value with
+            | Some (raw_key, k_nodes), Some (raw_value, v_nodes) ->
+                Some (attn_node, config, query, raw_key, raw_value, mask, k_nodes @ v_nodes)
+            | _ -> None)
+        | _ -> None)
+      nodes
+  in
+  if rewrites = [] then graph
+  else
+    let elim_set =
+      List.fold_left
+        (fun set (_, _, _, _, _, _, dead_nodes) ->
+          List.fold_left
+            (fun s node ->
+              match Ir.node_output node with
+              | Some out_val when List.length (consumers out_val) <= 1 ->
+                  Node_id_set.add (Ir.node_id node) s
+              | _ -> s)
+            set dead_nodes)
+        Node_id_set.empty rewrites
+    in
+    let replacements =
+      List.fold_left
+        (fun map (attn_node, config, query, raw_key, raw_value, mask, _) ->
+          let new_attn =
+            Ir.node_create ~id:(Ir.node_id attn_node)
+              ~op:(Ir.Op.Primitive (Ir.Primitive.Attention config))
+              ~inputs:[ query; raw_key; raw_value; mask ]
+              ~output:(Ir.node_output attn_node)
+          in
+          Node_id_map.add (Ir.node_id attn_node) new_attn map)
+        Node_id_map.empty rewrites
+    in
+    let rewritten_nodes =
+      List.filter_map
+        (fun node ->
+          let id = Ir.node_id node in
+          if Node_id_set.mem id elim_set then None
+          else
+            match Node_id_map.find_opt id replacements with
+            | Some fused -> Some fused
+            | None -> Some node)
+        nodes
+    in
+    Ir.Graph.with_nodes graph rewritten_nodes
+
 let pass = Pass.create ~name ~description ~run
