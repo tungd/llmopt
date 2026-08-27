@@ -32,6 +32,7 @@ available compiler, package, runtime, CLI, or benchmark configuration.
 * [Semantic 5x3 result](experiments/exp-0004-lfm25-semantic-5x3.md) - isolated long-context comparison and raw latency evidence.
 * [Viettel AI Race benchsuite implementation](experiments/exp-0005-viettel-racebench-implementation.md) - runner adoption and current baseline status.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.
+* [Restored W4 SIMD corrective rerun](experiments/exp-0093-restored-w4-simd-rerun-2026-08-27.md) - restored kernel execution strategy, latest Q4 comparison, and postmortem of the destructive canonicalization.
 * [LFM2.5-350M baseline](experiments/exp-0006-lfm25-350m-probe.md) - memory-safe engine-pass and baseline observation.
 * [Q8 weight-only linear pass](experiments/exp-0007-q8-linear-pass.md) - first quantized optimizer/codegen slice with Metal and LLVM smoke validation.
 * [Generated Q8 Metal runtime](experiments/exp-0008-metal-runtime-q8.md) - metallib loading, MPS dispatch bridge, tiled launch correction, and the captured non-model probe.

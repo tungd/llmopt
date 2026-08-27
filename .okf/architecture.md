@@ -199,8 +199,10 @@ The current ABI-v17 packages carry 243 tensor-store bindings and zero opaque
 commands. Prefill has 752 commands and 58 kernel entries; decode has 771
 commands and 55 entries. Both contain 16 executable W4 FFN operations. The
 latest scored HTTP trace completes 4/4 requests, reuses 80/193 prompt tokens,
-and records LLMOpt ERS `0.2265464543`, median TTFT `143.1265835 ms`, and median
-TPOT `10.2498472 ms`.
+and records LLMOpt ERS `0.6024965413`, median TTFT `62.6631460 ms`, and median
+TPOT `3.9542290 ms`. Ordinary W4 and fused FFN projections assign one 32-lane
+SIMD group to each output and reduce with `simd_sum`; the W4 LM head uses
+`uchar4` packed loads.
 
 The FX compiler consumes the versioned binary `graph.llmopt` and emits a
 versioned binary `package.llmopt` containing the typed

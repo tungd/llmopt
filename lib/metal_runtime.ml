@@ -1538,15 +1538,17 @@ let dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
       ~buffers:[ activation; norm_weight; normalized ] ~parameters
       ~grid:(m * 256, 1, 1)
   in
+  let* dual_grid_x = linear_f16_grid (m * n) in
+  let* down_grid_x = linear_f16_grid (m * k) in
   let* dual_kernel =
     dispatch ~batch runtime dual_entry
       ~buffers:[ normalized; gate_weight; gate_scale; up_weight; up_scale; product ]
-      ~parameters ~grid:(m * n, 1, 1)
+      ~parameters ~grid:(dual_grid_x, 1, 1)
   in
   let* down_kernel =
     dispatch ~batch runtime down_entry
       ~buffers:[ product; down_weight; down_scale; residual; output_buffer ]
-      ~parameters ~grid:(m * k, 1, 1)
+      ~parameters ~grid:(down_grid_x, 1, 1)
   in
   let state = bind_value state output output_buffer in
   let state = { state with resources = normalized :: product :: state.resources } in
@@ -2523,12 +2525,13 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* parameters =
               Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ]
             in
+            let* grid_x = linear_f16_grid (m * n) in
             dispatched
               (dispatch_output ~name:"llmopt_w4a16_linear_f16_g64" runtime
                  state output ~operation:Kernel_abi.Operation.W4a16_linear
                  ~input_dtype:Ir.Dtype.Float16
                  ~buffers:[ input; weight; scale; bias_buffer ] ~parameters
-                 ~grid:(m * n, 1, 1))
+                 ~grid:(grid_x, 1, 1))
         | ( Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon },
             values,
             Some output ) ->

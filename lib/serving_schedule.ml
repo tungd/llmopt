@@ -2078,6 +2078,16 @@ let read_primitive values reader =
            { Ir.Reduction.operator = Sum; axes; keepdim })
   | 13 ->
       read_index reader |> Result.map (fun index -> Ir.Primitive.Update_slice index)
+  | 14 ->
+      let* scale = Binary.Reader.float64 reader in
+      let* cache_layer = Binary.Reader.u32 reader in
+      let* attention_layers = Binary.Reader.u32 reader in
+      let* kv_heads = Binary.Reader.u32 reader in
+      let* group_size = Binary.Reader.u32 reader in
+      let* token_stride = Binary.Reader.u32 reader in
+      Ir.Paged_attention_q8.create ~scale ~cache_layer ~attention_layers
+        ~kv_heads ~group_size ~token_stride
+      |> Result.map (fun config -> Ir.Primitive.Paged_attention_q8 config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function

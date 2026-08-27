@@ -117,7 +117,8 @@ at::Tensor w4a16_linear(
   const W4A16Params params{
       static_cast<uint32_t>(m), static_cast<uint32_t>(n),
       static_cast<uint32_t>(k), has_bias ? 1u : 0u};
-  const std::array<uint64_t, 2> grid = {round_up_to_tile(m * n, 256), 1};
+  const uint64_t total_threads = static_cast<uint64_t>(m) * n * 32;
+  const std::array<uint64_t, 2> grid = {round_up_to_tile(total_threads, 256), 1};
   const std::array<uint64_t, 2> group = {256, 1};
 
   entry->w4a16_kernel->runCommandBlock([&] {
