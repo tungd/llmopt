@@ -1232,13 +1232,24 @@ module Execution_batch = struct
     commands : Batch.t;
     mutable resources : Buffer.t list;
     mutable schedules : int;
+    mutable swiglu_normalized : Buffer.t option;
+    mutable swiglu_product : Buffer.t option;
+    mutable candidates_buffer : Buffer.t option;
   }
 end
 
 let with_execution_batch runtime operation =
   let* commands = Batch.create runtime in
   let batch =
-    { Execution_batch.runtime; commands; resources = []; schedules = 0 }
+    {
+      Execution_batch.runtime;
+      commands;
+      resources = [];
+      schedules = 0;
+      swiglu_normalized = None;
+      swiglu_product = None;
+      candidates_buffer = None;
+    }
   in
   let release_resources () = batch.resources <- [] in
   match operation batch with
@@ -1450,7 +1461,7 @@ let macro_kernel_name dtype ~base ~has_bias =
         (Printf.sprintf "Q8 macro dispatch requires f16 or f32 activations, got %s"
            (Ir.Dtype.to_string dtype))
 
-let dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
+let dispatch_w4a16_swiglu_ffn_command execution_batch batch runtime state ~m ~n ~k ~epsilon
     values output =
   let* activation_value, residual_value, gate_weight_value, gate_scale_value,
        up_weight_value, up_scale_value, down_weight_value, down_scale_value,
@@ -1530,8 +1541,24 @@ let dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
       ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
   in
-  let* normalized = Buffer.create ~runtime ~bytes:(m * k * 2) in
-  let* product = Buffer.create ~runtime ~bytes:(m * n * 2) in
+  let* normalized =
+    match execution_batch.Execution_batch.swiglu_normalized with
+    | Some buf when Buffer.byte_length buf >= m * k * 2 -> Ok buf
+    | _ ->
+        let* buf = Buffer.create ~runtime ~bytes:(m * k * 2) in
+        execution_batch.Execution_batch.swiglu_normalized <- Some buf;
+        execution_batch.Execution_batch.resources <- buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* product =
+    match execution_batch.Execution_batch.swiglu_product with
+    | Some buf when Buffer.byte_length buf >= m * n * 2 -> Ok buf
+    | _ ->
+        let* buf = Buffer.create ~runtime ~bytes:(m * n * 2) in
+        execution_batch.Execution_batch.swiglu_product <- Some buf;
+        execution_batch.Execution_batch.resources <- buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
   let* parameters = Parameters.w4a16_swiglu_ffn ~m ~n ~k ~epsilon in
   let* rms_kernel =
     dispatch ~batch runtime rms_entry
@@ -1551,7 +1578,6 @@ let dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
       ~parameters ~grid:(down_grid_x, 1, 1)
   in
   let state = bind_value state output output_buffer in
-  let state = { state with resources = normalized :: product :: state.resources } in
   Ok (state, [ rms_kernel; dual_kernel; down_kernel ])
 
 let dispatch_w4a16_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k ~n_v
@@ -1577,27 +1603,41 @@ let dispatch_w4a16_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k ~n_v
   in
   let* k_output_buffer = workspace_buffer state k_output_value in
   let* v_output_buffer = workspace_buffer state v_output_value in
-  let* entry =
-    kernel_entry ~name:"llmopt_w4a16_qkv_linear_f16_g64" runtime
-      ~operation:Kernel_abi.Operation.W4a16_qkv_linear
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
-  in
   let* parameters = Parameters.u32s [ m; k; n_q; n_k; n_v ] in
   let total_cols = n_q + n_k + n_v in
-  let* grid_x = linear_f16_grid (m * total_cols) in
   let* kernel =
-    dispatch ~batch runtime entry
-      ~buffers:
-        [ input; q_weight; q_scale; k_weight; k_scale; v_weight; v_scale;
-          q_output_buffer; k_output_buffer; v_output_buffer ]
-      ~parameters ~grid:(grid_x, 1, 1)
+    if m = 1 then
+      let* entry =
+        kernel_entry ~name:"llmopt_w4a16_qkv_linear_f16_g64" runtime
+          ~operation:Kernel_abi.Operation.W4a16_qkv_linear
+          ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+      in
+      let* grid_x = linear_f16_grid (m * total_cols) in
+      dispatch ~batch runtime entry
+        ~buffers:
+          [ input; q_weight; q_scale; k_weight; k_scale; v_weight; v_scale;
+            q_output_buffer; k_output_buffer; v_output_buffer ]
+        ~parameters ~grid:(grid_x, 1, 1)
+    else
+      let m_blocks = (m + 3) / 4 in
+      let* entry =
+        kernel_entry ~name:"llmopt_w4a16_qkv_linear_f16_g64_m4" runtime
+          ~operation:Kernel_abi.Operation.W4a16_qkv_linear
+          ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+      in
+      let* grid_x = linear_f16_grid (m_blocks * total_cols) in
+      dispatch ~batch runtime entry
+        ~buffers:
+          [ input; q_weight; q_scale; k_weight; k_scale; v_weight; v_scale;
+            q_output_buffer; k_output_buffer; v_output_buffer ]
+        ~parameters ~grid:(grid_x, 1, 1)
   in
   let state = bind_value state output q_output_buffer in
   let state = bind_value state k_output_value k_output_buffer in
   let state = bind_value state v_output_value v_output_buffer in
   Ok (state, [ kernel ])
 
-let dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
+let dispatch_w4a16_lm_head_argmax_command execution_batch batch runtime state ~m ~n ~k ~epsilon
     ~extra_outputs values output =
   let* input_value, norm_weight_value, weight_value, scale_value =
     match values with
@@ -1672,7 +1712,15 @@ let dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
   match stage1_entry, reduce_entry with
   | Ok entry1, Ok entry2 ->
       let candidate_bytes = m * 256 * 8 in
-      let* candidates_buffer = Buffer.create ~runtime ~bytes:candidate_bytes in
+      let* candidates_buffer =
+        match execution_batch.Execution_batch.candidates_buffer with
+        | Some buf when Buffer.byte_length buf >= candidate_bytes -> Ok buf
+        | _ ->
+            let* buf = Buffer.create ~runtime ~bytes:candidate_bytes in
+            execution_batch.Execution_batch.candidates_buffer <- Some buf;
+            execution_batch.Execution_batch.resources <- buf :: execution_batch.Execution_batch.resources;
+            Ok buf
+      in
       let* parameters1 = Parameters.w4a16_lm_head_argmax ~m ~n ~k ~epsilon in
       let* parameters2 = Parameters.u32s [ m ] in
       let buffers1 =
@@ -1700,7 +1748,6 @@ let dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
         | Some value, Some buffer -> bind_value state value buffer
         | _ -> state
       in
-      let state = { state with resources = candidates_buffer :: state.resources } in
       Ok (state, kernel1 ^ "+" ^ kernel2)
   | _ ->
       let* kernel_name =
@@ -2568,18 +2615,28 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* parameters =
               Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ]
             in
-            let* grid_x = linear_f16_grid (m * n) in
-            dispatched
-              (dispatch_output ~name:"llmopt_w4a16_linear_f16_g64" runtime
-                 state output ~operation:Kernel_abi.Operation.W4a16_linear
-                 ~input_dtype:Ir.Dtype.Float16
-                 ~buffers:[ input; weight; scale; bias_buffer ] ~parameters
-                 ~grid:(grid_x, 1, 1))
+            if m = 1 then
+              let* grid_x = linear_f16_grid (m * n) in
+              dispatched
+                (dispatch_output ~name:"llmopt_w4a16_linear_f16_g64" runtime
+                   state output ~operation:Kernel_abi.Operation.W4a16_linear
+                   ~input_dtype:Ir.Dtype.Float16
+                   ~buffers:[ input; weight; scale; bias_buffer ] ~parameters
+                   ~grid:(grid_x, 1, 1))
+            else
+              let m_blocks = (m + 3) / 4 in
+              let* grid_x = linear_f16_grid (m_blocks * n) in
+              dispatched
+                (dispatch_output ~name:"llmopt_w4a16_linear_f16_g64_m4" runtime
+                   state output ~operation:Kernel_abi.Operation.W4a16_linear
+                   ~input_dtype:Ir.Dtype.Float16
+                   ~buffers:[ input; weight; scale; bias_buffer ] ~parameters
+                   ~grid:(grid_x, 1, 1))
         | ( Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon },
             values,
             Some output ) ->
             dispatched_many
-              (dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k
+              (dispatch_w4a16_swiglu_ffn_command execution_batch batch runtime state ~m ~n ~k
                  ~epsilon values output)
         | ( Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs },
             values,
@@ -2591,7 +2648,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             values,
             Some output ) ->
             dispatched
-              (dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k
+              (dispatch_w4a16_lm_head_argmax_command execution_batch batch runtime state ~m ~n ~k
                  ~epsilon ~extra_outputs values output)
         | Ir.Op.Output { name }, [ input ], None ->
             let* buffer = find_value state input in
@@ -2638,7 +2695,15 @@ let execute_decode_step ?workspace ?memory_plan runtime ~cache ~schedule ~inputs
 let precompile_decode_batch ?workspace ?memory_plan runtime ~schedule ~inputs =
   let* commands = Batch.create runtime in
   let batch =
-    { Execution_batch.runtime; commands; resources = []; schedules = 0 }
+    {
+      Execution_batch.runtime;
+      commands;
+      resources = [];
+      schedules = 0;
+      swiglu_normalized = None;
+      swiglu_product = None;
+      candidates_buffer = None;
+    }
   in
   let* execution =
     encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs
