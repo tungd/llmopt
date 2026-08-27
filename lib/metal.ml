@@ -95,6 +95,85 @@ let w4a16_entries =
       ~operation:Kernel_abi.Operation.W4a16_linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let w4a16_qkv_linear_source =
+  "\nstruct W4A16QKVParams {\n"
+  ^ "  uint m;\n"
+  ^ "  uint k;\n"
+  ^ "  uint n_q;\n"
+  ^ "  uint n_k;\n"
+  ^ "  uint n_v;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_w4a16_qkv_linear_f16_g64(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const uchar* q_weight [[buffer(1)]],\n"
+  ^ "    device const half* q_scale [[buffer(2)]],\n"
+  ^ "    device const uchar* k_weight [[buffer(3)]],\n"
+  ^ "    device const half* k_scale [[buffer(4)]],\n"
+  ^ "    device const uchar* v_weight [[buffer(5)]],\n"
+  ^ "    device const half* v_scale [[buffer(6)]],\n"
+  ^ "    device half* q_output [[buffer(7)]],\n"
+  ^ "    device half* k_output [[buffer(8)]],\n"
+  ^ "    device half* v_output [[buffer(9)]],\n"
+  ^ "    constant W4A16QKVParams& params [[buffer(10)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint simd_idx = gid >> 5;\n"
+  ^ "  const uint total_cols = params.n_q + params.n_k + params.n_v;\n"
+  ^ "  const uint total_elements = params.m * total_cols;\n"
+  ^ "  if (simd_idx >= total_elements) return;\n"
+  ^ "  const uint row = simd_idx / total_cols;\n"
+  ^ "  const uint col_idx = simd_idx - row * total_cols;\n"
+  ^ "  device const uchar* weight_ptr;\n"
+  ^ "  device const half* scale_ptr;\n"
+  ^ "  device half* out_ptr;\n"
+  ^ "  uint col;\n"
+  ^ "  uint out_stride;\n"
+  ^ "  if (col_idx < params.n_q) {\n"
+  ^ "    col = col_idx;\n"
+  ^ "    out_stride = params.n_q;\n"
+  ^ "    weight_ptr = q_weight;\n"
+  ^ "    scale_ptr = q_scale;\n"
+  ^ "    out_ptr = q_output;\n"
+  ^ "  } else if (col_idx < params.n_q + params.n_k) {\n"
+  ^ "    col = col_idx - params.n_q;\n"
+  ^ "    out_stride = params.n_k;\n"
+  ^ "    weight_ptr = k_weight;\n"
+  ^ "    scale_ptr = k_scale;\n"
+  ^ "    out_ptr = k_output;\n"
+  ^ "  } else {\n"
+  ^ "    col = col_idx - (params.n_q + params.n_k);\n"
+  ^ "    out_stride = params.n_v;\n"
+  ^ "    weight_ptr = v_weight;\n"
+  ^ "    scale_ptr = v_scale;\n"
+  ^ "    out_ptr = v_output;\n"
+  ^ "  }\n"
+  ^ "  const uint groups = params.k >> 6;\n"
+  ^ "  const uint packed_base = col * (params.k >> 1);\n"
+  ^ "  const uint scale_base = col * groups;\n"
+  ^ "  const uint input_base = row * params.k;\n"
+  ^ "  float acc = 0.0f;\n"
+  ^ "  for (uint g = 0; g < groups; ++g) {\n"
+  ^ "    const float s = float(scale_ptr[scale_base + g]);\n"
+  ^ "    const uchar packed = weight_ptr[packed_base + (g << 5) + lane];\n"
+  ^ "    const int q0 = int(packed & 15u) - ((packed & 8u) ? 16 : 0);\n"
+  ^ "    const int q1 = int(packed >> 4) - ((packed & 128u) ? 16 : 0);\n"
+  ^ "    const uint in_idx = input_base + (g << 6) + (lane << 1);\n"
+  ^ "    const float in0 = float(input[in_idx]);\n"
+  ^ "    const float in1 = float(input[in_idx + 1]);\n"
+  ^ "    acc += in0 * (float(q0) * s) + in1 * (float(q1) * s);\n"
+  ^ "  }\n"
+  ^ "  acc = simd_sum(acc);\n"
+  ^ "  if (lane == 0) {\n"
+  ^ "    out_ptr[row * out_stride + col] = half(acc);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let w4a16_qkv_linear_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_w4a16_qkv_linear_f16_g64"
+      ~operation:Kernel_abi.Operation.W4a16_qkv_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let w4a16_swiglu_rms_kernel ~name ~input_type =
   "kernel void " ^ name ^ "(\n"
   ^ "    device const " ^ input_type ^ "* input [[buffer(0)]],\n"
@@ -2144,6 +2223,13 @@ let has_w4a16_linear graph =
          | Ir.Op.W4a16_linear _ -> true
          | _ -> false)
 
+let has_w4a16_qkv_linear graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.W4a16_qkv_linear _ -> true
+         | _ -> false)
+
 let has_w4a16_swiglu_ffn graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -2346,6 +2432,9 @@ let lower graph =
   in
   let components =
     [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
+      ( has_w4a16_qkv_linear graph,
+        w4a16_qkv_linear_source,
+        w4a16_qkv_linear_entries );
       ( has_w4a16_swiglu_ffn graph,
         w4a16_swiglu_ffn_source,
         w4a16_swiglu_ffn_entries );

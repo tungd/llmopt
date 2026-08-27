@@ -164,6 +164,7 @@ let operation_tag = function
   | Kernel_abi.Operation.W4a16_lm_head_argmax -> 26
   | Kernel_abi.Operation.W4a16_linear -> 27
   | Kernel_abi.Operation.W4a16_swiglu_ffn -> 28
+  | Kernel_abi.Operation.W4a16_qkv_linear -> 29
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -190,6 +191,7 @@ let operation_of_tag = function
   | 26 -> Ok Kernel_abi.Operation.W4a16_lm_head_argmax
   | 27 -> Ok Kernel_abi.Operation.W4a16_linear
   | 28 -> Ok Kernel_abi.Operation.W4a16_swiglu_ffn
+  | 29 -> Ok Kernel_abi.Operation.W4a16_qkv_linear
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function

@@ -241,6 +241,14 @@ module Op : sig
     | Barrier_wait of int
     | Fused_matmul_bias of { m : int; n : int; k : int }
     | W4a16_linear of { m : int; n : int; k : int; bias : bool }
+    | W4a16_qkv_linear of {
+        m : int;
+        k : int;
+        n_q : int;
+        n_k : int;
+        n_v : int;
+        extra_outputs : Value.t list;
+      }
     | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
     | W4a16_lm_head_argmax of {
         m : int;

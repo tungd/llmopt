@@ -1554,6 +1554,49 @@ let dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k ~epsilon
   let state = { state with resources = normalized :: product :: state.resources } in
   Ok (state, [ rms_kernel; dual_kernel; down_kernel ])
 
+let dispatch_w4a16_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k ~n_v
+    ~extra_outputs values output =
+  let* input_value, q_weight_value, q_scale_value, k_weight_value,
+       k_scale_value, v_weight_value, v_scale_value =
+    match values with
+    | [ input; qw; qs; kw; ks; vw; vs ] -> Ok (input, qw, qs, kw, ks, vw, vs)
+    | _ -> Error "W4A16 QKV linear command has inconsistent inputs"
+  in
+  let* input = find_value state input_value in
+  let* q_weight = find_value state q_weight_value in
+  let* q_scale = find_value state q_scale_value in
+  let* k_weight = find_value state k_weight_value in
+  let* k_scale = find_value state k_scale_value in
+  let* v_weight = find_value state v_weight_value in
+  let* v_scale = find_value state v_scale_value in
+  let* q_output_buffer = workspace_buffer state output in
+  let* k_output_value, v_output_value =
+    match extra_outputs with
+    | [ k; v ] -> Ok (k, v)
+    | _ -> Error "W4A16 QKV linear command requires 2 extra outputs (K and V)"
+  in
+  let* k_output_buffer = workspace_buffer state k_output_value in
+  let* v_output_buffer = workspace_buffer state v_output_value in
+  let* entry =
+    kernel_entry ~name:"llmopt_w4a16_qkv_linear_f16_g64" runtime
+      ~operation:Kernel_abi.Operation.W4a16_qkv_linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+  in
+  let* parameters = Parameters.u32s [ m; k; n_q; n_k; n_v ] in
+  let total_cols = n_q + n_k + n_v in
+  let* grid_x = linear_f16_grid (m * total_cols) in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers:
+        [ input; q_weight; q_scale; k_weight; k_scale; v_weight; v_scale;
+          q_output_buffer; k_output_buffer; v_output_buffer ]
+      ~parameters ~grid:(grid_x, 1, 1)
+  in
+  let state = bind_value state output q_output_buffer in
+  let state = bind_value state k_output_value k_output_buffer in
+  let state = bind_value state v_output_value v_output_buffer in
+  Ok (state, [ kernel ])
+
 let dispatch_w4a16_lm_head_argmax_command batch runtime state ~m ~n ~k ~epsilon
     ~extra_outputs values output =
   let* input_value, norm_weight_value, weight_value, scale_value =
@@ -2538,6 +2581,12 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             dispatched_many
               (dispatch_w4a16_swiglu_ffn_command batch runtime state ~m ~n ~k
                  ~epsilon values output)
+        | ( Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs },
+            values,
+            Some output ) ->
+            dispatched_many
+              (dispatch_w4a16_qkv_linear_command batch runtime state ~m ~k ~n_q
+                 ~n_k ~n_v ~extra_outputs values output)
         | ( Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs },
             values,
             Some output ) ->

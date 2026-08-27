@@ -4,6 +4,7 @@ module Operation = struct
     | Fused_linear
     | Linear
     | W4a16_linear
+    | W4a16_qkv_linear
     | W4a16_swiglu_ffn
     | W4a16_lm_head_argmax
     | Rms_norm
@@ -30,6 +31,7 @@ module Operation = struct
     | Fused_linear -> "fused-linear"
     | Linear -> "linear"
     | W4a16_linear -> "w4a16-linear-g64"
+    | W4a16_qkv_linear -> "w4a16-qkv-linear-g64"
     | W4a16_swiglu_ffn -> "w4a16-swiglu-ffn-g64"
     | W4a16_lm_head_argmax -> "w4a16-lm-head-argmax"
     | Rms_norm -> "rms-norm"
@@ -56,6 +58,7 @@ module Operation = struct
     | "fused-linear" -> Ok Fused_linear
     | "linear" -> Ok Linear
     | "w4a16-linear-g64" -> Ok W4a16_linear
+    | "w4a16-qkv-linear-g64" -> Ok W4a16_qkv_linear
     | "w4a16-swiglu-ffn-g64" -> Ok W4a16_swiglu_ffn
     | "w4a16-lm-head-argmax" -> Ok W4a16_lm_head_argmax
     | "rms-norm" -> Ok Rms_norm

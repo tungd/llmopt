@@ -154,6 +154,30 @@ let w4a16_swiglu_metadata_matches ~m ~n ~k ~epsilon inputs output =
       && dimensions norm_weight = [ k ]
   | _ -> false
 
+let w4a16_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output extra_outputs =
+  let dimensions value =
+    Ir.Value.logical_shape value |> Tensor_shape.dimensions
+  in
+  let f16 value = Ir.Value.dtype value = Ir.Dtype.Float16 in
+  let u8 value = Ir.Value.dtype value = Ir.Dtype.UInt8 in
+  match inputs, extra_outputs with
+  | [ input; qw; qs; kw; ks; vw; vs ], [ k_out; v_out ] ->
+      m > 0 && k > 0 && n_q > 0 && n_k > 0 && n_v > 0
+      && k mod 64 = 0 && n_q mod 64 = 0 && n_k mod 64 = 0 && n_v mod 64 = 0
+      && f16 input && u8 qw && f16 qs && u8 kw && f16 ks && u8 vw && f16 vs
+      && f16 output && f16 k_out && f16 v_out
+      && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+      && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n_q
+      && Tensor_shape.numel (Ir.Value.logical_shape k_out) = m * n_k
+      && Tensor_shape.numel (Ir.Value.logical_shape v_out) = m * n_v
+      && dimensions qw = [ n_q; k / 2 ]
+      && dimensions qs = [ n_q; k / 64 ]
+      && dimensions kw = [ n_k; k / 2 ]
+      && dimensions ks = [ n_k; k / 64 ]
+      && dimensions vw = [ n_v; k / 2 ]
+      && dimensions vs = [ n_v; k / 64 ]
+  | _ -> false
+
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
   && Tensor_shape.equal
@@ -213,6 +237,14 @@ let validate_command seen_values command =
               Error
                 (Printf.sprintf
                    "schedule node %d W4A16 linear metadata is inconsistent"
+                   command.Command.node_id)
+        | Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs }, inputs, Some output ->
+            if w4a16_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output extra_outputs then
+              Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d W4A16 QKV linear metadata is inconsistent"
                    command.Command.node_id)
         | Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon }, inputs, Some output ->
             if w4a16_swiglu_metadata_matches ~m ~n ~k ~epsilon inputs output then
@@ -911,6 +943,17 @@ module Lfm25 = struct
                k = substitute substitutions k;
                bias;
              })
+    | Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs } ->
+        Ok
+          (Ir.Op.W4a16_qkv_linear
+             {
+               m = substitute substitutions m;
+               k = substitute substitutions k;
+               n_q = substitute substitutions n_q;
+               n_k = substitute substitutions n_k;
+               n_v = substitute substitutions n_v;
+               extra_outputs;
+             })
     | Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon } ->
         Ok
           (Ir.Op.W4a16_swiglu_ffn
@@ -1088,6 +1131,10 @@ module Lfm25 = struct
     | Ir.Op.W4a16_lm_head_argmax { m; n; _ }, [ logits_output ] ->
         specialized_matrix_value substitutions ~rows:m ~columns:n logits_output
         |> Result.map (fun output -> [ output ])
+    | Ir.Op.W4a16_qkv_linear { m; n_k; n_v; _ }, [ k_out; v_out ] ->
+        let* k_out = specialized_matrix_value substitutions ~rows:m ~columns:n_k k_out in
+        let* v_out = specialized_matrix_value substitutions ~rows:m ~columns:n_v v_out in
+        Ok [ k_out; v_out ]
     | _, [] -> Ok []
     | _, _ -> Error "unexpected secondary outputs in specialized schedule"
 
@@ -1095,6 +1142,8 @@ module Lfm25 = struct
     match operation with
     | Ir.Op.W4a16_lm_head_argmax config ->
         Ir.Op.W4a16_lm_head_argmax { config with extra_outputs = outputs }
+    | Ir.Op.W4a16_qkv_linear config ->
+        Ir.Op.W4a16_qkv_linear { config with extra_outputs = outputs }
     | _ -> operation
 
   type last_token_projection = {
@@ -1340,9 +1389,16 @@ module Lfm25 = struct
   let producer_map commands =
     List.fold_left
       (fun producers command ->
-        match command.Command.output with
-        | None -> producers
-        | Some output -> Value_map.add (Ir.Value.id output) command producers)
+        let producers =
+          match command.Command.output with
+          | None -> producers
+          | Some output -> Value_map.add (Ir.Value.id output) command producers
+        in
+        List.fold_left
+          (fun producers extra ->
+            Value_map.add (Ir.Value.id extra) command producers)
+          producers
+          (Ir.Op.additional_outputs command.Command.op))
       Value_map.empty commands
 
   let max_value_id commands =
@@ -1352,6 +1408,11 @@ module Lfm25 = struct
           List.fold_left
             (fun maximum value -> max maximum (value_id value))
             maximum command.Command.inputs
+        in
+        let maximum =
+          List.fold_left
+            (fun maximum value -> max maximum (value_id value))
+            maximum (Ir.Op.additional_outputs command.Command.op)
         in
         match command.Command.output with
         | None -> maximum
@@ -1389,7 +1450,11 @@ module Lfm25 = struct
            | _ -> (
                match command.Command.output with
                | None -> true
-               | Some output -> Value_map.mem (Ir.Value.id output) needed))
+               | Some output ->
+                   Value_map.mem (Ir.Value.id output) needed
+                   || List.exists
+                        (fun extra -> Value_map.mem (Ir.Value.id extra) needed)
+                        (Ir.Op.additional_outputs command.Command.op)))
     |> List.mapi (fun node_id command -> { command with Command.node_id })
 
   let specialize_rope schedule =
@@ -2237,6 +2302,11 @@ let write_op writer = function
       Binary.Writer.u8 writer 35;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.float64 writer epsilon
+  | Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs } ->
+      Binary.Writer.u8 writer 36;
+      List.iter (Binary.Writer.u64 writer) [ m; k; n_q; n_k; n_v ];
+      Binary.Writer.u8 writer (List.length extra_outputs);
+      List.iter (write_value writer) extra_outputs
   | Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
       Binary.Writer.u8 writer (if extra_outputs = [] then 29 else 33);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
@@ -2336,6 +2406,21 @@ let read_op values reader =
       if Float.is_finite epsilon && epsilon > 0.0 then
         Ok (Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon })
       else Error "schedule contains an invalid W4A16 SwiGLU epsilon"
+  | 36 ->
+      let* m = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* n_q = Binary.Reader.u64 reader in
+      let* n_k = Binary.Reader.u64 reader in
+      let* n_v = Binary.Reader.u64 reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      Ok (Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs })
   | 15 -> read_primitive values reader |> Result.map (fun value -> Ir.Op.Primitive value)
   | 16 ->
       let* epsilon = Binary.Reader.float64 reader in
