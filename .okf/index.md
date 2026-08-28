@@ -40,6 +40,7 @@ available compiler, package, runtime, CLI, or benchmark configuration.
 * [Semantic 5x3 result](experiments/exp-0004-lfm25-semantic-5x3.md) - isolated long-context comparison and raw latency evidence.
 * [Cross-model generalization: SmolLM2-135M](experiments/exp-0096-cross-model-smollm2-validation.md) - generic AOT FX compilation, 30-layer Llama-family megakernel lowering, exact PyTorch parity, and llama.cpp performance parity.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
+* [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.
 * [Restored W4 SIMD corrective rerun](experiments/exp-0093-restored-w4-simd-rerun-2026-08-27.md) - restored kernel execution strategy, latest Q4 comparison, and postmortem of the destructive canonicalization.
 * [W4A16 RMSNorm/SwiGLU cast absorption](experiments/exp-0094-w4a16-rms-cast-absorption-2026-08-27.md) - rule-engine removal of the 33 single-use f16-to-f32 widening casts from each preserved graph and the resulting static package inventory.

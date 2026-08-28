@@ -33,6 +33,35 @@ module Float16_logits = struct
     Ok (Bytes.sub bytes row_offset row_bytes)
 end
 
+module Params = struct
+  type t = {
+    temperature : float;
+    top_k : int;
+    top_p : float;
+    min_p : float;
+    seed : int;
+  }
+
+  let greedy =
+    {
+      temperature = 0.0;
+      top_k = 1;
+      top_p = 1.0;
+      min_p = 0.0;
+      seed = 0;
+    }
+
+  let create ?(temperature = 0.0) ?(top_k = 0) ?(top_p = 1.0) ?(min_p = 0.0)
+      ?(seed = 0) () =
+    {
+      temperature = Float.max 0.0 temperature;
+      top_k = max 0 top_k;
+      top_p = Float.max 0.0 (Float.min 1.0 top_p);
+      min_p = Float.max 0.0 (Float.min 1.0 min_p);
+      seed;
+    }
+end
+
 module Greedy = struct
   let token_at bytes offset =
     let raw = Bytes.get_int32_le bytes offset |> Int64.of_int32 in
@@ -77,3 +106,19 @@ module Greedy = struct
         in
         select 0 first 1
 end
+
+external f16_sample_native :
+  bytes -> int -> float -> int -> float -> float -> int -> int
+  = "caml_llmopt_sample_f16_bytecode" "caml_llmopt_sample_f16_native"
+
+let sample ~params ~vocabulary bytes =
+  let ( let* ) = Result.bind in
+  let* row = Float16_logits.last_row ~vocabulary bytes in
+  if params.Params.temperature <= 0.0001 || params.Params.top_k = 1 then
+    Greedy.f16_last_row ~vocabulary bytes
+  else
+    try
+      Ok
+        (f16_sample_native row vocabulary params.temperature params.top_k
+           params.top_p params.min_p params.seed)
+    with _ -> Greedy.f16_last_row ~vocabulary bytes

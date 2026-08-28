@@ -1595,3 +1595,195 @@ CAMLprim value caml_llmopt_f16_argmax(value v_bytes, value v_count) {
   }
   CAMLreturn(Val_long((intptr_t)max_idx));
 }
+
+typedef struct {
+  uint32_t token;
+  float logit;
+} LLMOptTokenLogit;
+
+static inline void llmopt_heap_sift_down(LLMOptTokenLogit *heap, int size, int idx) {
+  while (1) {
+    int smallest = idx;
+    int left = 2 * idx + 1;
+    int right = 2 * idx + 2;
+    if (left < size && heap[left].logit < heap[smallest].logit) smallest = left;
+    if (right < size && heap[right].logit < heap[smallest].logit) smallest = right;
+    if (smallest == idx) break;
+    LLMOptTokenLogit tmp = heap[idx];
+    heap[idx] = heap[smallest];
+    heap[smallest] = tmp;
+    idx = smallest;
+  }
+}
+
+static inline void llmopt_heap_sift_up(LLMOptTokenLogit *heap, int idx) {
+  while (idx > 0) {
+    int parent = (idx - 1) / 2;
+    if (heap[idx].logit < heap[parent].logit) {
+      LLMOptTokenLogit tmp = heap[idx];
+      heap[idx] = heap[parent];
+      heap[parent] = tmp;
+      idx = parent;
+    } else {
+      break;
+    }
+  }
+}
+
+static inline uint64_t llmopt_xoroshiro128plus(uint64_t s[2]) {
+  const uint64_t s0 = s[0];
+  uint64_t s1 = s[1];
+  const uint64_t result = s0 + s1;
+  s1 ^= s0;
+  s[0] = ((s0 << 24) | (s0 >> 40)) ^ s1 ^ (s1 << 16);
+  s[1] = (s1 << 37) | (s1 >> 27);
+  return result;
+}
+
+static inline float llmopt_random_uniform_01(uint64_t s[2]) {
+  return (float)(llmopt_xoroshiro128plus(s) >> 11) * (1.0f / 9007199254740992.0f);
+}
+
+CAMLprim value caml_llmopt_sample_f16_native(
+    value v_bytes, value v_count, value v_temp, value v_top_k,
+    value v_top_p, value v_min_p, value v_seed) {
+  CAMLparam5(v_bytes, v_count, v_temp, v_top_k, v_top_p);
+  CAMLxparam2(v_min_p, v_seed);
+
+  const _Float16 *ptr = (const _Float16 *)String_val(v_bytes);
+  size_t count = (size_t)Long_val(v_count);
+  if (count == 0) CAMLreturn(Val_long(0));
+
+  float temp = (float)Double_val(v_temp);
+  int top_k = (int)Long_val(v_top_k);
+  float top_p = (float)Double_val(v_top_p);
+  float min_p = (float)Double_val(v_min_p);
+  uint64_t seed = (uint64_t)Long_val(v_seed);
+
+  // Fast-path for greedy
+  if (temp <= 0.0001f || top_k == 1) {
+    _Float16 max_val = ptr[0];
+    size_t max_idx = 0;
+    for (size_t i = 1; i < count; i++) {
+      if (ptr[i] > max_val) {
+        max_val = ptr[i];
+        max_idx = i;
+      }
+    }
+    CAMLreturn(Val_long((intptr_t)max_idx));
+  }
+
+  // Bound Top-K for stack allocation
+  int eff_k = 64;
+  if (top_k > 0 && top_k <= 256) eff_k = top_k;
+  else if (top_k > 256) eff_k = 256;
+
+  LLMOptTokenLogit heap[256];
+  int heap_size = 0;
+
+  // Single-pass Top-K streaming scan
+  for (size_t i = 0; i < count; i++) {
+    float val = (float)ptr[i];
+    if (heap_size < eff_k) {
+      heap[heap_size].token = (uint32_t)i;
+      heap[heap_size].logit = val;
+      llmopt_heap_sift_up(heap, heap_size);
+      heap_size++;
+    } else if (val > heap[0].logit) {
+      heap[0].token = (uint32_t)i;
+      heap[0].logit = val;
+      llmopt_heap_sift_down(heap, eff_k, 0);
+    }
+  }
+
+  // Extract heap and sort descending
+  LLMOptTokenLogit sorted[256];
+  int n_candidates = heap_size;
+  for (int i = n_candidates - 1; i >= 0; i--) {
+    sorted[i] = heap[0];
+    heap[0] = heap[heap_size - 1];
+    heap_size--;
+    llmopt_heap_sift_down(heap, heap_size, 0);
+  }
+
+  float max_logit = sorted[0].logit;
+  float inv_temp = 1.0f / temp;
+
+  // Compute exp((logit - max_logit) / temp)
+  float weights[256];
+  float sum_weights = 0.0f;
+  for (int i = 0; i < n_candidates; i++) {
+    float scaled = (sorted[i].logit - max_logit) * inv_temp;
+    float w = expf(scaled);
+    weights[i] = w;
+    sum_weights += w;
+  }
+
+  // Min-P filtering
+  int valid_candidates = n_candidates;
+  if (min_p > 0.0f && sum_weights > 0.0f) {
+    float max_prob = weights[0] / sum_weights;
+    float prob_thresh = max_prob * min_p;
+    float filtered_sum = 0.0f;
+    int count_valid = 0;
+    for (int i = 0; i < n_candidates; i++) {
+      if (weights[i] / sum_weights >= prob_thresh) {
+        filtered_sum += weights[i];
+        count_valid++;
+      } else {
+        break;
+      }
+    }
+    if (count_valid > 0) {
+      valid_candidates = count_valid;
+      sum_weights = filtered_sum;
+    }
+  }
+
+  // Top-P (Nucleus) Truncation
+  if (top_p > 0.0f && top_p < 1.0f && sum_weights > 0.0f) {
+    float cum_p = 0.0f;
+    float p_sum = 0.0f;
+    int p_cutoff = valid_candidates;
+    for (int i = 0; i < valid_candidates; i++) {
+      float p = weights[i] / sum_weights;
+      cum_p += p;
+      p_sum += weights[i];
+      if (cum_p >= top_p) {
+        p_cutoff = i + 1;
+        break;
+      }
+    }
+    valid_candidates = p_cutoff;
+    sum_weights = p_sum;
+  }
+
+  // Sample token from distribution
+  uint64_t rng[2];
+  if (seed == 0) {
+    seed = (uint64_t)mach_absolute_time();
+  }
+  rng[0] = seed ^ 0x9E3779B97F4A7C15ULL;
+  rng[1] = (seed << 31) | (seed >> 33);
+  if (rng[0] == 0 && rng[1] == 0) { rng[0] = 1; rng[1] = 2; }
+
+  float r = llmopt_random_uniform_01(rng) * sum_weights;
+  float acc = 0.0f;
+  uint32_t chosen_token = sorted[0].token;
+
+  for (int i = 0; i < valid_candidates; i++) {
+    acc += weights[i];
+    if (acc >= r) {
+      chosen_token = sorted[i].token;
+      break;
+    }
+  }
+
+  CAMLreturn(Val_long((intptr_t)chosen_token));
+}
+
+CAMLprim value caml_llmopt_sample_f16_bytecode(value *argv, int argn) {
+  (void)argn;
+  return caml_llmopt_sample_f16_native(
+      argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
+}

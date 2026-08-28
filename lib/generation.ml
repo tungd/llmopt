@@ -13,7 +13,7 @@ module Native_engine = struct
   let decode = Serving_engine.decode
   let tokens = Serving_engine.Step.tokens
 
-  let next_token step =
+  let next_token ?(params = Sampling.Params.greedy) step =
     match Serving_engine.Step.token_id step with
     | Some buffer ->
         let* bytes = Metal_runtime.Buffer.contents buffer in
@@ -23,7 +23,7 @@ module Native_engine = struct
         (match Serving_engine.Step.logits step with
         | Some buffer ->
             let* bytes = Metal_runtime.Buffer.contents buffer in
-            Sampling.Greedy.f16_last_row
+            Sampling.sample ~params
               ~vocabulary:Lfm25.Config.default.vocab_size bytes
         | None -> Error "serving step has neither token_id nor logits output")
 end
@@ -77,14 +77,16 @@ module Session = struct
   }
   type t = session
 
-  let init ~generation:parent ~config ?(ignore_eos = false) ~messages () =
+  let init ~generation:parent ~config ?(sampling_params = Sampling.Params.greedy)
+      ?(ignore_eos = false) ~messages () =
     let* prompt = Lfm_chat.encode parent.chat messages in
     let is_stop =
       if ignore_eos then Fun.const false
       else Lfm_chat.is_end_token parent.chat
     in
     let* driver_state, first_token =
-      Driver.State.init parent.engine ~config ~is_stop ~prompt
+      Driver.State.init parent.engine ~config ~sampling_params ~is_stop ~prompt
+        ()
     in
     Ok ({ parent; driver_state }, first_token)
 
@@ -102,14 +104,15 @@ module Session = struct
     Tokenizer.decode session.parent.tokenizer tokens
 end
 
-let generate ?emit ?(ignore_eos = false) generation ~config ~messages =
+let generate ?emit ?(sampling_params = Sampling.Params.greedy)
+    ?(ignore_eos = false) generation ~config ~messages =
   let* prompt = Lfm_chat.encode generation.chat messages in
   let is_stop =
     if ignore_eos then Fun.const false
     else Lfm_chat.is_end_token generation.chat
   in
   let* result =
-    Driver.run ?emit generation.engine ~config
+    Driver.run ?emit ~sampling_params generation.engine ~config
       ~is_stop ~prompt
   in
   let completion = Generation_core.Result.completion_tokens result in

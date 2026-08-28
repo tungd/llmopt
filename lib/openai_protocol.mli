@@ -6,6 +6,7 @@ module Request : sig
   val messages : t -> Lfm_chat.Message.t list
   val max_tokens : t -> int
   val ignore_eos : t -> bool
+  val sampling_params : t -> Sampling.Params.t
 end
 
 module Sse : sig

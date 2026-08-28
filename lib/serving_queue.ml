@@ -21,12 +21,14 @@ type request_state =
       remaining_prefill : int;
       max_new_tokens : int;
       ignore_eos : bool;
+      sampling_params : Sampling.Params.t;
     }
   | Active_decode of {
       prompt_length : int;
       generated_tokens : int list;
       max_new_tokens : int;
       ignore_eos : bool;
+      sampling_params : Sampling.Params.t;
     }
 
 type request = {

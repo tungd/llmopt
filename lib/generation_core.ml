@@ -41,7 +41,7 @@ module type Engine = sig
   val prompt : t -> tokens:int array -> (step * int, string) result
   val decode : t -> prefix:int array -> token:int -> (step, string) result
   val tokens : step -> int array
-  val next_token : step -> (int, string) result
+  val next_token : ?params:Sampling.Params.t -> step -> (int, string) result
 end
 
 module Make (Engine : Engine) = struct
@@ -58,6 +58,7 @@ module Make (Engine : Engine) = struct
 
     type t = {
       config : Config.t;
+      sampling_params : Sampling.Params.t;
       is_stop : int -> bool;
       prompt : int array;
       cached_prompt_tokens : int;
@@ -88,15 +89,17 @@ module Make (Engine : Engine) = struct
 
     let cached_prompt_tokens state = state.cached_prompt_tokens
 
-    let init engine ~config ~is_stop ~prompt =
+    let init engine ~config ?(sampling_params = Sampling.Params.greedy) ~is_stop
+        ~prompt () =
       let started = Unix.gettimeofday () in
       let* step, cached_prompt_tokens = Engine.prompt engine ~tokens:prompt in
-      let* first_token = Engine.next_token step in
+      let* first_token = Engine.next_token ~params:sampling_params step in
       let first_at = Unix.gettimeofday () in
       let limit = Config.max_new_tokens config in
       let state =
         {
           config;
+          sampling_params;
           is_stop;
           prompt = Array.copy prompt;
           cached_prompt_tokens;
@@ -146,7 +149,9 @@ module Make (Engine : Engine) = struct
           let* next_step =
             Engine.decode engine ~prefix:(Engine.tokens step) ~token:last_token
           in
-          let* next_token = Engine.next_token next_step in
+          let* next_token =
+            Engine.next_token ~params:state.sampling_params next_step
+          in
           let token_at = Unix.gettimeofday () in
           let inter_token = token_at -. token_started in
           state.completion_rev <- next_token :: state.completion_rev;
@@ -195,8 +200,11 @@ module Make (Engine : Engine) = struct
           )
   end
 
-  let run ?(emit = Fun.const ()) engine ~config ~is_stop ~prompt =
-    let* state, first_token = State.init engine ~config ~is_stop ~prompt in
+  let run ?(emit = Fun.const ()) ?(sampling_params = Sampling.Params.greedy)
+      engine ~config ~is_stop ~prompt =
+    let* state, first_token =
+      State.init engine ~config ~sampling_params ~is_stop ~prompt ()
+    in
     emit first_token;
     let rec loop () =
       if State.is_finished state then

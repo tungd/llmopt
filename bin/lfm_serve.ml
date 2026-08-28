@@ -192,6 +192,9 @@ let serve service options =
                 let decoder = Tokenizer.Decoder.create service.tokenizer in
                 let max_new_tokens = Openai_protocol.Request.max_tokens parsed_req in
                 let ignore_eos = Openai_protocol.Request.ignore_eos parsed_req in
+                let sampling_params =
+                  Openai_protocol.Request.sampling_params parsed_req
+                in
                 (match Lfm_chat.encode (Generation.chat service.generation)
                          (Openai_protocol.Request.messages parsed_req) with
                 | Error err ->
@@ -206,6 +209,7 @@ let serve service options =
                         remaining_prefill = Array.length prompt_tokens;
                         max_new_tokens;
                         ignore_eos;
+                        sampling_params;
                       }
                     in
                     let now = Unix.gettimeofday () in
@@ -322,6 +326,11 @@ let serve service options =
                             Hashtbl.remove active_requests req.id;
                             Mutex.unlock mutex
                         | None ->
+                            let sampling_params =
+                              match req.state with
+                              | Serving_queue.Active_decode d -> d.sampling_params
+                              | Serving_queue.Pending_prefill p -> p.sampling_params
+                            in
                             req.state <- Serving_queue.Active_decode {
                               prompt_length = Array.length active_req.prompt_tokens;
                               generated_tokens =
@@ -334,6 +343,7 @@ let serve service options =
                                 (match req.state with
                                 | Serving_queue.Active_decode d -> d.ignore_eos
                                 | _ -> false);
+                              sampling_params;
                             };
                             Mutex.lock mutex;
                             Serving_queue.enqueue queue req;
@@ -367,7 +377,7 @@ let serve service options =
           | None -> ()
           | Some active_req ->
               match req.state with
-              | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; _ } ->
+              | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; sampling_params; _ } ->
                   let is_stop =
                     if ignore_eos then Fun.const false
                     else Lfm_chat.is_end_token (Generation.chat service.generation)
@@ -385,7 +395,8 @@ let serve service options =
                       let init_res =
                         Generation.Driver.State.init
                           (Generation.engine service.generation)
-                          ~config ~is_stop ~prompt:prompt_tokens
+                          ~config ~sampling_params ~is_stop ~prompt:prompt_tokens
+                          ()
                       in
                       (match init_res with
                       | Error err ->
@@ -435,6 +446,7 @@ let serve service options =
                                   generated_tokens = [ first_token ];
                                   max_new_tokens;
                                   ignore_eos;
+                                  sampling_params;
                                 };
                                 Mutex.lock mutex;
                                 Serving_queue.enqueue queue req;

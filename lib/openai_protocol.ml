@@ -22,6 +22,15 @@ let integer context = function
       | None -> Error (context ^ " is outside the supported integer range"))
   | _ -> Error (context ^ " must be an integer")
 
+let float_ context = function
+  | `Float value -> Ok value
+  | `Int value -> Ok (float_of_int value)
+  | `Intlit value ->
+      (match float_of_string_opt value with
+      | Some value -> Ok value
+      | None -> Error (context ^ " is outside the supported float range"))
+  | _ -> Error (context ^ " must be a number")
+
 let required context name fields decode =
   match field name fields with
   | None -> Error (context ^ " is missing " ^ name)
@@ -45,6 +54,7 @@ module Request = struct
     messages : Lfm_chat.Message.t list;
     max_tokens : int;
     ignore_eos : bool;
+    sampling_params : Sampling.Params.t;
   }
 
   let message index value =
@@ -67,11 +77,6 @@ module Request = struct
         decode [] 0 values
     | _ -> Error (context ^ " must be an array")
 
-  let zero_temperature context = function
-    | `Int 0 | `Float 0.0 -> Ok ()
-    | `Intlit value when float_of_string_opt value = Some 0.0 -> Ok ()
-    | _ -> Error (context ^ " must be 0 for greedy native generation")
-
   let of_json value =
     let* fields = object_ "request" value in
     let* model = required "request" "model" fields string in
@@ -91,20 +96,40 @@ module Request = struct
           let* ignore_eos =
             optional "request" "ignore_eos" fields bool ~default:false
           in
-          let* () =
-            optional "request" "temperature" fields zero_temperature
-              ~default:()
+          let* temperature =
+            optional "request" "temperature" fields float_ ~default:0.0
           in
-          Ok { model; messages; max_tokens; ignore_eos }
+          let* top_p =
+            optional "request" "top_p" fields float_ ~default:1.0
+          in
+          let* top_k =
+            optional "request" "top_k" fields integer ~default:0
+          in
+          let* min_p =
+            optional "request" "min_p" fields float_ ~default:0.0
+          in
+          let* seed =
+            optional "request" "seed" fields integer ~default:0
+          in
+          let sampling_params =
+            Sampling.Params.create ~temperature ~top_k ~top_p ~min_p ~seed ()
+          in
+          Ok { model; messages; max_tokens; ignore_eos; sampling_params }
 
   let of_string source =
-    try of_json (Yojson.Safe.from_string source)
-    with Yojson.Json_error message -> Error ("invalid JSON: " ^ message)
+    let ( let* ) = Result.bind in
+    let* json =
+      try Ok (Yojson.Safe.from_string source)
+      with Yojson.Json_error message ->
+        Error ("malformed json request: " ^ message)
+    in
+    of_json json
 
   let model request = request.model
   let messages request = request.messages
   let max_tokens request = request.max_tokens
   let ignore_eos request = request.ignore_eos
+  let sampling_params request = request.sampling_params
 end
 
 module Sse = struct

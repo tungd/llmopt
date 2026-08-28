@@ -28,7 +28,7 @@ module Native_engine : sig
   val prompt : t -> tokens:int array -> (step * int, string) result
   val decode : t -> prefix:int array -> token:int -> (step, string) result
   val tokens : step -> int array
-  val next_token : step -> (int, string) result
+  val next_token : ?params:Sampling.Params.t -> step -> (int, string) result
 end
 
 module Driver : module type of Generation_core.Make (Native_engine)
@@ -40,6 +40,7 @@ module Session : sig
   val init :
     generation:generation ->
     config:Generation_core.Config.t ->
+    ?sampling_params:Sampling.Params.t ->
     ?ignore_eos:bool ->
     messages:Lfm_chat.Message.t list ->
     unit ->
@@ -56,6 +57,7 @@ end
 
 val generate :
   ?emit:(int -> unit) ->
+  ?sampling_params:Sampling.Params.t ->
   ?ignore_eos:bool ->
   t ->
   config:Generation_core.Config.t ->

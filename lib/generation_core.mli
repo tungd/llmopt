@@ -29,7 +29,7 @@ module type Engine = sig
   val prompt : t -> tokens:int array -> (step * int, string) result
   val decode : t -> prefix:int array -> token:int -> (step, string) result
   val tokens : step -> int array
-  val next_token : step -> (int, string) result
+  val next_token : ?params:Sampling.Params.t -> step -> (int, string) result
 end
 
 module Make (Engine : Engine) : sig
@@ -39,8 +39,10 @@ module Make (Engine : Engine) : sig
     val init :
       Engine.t ->
       config:Config.t ->
+      ?sampling_params:Sampling.Params.t ->
       is_stop:(int -> bool) ->
       prompt:int array ->
+      unit ->
       (t * int, string) result
 
     val step :
@@ -57,6 +59,7 @@ module Make (Engine : Engine) : sig
 
   val run :
     ?emit:(int -> unit) ->
+    ?sampling_params:Sampling.Params.t ->
     Engine.t ->
     config:Config.t ->
     is_stop:(int -> bool) ->
