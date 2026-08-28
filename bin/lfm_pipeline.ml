@@ -133,7 +133,7 @@ let compile_single_graph ~weights_path ~graph_path ~output_dir ~greedy =
   in
   link_or_copy weights_path (Filename.concat output_dir "weights.llmopt");
   let* () = compile_metal_to_metallib output_dir in
-  Ok (List.length (Fx.nodes fx_graph), List.length (Ir.Graph.nodes planned))
+  Ok (package, List.length (Fx.nodes fx_graph), List.length (Ir.Graph.nodes planned))
 
 type options = {
   weights : string;
@@ -199,7 +199,7 @@ let run () =
   (* 2. Compile prefill package *)
   let prefill_dir = Filename.concat opts.output_dir "prefill" in
   Printf.printf "[llmopt-pipeline] Compiling prefill engine & shaders...\n%!";
-  let* p_fx, p_ir =
+  let* prefill_pkg, p_fx, p_ir =
     compile_single_graph ~weights_path:opts.weights
       ~graph_path:opts.prefill_graph ~output_dir:prefill_dir ~greedy:opts.greedy
   in
@@ -208,11 +208,32 @@ let run () =
   (* 3. Compile decode package *)
   let decode_dir = Filename.concat opts.output_dir "decode" in
   Printf.printf "[llmopt-pipeline] Compiling decode engine & shaders...\n%!";
-  let* d_fx, d_ir =
+  let* decode_pkg, d_fx, d_ir =
     compile_single_graph ~weights_path:opts.weights
       ~graph_path:opts.decode_graph ~output_dir:decode_dir ~greedy:opts.greedy
   in
   Printf.printf "[llmopt-pipeline] Decode: %d FX nodes -> %d IR nodes\n%!" d_fx d_ir;
+
+  (* 4. Construct and emit root Model Program *)
+  Printf.printf "[llmopt-pipeline] Linking root Model Program (model.llmopt)...\n%!";
+  let* prefill_art = Model_program.Artifact.create "prefill/package.llmopt" in
+  let* decode_art = Model_program.Artifact.create "decode/package.llmopt" in
+  let* tok_art = Model_program.Artifact.create "tokenizer.llmopt" in
+  let* program =
+    Lfm25_program.of_packages
+      ~config:Lfm25.Config.default
+      ~tokenizer:tok_art
+      ~prefill_path:prefill_art
+      ~prefill:prefill_pkg
+      ~decode_path:decode_art
+      ~decode:decode_pkg
+      ()
+  in
+  let* () =
+    Model_program.write_file
+      (Filename.concat opts.output_dir "model.llmopt")
+      program
+  in
 
   Printf.printf "\n=======================================================\n";
   Printf.printf "  LLMOPT ENGINE READY FOR SERVING\n";
