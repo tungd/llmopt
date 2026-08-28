@@ -785,4 +785,34 @@ let () =
   expect (target_roundtrip.memory.simd_lanes = 32) "target JSON round-trip preserves simd_lanes";
   expect (target_roundtrip.memory.sram_banks = 32) "target JSON round-trip preserves sram_banks";
 
+  (* Prefill batch/chunk size cost model tests *)
+  let prefill_cm_350m =
+    Target_hardware.Prefill_cost_model.analyze ~target:target.execution
+      ~weight_bytes:175_000_000 ~active_params:350_000_000 ()
+  in
+  expect (prefill_cm_350m.roofline_knee_tokens >= 8 && prefill_cm_350m.roofline_knee_tokens <= 64)
+    "350M roofline knee is within expected range [8, 64]";
+  expect (prefill_cm_350m.core_saturation_tokens >= 32)
+    "core saturation tokens is >= 32";
+  expect (prefill_cm_350m.optimal_chunk_size mod 64 = 0)
+    "optimal chunk size is 64-token aligned";
+  expect (prefill_cm_350m.optimal_chunk_size >= 64 && prefill_cm_350m.optimal_chunk_size <= 512)
+    "optimal chunk size is in serving range [64, 512]";
+  expect (List.mem 64 prefill_cm_350m.template_buckets)
+    "template buckets include 64-token interactive bucket";
+  expect (List.mem prefill_cm_350m.optimal_chunk_size prefill_cm_350m.template_buckets)
+    "template buckets include optimal chunk size";
+  expect (prefill_cm_350m.predicted_chunk_latency_ms > 0.0 && prefill_cm_350m.predicted_chunk_latency_ms < 50.0)
+    "predicted chunk latency is within interactive budget (< 50ms)";
+
+  (* Prefill cost model JSON round-trip *)
+  let pcm_json = Target_hardware.Prefill_cost_model.to_json prefill_cm_350m in
+  let pcm_roundtrip = expect_ok (Target_hardware.Prefill_cost_model.of_json pcm_json) in
+  expect (pcm_roundtrip.roofline_knee_tokens = prefill_cm_350m.roofline_knee_tokens)
+    "prefill cost model JSON round-trip preserves roofline knee";
+  expect (pcm_roundtrip.optimal_chunk_size = prefill_cm_350m.optimal_chunk_size)
+    "prefill cost model JSON round-trip preserves optimal chunk size";
+  expect (pcm_roundtrip.template_buckets = prefill_cm_350m.template_buckets)
+    "prefill cost model JSON round-trip preserves template buckets";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"

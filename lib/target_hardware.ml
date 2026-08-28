@@ -89,6 +89,110 @@ module Execution_profile = struct
     }
 end
 
+module Prefill_cost_model = struct
+  type t = {
+    roofline_knee_tokens : int;
+    core_saturation_tokens : int;
+    optimal_chunk_size : int;
+    template_buckets : int list;
+    predicted_chunk_latency_ms : float;
+  }
+
+  let analyze ?(max_latency_ms = 25.0) ~(target : Execution_profile.t)
+      ~weight_bytes ~active_params () =
+    let safe_params = max 1_000_000 active_params in
+    let safe_weights = max 1_000_000 weight_bytes in
+    let bw_bytes_per_sec = target.memory_bandwidth_gbps *. 1e9 in
+    let peak_flops_per_sec = target.fp16_tflops *. 1e12 in
+    let flops_per_token = 2.0 *. float_of_int safe_params in
+
+    (* 1. Roofline arithmetic intensity knee: W/B = (M * F)/P *)
+    let t_mem = float_of_int safe_weights /. bw_bytes_per_sec in
+    let knee_float = t_mem *. peak_flops_per_sec /. flops_per_token in
+    let roofline_knee_tokens = max 8 (int_of_float (Float.ceil knee_float)) in
+
+    (* 2. Core saturation: need enough threadgroups to keep all compute units busy *)
+    let core_saturation_tokens = max 32 (target.gpu_cores * 4) in
+
+    (* 3. SLA budget constraint: M_sla = ((max_latency - dispatch) * P) / F *)
+    let max_sec = max_latency_ms *. 1e-3 in
+    let usable_sec = max 0.001 (max_sec -. target.dispatch_overhead_seconds) in
+    let max_sla_tokens =
+      int_of_float (usable_sec *. peak_flops_per_sec /. flops_per_token)
+    in
+
+    (* 4. Optimal chunk size M*: balance roofline compute intensity and SLA latency *)
+    let raw_chunk = max roofline_knee_tokens core_saturation_tokens * 4 in
+    let bounded_chunk =
+      min (max 64 raw_chunk) (max 64 max_sla_tokens)
+    in
+    (* Align to multiple of 64 *)
+    let optimal_chunk_size =
+      let rem = bounded_chunk mod 64 in
+      if rem = 0 then bounded_chunk else bounded_chunk + (64 - rem)
+    in
+
+    (* 5. Standard template buckets *)
+    let candidate_buckets =
+      [ 16; 64; 128; optimal_chunk_size;
+        min (optimal_chunk_size * 2) 1024;
+        min (optimal_chunk_size * 4) 4096 ]
+    in
+    let template_buckets =
+      candidate_buckets
+      |> List.sort_uniq Int.compare
+      |> List.filter (fun b -> b > 0)
+    in
+
+    (* 6. Predicted latency for optimal chunk *)
+    let t_compute =
+      (float_of_int optimal_chunk_size *. flops_per_token) /. peak_flops_per_sec
+    in
+    let predicted_chunk_latency_ms =
+      (Float.max t_mem t_compute +. target.dispatch_overhead_seconds) *. 1000.0
+    in
+
+    {
+      roofline_knee_tokens;
+      core_saturation_tokens;
+      optimal_chunk_size;
+      template_buckets;
+      predicted_chunk_latency_ms;
+    }
+
+  let to_json (m : t) : Yojson.Basic.t =
+    `Assoc
+      [
+        ("roofline_knee_tokens", `Int m.roofline_knee_tokens);
+        ("core_saturation_tokens", `Int m.core_saturation_tokens);
+        ("optimal_chunk_size", `Int m.optimal_chunk_size);
+        ("template_buckets", `List (List.map (fun b -> `Int b) m.template_buckets));
+        ("predicted_chunk_latency_ms", `Float m.predicted_chunk_latency_ms);
+      ]
+
+  let of_json (json : Yojson.Basic.t) : (t, string) result =
+    let open Yojson.Basic.Util in
+    try
+      let roofline_knee_tokens = json |> member "roofline_knee_tokens" |> to_int in
+      let core_saturation_tokens = json |> member "core_saturation_tokens" |> to_int in
+      let optimal_chunk_size = json |> member "optimal_chunk_size" |> to_int in
+      let template_buckets =
+        json |> member "template_buckets" |> to_list |> List.map to_int
+      in
+      let predicted_chunk_latency_ms =
+        json |> member "predicted_chunk_latency_ms" |> to_float
+      in
+      Ok
+        {
+          roofline_knee_tokens;
+          core_saturation_tokens;
+          optimal_chunk_size;
+          template_buckets;
+          predicted_chunk_latency_ms;
+        }
+    with Type_error (msg, _) -> Error ("Prefill_cost_model JSON error: " ^ msg)
+end
+
 type t = {
   device_name : string;
   memory : Memory_hierarchy.t;

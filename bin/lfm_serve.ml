@@ -247,7 +247,17 @@ let serve service options =
     Webs_iomux.start ~host:options.host ~port:options.port
       ~max_body_bytes:options.max_body_bytes handler
   in
-  Printf.eprintf "ready: http://%s:%d\n%!" options.host (Webs_iomux.port server);
+  let hw = Target_hardware.discover () in
+  let cost_model =
+    Target_hardware.Prefill_cost_model.analyze ~target:hw.execution
+      ~weight_bytes:175_000_000 ~active_params:350_000_000 ()
+  in
+  let prefill_chunk_budget = cost_model.optimal_chunk_size in
+  Printf.eprintf "prefill cost model: knee=%d sat=%d chunk_budget=%d buckets=[%s] est_latency=%.2fms\n%!"
+    cost_model.roofline_knee_tokens cost_model.core_saturation_tokens
+    prefill_chunk_budget
+    (String.concat ";" (List.map string_of_int cost_model.template_buckets))
+    cost_model.predicted_chunk_latency_ms;
 
   let rec step_engine_loop () =
     Mutex.lock mutex;
@@ -257,7 +267,7 @@ let serve service options =
     let now = Unix.gettimeofday () in
     Serving_queue.update_scores queue ~current_time:now;
     let (batch_decodes, prefill_candidate_opt) =
-      Serving_queue.pop_next_batch queue ~max_batch_size:8 ~prefill_chunk_budget:512
+      Serving_queue.pop_next_batch queue ~max_batch_size:8 ~prefill_chunk_budget
     in
     Mutex.unlock mutex;
 

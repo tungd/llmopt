@@ -47,6 +47,27 @@ module Execution_profile : sig
   val default_apple : t
 end
 
+module Prefill_cost_model : sig
+  type t = {
+    roofline_knee_tokens : int;
+    core_saturation_tokens : int;
+    optimal_chunk_size : int;
+    template_buckets : int list;
+    predicted_chunk_latency_ms : float;
+  }
+
+  val analyze :
+    ?max_latency_ms:float ->
+    target:Execution_profile.t ->
+    weight_bytes:int ->
+    active_params:int ->
+    unit ->
+    t
+
+  val to_json : t -> Yojson.Basic.t
+  val of_json : Yojson.Basic.t -> (t, string) result
+end
+
 type t = {
   device_name : string;
   memory : Memory_hierarchy.t;

@@ -68,6 +68,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.artifact_dir is not None:
+        import shutil
+        shutil.rmtree(args.artifact_dir, ignore_errors=True)
         os.environ["LLMOPT_ARTIFACT_DIR"] = args.artifact_dir
     # The model-level parity probe uses the generated dequantization kernel
     # followed by PyTorch MPS linear, which preserves the eager reference's
