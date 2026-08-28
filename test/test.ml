@@ -1132,6 +1132,31 @@ let () =
   expect (Kv_cache.Layout.recurrent_layers tf_kv_layout = 0) "transformer cache layout has 0 recurrent layers";
   expect (Kv_cache.Layout.bytes_per_checkpoint tf_kv_layout = 0) "transformer cache layout has 0 checkpoint bytes";
 
+  (* Serving specialization tests *)
+  let spec =
+    Model_program.Specialization.create ~min_prefill_tokens:3
+      ~rope_cosine_input:"custom_cos" ~rope_sine_input:"custom_sin"
+      ~paged_slots_input:"custom_slots" ()
+    |> Result.get_ok
+  in
+  let empty_sched =
+    Serving_schedule.of_graph (Ir.Graph.create ())
+    |> Result.get_ok
+  in
+  let pref_err =
+    Serving_specialization.prefill ~specialization:spec ~captured_tokens:3
+      ~tokens:2 empty_sched
+  in
+  expect (Result.is_error pref_err)
+    "specialization rejects prefill tokens < min_prefill_tokens";
+  let suf_err =
+    Serving_specialization.suffix_prefill_paged_q8 ~specialization:spec
+      ~captured_tokens:3 ~tokens:1 ~past_tokens:5
+      ~cache:(Serving_cache.Config.kv cache_cfg) empty_sched
+  in
+  expect (Result.is_error suf_err)
+    "specialization rejects suffix prefill tokens < min_prefill_tokens";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 
