@@ -17,6 +17,24 @@ type generation = t
 val create :
   tokenizer:Tokenizer.t -> engine:Serving_engine.t -> (t, string) result
 
+val create_from_program :
+  program:Model_program.t ->
+  model_dir:string ->
+  ?token_capacity:int ->
+  ?checkpoint_capacity:int ->
+  ?page_size:int ->
+  unit ->
+  (t, string) result
+
+val create_from_dir :
+  model_dir:string ->
+  ?token_capacity:int ->
+  ?checkpoint_capacity:int ->
+  ?page_size:int ->
+  unit ->
+  (t, string) result
+
+val program : t -> Model_program.t option
 val tokenizer : t -> Tokenizer.t
 val engine : t -> Serving_engine.t
 val chat : t -> Lfm_chat.t

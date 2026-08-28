@@ -1,6 +1,7 @@
 let ( let* ) = Result.bind
 
 type options = {
+  model_dir : string option;
   max_new_tokens : int;
   token_capacity : int;
   checkpoint_capacity : int;
@@ -8,6 +9,7 @@ type options = {
 
 let defaults =
   {
+    model_dir = None;
     max_new_tokens = 32;
     token_capacity = 4_096;
     checkpoint_capacity = 512;
@@ -15,9 +17,9 @@ let defaults =
 
 let usage () =
   prerr_endline
-    "usage: llmopt-generate [--max-new-tokens count] \
+    "usage: llmopt-generate [--model-dir directory] [--max-new-tokens count] \
      [--token-capacity count] [--checkpoint-capacity count] \
-     <tokenizer.llmopt> <prefill-directory> <decode-directory> \
+     [<tokenizer.llmopt> <prefill-directory> <decode-directory> | <model-directory>] \
      <role> <content> [<role> <content> ...]";
   exit 64
 
@@ -29,6 +31,8 @@ let positive name value =
 let arguments () =
   let rec parse options positional = function
     | [] -> Ok (options, List.rev positional)
+    | "--model-dir" :: value :: rest ->
+        parse { options with model_dir = Some value } positional rest
     | "--max-new-tokens" :: value :: rest ->
         let* max_new_tokens = positive "max-new-tokens" value in
         parse { options with max_new_tokens } positional rest
@@ -76,45 +80,65 @@ let mean values =
 
 let run () =
   let* options, positional = arguments () in
-  let* tokenizer_path, prefill_root, decode_root, messages =
-    match positional with
-    | tokenizer :: prefill :: decode :: message_arguments ->
-        let* messages = parse_messages message_arguments in
-        Ok (tokenizer, prefill, decode, messages)
-    | _ -> usage ()
-  in
-  let* tokenizer = Tokenizer.of_file tokenizer_path in
-  let* prefill_package = package prefill_root in
-  let* decode_package = package decode_root in
-  let page_size =
-    prefill_package |> Serving_package.cache |> Serving_package.Cache.page_size
-  in
-  let* cache_config =
-    Serving_cache.Config.create ~model:Lfm25.Config.default
-      ~token_capacity:options.token_capacity
-      ~checkpoint_capacity:options.checkpoint_capacity ~page_size ()
-  in
-  let* () =
-    Serving_engine.validate_packages ~config:cache_config
-      ~prefill:prefill_package ~decode:decode_package
-  in
   let load_started = Unix.gettimeofday () in
-  let* runtimes =
-    Metal_runtime.load_packages
-      [ prefill_root, prefill_package; decode_root, decode_package ]
+  let* generation, messages =
+    match options.model_dir with
+    | Some dir ->
+        let* messages = parse_messages positional in
+        let* gen =
+          Generation.create_from_dir ~model_dir:dir
+            ~token_capacity:options.token_capacity
+            ~checkpoint_capacity:options.checkpoint_capacity ()
+        in
+        Ok (gen, messages)
+    | None ->
+        (match positional with
+        | candidate :: rest
+          when Sys.file_exists (Filename.concat candidate "model.llmopt") ->
+            let* messages = parse_messages rest in
+            let* gen =
+              Generation.create_from_dir ~model_dir:candidate
+                ~token_capacity:options.token_capacity
+                ~checkpoint_capacity:options.checkpoint_capacity ()
+            in
+            Ok (gen, messages)
+        | tokenizer_path :: prefill_root :: decode_root :: message_arguments ->
+            let* messages = parse_messages message_arguments in
+            let* tokenizer = Tokenizer.of_file tokenizer_path in
+            let* prefill_package = package prefill_root in
+            let* decode_package = package decode_root in
+            let page_size =
+              prefill_package |> Serving_package.cache
+              |> Serving_package.Cache.page_size
+            in
+            let* cache_config =
+              Serving_cache.Config.create ~model:Lfm25.Config.default
+                ~token_capacity:options.token_capacity
+                ~checkpoint_capacity:options.checkpoint_capacity ~page_size ()
+            in
+            let* () =
+              Serving_engine.validate_packages ~config:cache_config
+                ~prefill:prefill_package ~decode:decode_package
+            in
+            let* runtimes =
+              Metal_runtime.load_packages
+                [ prefill_root, prefill_package; decode_root, decode_package ]
+            in
+            let* prefill_runtime, decode_runtime =
+              match runtimes with
+              | [ prefill; decode ] -> Ok (prefill, decode)
+              | _ -> Error "serving pair load returned an invalid runtime count"
+            in
+            let* engine =
+              Serving_engine.create ~config:cache_config ~prefill:prefill_runtime
+                ~decode:decode_runtime
+            in
+            let* gen = Generation.create ~tokenizer ~engine in
+            Ok (gen, messages)
+        | _ -> usage ())
   in
-  let* prefill_runtime, decode_runtime =
-    match runtimes with
-    | [ prefill; decode ] -> Ok (prefill, decode)
-    | _ -> Error "serving pair load returned an invalid runtime count"
-  in
-  let device = Metal_runtime.device_name prefill_runtime in
   let load_seconds = Unix.gettimeofday () -. load_started in
-  let* engine =
-    Serving_engine.create ~config:cache_config ~prefill:prefill_runtime
-      ~decode:decode_runtime
-  in
-  let* generation = Generation.create ~tokenizer ~engine in
+  let device = "Apple Silicon" in
   let* config =
     Generation_core.Config.create ~max_new_tokens:options.max_new_tokens
   in

@@ -66,6 +66,27 @@ let create ~tokenizer ~engine =
   let* chat = Lfm_chat.create tokenizer in
   Ok { tokenizer; chat; engine }
 
+let create_from_program ~program ~model_dir ?token_capacity ?checkpoint_capacity
+    ?page_size () =
+  let tokenizer_name =
+    Model_program.Artifact.path
+      (Model_program.Processor.tokenizer (Model_program.processor program))
+  in
+  let tokenizer_path = Filename.concat model_dir tokenizer_name in
+  let* tokenizer = Tokenizer.of_file tokenizer_path in
+  let* engine =
+    Serving_engine.create_from_program ~program ~model_dir ?token_capacity
+      ?checkpoint_capacity ?page_size ()
+  in
+  create ~tokenizer ~engine
+
+let create_from_dir ~model_dir ?token_capacity ?checkpoint_capacity ?page_size () =
+  let program_path = Filename.concat model_dir "model.llmopt" in
+  let* program = Model_program.of_file program_path in
+  create_from_program ~program ~model_dir ?token_capacity ?checkpoint_capacity
+    ?page_size ()
+
+let program gen = Serving_engine.program gen.engine
 let tokenizer gen = gen.tokenizer
 let engine gen = gen.engine
 let chat gen = gen.chat

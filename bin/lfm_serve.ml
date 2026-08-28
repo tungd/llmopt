@@ -3,6 +3,7 @@ let ( let* ) = Result.bind
 type options = {
   host : string;
   port : int;
+  model_dir : string option;
   token_capacity : int;
   checkpoint_capacity : int;
   max_body_bytes : int;
@@ -12,6 +13,7 @@ let defaults =
   {
     host = "127.0.0.1";
     port = 8000;
+    model_dir = None;
     token_capacity = 8_192;
     checkpoint_capacity = 1_024;
     max_body_bytes = 64 * 1_024 * 1_024;
@@ -19,9 +21,9 @@ let defaults =
 
 let usage () =
   prerr_endline
-    "usage: llmopt-serve [--host address] [--port number] \
+    "usage: llmopt-serve [--model-dir directory] [--host address] [--port number] \
      [--token-capacity count] [--checkpoint-capacity count] \
-     [--max-body-bytes count] <engine-directory | tokenizer.llmopt prefill-dir decode-dir>";
+     [--max-body-bytes count] [<model-directory | engine-directory | tokenizer.llmopt prefill-dir decode-dir>]";
   exit 64
 
 let positive name value =
@@ -32,6 +34,8 @@ let positive name value =
 let arguments () =
   let rec parse options positional = function
     | [] -> Ok (options, List.rev positional)
+    | "--model-dir" :: value :: rest ->
+        parse { options with model_dir = Some value } positional rest
     | "--host" :: value :: rest ->
         parse { options with host = value } positional rest
     | "--port" :: value :: rest ->
@@ -63,6 +67,15 @@ type service = {
   generation : Generation.t;
   mutable request_number : int;
 }
+
+let load_from_dir options model_dir =
+  let* generation =
+    Generation.create_from_dir ~model_dir
+      ~token_capacity:options.token_capacity
+      ~checkpoint_capacity:options.checkpoint_capacity ()
+  in
+  let tokenizer = Generation.tokenizer generation in
+  Ok ({ tokenizer; generation; request_number = 0 }, "Apple Silicon")
 
 let load options tokenizer_path prefill_root decode_root =
   let* tokenizer = Tokenizer.of_file tokenizer_path in
@@ -459,23 +472,27 @@ let serve service options =
 
 let run () =
   let* options, positional = arguments () in
-  let* tokenizer, prefill, decode =
-    match positional with
-    | [ tokenizer; prefill; decode ] -> Ok (tokenizer, prefill, decode)
-    | [ engine_directory ] ->
-        let tokenizer = Filename.concat engine_directory "tokenizer.llmopt" in
-        let prefill = Filename.concat engine_directory "prefill" in
-        let decode = Filename.concat engine_directory "decode" in
-        if not (Sys.file_exists tokenizer) then
-          Error (Printf.sprintf "engine directory missing tokenizer: %s" tokenizer)
-        else if not (Sys.file_exists prefill) then
-          Error (Printf.sprintf "engine directory missing prefill: %s" prefill)
-        else if not (Sys.file_exists decode) then
-          Error (Printf.sprintf "engine directory missing decode: %s" decode)
-        else Ok (tokenizer, prefill, decode)
-    | _ -> usage ()
+  let* service, device =
+    match options.model_dir with
+    | Some dir -> load_from_dir options dir
+    | None ->
+        (match positional with
+        | [ candidate ] when Sys.file_exists (Filename.concat candidate "model.llmopt") ->
+            load_from_dir options candidate
+        | [ tokenizer; prefill; decode ] -> load options tokenizer prefill decode
+        | [ engine_directory ] ->
+            let tokenizer = Filename.concat engine_directory "tokenizer.llmopt" in
+            let prefill = Filename.concat engine_directory "prefill" in
+            let decode = Filename.concat engine_directory "decode" in
+            if not (Sys.file_exists tokenizer) then
+              Error (Printf.sprintf "engine directory missing tokenizer: %s" tokenizer)
+            else if not (Sys.file_exists prefill) then
+              Error (Printf.sprintf "engine directory missing prefill: %s" prefill)
+            else if not (Sys.file_exists decode) then
+              Error (Printf.sprintf "engine directory missing decode: %s" decode)
+            else load options tokenizer prefill decode
+        | _ -> usage ())
   in
-  let* service, device = load options tokenizer prefill decode in
   Printf.eprintf "device: %s; kv: %s\n%!" device
     (Kv_cache.Format.to_string Kv_cache.Format.default);
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;

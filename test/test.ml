@@ -1165,6 +1165,19 @@ let () =
   expect (Result.is_error engine_err)
     "create_from_program fails on nonexistent package files";
 
+  (* Generation create_from_program and create_from_dir validation tests *)
+  let gen_prog_err =
+    Generation.create_from_program ~program:restored
+      ~model_dir:"/nonexistent/dir" ()
+  in
+  expect (Result.is_error gen_prog_err)
+    "generation create_from_program fails on nonexistent dir";
+  let gen_dir_err =
+    Generation.create_from_dir ~model_dir:"/nonexistent/dir" ()
+  in
+  expect (Result.is_error gen_dir_err)
+    "generation create_from_dir fails on nonexistent model.llmopt";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 
