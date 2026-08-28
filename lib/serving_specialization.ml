@@ -7,6 +7,9 @@ let prefill ~specialization ~captured_tokens ~tokens schedule =
   else
     Serving_schedule.Lfm25.specialize_prefill ~captured_tokens ~tokens schedule
 
+let recurrent_in_input layer =
+  Serving_schedule.Lfm25.recurrent_in_input layer
+
 let suffix_prefill_paged_q8 ~specialization ~captured_tokens ~tokens ~past_tokens
     ~cache schedule =
   let min_tokens = Model_program.Specialization.min_prefill_tokens specialization in

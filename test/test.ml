@@ -1156,6 +1156,12 @@ let () =
   in
   expect (Result.is_error suf_err)
     "specialization rejects suffix prefill tokens < min_prefill_tokens";
+  expect
+    (Serving_specialization.recurrent_in_input 0 = "__llmopt_recurrent_in_0")
+    "recurrent_in_input 0 produces __llmopt_recurrent_in_0";
+  expect
+    (Serving_specialization.recurrent_in_input 5 = "__llmopt_recurrent_in_5")
+    "recurrent_in_input 5 produces __llmopt_recurrent_in_5";
 
   (* Serving engine create_from_program validation tests *)
   let engine_err =

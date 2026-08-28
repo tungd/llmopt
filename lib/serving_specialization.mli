@@ -5,6 +5,8 @@ val prefill :
   Serving_schedule.t ->
   (Serving_schedule.t, string) result
 
+val recurrent_in_input : int -> string
+
 val suffix_prefill_paged_q8 :
   specialization:Model_program.Specialization.t ->
   captured_tokens:int ->

@@ -1490,7 +1490,8 @@ let suffix_prefill engine match_ ~tokens ~cached_tokens =
           let* recurrent_buffers = unpack_recurrent_states engine source_checkpoint in
           let recurrent_inputs =
             List.map
-              (fun (binding, state) -> (binding.state_input, state))
+              (fun (binding, state) ->
+                (Serving_specialization.recurrent_in_input binding.cache_layer, state))
               recurrent_buffers
           in
           let inputs =
