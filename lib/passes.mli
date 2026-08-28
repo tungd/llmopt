@@ -37,4 +37,4 @@ module Optimization : sig
   val execution_graph : t -> Ir.Graph.t
 end
 
-val optimize : Ir.Graph.t -> (Optimization.t, string) result
+val optimize : ?target:Target_hardware.t -> Ir.Graph.t -> (Optimization.t, string) result

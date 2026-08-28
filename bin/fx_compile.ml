@@ -92,6 +92,11 @@ let () =
       exit 2
   in
   ensure_directory output_directory;
+  let target = Target_hardware.discover () in
+  Printf.printf "llmopt AOT target hardware: %s\n%!" (Target_hardware.to_string target);
+  write_file
+    (Filename.concat output_directory "target.json")
+    (Yojson.Basic.pretty_to_string (Target_hardware.to_json target));
   match Fx.of_file graph_input with
   | Error message ->
       prerr_endline message;
@@ -112,7 +117,7 @@ let () =
                   exit 3
           in
           let optimization =
-            match Passes.optimize graph with
+            match Passes.optimize ~target graph with
             | Ok optimization -> optimization
             | Error message ->
                 prerr_endline ("optimization failed: " ^ message);

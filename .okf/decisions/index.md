@@ -12,3 +12,4 @@
 * [Macro-Operator Fusions: Dual-Linear, QKV, ShortConv Step, Residual-Norm, and On-GPU Argmax](macro-operator-fusions.md) - High-impact compiler fusions eliminating intermediate DRAM roundtrips.
 * [Model Program boundary](model-program-boundary.md) - Compile-time model adapters emit one root execution contract consumed by shared serving modules.
 * [AOT Decode Solidification and Zero-JIT Serving Architecture](aot-decode-solidification-zero-jit-serving.md) - Move all graph specialization and memory planning into the offline AOT compiler pipeline for true model portability and zero-overhead serving.
+* [Hardware-Aware AOT Compilation and Microarchitectural Discovery](hardware-aware-aot-compilation-and-discovery.md) - Formalize hardware discovery (SIMD lanes, SRAM banks, bank width, SRAM capacity, cache line sizes) as a first-class compiler phase in llmopt-fx for generalizable graph optimization.

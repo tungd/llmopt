@@ -49,7 +49,8 @@ module Optimization = struct
   let execution_graph optimization = optimization.execution_graph
 end
 
-let optimize graph =
+let optimize ?(target = Target_hardware.default) graph =
+  let _ = target in
   let semantic_graph = Pass.Pipeline.run default_pipeline graph in
   match Compute_plan.of_graph semantic_graph with
   | Error _ as error -> error

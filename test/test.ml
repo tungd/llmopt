@@ -750,4 +750,39 @@ let () =
     | Ok _ -> false)
     "suffix prefill rejects a zero captured prefill length";
 
+  (* Target_hardware discovery, bank conflicts, and JSON round-trip tests *)
+  let target = Target_hardware.discover () in
+  expect (String.length target.device_name > 0) "target hardware device name is non-empty";
+  expect (target.memory.simd_lanes = 32) "Apple Silicon SIMD lanes is 32";
+  expect (target.memory.sram_banks = 32) "Apple Silicon SRAM banks is 32";
+  expect (target.memory.sram_bank_width_bytes = 4) "Apple Silicon SRAM bank width is 4 bytes";
+  expect (target.memory.sram_capacity_bytes = 32768) "Apple Silicon SRAM capacity is 32 KB";
+  expect (target.memory.l1_cache_line_bytes = 128) "Apple Silicon L1 cache line is 128 bytes";
+
+  (* Microarchitectural bank conflict checks *)
+  expect
+    (Target_hardware.bank_conflict_degree target.memory ~element_bytes:2 ~stride_elements:1 = 2)
+    "contiguous FP16 in 4-byte banks has 2-way bank conflict";
+  expect
+    (Target_hardware.bank_conflict_degree target.memory ~element_bytes:4 ~stride_elements:1 = 1)
+    "contiguous FP32/half2 in 4-byte banks is conflict-free (1-way)";
+  expect
+    (Target_hardware.bank_conflict_degree target.memory ~element_bytes:2 ~stride_elements:2 = 1)
+    "stride-2 FP16 in 4-byte banks is conflict-free (1-way)";
+
+  (* Analytical SRAM fusion cost model *)
+  expect
+    (Target_hardware.should_fuse_sram_reduction target ~elements:1024 ~element_bytes:2 ~threadgroups:1 ~barriers:1)
+    "SRAM fusion is profitable for single-threadgroup dispatch";
+  expect
+    (not (Target_hardware.should_fuse_sram_reduction target ~elements:1024 ~element_bytes:2 ~threadgroups:576 ~barriers:3))
+    "SRAM fusion is rejected for 576 threadgroups due to redundant compute and barrier overhead";
+
+  (* Target hardware JSON round-trip *)
+  let target_json = Target_hardware.to_json target in
+  let target_roundtrip = expect_ok (Target_hardware.of_json target_json) in
+  expect (target_roundtrip.device_name = target.device_name) "target JSON round-trip preserves device name";
+  expect (target_roundtrip.memory.simd_lanes = 32) "target JSON round-trip preserves simd_lanes";
+  expect (target_roundtrip.memory.sram_banks = 32) "target JSON round-trip preserves sram_banks";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
