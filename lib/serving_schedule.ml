@@ -298,6 +298,38 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d LM-head argmax metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Rms_rope_qk
+              { q_heads; k_heads; width; half_dimension = _; epsilon; extra_outputs },
+            [ _q_input; q_weight; _k_input; k_weight; _cosine; _sine ],
+            Some q_output ) ->
+            let dimensions value = Tensor_shape.dimensions (Ir.Value.logical_shape value) in
+            let q_dims = dimensions q_output in
+            let q_matches =
+              match q_dims with
+              | [ _; h; _; w ] | [ _; _; h; w ] -> h = q_heads && w = width
+              | _ -> false
+            in
+            let secondary_matches =
+              match extra_outputs with
+              | [ k_output ] ->
+                  (match dimensions k_output with
+                  | [ _; h; _; w ] | [ _; _; h; w ] -> h = k_heads && w = width
+                  | _ -> false)
+              | _ -> false
+            in
+            if
+              Float.is_finite epsilon && epsilon > 0.0
+              && dimensions q_weight = [ width ]
+              && dimensions k_weight = [ width ]
+              && q_matches
+              && secondary_matches
+              && fresh_outputs seen_values (q_output :: extra_outputs)
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d RMS-RoPE-QK metadata is inconsistent"
+                   command.Command.node_id)
         | _, _, Some output when Int_set.mem (value_id output) seen_values ->
             Error
               (Printf.sprintf "schedule redefines value %d" (value_id output))
@@ -997,6 +1029,17 @@ module Lfm25 = struct
                epsilon;
                extra_outputs;
              })
+    | Ir.Op.Rms_rope_qk { q_heads; k_heads; width; half_dimension; epsilon; extra_outputs } ->
+        Ok
+          (Ir.Op.Rms_rope_qk
+             {
+               q_heads = substitute substitutions q_heads;
+               k_heads = substitute substitutions k_heads;
+               width = substitute substitutions width;
+               half_dimension = substitute substitutions half_dimension;
+               epsilon;
+               extra_outputs;
+             })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
         Ok (Ir.Op.Primitive primitive)
@@ -1150,6 +1193,15 @@ module Lfm25 = struct
            ~shape ~dtype:(Ir.Value.dtype original))
     with Invalid_argument message -> Error message
 
+  let specialized_generic_value substitutions original =
+    let* shape = map_shape substitutions (Ir.Value.logical_shape original) in
+    try
+      Ok
+        (Ir.Value.make_tensor
+           ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
+           ~shape ~dtype:(Ir.Value.dtype original))
+    with Invalid_argument message -> Error message
+
   let specialized_additional_outputs substitutions operation originals =
     match operation, originals with
     | Ir.Op.W4a16_lm_head_argmax { m; n; _ }, [ logits_output ] ->
@@ -1159,6 +1211,9 @@ module Lfm25 = struct
         let* k_out = specialized_matrix_value substitutions ~rows:m ~columns:n_k k_out in
         let* v_out = specialized_matrix_value substitutions ~rows:m ~columns:n_v v_out in
         Ok [ k_out; v_out ]
+    | Ir.Op.Rms_rope_qk _, [ k_out ] ->
+        specialized_generic_value substitutions k_out
+        |> Result.map (fun output -> [ output ])
     | _, [] -> Ok []
     | _, _ -> Error "unexpected secondary outputs in specialized schedule"
 
@@ -1168,6 +1223,8 @@ module Lfm25 = struct
         Ir.Op.W4a16_lm_head_argmax { config with extra_outputs = outputs }
     | Ir.Op.W4a16_qkv_linear config ->
         Ir.Op.W4a16_qkv_linear { config with extra_outputs = outputs }
+    | Ir.Op.Rms_rope_qk config ->
+        Ir.Op.Rms_rope_qk { config with extra_outputs = outputs }
     | _ -> operation
 
   type last_token_projection = {
@@ -2464,6 +2521,16 @@ let write_op writer = function
       Binary.Writer.u8 writer 20;
       Binary.Writer.float64 writer (Ir.Rms_rope.epsilon config);
       Binary.Writer.u64 writer (Ir.Rms_rope.half_dimension config)
+  | Ir.Op.Rms_rope_qk
+      { q_heads; k_heads; width; half_dimension; epsilon; extra_outputs } ->
+      Binary.Writer.u8 writer 26;
+      Binary.Writer.u64 writer q_heads;
+      Binary.Writer.u64 writer k_heads;
+      Binary.Writer.u64 writer width;
+      Binary.Writer.u64 writer half_dimension;
+      Binary.Writer.float64 writer epsilon;
+      Binary.Writer.u8 writer (List.length extra_outputs);
+      List.iter (write_value writer) extra_outputs
   | Ir.Op.Short_conv_step config ->
       Binary.Writer.u8 writer 21;
       Binary.Writer.u64 writer (Ir.Short_conv_step.channels config);
@@ -2611,6 +2678,21 @@ let read_op values reader =
       let* window = Binary.Reader.u64 reader in
       Ir.Short_conv_step.create ~channels ~window
       |> Result.map (fun config -> Ir.Op.Short_conv_step_fused config)
+  | 26 ->
+      let* q_heads = Binary.Reader.u64 reader in
+      let* k_heads = Binary.Reader.u64 reader in
+      let* width = Binary.Reader.u64 reader in
+      let* half_dimension = Binary.Reader.u64 reader in
+      let* epsilon = Binary.Reader.float64 reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      Ok (Ir.Op.Rms_rope_qk { q_heads; k_heads; width; half_dimension; epsilon; extra_outputs })
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

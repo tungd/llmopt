@@ -250,6 +250,14 @@ module Op : sig
         extra_outputs : Value.t list;
       }
     | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
+    | Rms_rope_qk of {
+        q_heads : int;
+        k_heads : int;
+        width : int;
+        half_dimension : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
     | W4a16_lm_head_argmax of {
         m : int;
         n : int;

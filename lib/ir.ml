@@ -427,6 +427,14 @@ module Op = struct
         extra_outputs : Value.t list;
       }
     | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
+    | Rms_rope_qk of {
+        q_heads : int;
+        k_heads : int;
+        width : int;
+        half_dimension : int;
+        epsilon : float;
+        extra_outputs : Value.t list;
+      }
     | W4a16_lm_head_argmax of {
         m : int;
         n : int;
@@ -437,6 +445,7 @@ module Op = struct
   let additional_outputs = function
     | W4a16_lm_head_argmax { extra_outputs; _ } -> extra_outputs
     | W4a16_qkv_linear { extra_outputs; _ } -> extra_outputs
+    | Rms_rope_qk { extra_outputs; _ } -> extra_outputs
     | _ -> []
 
   let to_string = function
@@ -462,6 +471,8 @@ module Op = struct
     | Relu -> "relu"
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
     | Rms_rope config -> Rms_rope.to_string config
+    | Rms_rope_qk { q_heads; k_heads; width; half_dimension; epsilon; _ } ->
+        Printf.sprintf "rms-rope-qk(q=%d,k=%d,w=%d,half=%d,eps=%.9g)" q_heads k_heads width half_dimension epsilon
     | Short_conv_step config -> Short_conv_step.to_string config
     | Short_conv_step_fused config ->
         "short-conv-step-fused(" ^ Short_conv_step.to_string config ^ ")"

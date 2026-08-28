@@ -754,26 +754,43 @@ pipeline_for_name(llmopt_metal_library *library, const char *kernel_name) {
       caml_failwith("Metal library does not contain the selected kernel");
     }
     NSError *pipeline_error = nil;
-    MTLComputePipelineDescriptor *pipe_desc = [[MTLComputePipelineDescriptor alloc] init];
-    pipe_desc.computeFunction = function;
-    pipe_desc.supportIndirectCommandBuffers = YES;
-    pipeline = [library->device newComputePipelineStateWithDescriptor:pipe_desc
-                                                              options:0
-                                                           reflection:nil
-                                                                error:&pipeline_error];
-    [pipe_desc release];
+    pipeline = [library->device newComputePipelineStateWithFunction:function
+                                                               error:&pipeline_error];
     [function release];
     if (pipeline == nil) {
       fail_with_error("cannot create Metal compute pipeline", pipeline_error);
     }
     [library->pipelines setObject:pipeline forKey:name];
-    [pipeline release];
   }
 
   if (library->cache_count < LLMOPT_PIPELINE_CACHE_SIZE) {
     library->cache[library->cache_count].name = strdup(kernel_name);
     library->cache[library->cache_count].pipeline = pipeline;
     library->cache_count++;
+  }
+  return pipeline;
+}
+
+static id<MTLComputePipelineState>
+pipeline_for_name_icb(llmopt_metal_library *library, const char *kernel_name) {
+  NSString *name = [NSString stringWithUTF8String:kernel_name];
+  id<MTLFunction> function = [library->library newFunctionWithName:name];
+  if (function == nil) {
+    caml_failwith("Metal library does not contain the selected kernel");
+  }
+  NSError *pipeline_error = nil;
+  MTLComputePipelineDescriptor *pipe_desc = [[MTLComputePipelineDescriptor alloc] init];
+  pipe_desc.computeFunction = function;
+  pipe_desc.supportIndirectCommandBuffers = YES;
+  id<MTLComputePipelineState> pipeline =
+      [library->device newComputePipelineStateWithDescriptor:pipe_desc
+                                                     options:0
+                                                  reflection:nil
+                                                       error:&pipeline_error];
+  [pipe_desc release];
+  [function release];
+  if (pipeline == nil) {
+    fail_with_error("cannot create Metal compute pipeline for ICB", pipeline_error);
   }
   return pipeline;
 }
@@ -1401,7 +1418,7 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     value params = Field(item, 2);
     plan->records[i].grid = MTLSizeMake(Long_val(Field(item, 3)), Long_val(Field(item, 4)), Long_val(Field(item, 5)));
     plan->records[i].group = MTLSizeMake(Long_val(Field(item, 6)), Long_val(Field(item, 7)), Long_val(Field(item, 8)));
-    plan->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
+    plan->records[i].pipeline = [pipeline_for_name_icb(lib, kname) retain];
     plan->records[i].is_paged_attention = (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0);
     plan->records[i].is_checkpoint_pack = (strcmp(kname, "llmopt_cache_pack_checkpoint_q8_simd") == 0);
 

@@ -84,7 +84,7 @@ let w4a16_source =
   ^ "  }\n"
   ^ "  acc = simd_sum(acc);\n"
   ^ "  if (lane == 0) {\n"
-  ^ "    if (params.has_bias != 0u) acc += float(bias_or_scale[row * params.n + col]);\n"
+  ^ "    if (params.has_bias != 0u) acc += float(bias_or_scale[col]);\n"
   ^ "    output[row * params.n + col] = half(acc);\n"
   ^ "  }\n"
   ^ "}\n\n"
@@ -153,18 +153,18 @@ let w4a16_source =
   ^ "  if (valid3) acc3 = simd_sum(acc3);\n"
   ^ "  if (lane == 0) {\n"
   ^ "    const bool has_bias = (params.has_bias != 0u);\n"
-  ^ "    if (has_bias) acc0 += float(bias_or_scale[row0 * params.n + col]);\n"
+  ^ "    if (has_bias) acc0 += float(bias_or_scale[col]);\n"
   ^ "    output[row0 * params.n + col] = half(acc0);\n"
   ^ "    if (valid1) {\n"
-  ^ "      if (has_bias) acc1 += float(bias_or_scale[row1 * params.n + col]);\n"
+  ^ "      if (has_bias) acc1 += float(bias_or_scale[col]);\n"
   ^ "      output[row1 * params.n + col] = half(acc1);\n"
   ^ "    }\n"
   ^ "    if (valid2) {\n"
-  ^ "      if (has_bias) acc2 += float(bias_or_scale[row2 * params.n + col]);\n"
+  ^ "      if (has_bias) acc2 += float(bias_or_scale[col]);\n"
   ^ "      output[row2 * params.n + col] = half(acc2);\n"
   ^ "    }\n"
   ^ "    if (valid3) {\n"
-  ^ "      if (has_bias) acc3 += float(bias_or_scale[row3 * params.n + col]);\n"
+  ^ "      if (has_bias) acc3 += float(bias_or_scale[col]);\n"
   ^ "      output[row3 * params.n + col] = half(acc3);\n"
   ^ "    }\n"
   ^ "  }\n"
@@ -211,9 +211,7 @@ let w4a16_source =
   ^ "    const float q0 = float(int(packed & 15u) - ((packed & 8u) ? 16 : 0)) * s;\n"
   ^ "    const float q1 = float(int(packed >> 4) - ((packed & 128u) ? 16 : 0)) * s;\n"
   ^ "    const uint offset = (g << 6) + (lane << 1);\n"
-  ^ "    const float x0_0 = float(input[in_base0 + offset]);\n"
-  ^ "    const float x0_1 = float(input[in_base0 + offset + 1]);\n"
-  ^ "    acc0 += x0_0 * q0 + x0_1 * q1;\n"
+  ^ "    acc0 += float(input[in_base0 + offset]) * q0 + float(input[in_base0 + offset + 1]) * q1;\n"
   ^ "    if (valid1) { acc1 += float(input[in_base1 + offset]) * q0 + float(input[in_base1 + offset + 1]) * q1; }\n"
   ^ "    if (valid2) { acc2 += float(input[in_base2 + offset]) * q0 + float(input[in_base2 + offset + 1]) * q1; }\n"
   ^ "    if (valid3) { acc3 += float(input[in_base3 + offset]) * q0 + float(input[in_base3 + offset + 1]) * q1; }\n"
@@ -232,15 +230,15 @@ let w4a16_source =
   ^ "  if (valid7) acc7 = simd_sum(acc7);\n"
   ^ "  if (lane == 0) {\n"
   ^ "    const bool has_bias = (params.has_bias != 0u);\n"
-  ^ "    if (has_bias) acc0 += float(bias_or_scale[row0 * params.n + col]);\n"
+  ^ "    if (has_bias) acc0 += float(bias_or_scale[col]);\n"
   ^ "    output[row0 * params.n + col] = half(acc0);\n"
-  ^ "    if (valid1) { const uint r = row0 + 1u; if (has_bias) acc1 += float(bias_or_scale[r * params.n + col]); output[r * params.n + col] = half(acc1); }\n"
-  ^ "    if (valid2) { const uint r = row0 + 2u; if (has_bias) acc2 += float(bias_or_scale[r * params.n + col]); output[r * params.n + col] = half(acc2); }\n"
-  ^ "    if (valid3) { const uint r = row0 + 3u; if (has_bias) acc3 += float(bias_or_scale[r * params.n + col]); output[r * params.n + col] = half(acc3); }\n"
-  ^ "    if (valid4) { const uint r = row0 + 4u; if (has_bias) acc4 += float(bias_or_scale[r * params.n + col]); output[r * params.n + col] = half(acc4); }\n"
-  ^ "    if (valid5) { const uint r = row0 + 5u; if (has_bias) acc5 += float(bias_or_scale[r * params.n + col]); output[r * params.n + col] = half(acc5); }\n"
-  ^ "    if (valid6) { const uint r = row0 + 6u; if (has_bias) acc6 += float(bias_or_scale[r * params.n + col]); output[r * params.n + col] = half(acc6); }\n"
-  ^ "    if (valid7) { const uint r = row0 + 7u; if (has_bias) acc7 += float(bias_or_scale[r * params.n + col]); output[r * params.n + col] = half(acc7); }\n"
+  ^ "    if (valid1) { const uint r = row0 + 1u; if (has_bias) acc1 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc1); }\n"
+  ^ "    if (valid2) { const uint r = row0 + 2u; if (has_bias) acc2 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc2); }\n"
+  ^ "    if (valid3) { const uint r = row0 + 3u; if (has_bias) acc3 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc3); }\n"
+  ^ "    if (valid4) { const uint r = row0 + 4u; if (has_bias) acc4 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc4); }\n"
+  ^ "    if (valid5) { const uint r = row0 + 5u; if (has_bias) acc5 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc5); }\n"
+  ^ "    if (valid6) { const uint r = row0 + 6u; if (has_bias) acc6 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc6); }\n"
+  ^ "    if (valid7) { const uint r = row0 + 7u; if (has_bias) acc7 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc7); }\n"
   ^ "  }\n"
   ^ "}\n"
 
@@ -2045,6 +2043,70 @@ let rms_rope_entries =
       ~operation:Kernel_abi.Operation.Rms_rope
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let rms_rope_qk_source =
+  "\nconstant uint RMS_ROPE_QK_SIMD_WIDTH = 32;\n"
+  ^ "constant uint RMS_ROPE_QK_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct RmsRopeQKParams {\n"
+  ^ "  uint batches; uint tokens; uint q_heads; uint k_heads;\n"
+  ^ "  uint width; uint half_dimension; uint trig_batches;\n"
+  ^ "  float epsilon;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_rms_rope_qk_f16_simd_h64(\n"
+  ^ "    device const half* q_input [[buffer(0)]],\n"
+  ^ "    device const half* q_weight [[buffer(1)]],\n"
+  ^ "    device const half* k_input [[buffer(2)]],\n"
+  ^ "    device const half* k_weight [[buffer(3)]],\n"
+  ^ "    device const half* cosine [[buffer(4)]],\n"
+  ^ "    device const half* sine [[buffer(5)]],\n"
+  ^ "    device half* q_output [[buffer(6)]],\n"
+  ^ "    device half* k_output [[buffer(7)]],\n"
+  ^ "    constant RmsRopeQKParams& params [[buffer(8)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_ROPE_QK_ROWS_PER_THREADGROUP + simdgroup;\n"
+  ^ "  const uint total_rows = params.batches * (params.q_heads + params.k_heads) * params.tokens;\n"
+  ^ "  if (row >= total_rows) return;\n"
+  ^ "  const uint q_rows = params.batches * params.q_heads * params.tokens;\n"
+  ^ "  const bool is_q = (row < q_rows);\n"
+  ^ "  const uint local_row = is_q ? row : (row - q_rows);\n"
+  ^ "  const uint heads = is_q ? params.q_heads : params.k_heads;\n"
+  ^ "  const uint batch = local_row / (heads * params.tokens);\n"
+  ^ "  const uint head_token = local_row % (heads * params.tokens);\n"
+  ^ "  const uint head = head_token / params.tokens;\n"
+  ^ "  const uint token = head_token % params.tokens;\n"
+  ^ "  const uint input_row = (batch * params.tokens + token) * heads + head;\n"
+  ^ "  const uint input_base = input_row * params.width;\n"
+  ^ "  device const half* input = is_q ? q_input : k_input;\n"
+  ^ "  device const half* weight = is_q ? q_weight : k_weight;\n"
+  ^ "  device half* output = is_q ? q_output : k_output;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_QK_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[input_base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  const uint trig_batch = params.trig_batches == 1 ? 0 : batch;\n"
+  ^ "  const uint trig_base = (trig_batch * params.tokens + token) * params.width;\n"
+  ^ "  const uint output_base = local_row * params.width;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_QK_SIMD_WIDTH) {\n"
+  ^ "    const half normalized = half(float(input[input_base + col]) * inverse * float(weight[col]));\n"
+  ^ "    const uint rotated_col = col < params.half_dimension ? col + params.half_dimension : col - params.half_dimension;\n"
+  ^ "    half rotated = half(float(input[input_base + rotated_col]) * inverse * float(weight[rotated_col]));\n"
+  ^ "    if (col < params.half_dimension) rotated = -rotated;\n"
+  ^ "    const half direct = half(normalized * cosine[trig_base + col]);\n"
+  ^ "    const half turned = half(rotated * sine[trig_base + col]);\n"
+  ^ "    output[output_base + col] = half(direct + turned);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let rms_rope_qk_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_qk_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Rms_rope_qk
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let short_conv_source =
   "\nstruct ShortConvParams {\n"
   ^ "  uint batches; uint channels; uint input_width; uint output_width;\n"
@@ -2248,6 +2310,7 @@ let attention_source =
   ^ "    device const half* query, device const half* key,\n"
   ^ "    constant AttentionParams& params, uint batch, uint head,\n"
   ^ "    uint query_position, uint key_position) {\n"
+  ^ "  const uint effective_kv_heads = (params.kv_heads > 0) ? params.kv_heads : params.heads;\n"
   ^ "  const uint kv_head = (params.kv_heads > 0 && params.kv_heads < params.heads)\n"
   ^ "      ? (head / (params.heads / params.kv_heads)) : head;\n"
   ^ "  float result = 0.0f;\n"
@@ -2255,7 +2318,7 @@ let attention_source =
   ^ "    const uint query_index = (((batch * params.heads + head)\n"
   ^ "        * params.query_length + query_position) * params.head_dimension)\n"
   ^ "        + dimension;\n"
-  ^ "    const uint key_index = (((batch * params.kv_heads + kv_head)\n"
+  ^ "    const uint key_index = (((batch * effective_kv_heads + kv_head)\n"
   ^ "        * params.key_length + key_position) * params.head_dimension)\n"
   ^ "        + dimension;\n"
   ^ "    result += float(query[query_index]) * float(key[key_index]);\n"
@@ -2291,6 +2354,7 @@ let attention_source =
   ^ "        denominator += exp(llmopt_attention_score(query, key, params,\n"
   ^ "            batch, head, query_position, key_position) - maximum);\n"
   ^ "  }\n"
+  ^ "  const uint effective_kv_heads = (params.kv_heads > 0) ? params.kv_heads : params.heads;\n"
   ^ "  const uint kv_head = (params.kv_heads > 0 && params.kv_heads < params.heads)\n"
   ^ "      ? (head / (params.heads / params.kv_heads)) : head;\n"
   ^ "  for (uint dimension = 0; dimension < params.head_dimension; ++dimension) {\n"
@@ -2300,7 +2364,7 @@ let attention_source =
   ^ "        if (llmopt_attention_allowed(mask, params, batch, head, query_position, key_position)) {\n"
   ^ "          const float probability = exp(llmopt_attention_score(query, key, params,\n"
   ^ "              batch, head, query_position, key_position) - maximum) / denominator;\n"
-  ^ "          const uint value_index = (((batch * params.kv_heads + kv_head)\n"
+  ^ "          const uint value_index = (((batch * effective_kv_heads + kv_head)\n"
   ^ "              * params.key_length + key_position) * params.head_dimension)\n"
   ^ "              + dimension;\n"
   ^ "          result += probability * float(value[value_index]);\n"
@@ -2944,6 +3008,11 @@ let has_rms_rope graph =
   |> List.exists (fun node ->
          match Ir.node_op node with Ir.Op.Rms_rope _ -> true | _ -> false)
 
+let has_rms_rope_qk graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with Ir.Op.Rms_rope_qk _ -> true | _ -> false)
+
 let has_short_conv graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -3231,6 +3300,7 @@ let lower graph =
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
+      has_rms_rope_qk graph, rms_rope_qk_source, rms_rope_qk_entries;
       has_short_conv graph, short_conv_source, short_conv_entries;
       has_short_conv_step graph, short_conv_step_source, short_conv_step_entries;
       ( has_short_conv_step_fused graph,

@@ -220,6 +220,7 @@ let serve service options =
       match Unix.accept socket with
       | client, _ ->
           Unix.clear_nonblock client;
+          (try Unix.setsockopt client Unix.TCP_NODELAY true with _ -> ());
           let output_descriptor = Unix.dup client in
           let in_ch = Unix.in_channel_of_descr client in
           let out_ch = Unix.out_channel_of_descr output_descriptor in

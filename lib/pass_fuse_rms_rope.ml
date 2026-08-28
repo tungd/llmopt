@@ -359,6 +359,69 @@ let match_rms_rope nodes producers final_node =
       | None -> attempt output right left)
   | None -> None
 
+let fuse_qk_nodes nodes =
+  let rec loop acc = function
+    | [] -> List.rev acc
+    | node_q :: rest ->
+        match Ir.node_op node_q, Ir.node_inputs node_q, Ir.node_output node_q with
+        | Ir.Op.Rms_rope q_config, [ q_in; q_w; q_cos; q_sin ], Some q_out ->
+            let k_match =
+              List.find_map
+                (fun node_k ->
+                  match Ir.node_op node_k, Ir.node_inputs node_k, Ir.node_output node_k with
+                  | Ir.Op.Rms_rope k_config, [ k_in; k_w; k_cos; k_sin ], Some k_out
+                    when value_is q_cos k_cos && value_is q_sin k_sin
+                         && Float.equal (Ir.Rms_rope.epsilon q_config) (Ir.Rms_rope.epsilon k_config)
+                         && Ir.Rms_rope.half_dimension q_config = Ir.Rms_rope.half_dimension k_config ->
+                      Some (node_k, k_config, k_in, k_w, k_out)
+                  | _ -> None)
+                rest
+            in
+            (match k_match with
+            | Some (node_k, _k_config, k_in, k_w, k_out) ->
+                let q_dims = Tensor_shape.dimensions (Ir.Value.logical_shape q_out) in
+                let k_dims = Tensor_shape.dimensions (Ir.Value.logical_shape k_out) in
+                let q_heads =
+                  match q_dims with
+                  | [ _; h; _; _ ] when h = 16 -> 16
+                  | [ _; _; h; _ ] when h = 16 -> 16
+                  | [ _; h; _; _ ] -> h
+                  | _ -> 16
+                in
+                let k_heads =
+                  match k_dims with
+                  | [ _; h; _; _ ] when h = 8 -> 8
+                  | [ _; _; h; _ ] when h = 8 -> 8
+                  | [ _; h; _; _ ] -> h
+                  | _ -> 8
+                in
+                let width = match q_dims with [ _; _; _; w ] -> w | _ -> 64 in
+                let half_dimension = Ir.Rms_rope.half_dimension q_config in
+                let epsilon = Ir.Rms_rope.epsilon q_config in
+                let fused_op =
+                  Ir.Op.Rms_rope_qk
+                    {
+                      q_heads;
+                      k_heads;
+                      width;
+                      half_dimension;
+                      epsilon;
+                      extra_outputs = [ k_out ];
+                    }
+                in
+                let fused_node =
+                  Ir.node_replace node_q ~op:fused_op
+                    ~inputs:[ q_in; q_w; k_in; k_w; q_cos; q_sin ]
+                in
+                let rest_without_k =
+                  List.filter (fun n -> Ir.node_id n <> Ir.node_id node_k) rest
+                in
+                loop (fused_node :: acc) rest_without_k
+            | None -> loop (node_q :: acc) rest)
+        | _ -> loop (node_q :: acc) rest
+  in
+  loop [] nodes
+
 let run graph =
   let nodes = Ir.Graph.nodes graph in
   let producers = producer_map nodes in
@@ -385,6 +448,7 @@ let run graph =
         | None -> Some node)
       nodes
   in
-  Ir.Graph.with_nodes graph rewritten
+  let final_nodes = fuse_qk_nodes rewritten in
+  Ir.Graph.with_nodes graph final_nodes
 
 let pass = Pass.create ~name ~description ~run

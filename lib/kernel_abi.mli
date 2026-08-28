@@ -9,6 +9,7 @@ module Operation : sig
     | W4a16_lm_head_argmax
     | Rms_norm
     | Rms_rope
+    | Rms_rope_qk
     | Short_conv
     | Short_conv_step
     | Short_conv_prefill

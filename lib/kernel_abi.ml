@@ -9,6 +9,7 @@ module Operation = struct
     | W4a16_lm_head_argmax
     | Rms_norm
     | Rms_rope
+    | Rms_rope_qk
     | Short_conv
     | Short_conv_step
     | Short_conv_prefill
@@ -36,6 +37,7 @@ module Operation = struct
     | W4a16_lm_head_argmax -> "w4a16-lm-head-argmax"
     | Rms_norm -> "rms-norm"
     | Rms_rope -> "rms-rope"
+    | Rms_rope_qk -> "rms-rope-qk"
     | Short_conv -> "short-conv"
     | Short_conv_step -> "short-conv-step"
     | Short_conv_prefill -> "short-conv-prefill"
@@ -63,6 +65,7 @@ module Operation = struct
     | "w4a16-lm-head-argmax" -> Ok W4a16_lm_head_argmax
     | "rms-norm" -> Ok Rms_norm
     | "rms-rope" -> Ok Rms_rope
+    | "rms-rope-qk" -> Ok Rms_rope_qk
     | "short-conv" -> Ok Short_conv
     | "short-conv-step" -> Ok Short_conv_step
     | "short-conv-prefill" -> Ok Short_conv_prefill

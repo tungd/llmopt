@@ -502,6 +502,16 @@ module Parameters = struct
     Bytes.set_int32_le bytes 24 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let rms_rope_qk ~batches ~tokens ~q_heads ~k_heads ~width ~half_dimension
+      ~trig_batches ~epsilon =
+    let bytes = Bytes.make 32 '\000' in
+    let* () =
+      u32s [ batches; tokens; q_heads; k_heads; width; half_dimension; trig_batches ]
+      |> Result.map (fun encoded -> Bytes.blit encoded 0 bytes 0 28)
+    in
+    Bytes.set_int32_le bytes 28 (Int32.bits_of_float epsilon);
+    Ok bytes
+
   let arange ~count ~start ~step =
     let bytes = Bytes.make 24 '\000' in
     let* () = set_u32 bytes 0 count in
@@ -1458,7 +1468,7 @@ let select_rms_norm_kernel runtime input_dtype output_dtype =
 
 let select_attention_kernel runtime input_dtype output_dtype head_dimension =
   let candidates =
-    if head_dimension <= 64 then
+    if head_dimension = 64 then
       [ "llmopt_attention_f16_simd_h64", true;
         "llmopt_attention_f16", false ]
     else [ "llmopt_attention_f16", false ]
@@ -2390,6 +2400,63 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   ~grid:(grid_x, 1, 1)
               in
               dispatched (Ok (bind_value state output output_buffer, kernel))
+        | ( Ir.Op.Rms_rope_qk
+              {
+                q_heads;
+                k_heads;
+                width;
+                half_dimension;
+                epsilon;
+                extra_outputs = [ k_output ];
+              },
+            [ q_input; q_weight; k_input; k_weight; cosine; sine ],
+            Some q_output ) ->
+            let* batches, tokens, _, _ =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape q_input) with
+              | [ batches; tokens; heads; w ]
+                when batches > 0 && tokens > 0 && heads = q_heads && w = width ->
+                  Ok (batches, tokens, heads, w)
+              | _ -> Error "Metal RMSNorm-RoPE-QK Q input must have rank four"
+            in
+            let* trig_batches =
+              match
+                Tensor_shape.dimensions (Ir.Value.logical_shape cosine),
+                Tensor_shape.dimensions (Ir.Value.logical_shape sine)
+              with
+              | ( [ cosine_batches; 1; cosine_tokens; cosine_width ],
+                  [ sine_batches; 1; sine_tokens; sine_width ] )
+                when (cosine_batches = 1 || cosine_batches = batches)
+                     && sine_batches = cosine_batches
+                     && cosine_tokens = tokens && sine_tokens = tokens
+                     && cosine_width = width && sine_width = width ->
+                  Ok cosine_batches
+              | _ ->
+                  Error "Metal RMSNorm-RoPE-QK trigonometric tables are inconsistent"
+            in
+            let* buffers =
+              find_values state [ q_input; q_weight; k_input; k_weight; cosine; sine ]
+            in
+            let* parameters =
+              Parameters.rms_rope_qk ~batches ~tokens ~q_heads ~k_heads ~width
+                ~half_dimension ~trig_batches ~epsilon
+            in
+            let* entry =
+              kernel_entry ~name:"llmopt_rms_rope_qk_f16_simd_h64" runtime
+                ~operation:Kernel_abi.Operation.Rms_rope_qk
+                ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+            in
+            let* grid_x = simd_rows_grid (batches * (q_heads + k_heads) * tokens) in
+            let* q_out_buf = workspace_buffer state q_output in
+            let* k_out_buf = workspace_buffer state k_output in
+            let* kernel =
+              dispatch ~batch runtime entry
+                ~buffers:(buffers @ [ q_out_buf; k_out_buf ])
+                ~parameters
+                ~grid:(grid_x, 1, 1)
+            in
+            let state = bind_value state q_output q_out_buf in
+            let state = bind_value state k_output k_out_buf in
+            dispatched (Ok (state, kernel))
         | ( (Ir.Op.Short_conv_step config | Ir.Op.Short_conv_step_fused config),
             [ in_proj; conv_state; conv_weight ],
             Some output ) ->
