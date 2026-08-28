@@ -1079,6 +1079,60 @@ let () =
     = "conv_states_1")
     "second recurrent layer output state is indexed conv_states_1";
 
+  (* Serving cache from state plan tests *)
+  let lfm_layout =
+    Model_program.State.Cache_layout.create ~attention_layers:6 ~kv_heads:8
+      ~head_dim:64 ~recurrent_layers:10 ~recurrent_dim:1024
+    |> Result.get_ok
+  in
+  let lfm_state =
+    Model_program.State.create ~layout:lfm_layout ~attentions:lfm_att
+      ~recurrents:lfm_rec
+    |> Result.get_ok
+  in
+  let cache_cfg =
+    Serving_cache.Config.of_state_plan ~state:lfm_state ~token_capacity:1024
+      ~checkpoint_capacity:16 ~page_size:16 ()
+    |> Result.get_ok
+  in
+  let kv_cfg = Serving_cache.Config.kv cache_cfg in
+  let kv_layout = Kv_cache.Config.layout kv_cfg in
+  expect (Kv_cache.Layout.attention_layers kv_layout = 6) "cache layout has 6 attention layers";
+  expect (Kv_cache.Layout.recurrent_layers kv_layout = 10) "cache layout has 10 recurrent layers";
+  expect (Kv_cache.Layout.bytes_per_checkpoint kv_layout > 0) "cache layout checkpoint bytes positive for hybrid";
+
+  (* Transformer-only state plan (zero recurrent layers) *)
+  let tf_att0 =
+    Model_program.State.Attention_binding.create ~cache_layer:0
+      ~key_input:"k0" ~value_input:"v0" ~key_output:"kout0" ~value_output:"vout0"
+    |> Result.get_ok
+  in
+  let tf_att1 =
+    Model_program.State.Attention_binding.create ~cache_layer:1
+      ~key_input:"k1" ~value_input:"v1" ~key_output:"kout1" ~value_output:"vout1"
+    |> Result.get_ok
+  in
+  let tf_layout =
+    Model_program.State.Cache_layout.create ~attention_layers:2 ~kv_heads:8
+      ~head_dim:64 ~recurrent_layers:0 ~recurrent_dim:0
+    |> Result.get_ok
+  in
+  let tf_state =
+    Model_program.State.create ~layout:tf_layout
+      ~attentions:[ tf_att0; tf_att1 ] ~recurrents:[]
+    |> Result.get_ok
+  in
+  let tf_cache_cfg =
+    Serving_cache.Config.of_state_plan ~state:tf_state ~token_capacity:1024
+      ~checkpoint_capacity:16 ~page_size:16 ()
+    |> Result.get_ok
+  in
+  let tf_kv_layout = Kv_cache.Config.layout (Serving_cache.Config.kv tf_cache_cfg) in
+  expect (Kv_cache.Layout.attention_layers tf_kv_layout = 2) "transformer cache layout has 2 attention layers";
+  expect (Kv_cache.Layout.recurrent_layers tf_kv_layout = 0) "transformer cache layout has 0 recurrent layers";
+  expect (Kv_cache.Layout.bytes_per_checkpoint tf_kv_layout = 0) "transformer cache layout has 0 checkpoint bytes";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
+
 
 

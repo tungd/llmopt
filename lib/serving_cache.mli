@@ -9,9 +9,18 @@ module Config : sig
     unit ->
     (t, string) result
 
+  val of_state_plan :
+    state:Model_program.State.t ->
+    token_capacity:int ->
+    checkpoint_capacity:int ->
+    page_size:int ->
+    unit ->
+    (t, string) result
+
   val kv : t -> Kv_cache.Config.t
   val page_size : t -> int
   val model : t -> Lfm25.Config.t
+  val state_plan : t -> Model_program.State.t option
 end
 
 module Match : sig

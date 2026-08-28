@@ -1,8 +1,58 @@
-module Config = struct
-  type t = { model : Lfm25.Config.t; kv : Kv_cache.Config.t; page_size : int }
+let ( let* ) = Result.bind
 
-  let create ~model ~token_capacity
-      ~checkpoint_capacity ~page_size () =
+module Config = struct
+
+  type t = {
+    model : Lfm25.Config.t option;
+    state_plan : Model_program.State.t option;
+    kv : Kv_cache.Config.t;
+    page_size : int;
+  }
+
+  let of_state_plan ~state ~token_capacity ~checkpoint_capacity ~page_size () =
+    if page_size <= 0 then Error "serving radix page_size must be positive"
+    else
+      let layout = Model_program.State.layout state in
+      let attention_layers =
+        Model_program.State.Cache_layout.attention_layers layout
+      in
+      let kv_heads = Model_program.State.Cache_layout.kv_heads layout in
+      let head_dim = Model_program.State.Cache_layout.head_dim layout in
+      let recurrent_layers =
+        Model_program.State.Cache_layout.recurrent_layers layout
+      in
+      let recurrent_dim =
+        Model_program.State.Cache_layout.recurrent_dim layout
+      in
+      if attention_layers > 0 && head_dim <> Kv_cache.Layout.q8_head_dim then
+        Error "serving Q8 KV requires attention head_dim=64"
+      else
+        let recurrent_width =
+          if recurrent_layers = 0 then 0 else recurrent_dim
+        in
+        let recurrent_window = if recurrent_layers = 0 then 0 else 3 in
+        match
+          Kv_cache.Layout.create ~format:Kv_cache.Format.default
+            ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
+            ~recurrent_width ~recurrent_window
+        with
+        | Error message -> Error message
+        | Ok kv_layout ->
+            (match
+               Kv_cache.Config.create ~layout:kv_layout ~token_capacity
+                 ~checkpoint_capacity
+             with
+            | Error message -> Error message
+            | Ok kv ->
+                Ok
+                  {
+                    model = None;
+                    state_plan = Some state;
+                    kv;
+                    page_size;
+                  })
+
+  let create ~model ~token_capacity ~checkpoint_capacity ~page_size () =
     if model.Lfm25.Config.hidden_size <= 0 then
       Error "serving model hidden_size must be positive"
     else if model.num_attention_heads <= 0 then
@@ -11,26 +61,28 @@ module Config = struct
       Error "serving model num_key_value_heads must be positive"
     else if model.hidden_size mod model.num_attention_heads <> 0 then
       Error "serving model hidden_size must divide evenly into attention heads"
-    else match Lfm25.Config.validate model with
-    | Error message -> Error ("invalid serving model config: " ^ message)
-    | Ok () when page_size <= 0 -> Error "serving radix page_size must be positive"
-    | Ok () ->
-        let attention_layers =
-          Lfm25.Config.count_layers Lfm25.Config.Full_attention model
-        in
-        let recurrent_layers =
-          Lfm25.Config.count_layers Lfm25.Config.Conv model
-        in
-        let head_dim = model.hidden_size / model.num_attention_heads in
-        (if head_dim <> Kv_cache.Layout.q8_head_dim then
-           Error "serving Q8 KV requires attention head_dim=64"
-         else
-            (match
-               Kv_cache.Layout.create ~format:Kv_cache.Format.default ~attention_layers
-                 ~kv_heads:model.num_key_value_heads ~head_dim ~recurrent_layers
-                 ~recurrent_width:model.hidden_size
-                 ~recurrent_window:model.conv_l_cache
-             with
+    else
+      match Lfm25.Config.validate model with
+      | Error message -> Error ("invalid serving model config: " ^ message)
+      | Ok () when page_size <= 0 ->
+          Error "serving radix page_size must be positive"
+      | Ok () ->
+          let attention_layers =
+            Lfm25.Config.count_layers Lfm25.Config.Full_attention model
+          in
+          let recurrent_layers =
+            Lfm25.Config.count_layers Lfm25.Config.Conv model
+          in
+          let head_dim = model.hidden_size / model.num_attention_heads in
+          if head_dim <> Kv_cache.Layout.q8_head_dim then
+            Error "serving Q8 KV requires attention head_dim=64"
+          else
+            match
+              Kv_cache.Layout.create ~format:Kv_cache.Format.default
+                ~attention_layers ~kv_heads:model.num_key_value_heads ~head_dim
+                ~recurrent_layers ~recurrent_width:model.hidden_size
+                ~recurrent_window:model.conv_l_cache
+            with
             | Error message -> Error message
             | Ok layout ->
                 (match
@@ -38,11 +90,22 @@ module Config = struct
                      ~checkpoint_capacity
                  with
                 | Error message -> Error message
-                | Ok kv -> Ok { model; kv; page_size })))
+                | Ok kv ->
+                    Ok
+                      {
+                        model = Some model;
+                        state_plan = None;
+                        kv;
+                        page_size;
+                      })
 
   let kv config = config.kv
   let page_size config = config.page_size
-  let model config = config.model
+  let model config =
+    match config.model with
+    | Some m -> m
+    | None -> Lfm25.Config.default
+  let state_plan config = config.state_plan
 end
 
 module Match = struct
