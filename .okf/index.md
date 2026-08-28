@@ -23,6 +23,13 @@ available compiler, package, runtime, CLI, or benchmark configuration.
 * [LFM2.5-350M ESR bandwidth target](decisions/target-lfm25-350m-bandwidth.md) - memory bandwidth physics and ERS feasibility on Apple Silicon.
 * [llama.cpp performance target](decisions/llama-cpp-target.md) - llama.cpp Q4_0 as the W4 parity comparison, with MPS retained as reference.
 * [Model Program boundary](decisions/model-program-boundary.md) - root execution contract joining PyTorch capture, compiled entrypoints, state, and serving assets.
+* [SRPT and Queueing-Theoretic Serving Scheduler](decisions/srpt-queueing-serving-scheduler.md) - continuous batching, age-weighted SRPT queue optimization, admission watermarks, and decode-first scheduling.
+* [XGBoost / GBDT Kernel Cost Model](decisions/xgboost-kernel-cost-model.md) - learned GBDT cost model trained on profiling sweeps and transpiled to pure OCaml AST.
+* [Hardware-Aware AOT Compilation & Microarchitectural Discovery](decisions/hardware-aware-aot-compilation-and-discovery.md) - discovery of SIMD width, SRAM banks, bank conflicts, and analytical prefill roofline modeling.
+* [DAG Concurrency Analysis & Co-Scheduling](decisions/dag-co-scheduling-optimizer-pass.md) - SSA dependency DAG analysis, ready antichain concurrency, and barrier placement.
+* [Fewest-Hops Whole-Block Megakernel Compiler](decisions/fewest-hops-megakernel-compiler.md) - fusing multi-layer blocks into ~40 hops with zero DRAM activation roundtrips.
+* [Macro-Operator Fusions](decisions/macro-operator-fusions.md) - high-impact fusions for SwiGLU, RMSNorm-RoPE, QKV, ShortConv, and on-GPU Argmax.
+* [AOT Decode Solidification & Zero-JIT Serving](decisions/aot-decode-solidification-zero-jit-serving.md) - zero-overhead serving with prebaked Indirect Command Buffers (ICB).
 
 ## Experiments and benchmarks
 
