@@ -73,30 +73,32 @@ The goal of `llmopt` is to **eliminate the trade-off between model adoption agil
 
 ## Benchmark Results vs `llama.cpp` (Apple M4 Pro)
 
+> [!NOTE]
+> **Measurement Methodology**: On macOS / Apple Silicon, absolute latency figures can swing by $\pm 20\%$ across separate invocations due to OS background tasks and thermal frequency scaling. Reliable comparison requires **multi-run paired measurements** executed on warm servers against the exact same trace, reporting the within-run **paired ratio ($\text{llmopt} / \text{llama.cpp}$)**.
+
 ### 1. `LiquidAI/LFM2.5-350M` (Hybrid Conv/Attention Architecture)
 
-Side-by-side OpenAI-compatible SSE streaming HTTP benchmark against `llama.cpp` (`llama-server` with Metal acceleration, Q4_0):
+Multi-run paired OpenAI-compatible SSE streaming HTTP benchmark against `llama.cpp` (`llama-server` with Metal acceleration, Q4_0):
 
-| Metric | `llama.cpp` | `llmopt` (Baseline) | `llmopt` (Current) | Delta vs `llama.cpp` |
+| Metric | `llama.cpp` (Q4_0) | `llmopt` (W4A16) | Paired Ratio ($\frac{\text{llmopt}}{\text{llama.cpp}}$) | Status vs $\pm 5\%$ Gate |
 | :--- | :--- | :--- | :--- | :--- |
-| **Time to First Token (TTFT)** | 18.28 ms | 1005.44 ms | **17.26 ms** | **-1.02 ms** (*llmopt is faster*) |
-| **Time per Output Token (TPOT)** | 2.37 ms | 4.19 ms | **2.93 ms** | **+0.56 ms** (*within ~0.5ms*) |
-| **ERS Benchmark Score** | 0.842 | 0.500 | **0.796** | Matches target range |
-| **Request Success Rate** | 100% | 100% | **100%** | Parity |
-| **Multi-Turn Suffix Prefill TTFT** | 19.10 ms | 76.20 ms | **18.20 ms** | **-0.90 ms** (*faster*) |
+| **Decode Latency (TPOT)** | 2.28 – 3.25 ms | 2.71 – 3.67 ms | **$1.13\times - 1.26\times$** (median **$1.20\times$**) | ~20% gap |
+| **Time to First Token (TTFT)** | 15.7 – 19.6 ms | 19.1 – 22.7 ms | **$1.16\times - 1.31\times$** (median **$1.25\times$**) | ~25% gap |
+| **ERS Benchmark Score** | 0.813 – 0.823 | 0.719 – 0.792 | **$\Delta = -0.06$ to $-0.09$** | 7–10% delta |
+| **Request Success Rate** | 100% (4/4) | 100% (4/4) | **$1.00\times$** | Parity |
 
 ### 2. `HuggingFaceTB/SmolLM2-135M` (Pure Transformer / Llama Architecture)
 
 Cross-model generalization validation on standard 30-layer Llama architecture (9 Q heads, 3 KV heads, GQA, SwiGLU, RMSNorm, RoPE):
 
-| Metric | `llama.cpp` (`llama-bench` Q4_K_M) | `llmopt` (Compiled Metal GPU) |
-| :--- | :--- | :--- |
-| **Decode Step Latency (TPOT)** | **$2.60\text{ ms} \pm 0.08\text{ ms}$** | **$2.45\text{ ms} \pm 0.12\text{ ms}$** |
-| **Decode Throughput** | **$384.26 \pm 10.93\text{ tok/s}$** | **$408.16 \pm 18.50\text{ tok/s}$** |
-| **Prefill Latency (pp6)** | **$5.95\text{ ms} \pm 0.85\text{ ms}$** | **$5.80\text{ ms} \pm 0.60\text{ ms}$** |
-| **Prefill Throughput (pp6)** | **$1,007.39 \pm 143.90\text{ tok/s}$** | **$1,034.48 \pm 102.20\text{ tok/s}$** |
-| **Opaque Dispatches** | N/A (Hand-written C/Metal) | **0 opaque dispatches** (100% compiled) |
-| **Numerical Parity with PyTorch** | Quantization delta | **Exact argmax token match (token 260)** |
+| Metric | `llama.cpp` (`llama-bench` Q4_K_M) | `llmopt` (Compiled Metal GPU) | Paired Comparison |
+| :--- | :--- | :--- | :--- |
+| **Decode Step Latency (TPOT)** | **$2.60\text{ ms} \pm 0.08\text{ ms}$** | **$2.45\text{ ms} \pm 0.12\text{ ms}$** | **$0.94\times$** (Parity) |
+| **Decode Throughput** | **$384.26 \pm 10.93\text{ tok/s}$** | **$408.16 \pm 18.50\text{ tok/s}$** | **$1.06\times$** |
+| **Prefill Latency (pp6)** | **$5.95\text{ ms} \pm 0.85\text{ ms}$** | **$5.80\text{ ms} \pm 0.60\text{ ms}$** | **$0.97\times$** (Parity) |
+| **Prefill Throughput (pp6)** | **$1,007.39 \pm 143.90\text{ tok/s}$** | **$1,034.48 \pm 102.20\text{ tok/s}$** | **$1.03\times$** |
+| **Opaque Dispatches** | N/A (Hand-written C/Metal) | **0 opaque dispatches** (100% compiled) | 100% AOT compiled |
+| **Numerical Parity with PyTorch** | Quantization delta | **Exact argmax token match (token 260)** | Exact match |
 
 ---
 

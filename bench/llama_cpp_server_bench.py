@@ -15,6 +15,7 @@ import urllib.request
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+import statistics
 from typing import Any
 
 from racebench.benchmark import summarize
@@ -28,6 +29,45 @@ DEFAULT_WARMUP_TRACE = "bench/traces/lfm25-mps-warmup.json"
 DEFAULT_ARTIFACT_DIR = "_artifacts/llama-cpp-trace"
 DEFAULT_OUTPUT = "_artifacts/llama-cpp-trace/result.json"
 DEFAULT_COMPARE_LABEL = "llmopt-serving"
+
+
+def _get_git_commit() -> str | None:
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                cwd=Path(__file__).parents[1],
+            ).strip()
+        )
+    except Exception:
+        return None
+
+
+def _get_llama_server_version(binary: str) -> str | None:
+    try:
+        res = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        out = (res.stdout + "\n" + res.stderr).strip()
+        return out.splitlines()[0] if out else None
+    except Exception:
+        return None
+
+
+def _ratio_distribution(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"mean": None, "median": None, "min": None, "max": None}
+    return {
+        "mean": round(statistics.mean(values), 4),
+        "median": round(statistics.median(values), 4),
+        "min": round(min(values), 4),
+        "max": round(max(values), 4),
+    }
 
 
 def _find_binary(explicit: str | None) -> str:
@@ -161,6 +201,12 @@ def parse_args() -> argparse.Namespace:
         "--compare-model-id",
         help="model field sent to the side endpoint; defaults to the trace model",
     )
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="number of times to repeat the paired trace measurement",
+    )
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -281,7 +327,7 @@ def main() -> int:
         args.hf_repo = None
     if args.port < 1 or args.port > 65535:
         raise ValueError("--port must be between 1 and 65535")
-    for name in ("parallel", "max_workers", "context_size", "batch_size", "ubatch_size"):
+    for name in ("parallel", "max_workers", "context_size", "batch_size", "ubatch_size", "repeats"):
         if getattr(args, name) < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     binary = _find_binary(args.binary)
@@ -295,6 +341,7 @@ def main() -> int:
                     "base_url": base_url,
                     "compare_base_url": args.compare_base_url,
                     "compare_label": args.compare_label,
+                    "repeats": args.repeats,
                 },
                 indent=2,
             )
@@ -302,6 +349,9 @@ def main() -> int:
         return 0
     if _port_is_open(args.host, args.port):
         raise RuntimeError(f"refusing to use occupied port {args.host}:{args.port}")
+
+    git_commit = _get_git_commit()
+    llama_server_version = _get_llama_server_version(binary)
 
     scored = WorkloadTrace.from_path(args.trace)
     validate_warmup_policy(args.trace, args.warmup_trace, require_shape_matched=True)
@@ -313,6 +363,31 @@ def main() -> int:
     stdout_path = artifact_dir / "server.stdout"
     stderr_path = artifact_dir / "server.stderr"
     primary_prefix = "llama-cpp"
+
+    compare_label = _safe_prefix(args.compare_label) if args.compare_base_url else None
+    compare_warmup = None
+    compare_scored = None
+    if args.compare_base_url:
+        compare_warmup = WorkloadTrace.from_path(args.warmup_trace)
+        compare_scored = WorkloadTrace.from_path(args.trace)
+        if args.compare_model_id:
+            compare_warmup = replace(compare_warmup, model=args.compare_model_id)
+            compare_scored = replace(compare_scored, model=args.compare_model_id)
+
+    paired_runs: list[dict[str, Any]] = []
+    tpot_ratios: list[float] = []
+    ttft_ratios: list[float] = []
+    ers_deltas: list[float] = []
+
+    primary_warmup_run = None
+    primary_warmup_wall = 0.0
+    side_warmup_run = None
+    side_warmup_wall = 0.0
+    last_primary_scored = None
+    last_side_scored = None
+    last_primary_wall = 0.0
+    last_side_wall = 0.0
+
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
         "w", encoding="utf-8"
     ) as stderr:
@@ -324,17 +399,118 @@ def main() -> int:
         )
         try:
             _wait_until_ready(process, args.host, args.port, args.startup_timeout)
-            primary = _run_endpoint_pair(
+
+            # 1. Warmup primary (and side if present)
+            primary_warmup_run, primary_warmup_wall = _run_phase(
                 warmup,
-                scored,
                 base_url=base_url,
                 max_workers=args.max_workers,
                 timeout=args.timeout,
-                artifact_dir=artifact_dir,
-                prefix=primary_prefix,
             )
+            if args.compare_base_url and compare_warmup:
+                side_warmup_run, side_warmup_wall = _run_phase(
+                    compare_warmup,
+                    base_url=args.compare_base_url.rstrip("/"),
+                    max_workers=args.max_workers,
+                    timeout=args.timeout,
+                )
+
+            # 2. Multi-run paired scored executions
+            for repeat_idx in range(1, args.repeats + 1):
+                p_scored_run, p_wall = _run_phase(
+                    scored,
+                    base_url=base_url,
+                    max_workers=args.max_workers,
+                    timeout=args.timeout,
+                )
+                last_primary_scored = p_scored_run
+                last_primary_wall = p_wall
+                p_summary = p_scored_run["summary"]
+
+                s_summary = None
+                s_wall = 0.0
+                if args.compare_base_url and compare_scored:
+                    s_scored_run, s_wall = _run_phase(
+                        compare_scored,
+                        base_url=args.compare_base_url.rstrip("/"),
+                        max_workers=args.max_workers,
+                        timeout=args.timeout,
+                    )
+                    last_side_scored = s_scored_run
+                    last_side_wall = s_wall
+                    s_summary = s_scored_run["summary"]
+
+                    p_tpot = p_summary["tpot_ms"]["median"]
+                    s_tpot = s_summary["tpot_ms"]["median"]
+                    p_ttft = p_summary["ttft_ms"]["median"]
+                    s_ttft = s_summary["ttft_ms"]["median"]
+                    p_ers = p_summary.get("ers")
+                    s_ers = s_summary.get("ers")
+
+                    tpot_ratio = round(s_tpot / p_tpot, 4) if (p_tpot and s_tpot) else None
+                    ttft_ratio = round(s_ttft / p_ttft, 4) if (p_ttft and s_ttft) else None
+                    ers_delta = round(p_ers - s_ers, 4) if (p_ers is not None and s_ers is not None) else None
+
+                    if tpot_ratio is not None:
+                        tpot_ratios.append(tpot_ratio)
+                    if ttft_ratio is not None:
+                        ttft_ratios.append(ttft_ratio)
+                    if ers_delta is not None:
+                        ers_deltas.append(ers_delta)
+
+                    paired_runs.append({
+                        "run": repeat_idx,
+                        "primary": {
+                            "tpot_ms_median": p_tpot,
+                            "ttft_ms_median": p_ttft,
+                            "ers": p_ers,
+                            "wall_time_s": p_wall,
+                        },
+                        "side": {
+                            "tpot_ms_median": s_tpot,
+                            "ttft_ms_median": s_ttft,
+                            "ers": s_ers,
+                            "wall_time_s": s_wall,
+                        },
+                        "paired_ratio": {
+                            "tpot_ratio_side_over_primary": tpot_ratio,
+                            "ttft_ratio_side_over_primary": ttft_ratio,
+                            "ers_delta_llama_cpp_minus_side": ers_delta,
+                        },
+                    })
         finally:
             _stop(process)
+
+    # Save reports
+    warmup_report_path = artifact_dir / f"{primary_prefix}-warmup.json"
+    scored_report_path = artifact_dir / f"{primary_prefix}-report.json"
+    warmup_report = write_report(
+        warmup_report_path,
+        trace=warmup,
+        base_url=base_url,
+        results=primary_warmup_run["results"] if primary_warmup_run else [],
+        wall_time_s=primary_warmup_wall,
+    )
+    scored_report = write_report(
+        scored_report_path,
+        trace=scored,
+        base_url=base_url,
+        results=last_primary_scored["results"] if last_primary_scored else [],
+        wall_time_s=last_primary_wall,
+    )
+    primary = {
+        "base_url": base_url,
+        "warmup": {
+            "report": str(warmup_report_path),
+            "wall_time_s": primary_warmup_wall,
+            "summary": warmup_report["summary"],
+        },
+        "scored": {
+            "report": str(scored_report_path),
+            "wall_time_s": last_primary_wall,
+            "summary": scored_report["summary"],
+        },
+    }
 
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -344,6 +520,11 @@ def main() -> int:
         "runtime": "llama-server",
         "model_spec": args.model or args.hf_repo,
         "model_id": args.model_id,
+        "metadata": {
+            "git_commit": git_commit,
+            "llama_server_version": llama_server_version,
+            "repeats": args.repeats,
+        },
         "server": {
             "binary": binary,
             "command": command,
@@ -364,28 +545,48 @@ def main() -> int:
         "scored": primary["scored"],
         "token_ids": "not exposed by llama-server SSE; visible-text timing is retained",
     }
-    if args.compare_base_url:
-        compare_label = _safe_prefix(args.compare_label)
-        compare_warmup = WorkloadTrace.from_path(args.warmup_trace)
-        compare_scored = WorkloadTrace.from_path(args.trace)
-        if args.compare_model_id:
-            compare_warmup = replace(compare_warmup, model=args.compare_model_id)
-            compare_scored = replace(compare_scored, model=args.compare_model_id)
-        side = _run_endpoint_pair(
-            compare_warmup,
-            compare_scored,
+    if args.compare_base_url and compare_label and side_warmup_run and last_side_scored:
+        side_warmup_report_path = artifact_dir / f"{compare_label}-warmup.json"
+        side_scored_report_path = artifact_dir / f"{compare_label}-report.json"
+        side_warmup_report = write_report(
+            side_warmup_report_path,
+            trace=compare_warmup,
             base_url=args.compare_base_url.rstrip("/"),
-            max_workers=args.max_workers,
-            timeout=args.timeout,
-            artifact_dir=artifact_dir,
-            prefix=compare_label,
+            results=side_warmup_run["results"],
+            wall_time_s=side_warmup_wall,
         )
+        side_scored_report = write_report(
+            side_scored_report_path,
+            trace=compare_scored,
+            base_url=args.compare_base_url.rstrip("/"),
+            results=last_side_scored["results"],
+            wall_time_s=last_side_wall,
+        )
+        side = {
+            "base_url": args.compare_base_url.rstrip("/"),
+            "warmup": {
+                "report": str(side_warmup_report_path),
+                "wall_time_s": side_warmup_wall,
+                "summary": side_warmup_report["summary"],
+            },
+            "scored": {
+                "report": str(side_scored_report_path),
+                "wall_time_s": last_side_wall,
+                "summary": side_scored_report["summary"],
+            },
+        }
         payload["side_comparison"] = {
             "label": args.compare_label,
-            "model_id": args.compare_model_id or compare_scored.model,
+            "model_id": args.compare_model_id or (compare_scored.model if compare_scored else ""),
             "warmup": side["warmup"],
             "scored": side["scored"],
             "delta": _comparison_delta(primary, side),
+            "paired_runs": paired_runs,
+            "paired_summary": {
+                "tpot_ratio_side_over_primary": _ratio_distribution(tpot_ratios),
+                "ttft_ratio_side_over_primary": _ratio_distribution(ttft_ratios),
+                "ers_delta_llama_cpp_minus_side": _ratio_distribution(ers_deltas),
+            },
         }
     _write_json(args.output, payload)
     if args.record_output:
