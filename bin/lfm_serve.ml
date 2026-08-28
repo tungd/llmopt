@@ -97,69 +97,15 @@ let load options tokenizer_path prefill_root decode_root =
     ( { tokenizer; generation; request_number = 0 },
       Metal_runtime.device_name prefill )
 
-let trim_cr line =
-  let length = String.length line in
-  if length > 0 && line.[length - 1] = '\r' then
-    String.sub line 0 (length - 1)
-  else line
-
-let lowercase = String.lowercase_ascii
-
-let read_headers input =
-  let rec read output =
-    match input_line input |> trim_cr with
-    | "" -> Ok (List.rev output)
-    | line ->
-        (match String.index_opt line ':' with
-        | None -> Error "malformed HTTP header"
-        | Some separator ->
-            let name = String.sub line 0 separator |> lowercase in
-            let value =
-              String.sub line (separator + 1)
-                (String.length line - separator - 1)
-              |> String.trim
-            in
-            read ((name, value) :: output))
-  in
-  try read [] with End_of_file -> Error "incomplete HTTP headers"
-
-let content_length headers =
-  match List.assoc_opt "content-length" headers with
-  | None -> Error "Content-Length is required"
-  | Some value ->
-    (match int_of_string_opt value with
-    | Some length when length >= 0 -> Ok length
-    | _ -> Error "Content-Length is invalid")
-
-let write_response output ~status ~content_type body =
-  Printf.fprintf output "HTTP/1.1 %s\r\n" status;
-  Printf.fprintf output "Content-Type: %s\r\n" content_type;
-  Printf.fprintf output "Content-Length: %d\r\n" (String.length body);
-  output_string output "Connection: close\r\n\r\n";
-  output_string output body;
-  flush output
-
-let write_error output ~status message =
-  write_response output ~status ~content_type:"application/json"
-    (Openai_protocol.error_body message)
-
-let write_stream_headers output =
-  output_string output "HTTP/1.1 200 OK\r\n";
-  output_string output "Content-Type: text/event-stream\r\n";
-  output_string output "Cache-Control: no-cache\r\n";
-  output_string output "Connection: close\r\n\r\n";
-  flush output
-
 type active_request = {
   id : Serving_queue.Request_id.t;
   id_str : string;
   model : string;
   created : int;
   prompt_tokens : int array;
-  cached_prompt_tokens : int;
+  mutable cached_prompt_tokens : int;
   decoder : Tokenizer.Decoder.t;
-  out : out_channel;
-  in_ch : in_channel;
+  stream : Webs_iomux.Stream.t;
   mutable driver_state : Generation.Driver.State.t option;
   mutable allocated_tokens : int;
 }
@@ -168,45 +114,44 @@ let emit_token active_req token =
   match Tokenizer.Decoder.push active_req.decoder token with
   | Error message -> Error message
   | Ok text ->
-      output_string active_req.out
-        (Openai_protocol.Sse.content ~id:active_req.id_str ~model:active_req.model
-           ~created:active_req.created ~token_id:token text);
-      flush active_req.out;
+      let chunk =
+        Openai_protocol.Sse.content ~id:active_req.id_str ~model:active_req.model
+          ~created:active_req.created ~token_id:token text
+      in
+      ignore (Webs_iomux.Stream.push active_req.stream chunk);
       Ok ()
 
 let emit_finish active_req ~finish_reason ~completion_count =
   let prompt_tokens = Array.length active_req.prompt_tokens in
   let reason = Generation_core.Finish_reason.to_string finish_reason in
-  output_string active_req.out
-    (Openai_protocol.Sse.finish ~id:active_req.id_str ~model:active_req.model
-       ~created:active_req.created ~reason);
-  output_string active_req.out
-    (Openai_protocol.Sse.usage ~id:active_req.id_str ~model:active_req.model
-       ~created:active_req.created ~prompt_tokens
-       ~cached_prompt_tokens:active_req.cached_prompt_tokens
-       ~completion_tokens:completion_count);
-  output_string active_req.out Openai_protocol.Sse.done_;
-  flush active_req.out;
-  close_out_noerr active_req.out;
-  close_in_noerr active_req.in_ch
+  let finish_chunk =
+    Openai_protocol.Sse.finish ~id:active_req.id_str ~model:active_req.model
+      ~created:active_req.created ~reason
+  in
+  let usage_chunk =
+    Openai_protocol.Sse.usage ~id:active_req.id_str ~model:active_req.model
+      ~created:active_req.created ~prompt_tokens
+      ~cached_prompt_tokens:active_req.cached_prompt_tokens
+      ~completion_tokens:completion_count
+  in
+  ignore (Webs_iomux.Stream.push active_req.stream finish_chunk);
+  ignore (Webs_iomux.Stream.push active_req.stream usage_chunk);
+  ignore (Webs_iomux.Stream.push active_req.stream Openai_protocol.Sse.done_);
+  Webs_iomux.Stream.close active_req.stream
 
 let close_active_request active_req =
-  close_out_noerr active_req.out;
-  close_in_noerr active_req.in_ch
+  Webs_iomux.Stream.close active_req.stream
+
+let json_response status body_str =
+  let headers =
+    Webs.Http.Headers.add_value
+      (Webs.Http.Headers.Name.v "content-type")
+      "application/json"
+      Webs.Http.Headers.empty
+  in
+  Webs.Http.Response.make ~headers status (Webs.Http.Body.of_string body_str)
 
 let serve service options =
-  let address =
-    try Ok (Unix.inet_addr_of_string options.host)
-    with Failure _ -> Error "host must be a numeric IPv4 or IPv6 address"
-  in
-  let* address = address in
-  let socket = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-  Unix.setsockopt socket Unix.SO_REUSEADDR true;
-  Unix.bind socket (Unix.ADDR_INET (address, options.port));
-  Unix.listen socket 128;
-  Unix.set_nonblock socket;
-  Printf.eprintf "ready: http://%s:%d\n%!" options.host options.port;
-
   let queue =
     Serving_queue.create ~token_capacity:options.token_capacity
       ~high_watermark_ratio:0.90 ~low_watermark_ratio:0.75 ()
@@ -214,274 +159,281 @@ let serve service options =
   let active_requests : (Serving_queue.Request_id.t, active_request) Hashtbl.t =
     Hashtbl.create 32
   in
+  let mutex = Mutex.create () in
+  let cond = Condition.create () in
 
-  let accept_new_connections () =
-    let rec accept_loop () =
-      match Unix.accept socket with
-      | client, _ ->
-          Unix.clear_nonblock client;
-          (try Unix.setsockopt client Unix.TCP_NODELAY true with _ -> ());
-          let output_descriptor = Unix.dup client in
-          let in_ch = Unix.in_channel_of_descr client in
-          let out_ch = Unix.out_channel_of_descr output_descriptor in
-          let request_line =
-            try Some (input_line in_ch |> trim_cr) with _ -> None
-          in
-          (match request_line with
-          | None ->
-              close_in_noerr in_ch;
-              close_out_noerr out_ch
-          | Some line ->
-              (match String.split_on_char ' ' line with
-              | [ "GET"; ("/health" | "/healthz"); _ ] ->
-                  ignore (read_headers in_ch);
-                  write_response out_ch ~status:"200 OK" ~content_type:"text/plain" "ok\n";
-                  close_in_noerr in_ch;
-                  close_out_noerr out_ch
-              | [ "POST"; "/v1/chat/completions"; _ ] ->
-                  (match read_headers in_ch with
-                  | Error msg ->
-                      write_error out_ch ~status:"400 Bad Request" msg;
-                      close_in_noerr in_ch;
-                      close_out_noerr out_ch
-                  | Ok headers ->
-                      (match content_length headers with
-                      | Error msg ->
-                          write_error out_ch ~status:"411 Length Required" msg;
-                          close_in_noerr in_ch;
-                          close_out_noerr out_ch
-                      | Ok len when len > options.max_body_bytes ->
-                          write_error out_ch ~status:"413 Content Too Large"
-                            "request body exceeds max-body-bytes";
-                          close_in_noerr in_ch;
-                          close_out_noerr out_ch
-                      | Ok len ->
-                          let body = really_input_string in_ch len in
-                          (match Openai_protocol.Request.of_string body with
-                          | Error msg ->
-                              write_error out_ch ~status:"400 Bad Request" msg;
-                              close_in_noerr in_ch;
-                              close_out_noerr out_ch
-                          | Ok req ->
-                              service.request_number <- service.request_number + 1;
-                              let id_str =
-                                Printf.sprintf "chatcmpl-llmopt-%d" service.request_number
-                              in
-                              let req_id = Serving_queue.Request_id.create () in
-                              let model = Openai_protocol.Request.model req in
-                              let created = int_of_float (Unix.time ()) in
-                              let decoder = Tokenizer.Decoder.create service.tokenizer in
-                              let max_new_tokens = Openai_protocol.Request.max_tokens req in
-                              let ignore_eos = Openai_protocol.Request.ignore_eos req in
-                              (match Lfm_chat.encode (Generation.chat service.generation)
-                                       (Openai_protocol.Request.messages req) with
-                              | Error err ->
-                                  write_error out_ch ~status:"400 Bad Request" err;
-                                  close_in_noerr in_ch;
-                                  close_out_noerr out_ch
-                              | Ok prompt_tokens ->
-                                  write_stream_headers out_ch;
-                                  let initial_state =
-                                    Serving_queue.Pending_prefill {
-                                      prompt_tokens;
-                                      cached_tokens = 0;
-                                      remaining_prefill = Array.length prompt_tokens;
-                                      max_new_tokens;
-                                      ignore_eos;
-                                    }
-                                  in
-                                  let now = Unix.gettimeofday () in
-                                  let initial_score =
-                                    Serving_queue.Score.compute ~prefill_rate:100.0
-                                      ~decode_rate:10.0 ~current_time:now
-                                      ~arrival_time:now initial_state
-                                  in
-                                  let queue_req : Serving_queue.request = {
-                                    id = req_id;
-                                    arrival_time = now;
-                                    state = initial_state;
-                                    priority_score = initial_score;
-                                  } in
-                                  let active_req : active_request = {
-                                    id = req_id;
-                                    id_str;
-                                    model;
-                                    created;
-                                    prompt_tokens;
-                                    cached_prompt_tokens = 0;
-                                    decoder;
-                                    out = out_ch;
-                                    in_ch;
-                                    driver_state = None;
-                                    allocated_tokens = 0;
-                                  } in
-                                  Hashtbl.add active_requests req_id active_req;
-                                  Serving_queue.enqueue queue queue_req))));
-              | _ ->
-                  ignore (read_headers in_ch);
-                  write_error out_ch ~status:"404 Not Found" "endpoint not found";
-                  close_in_noerr in_ch;
-                  close_out_noerr out_ch));
-          accept_loop ()
-      | exception Unix.Unix_error ((Unix.EWOULDBLOCK | Unix.EAGAIN), _, _) -> ()
-      | exception _ -> ()
-    in
-    accept_loop ()
+  let handler req =
+    let path = Webs.Http.Request.path req in
+    let meth = Webs.Http.Request.method' req in
+    match meth, path with
+    | `GET, ([ "health" ] | [ "healthz" ]) ->
+        Webs.Http.Response.make Webs.Http.Status.ok_200 (Webs.Http.Body.of_string "ok\n")
+    | `POST, [ "v1"; "chat"; "completions" ] ->
+        let body_res = Webs.Http.Body.to_string (Webs.Http.Request.body req) in
+        (match body_res with
+        | Error _ ->
+            json_response Webs.Http.Status.bad_request_400
+              (Openai_protocol.error_body "invalid body")
+        | Ok body ->
+            (match Openai_protocol.Request.of_string body with
+            | Error msg ->
+                json_response Webs.Http.Status.bad_request_400
+                  (Openai_protocol.error_body msg)
+            | Ok parsed_req ->
+                Mutex.lock mutex;
+                service.request_number <- service.request_number + 1;
+                let id_str =
+                  Printf.sprintf "chatcmpl-llmopt-%d" service.request_number
+                in
+                Mutex.unlock mutex;
+                let req_id = Serving_queue.Request_id.create () in
+                let model = Openai_protocol.Request.model parsed_req in
+                let created = int_of_float (Unix.time ()) in
+                let decoder = Tokenizer.Decoder.create service.tokenizer in
+                let max_new_tokens = Openai_protocol.Request.max_tokens parsed_req in
+                let ignore_eos = Openai_protocol.Request.ignore_eos parsed_req in
+                (match Lfm_chat.encode (Generation.chat service.generation)
+                         (Openai_protocol.Request.messages parsed_req) with
+                | Error err ->
+                    json_response Webs.Http.Status.bad_request_400
+                      (Openai_protocol.error_body err)
+                | Ok prompt_tokens ->
+                    let stream = Webs_iomux.Stream.create () in
+                    let initial_state =
+                      Serving_queue.Pending_prefill {
+                        prompt_tokens;
+                        cached_tokens = 0;
+                        remaining_prefill = Array.length prompt_tokens;
+                        max_new_tokens;
+                        ignore_eos;
+                      }
+                    in
+                    let now = Unix.gettimeofday () in
+                    let initial_score =
+                      Serving_queue.Score.compute ~prefill_rate:100.0
+                        ~decode_rate:10.0 ~current_time:now
+                        ~arrival_time:now initial_state
+                    in
+                    let queue_req : Serving_queue.request = {
+                      id = req_id;
+                      arrival_time = now;
+                      state = initial_state;
+                      priority_score = initial_score;
+                    } in
+                    let active_req : active_request = {
+                      id = req_id;
+                      id_str;
+                      model;
+                      created;
+                      prompt_tokens;
+                      cached_prompt_tokens = 0;
+                      decoder;
+                      stream;
+                      driver_state = None;
+                      allocated_tokens = 0;
+                    } in
+                    Mutex.lock mutex;
+                    Hashtbl.add active_requests req_id active_req;
+                    Serving_queue.enqueue queue queue_req;
+                    Condition.signal cond;
+                    Mutex.unlock mutex;
+                    Webs_iomux.Stream.response stream)))
+    | _ ->
+        json_response Webs.Http.Status.not_found_404
+          (Openai_protocol.error_body "endpoint not found")
   in
 
-  let rec step_server_loop () =
-    let is_idle = Serving_queue.is_empty queue in
-    let timeout = if is_idle then 0.005 else 0.0 in
-    (try
-       let r_fds, _, _ = Unix.select [ socket ] [] [] timeout in
-       if List.mem socket r_fds then accept_new_connections ()
-     with _ -> ());
+  let* server =
+    Webs_iomux.start ~host:options.host ~port:options.port
+      ~max_body_bytes:options.max_body_bytes handler
+  in
+  Printf.eprintf "ready: http://%s:%d\n%!" options.host (Webs_iomux.port server);
 
-    if not (Serving_queue.is_empty queue) then (
-      let now = Unix.gettimeofday () in
-      Serving_queue.update_scores queue ~current_time:now;
-      let (batch_decodes, prefill_candidate_opt) =
-        Serving_queue.pop_next_batch queue ~max_batch_size:8 ~prefill_chunk_budget:512
-      in
+  let rec step_engine_loop () =
+    Mutex.lock mutex;
+    while Serving_queue.is_empty queue do
+      Condition.wait cond mutex
+    done;
+    let now = Unix.gettimeofday () in
+    Serving_queue.update_scores queue ~current_time:now;
+    let (batch_decodes, prefill_candidate_opt) =
+      Serving_queue.pop_next_batch queue ~max_batch_size:8 ~prefill_chunk_budget:512
+    in
+    Mutex.unlock mutex;
 
-      (* Execute decode batch FIRST *)
-      List.iter
-        (fun (req : Serving_queue.request) ->
-          match Hashtbl.find_opt active_requests req.id with
+    (* Execute decode batch FIRST *)
+    List.iter
+      (fun (req : Serving_queue.request) ->
+        Mutex.lock mutex;
+        let active_opt = Hashtbl.find_opt active_requests req.id in
+        Mutex.unlock mutex;
+        match active_opt with
+        | None -> ()
+        | Some active_req ->
+            match active_req.driver_state with
+            | None -> ()
+            | Some driver_state ->
+                let step_res =
+                  Generation.Driver.State.step
+                    (Generation.engine service.generation)
+                    driver_state
+                in
+                (match step_res with
+                | Error err ->
+                    Printf.eprintf "stream step error: %s\n%!" err;
+                    close_active_request active_req;
+                    Mutex.lock mutex;
+                    Serving_queue.release_tokens queue active_req.allocated_tokens;
+                    Hashtbl.remove active_requests req.id;
+                    Mutex.unlock mutex
+                | Ok (Some token, finish_opt) ->
+                    Mutex.lock mutex;
+                    ignore (Serving_queue.reserve_tokens queue 1);
+                    active_req.allocated_tokens <- active_req.allocated_tokens + 1;
+                    Mutex.unlock mutex;
+                    (match emit_token active_req token with
+                    | Error err ->
+                        Printf.eprintf "stream emit error: %s\n%!" err;
+                        close_active_request active_req;
+                        Mutex.lock mutex;
+                        Serving_queue.release_tokens queue active_req.allocated_tokens;
+                        Hashtbl.remove active_requests req.id;
+                        Mutex.unlock mutex
+                    | Ok () ->
+                        (match finish_opt with
+                        | Some finish_reason ->
+                            let comp_tokens =
+                              Generation.Driver.State.completion_tokens driver_state
+                            in
+                            emit_finish active_req ~finish_reason
+                              ~completion_count:(List.length comp_tokens);
+                            Mutex.lock mutex;
+                            Serving_queue.release_tokens queue active_req.allocated_tokens;
+                            Hashtbl.remove active_requests req.id;
+                            Mutex.unlock mutex
+                        | None ->
+                            req.state <- Serving_queue.Active_decode {
+                              prompt_length = Array.length active_req.prompt_tokens;
+                              generated_tokens =
+                                Generation.Driver.State.completion_tokens driver_state;
+                              max_new_tokens =
+                                (match req.state with
+                                | Serving_queue.Active_decode d -> d.max_new_tokens
+                                | _ -> 16);
+                              ignore_eos =
+                                (match req.state with
+                                | Serving_queue.Active_decode d -> d.ignore_eos
+                                | _ -> false);
+                            };
+                            Mutex.lock mutex;
+                            Serving_queue.enqueue queue req;
+                            Mutex.unlock mutex))
+                | Ok (None, Some finish_reason) ->
+                    let comp_tokens =
+                      Generation.Driver.State.completion_tokens driver_state
+                    in
+                    emit_finish active_req ~finish_reason
+                      ~completion_count:(List.length comp_tokens);
+                    Mutex.lock mutex;
+                    Serving_queue.release_tokens queue active_req.allocated_tokens;
+                    Hashtbl.remove active_requests req.id;
+                    Mutex.unlock mutex
+                | Ok (None, None) -> ()))
+      batch_decodes;
+
+    (* Execute prefill candidate *)
+    (match prefill_candidate_opt with
+    | None -> ()
+    | Some (req, _slice_budget) ->
+        if batch_decodes <> [] then (
+          Mutex.lock mutex;
+          Serving_queue.enqueue queue req;
+          Mutex.unlock mutex
+        ) else (
+          Mutex.lock mutex;
+          let active_opt = Hashtbl.find_opt active_requests req.id in
+          Mutex.unlock mutex;
+          match active_opt with
           | None -> ()
           | Some active_req ->
-              match active_req.driver_state with
-              | None -> ()
-              | Some driver_state ->
-                  let step_res =
-                    Generation.Driver.State.step
-                      (Generation.engine service.generation)
-                      driver_state
+              match req.state with
+              | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; _ } ->
+                  let is_stop =
+                    if ignore_eos then Fun.const false
+                    else Lfm_chat.is_end_token (Generation.chat service.generation)
                   in
-                  (match step_res with
+                  let config_res = Generation_core.Config.create ~max_new_tokens in
+                  (match config_res with
                   | Error err ->
-                      Printf.eprintf "stream step error: %s\n%!" err;
-                      Serving_queue.release_tokens queue active_req.allocated_tokens;
+                      Printf.eprintf "stream error: %s\n%!" err;
                       close_active_request active_req;
-                      Hashtbl.remove active_requests req.id
-                  | Ok (Some token, finish_opt) ->
-                      ignore (Serving_queue.reserve_tokens queue 1);
-                      active_req.allocated_tokens <- active_req.allocated_tokens + 1;
-                      (match emit_token active_req token with
-                      | Error err ->
-                          Printf.eprintf "stream emit error: %s\n%!" err;
-                          Serving_queue.release_tokens queue active_req.allocated_tokens;
-                          close_active_request active_req;
-                          Hashtbl.remove active_requests req.id
-                      | Ok () ->
-                          (match finish_opt with
-                          | Some finish_reason ->
-                              let comp_tokens =
-                                Generation.Driver.State.completion_tokens driver_state
-                              in
-                              emit_finish active_req ~finish_reason
-                                ~completion_count:(List.length comp_tokens);
-                              Serving_queue.release_tokens queue active_req.allocated_tokens;
-                              Hashtbl.remove active_requests req.id
-                          | None ->
-                              req.state <- Serving_queue.Active_decode {
-                                prompt_length = Array.length active_req.prompt_tokens;
-                                generated_tokens =
-                                  Generation.Driver.State.completion_tokens driver_state;
-                                max_new_tokens =
-                                  (match req.state with
-                                  | Serving_queue.Active_decode d -> d.max_new_tokens
-                                  | _ -> 16);
-                                ignore_eos =
-                                  (match req.state with
-                                  | Serving_queue.Active_decode d -> d.ignore_eos
-                                  | _ -> false);
-                              };
-                              Serving_queue.enqueue queue req))
-                  | Ok (None, Some finish_reason) ->
-                      let comp_tokens =
-                        Generation.Driver.State.completion_tokens driver_state
-                      in
-                      emit_finish active_req ~finish_reason
-                        ~completion_count:(List.length comp_tokens);
+                      Mutex.lock mutex;
                       Serving_queue.release_tokens queue active_req.allocated_tokens;
-                      Hashtbl.remove active_requests req.id
-                  | Ok (None, None) -> ()))
-        batch_decodes;
-
-      (* Execute prefill candidate only when no active decodes are running *)
-      (match prefill_candidate_opt with
-      | None -> ()
-      | Some (req, _slice_budget) ->
-          if batch_decodes <> [] then
-            (* Defer prefill until active decodes finish to prevent TPOT starvation *)
-            Serving_queue.enqueue queue req
-          else
-            (match Hashtbl.find_opt active_requests req.id with
-            | None -> ()
-            | Some active_req ->
-                (match req.state with
-                | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; _ } ->
-                    let is_stop =
-                      if ignore_eos then Fun.const false
-                      else Lfm_chat.is_end_token (Generation.chat service.generation)
-                    in
-                    let config_res = Generation_core.Config.create ~max_new_tokens in
-                    (match config_res with
-                    | Error err ->
-                        Printf.eprintf "stream error: %s\n%!" err;
-                        close_active_request active_req;
-                        Hashtbl.remove active_requests req.id
-                    | Ok config ->
-                        let init_res =
-                          Generation.Driver.State.init
-                            (Generation.engine service.generation)
-                            ~config ~is_stop ~prompt:prompt_tokens
-                        in
-                        (match init_res with
-                        | Error err ->
-                            Printf.eprintf "stream error: %s\n%!" err;
-                            close_active_request active_req;
-                            Hashtbl.remove active_requests req.id
-                        | Ok (driver_state, first_token) ->
-                            active_req.driver_state <- Some driver_state;
-                            let cached_count = Generation.Driver.State.cached_prompt_tokens driver_state in
-                            let active_req = { active_req with cached_prompt_tokens = cached_count } in
-                            Hashtbl.replace active_requests req.id active_req;
-                            let alloc_count = Array.length prompt_tokens + 1 in
-                            ignore (Serving_queue.reserve_tokens queue alloc_count);
-                            active_req.allocated_tokens <- alloc_count;
-                            (match emit_token active_req first_token with
-                            | Error err ->
-                                Printf.eprintf "stream emit error: %s\n%!" err;
+                      Hashtbl.remove active_requests req.id;
+                      Mutex.unlock mutex
+                  | Ok config ->
+                      let init_res =
+                        Generation.Driver.State.init
+                          (Generation.engine service.generation)
+                          ~config ~is_stop ~prompt:prompt_tokens
+                      in
+                      (match init_res with
+                      | Error err ->
+                          Printf.eprintf "stream error: %s\n%!" err;
+                          close_active_request active_req;
+                          Mutex.lock mutex;
+                          Serving_queue.release_tokens queue active_req.allocated_tokens;
+                          Hashtbl.remove active_requests req.id;
+                          Mutex.unlock mutex
+                      | Ok (driver_state, first_token) ->
+                          active_req.driver_state <- Some driver_state;
+                          let cached_count =
+                            Generation.Driver.State.cached_prompt_tokens driver_state
+                          in
+                          active_req.cached_prompt_tokens <- cached_count;
+                          let alloc_count = Array.length prompt_tokens + 1 in
+                          Mutex.lock mutex;
+                          ignore (Serving_queue.reserve_tokens queue alloc_count);
+                          active_req.allocated_tokens <- alloc_count;
+                          Mutex.unlock mutex;
+                          (match emit_token active_req first_token with
+                          | Error err ->
+                              Printf.eprintf "stream emit error: %s\n%!" err;
+                              close_active_request active_req;
+                              Mutex.lock mutex;
+                              Serving_queue.release_tokens queue active_req.allocated_tokens;
+                              Hashtbl.remove active_requests req.id;
+                              Mutex.unlock mutex
+                          | Ok () ->
+                              if Generation.Driver.State.is_finished driver_state then (
+                                (match Generation.Driver.State.result driver_state with
+                                | Some r ->
+                                    let reason = Generation_core.Result.finish_reason r in
+                                    let comp_count =
+                                      Array.length (Generation_core.Result.completion_tokens r)
+                                    in
+                                    emit_finish active_req ~finish_reason:reason
+                                      ~completion_count:comp_count
+                                | None -> ());
+                                Mutex.lock mutex;
                                 Serving_queue.release_tokens queue active_req.allocated_tokens;
-                                close_active_request active_req;
-                                Hashtbl.remove active_requests req.id
-                            | Ok () ->
-                                if Generation.Driver.State.is_finished driver_state then (
-                                  (match Generation.Driver.State.result driver_state with
-                                  | Some r ->
-                                      let reason = Generation_core.Result.finish_reason r in
-                                      let comp_count = Array.length (Generation_core.Result.completion_tokens r) in
-                                      emit_finish active_req ~finish_reason:reason ~completion_count:comp_count
-                                  | None -> ());
-                                  Serving_queue.release_tokens queue active_req.allocated_tokens;
-                                  Hashtbl.remove active_requests req.id
-                                ) else (
-                                  req.state <- Serving_queue.Active_decode {
-                                    prompt_length = Array.length prompt_tokens;
-                                    generated_tokens = [ first_token ];
-                                    max_new_tokens;
-                                    ignore_eos;
-                                  };
-                                  Serving_queue.enqueue queue req
-                                ))))
-                | _ -> ())))
-    );
-
-    step_server_loop ()
+                                Hashtbl.remove active_requests req.id;
+                                Mutex.unlock mutex
+                              ) else (
+                                req.state <- Serving_queue.Active_decode {
+                                  prompt_length = Array.length prompt_tokens;
+                                  generated_tokens = [ first_token ];
+                                  max_new_tokens;
+                                  ignore_eos;
+                                };
+                                Mutex.lock mutex;
+                                Serving_queue.enqueue queue req;
+                                Mutex.unlock mutex
+                              ))))
+              | _ -> ()));
+    step_engine_loop ()
   in
-  Fun.protect ~finally:(fun () -> Unix.close socket) step_server_loop
+  step_engine_loop ()
 
 let run () =
   let* options, positional = arguments () in

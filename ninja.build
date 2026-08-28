@@ -1,5 +1,5 @@
 ocaml_flags = -O3 -g -bin-annot -I _build/ocaml
-ocaml_packages = -package yojson,unix,uutf,uucp
+ocaml_packages = -package yojson,unix,uutf,uucp,threads,webs,bytesrw,iomux
 
 rule ocaml_interface
   command = mkdir -p _build/ocaml && ocamlfind ocamlopt $ocaml_packages $ocaml_flags -c $in -o $out
@@ -323,8 +323,12 @@ build _build/bin/llmopt-lfm-serving-smoke: ocaml_metal_link _build/ocaml/shape.c
 build _build/ocaml/lfm_generate.cmx: ocaml_module bin/lfm_generate.ml | _build/ocaml/generation.cmx
 build _build/bin/llmopt-generate: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/lfm25.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/sampling.cmx _build/ocaml/generation_core.cmx _build/ocaml/binary.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/serving_replay.cmx _build/ocaml/serving_engine.cmx _build/ocaml/generation.cmx _build/ocaml/lfm_generate.cmx _build/native/ocaml_metal_stubs.o
 
-build _build/ocaml/lfm_serve.cmx: ocaml_module bin/lfm_serve.ml | _build/ocaml/generation.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/serving_queue.cmx
-build _build/bin/llmopt-serve: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/lfm25.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/sampling.cmx _build/ocaml/generation_core.cmx _build/ocaml/binary.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/serving_replay.cmx _build/ocaml/serving_engine.cmx _build/ocaml/serving_queue.cmx _build/ocaml/generation.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/lfm_serve.cmx _build/native/ocaml_metal_stubs.o
+build _build/ocaml/webs_connector_codec.cmx: ocaml_module lib/webs_iomux/webs_connector_codec.ml
+build _build/ocaml/webs_iomux.cmi: ocaml_interface lib/webs_iomux/webs_iomux.mli
+build _build/ocaml/webs_iomux.cmx: ocaml_module lib/webs_iomux/webs_iomux.ml | _build/ocaml/webs_iomux.cmi _build/ocaml/webs_connector_codec.cmx
+
+build _build/ocaml/lfm_serve.cmx: ocaml_module bin/lfm_serve.ml | _build/ocaml/generation.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/serving_queue.cmx _build/ocaml/webs_iomux.cmx
+build _build/bin/llmopt-serve: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/tile_effect.cmx _build/ocaml/tile.cmx _build/ocaml/lfm25.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/radix_cache.cmx _build/ocaml/serving_cache.cmx _build/ocaml/sampling.cmx _build/ocaml/generation_core.cmx _build/ocaml/binary.cmx _build/ocaml/tokenizer.cmx _build/ocaml/lfm_chat.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/serving_replay.cmx _build/ocaml/serving_engine.cmx _build/ocaml/serving_queue.cmx _build/ocaml/generation.cmx _build/ocaml/openai_protocol.cmx _build/ocaml/webs_connector_codec.cmx _build/ocaml/webs_iomux.cmx _build/ocaml/lfm_serve.cmx _build/native/ocaml_metal_stubs.o
 
 build _build/ocaml/fx.cmi: ocaml_interface lib/fx.mli | _build/ocaml/shape.cmi _build/ocaml/ir.cmi
 build _build/ocaml/fx.cmx: ocaml_module lib/fx.ml | _build/ocaml/fx.cmi _build/ocaml/binary.cmx _build/ocaml/shape.cmx _build/ocaml/ir.cmx
