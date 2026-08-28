@@ -2,7 +2,7 @@ module Config : sig
   type t
 
   val create :
-    model:Lfm25.Config.t ->
+    state:Model_program.State.t ->
     token_capacity:int ->
     checkpoint_capacity:int ->
     page_size:int ->
@@ -19,8 +19,7 @@ module Config : sig
 
   val kv : t -> Kv_cache.Config.t
   val page_size : t -> int
-  val model : t -> Lfm25.Config.t
-  val state_plan : t -> Model_program.State.t option
+  val state_plan : t -> Model_program.State.t
 end
 
 module Match : sig
@@ -60,6 +59,5 @@ val insert :
   unit ->
   (int, string) result
 
-val evict : t -> target_tokens:int -> (int, string) result
-val stats : t -> Stats.t
 val validate : t -> (unit, string) result
+val stats : t -> Stats.t

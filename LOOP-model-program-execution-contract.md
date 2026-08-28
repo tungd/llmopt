@@ -118,7 +118,7 @@ execution-contract seam required before adding another model adapter.
 
 ## Execution items
 
-- [ ] **ITEM-01: Define and encode Model Program ABI v1**
+- [x] **ITEM-01: Define and encode Model Program ABI v1**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: New root execution-contract domain immediately above
     `Serving_package`.
@@ -167,7 +167,7 @@ execution-contract seam required before adding another model adapter.
     update the decision and split that field into compile-time analysis data
     before proceeding.
 
-- [ ] **ITEM-02: Add the compile-time LFM Model Program adapter**
+- [x] **ITEM-02: Add the compile-time LFM Model Program adapter**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Model-family analysis seam between the two captured packages and
     the root Model Program.
@@ -209,7 +209,7 @@ execution-contract seam required before adding another model adapter.
     `Lfm25.Config.default`; record the exact package evidence and repair the
     adapter contract rather than choosing by name proximity.
 
-- [ ] **ITEM-03: Link and validate the root model artifact**
+- [x] **ITEM-03: Link and validate the root model artifact**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: `llmopt-pipeline` engine-directory linker and offline validation
     CLI.
@@ -249,7 +249,7 @@ execution-contract seam required before adding another model adapter.
     graph, schedule, kernel, weight archive, or per-graph package ABI; keep that
     change outside this milestone and repair the linker boundary instead.
 
-- [ ] **ITEM-04: Derive serving-cache configuration from the state plan**
+- [x] **ITEM-04: Derive serving-cache configuration from the state plan**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Logical radix/KV cache configuration boundary.
   - `IMPORTANT FILES`:
@@ -286,7 +286,7 @@ execution-contract seam required before adding another model adapter.
     record the exact failing invariant and split optional-checkpoint lifecycle
     into the later persistent-state LOOP.
 
-- [ ] **ITEM-05: Extract model-neutral sequence specialization**
+- [x] **ITEM-05: Extract model-neutral sequence specialization**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Dynamic prefill/decode schedule specialization between typed
     schedules and the serving engine.
@@ -331,7 +331,7 @@ execution-contract seam required before adding another model adapter.
     captured placeholder spelling; add the smallest explicit Model Program
     field in ITEM-01/ITEM-02 and update the decision before continuing.
 
-- [ ] **ITEM-06: Make Serving Engine consume Model Program data**
+- [x] **ITEM-06: Make Serving Engine consume Model Program data**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Shared runtime validation, schedule selection, state binding, and
     execution coordination.
@@ -377,7 +377,7 @@ execution-contract seam required before adding another model adapter.
     sequence requires a Metal runtime change; stop this item and repair its
     boundary rather than overwriting or expanding scope.
 
-- [ ] **ITEM-07: Migrate LFM entrypoints to load the root program**
+- [x] **ITEM-07: Migrate LFM entrypoints to load the root program**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Existing LFM server, generator, and static serving checker call
     sites.
@@ -421,7 +421,7 @@ execution-contract seam required before adding another model adapter.
     through the Model Program and LFM adapter with tests, not as a new caller
     default or path convention.
 
-- [ ] **ITEM-08: Review the cumulative contract migration and synchronize OKF**
+- [x] **ITEM-08: Review the cumulative contract migration and synchronize OKF**
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Fresh-context cumulative review, real saved-package smoke, and
     durable architecture evidence.

@@ -38,9 +38,11 @@ end
 type t
 
 val validate_packages :
+  ?program:Model_program.t ->
   config:Serving_cache.Config.t ->
   prefill:Serving_package.t ->
   decode:Serving_package.t ->
+  unit ->
   (unit, string) result
 
 val create :

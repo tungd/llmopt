@@ -3,7 +3,7 @@ type: Decision
 title: 'Compile PyTorch captures into a package-resident Model Program'
 description: 'A root Model Program owns serving entrypoints, state bindings, specialization metadata, and model assets so shared compiler and runtime modules do not reconstruct model-family facts.'
 tags: [decision, pytorch, compiler, model-program, serving, package, runtime]
-status: draft
+status: stable
 generated: { by: codex/gpt-5, at: '2026-08-27T17:12:48+07:00' }
 sources:
   - id: requested-vision

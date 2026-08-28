@@ -111,14 +111,21 @@ let run () =
               prefill_package |> Serving_package.cache
               |> Serving_package.Cache.page_size
             in
+            let* prefill_path = Model_program.Artifact.create "prefill/package.llmopt" in
+            let* decode_path = Model_program.Artifact.create "decode/package.llmopt" in
+            let* program =
+              Lfm25_program.of_packages ~config:Lfm25.Config.default
+                ~prefill_path ~prefill:prefill_package ~decode_path ~decode:decode_package ()
+            in
+            let state = Model_program.state program in
             let* cache_config =
-              Serving_cache.Config.create ~model:Lfm25.Config.default
+              Serving_cache.Config.of_state_plan ~state
                 ~token_capacity:options.token_capacity
                 ~checkpoint_capacity:options.checkpoint_capacity ~page_size ()
             in
             let* () =
-              Serving_engine.validate_packages ~config:cache_config
-                ~prefill:prefill_package ~decode:decode_package
+              Serving_engine.validate_packages ~config:cache_config ~program
+                ~prefill:prefill_package ~decode:decode_package ()
             in
             let* runtimes =
               Metal_runtime.load_packages

@@ -29,6 +29,7 @@ type contract = {
   past_tokens : int;
   attentions : attention_binding list;
   recurrents : recurrent_binding list;
+  vocab_size : int;
 }
 
 module Step = struct
@@ -91,44 +92,6 @@ type t = {
 }
 
 let program engine = engine.program
-
-let indexed_name base index =
-  if index = 0 then base else base ^ "_" ^ string_of_int index
-
-let cache_bindings model =
-  let rec build model_layer attention_index recurrent_index attentions recurrents =
-    function
-    | [] -> List.rev attentions, List.rev recurrents
-    | Lfm25.Config.Full_attention :: rest ->
-        let prefix =
-          "l_kwargs_past_key_values_layers_" ^ string_of_int model_layer
-        in
-        let binding =
-          {
-            cache_layer = attention_index;
-            key_input = prefix ^ "_keys";
-            value_input = prefix ^ "_values";
-            key_output = indexed_name "keys" attention_index;
-            value_output = indexed_name "values" attention_index;
-          }
-        in
-        build (model_layer + 1) (attention_index + 1) recurrent_index
-          (binding :: attentions) recurrents rest
-    | Lfm25.Config.Conv :: rest ->
-        let prefix =
-          "l_kwargs_past_key_values_layers_" ^ string_of_int model_layer
-        in
-        let binding =
-          {
-            cache_layer = recurrent_index;
-            state_input = prefix ^ "_conv_states";
-            state_output = indexed_name "conv_states" recurrent_index;
-          }
-        in
-        build (model_layer + 1) attention_index (recurrent_index + 1) attentions
-          (binding :: recurrents) rest
-  in
-  build 0 0 0 [] [] model.Lfm25.Config.layer_types
 
 let runtime_inputs package =
   package |> Serving_package.schedule |> Serving_schedule.runtime_inputs
@@ -387,44 +350,62 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
         past_tokens;
         attentions;
         recurrents;
+        vocab_size;
       }
 
-let contract ~config ~prefill ~decode =
-  match Serving_cache.Config.state_plan config with
-  | Some state ->
-      let layout = Model_program.State.layout state in
-      let attentions =
-        List.map of_state_attention (Model_program.State.attentions state)
-      in
-      let recurrents =
-        List.map of_state_recurrent (Model_program.State.recurrents state)
-      in
-      let kv_heads = Model_program.State.Cache_layout.kv_heads layout in
-      let head_dim = Model_program.State.Cache_layout.head_dim layout in
-      let model = Serving_cache.Config.model config in
-      let recurrent_shape =
-        if Model_program.State.Cache_layout.recurrent_layers layout > 0 then
-          [ 1; Model_program.State.Cache_layout.recurrent_dim layout; model.conv_l_cache ]
-        else [ 1; 0; 0 ]
-      in
-      contract_of_parts ~input_ids:"l_kwargs_input_ids_" ~attentions ~recurrents
-        ~kv_heads ~head_dim ~recurrent_shape ~vocab_size:model.vocab_size
-        ~prefill ~decode
-  | None ->
-      let model = Serving_cache.Config.model config in
-      let attentions, recurrents = cache_bindings model in
-      let recurrent_shape = [ 1; model.hidden_size; model.conv_l_cache ] in
-      contract_of_parts ~input_ids:"l_kwargs_input_ids_" ~attentions ~recurrents
-        ~kv_heads:model.num_key_value_heads
-        ~head_dim:(model.hidden_size / model.num_attention_heads)
-        ~recurrent_shape ~vocab_size:model.vocab_size ~prefill ~decode
+let contract ?program ~config ~prefill ~decode () =
+  let state =
+    match program with
+    | Some p -> Model_program.state p
+    | None -> Serving_cache.Config.state_plan config
+  in
+  let layout = Model_program.State.layout state in
+  let attentions =
+    List.map of_state_attention (Model_program.State.attentions state)
+  in
+  let recurrents =
+    List.map of_state_recurrent (Model_program.State.recurrents state)
+  in
+  let kv_heads = Model_program.State.Cache_layout.kv_heads layout in
+  let head_dim = Model_program.State.Cache_layout.head_dim layout in
+  let input_ids =
+    match program with
+    | Some p -> Model_program.Entrypoint.input_ids (Model_program.prefill p)
+    | None ->
+        (match
+           Serving_package.schedule prefill
+           |> Serving_schedule.runtime_inputs
+         with
+        | (name, _) :: _ -> name
+        | [] -> "input_ids")
+  in
+  let vocab_size =
+    match program with
+    | Some p -> Model_program.Generation.vocab_size (Model_program.generation p)
+    | None ->
+        (match String_map.find_opt "logits" (named_outputs prefill) with
+        | Some value ->
+            (match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
+            | [ _; _; v ] -> v
+            | [ _; v ] -> v
+            | _ -> 32000)
+        | None -> 32000)
+  in
+  let recurrent_shape =
+    if Model_program.State.Cache_layout.recurrent_layers layout > 0 then
+      let dim = Model_program.State.Cache_layout.recurrent_dim layout in
+      [ 1; dim; 3 ]
+    else [ 1; 0; 0 ]
+  in
+  contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
+    ~recurrent_shape ~vocab_size ~prefill ~decode
 
-let validate_packages ~config ~prefill ~decode =
+let validate_packages ?program ~config ~prefill ~decode () =
   let* () = validate_package prefill "prefill" in
   let* () = validate_package decode "decode" in
   let* () = validate_cache_policy config prefill "prefill" in
   let* () = validate_cache_policy config decode "decode" in
-  let* _ = contract ~config ~prefill ~decode in
+  let* _ = contract ?program ~config ~prefill ~decode () in
   Ok ()
 
 module Rope_table = struct
@@ -508,7 +489,9 @@ module Rope_table = struct
   let inv_freq_input schedule =
     Serving_schedule.tensor_inputs schedule
     |> List.find_opt (fun input ->
-           String.ends_with ~suffix:"rotary_emb_buffers_inv_freq_"
+           String.ends_with ~suffix:"inv_freq_"
+             (Serving_schedule.Tensor_input.key input)
+           || String.ends_with ~suffix:"inv_freq"
              (Serving_schedule.Tensor_input.key input))
 
   let create ~runtime ~package ~positions =
@@ -517,20 +500,20 @@ module Rope_table = struct
     | None -> Ok None
     | Some config ->
         let half_dimension = Ir.Rms_rope.half_dimension config in
-        if positions <= 0 then Error "LFM RoPE position table requires positive capacity"
+        if positions <= 0 then Error "RoPE position table requires positive capacity"
         else if half_dimension <= 0 || half_dimension > max_int / 2 then
-          Error "LFM RoPE half dimension is invalid"
+          Error "RoPE half dimension is invalid"
         else
           let width = 2 * half_dimension in
-          let* row_bytes = checked_product "LFM RoPE row" [ width; 2 ] in
-          let* total_bytes = checked_product "LFM RoPE table" [ positions; row_bytes ] in
+          let* row_bytes = checked_product "RoPE row" [ width; 2 ] in
+          let* total_bytes = checked_product "RoPE table" [ positions; row_bytes ] in
           let* input =
             match inv_freq_input schedule with
             | None -> Error "decode package has no rotary inverse-frequency tensor"
             | Some input -> Ok input
           in
           let* inv_freq_bytes =
-            checked_product "LFM RoPE inverse-frequency" [ half_dimension; 4 ]
+            checked_product "RoPE inverse-frequency" [ half_dimension; 4 ]
           in
           let value = Serving_schedule.Tensor_input.value input in
           let* () =
@@ -597,7 +580,7 @@ module Rope_table = struct
   let row table ~position =
     if position < 0 || position >= table.positions then
       Error
-        (Printf.sprintf "LFM RoPE position %d is outside [0,%d)" position
+        (Printf.sprintf "RoPE position %d is outside [0,%d)" position
            table.positions)
     else
       let offset = position * table.row_bytes in
@@ -614,7 +597,7 @@ module Rope_table = struct
   let slice table ~position ~length =
     if position < 0 || length <= 0 || position + length > table.positions then
       Error
-        (Printf.sprintf "LFM RoPE slice [%d,%d) is outside [0,%d)" position
+        (Printf.sprintf "RoPE slice [%d,%d) is outside [0,%d)" position
            (position + length) table.positions)
     else
       let offset = position * table.row_bytes in
@@ -642,53 +625,22 @@ let specialization_of engine =
   match engine.program with
   | Some p -> Model_program.specialization p
   | None ->
-      Model_program.Specialization.create ~min_prefill_tokens:3
-        ~rope_cosine_input:Serving_schedule.Lfm25.rope_cosine_input
-        ~rope_sine_input:Serving_schedule.Lfm25.rope_sine_input
-        ~paged_slots_input:Serving_schedule.Lfm25.q8_attention_slots_input ()
+      Model_program.Specialization.create ~min_prefill_tokens:1 ()
       |> Result.get_ok
 
 let create_internal ?program ~config ~prefill ~decode () =
   let prefill_package = Metal_runtime.package prefill in
   let decode_package = Metal_runtime.package decode in
-  let* () = validate_packages ~config ~prefill:prefill_package ~decode:decode_package in
+  let* () = validate_packages ?program ~config ~prefill:prefill_package ~decode:decode_package () in
   if Metal_runtime.device_name prefill <> Metal_runtime.device_name decode then
     Error "prefill and decode packages loaded on different Metal devices"
   else
-    let* contract =
-      match program with
-      | Some p ->
-          let state = Model_program.state p in
-          let layout = Model_program.State.layout state in
-          let gen = Model_program.generation p in
-          let attentions =
-            List.map of_state_attention (Model_program.State.attentions state)
-          in
-          let recurrents =
-            List.map of_state_recurrent (Model_program.State.recurrents state)
-          in
-          let recurrent_shape =
-            if Model_program.State.Cache_layout.recurrent_layers layout > 0 then
-              let dim = Model_program.State.Cache_layout.recurrent_dim layout in
-              let width = (Serving_cache.Config.model config).conv_l_cache in
-              [ 1; dim; width ]
-            else [ 1; 0; 0 ]
-          in
-          contract_of_parts
-            ~input_ids:(Model_program.Entrypoint.input_ids (Model_program.prefill p))
-            ~attentions ~recurrents
-            ~kv_heads:(Model_program.State.Cache_layout.kv_heads layout)
-            ~head_dim:(Model_program.State.Cache_layout.head_dim layout)
-            ~recurrent_shape
-            ~vocab_size:(Model_program.Generation.vocab_size gen)
-            ~prefill:prefill_package ~decode:decode_package
-      | None -> contract ~config ~prefill:prefill_package ~decode:decode_package
-    in
+    let* contract = contract ?program ~config ~prefill:prefill_package ~decode:decode_package () in
     let max_positions =
       match program with
       | Some p ->
           Model_program.Generation.max_positions (Model_program.generation p)
-      | None -> (Serving_cache.Config.model config).max_position_embeddings
+      | None -> 4096
     in
     let decode_schedule = Serving_package.schedule decode_package in
     let* rope_table =
@@ -735,12 +687,8 @@ let create ~config ~prefill ~decode =
   create_internal ~config ~prefill ~decode ()
 
 let create_from_program ~program ~model_dir ?(token_capacity = 1024)
-    ?(checkpoint_capacity = 16) ?(page_size = 16) () =
+    ?(checkpoint_capacity = 16) ?page_size () =
   let state = Model_program.state program in
-  let* config =
-    Serving_cache.Config.of_state_plan ~state ~token_capacity
-      ~checkpoint_capacity ~page_size ()
-  in
   let prefill_pkg_name =
     Model_program.Artifact.path
       (Model_program.Entrypoint.package (Model_program.prefill program))
@@ -749,14 +697,32 @@ let create_from_program ~program ~model_dir ?(token_capacity = 1024)
     Model_program.Artifact.path
       (Model_program.Entrypoint.package (Model_program.decode program))
   in
+  let prefill_dir =
+    let dir = Filename.dirname prefill_pkg_name in
+    if dir = "." then model_dir else Filename.concat model_dir dir
+  in
+  let decode_dir =
+    let dir = Filename.dirname decode_pkg_name in
+    if dir = "." then model_dir else Filename.concat model_dir dir
+  in
   let* prefill_pkg =
     Serving_package.of_file (Filename.concat model_dir prefill_pkg_name)
   in
   let* decode_pkg =
     Serving_package.of_file (Filename.concat model_dir decode_pkg_name)
   in
-  let* prefill = Metal_runtime.load_package ~root:model_dir prefill_pkg in
-  let* decode = Metal_runtime.load_package ~root:model_dir decode_pkg in
+  let page_size =
+    match page_size with
+    | Some s -> s
+    | None ->
+        prefill_pkg |> Serving_package.cache |> Serving_package.Cache.page_size
+  in
+  let* config =
+    Serving_cache.Config.of_state_plan ~state ~token_capacity
+      ~checkpoint_capacity ~page_size ()
+  in
+  let* prefill = Metal_runtime.load_package ~root:prefill_dir prefill_pkg in
+  let* decode = Metal_runtime.load_package ~root:decode_dir decode_pkg in
   create_internal ~program ~config ~prefill ~decode ()
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -814,11 +780,7 @@ let decode_schedule engine past_tokens =
       Ok schedule
 
 let validate_tokens engine tokens =
-  let vocabulary =
-    match engine.program with
-    | Some p -> Model_program.Generation.vocab_size (Model_program.generation p)
-    | None -> (Serving_cache.Config.model engine.config).vocab_size
-  in
+  let vocabulary = engine.contract.vocab_size in
   match Array.find_opt (fun token -> token < 0 || token >= vocabulary) tokens with
   | None -> Ok ()
   | Some token ->
@@ -1033,10 +995,7 @@ let decode_inputs engine ~slots ~token_input ~rope_buffers buffers =
          with
         | Some cos_name, Some sin_name ->
             Ok [ cos_name, cosine; sin_name, sine ]
-        | _ ->
-            Ok
-              [ Serving_schedule.Lfm25.rope_cosine_input, cosine;
-                Serving_schedule.Lfm25.rope_sine_input, sine ])
+        | _ -> Ok [])
     | Some _, None -> Error "decode RoPE table is missing its position binding"
     | None, Some _ -> Error "decode RoPE binding has no serving table"
   in
@@ -1526,16 +1485,12 @@ let suffix_prefill engine match_ ~tokens ~cached_tokens =
                  with
                 | Some cos_name, Some sin_name ->
                     Ok [ cos_name, cosine; sin_name, sine ]
-                | _ ->
-                    Ok
-                      [ Serving_schedule.Lfm25.rope_cosine_input, cosine;
-                        Serving_schedule.Lfm25.rope_sine_input, sine ])
+                | _ -> Ok [])
           in
           let* recurrent_buffers = unpack_recurrent_states engine source_checkpoint in
           let recurrent_inputs =
             List.map
-              (fun (binding, state) ->
-                (Serving_schedule.Lfm25.recurrent_in_input binding.cache_layer, state))
+              (fun (binding, state) -> (binding.state_input, state))
               recurrent_buffers
           in
           let inputs =

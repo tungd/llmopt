@@ -4,7 +4,7 @@ let usage () =
   prerr_endline
     "usage: llmopt-lfm-serving-smoke [--tokens count] \
      [--input-ids id,id,...] [--prefill-logits path] \
-     <prefill-directory> <decode-directory>";
+     [<model-directory> | <prefill-directory> <decode-directory>]";
   exit 64
 
 let input_ids value =
@@ -39,6 +39,7 @@ type arguments = {
   prefill_logits : string option;
   prefill_root : string;
   decode_root : string;
+  program : Model_program.t option;
 }
 
 let arguments () =
@@ -46,6 +47,41 @@ let arguments () =
     function
     | [] ->
         (match List.rev positional with
+        | [ model_dir ]
+          when Sys.file_exists (Filename.concat model_dir "model.llmopt") ->
+            if generated_tokens <= 0 then
+              Error "generated token count must be positive"
+            else
+              let* program =
+                Model_program.of_file (Filename.concat model_dir "model.llmopt")
+              in
+              let prefill_name =
+                Model_program.Artifact.path
+                  (Model_program.Entrypoint.package
+                     (Model_program.prefill program))
+              in
+              let decode_name =
+                Model_program.Artifact.path
+                  (Model_program.Entrypoint.package
+                     (Model_program.decode program))
+              in
+              let prefill_dir =
+                let dir = Filename.dirname prefill_name in
+                if dir = "." then model_dir else Filename.concat model_dir dir
+              in
+              let decode_dir =
+                let dir = Filename.dirname decode_name in
+                if dir = "." then model_dir else Filename.concat model_dir dir
+              in
+              Ok
+                {
+                  generated_tokens;
+                  input;
+                  prefill_logits;
+                  prefill_root = prefill_dir;
+                  decode_root = decode_dir;
+                  program = Some program;
+                }
         | [ prefill; decode ] ->
             if generated_tokens <= 0 then
               Error "generated token count must be positive"
@@ -57,6 +93,7 @@ let arguments () =
                   prefill_logits;
                   prefill_root = prefill;
                   decode_root = decode;
+                  program = None;
                 }
         | _ -> usage ())
     | "--tokens" :: value :: rest ->
@@ -150,13 +187,23 @@ let run () =
   in
   let token_capacity = max 512 (arguments.generated_tokens * 2 + 64) in
   let checkpoint_capacity = max 128 (arguments.generated_tokens + 16) in
+  let* program =
+    match arguments.program with
+    | Some p -> Ok p
+    | None ->
+        let* prefill_path = Model_program.Artifact.create "prefill/package.llmopt" in
+        let* decode_path = Model_program.Artifact.create "decode/package.llmopt" in
+        Lfm25_program.of_packages ~config:Lfm25.Config.default
+          ~prefill_path ~prefill:prefill_package ~decode_path ~decode:decode_package ()
+  in
+  let state = Model_program.state program in
   let* config =
-    Serving_cache.Config.create ~model:Lfm25.Config.default
+    Serving_cache.Config.of_state_plan ~state
       ~token_capacity ~checkpoint_capacity ~page_size ()
   in
   let* () =
-    Serving_engine.validate_packages ~config ~prefill:prefill_package
-      ~decode:decode_package
+    Serving_engine.validate_packages ~config ~program
+      ~prefill:prefill_package ~decode:decode_package ()
   in
   let load_started = Unix.gettimeofday () in
   let* runtimes =

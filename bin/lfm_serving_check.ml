@@ -152,11 +152,21 @@ let run () =
       (Printf.sprintf "prefill page size %d differs from decode page size %d"
          prefill_page decode_page)
   else
+    let* prefill_path = Model_program.Artifact.create "prefill/package.llmopt" in
+    let* decode_path = Model_program.Artifact.create "decode/package.llmopt" in
+    let* lfm_program =
+      Lfm25_program.of_packages ~config:Lfm25.Config.default
+        ~prefill_path ~prefill ~decode_path ~decode ()
+    in
+    let state = Model_program.state lfm_program in
     let* config =
-      Serving_cache.Config.create ~model:Lfm25.Config.default
+      Serving_cache.Config.of_state_plan ~state
         ~token_capacity:1 ~checkpoint_capacity:1 ~page_size:prefill_page ()
     in
-    let* () = Serving_engine.validate_packages ~config ~prefill ~decode in
+    let* () =
+      Serving_engine.validate_packages ~config ~program:lfm_program ~prefill
+        ~decode ()
+    in
     let* captured_prefill, captured_past, prefill_13_rows, prefill_128_rows,
          prefill_4096_rows, prefill_13, prefill_128, prefill_4096, decode_one,
          decode_127, decode_4095, decode_commands, decode_inputs,
