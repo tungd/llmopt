@@ -1050,5 +1050,35 @@ let () =
        (Model_program.Specialization.create ~min_prefill_tokens:0 ()))
     "rejects min prefill tokens < 1";
 
+  (* LFM2.5 Model Program adapter tests *)
+  let lfm_att, lfm_rec = Lfm25_program.cache_bindings Lfm25.Config.default in
+  expect (List.length lfm_att = 6) "LFM2.5 has 6 attention bindings";
+  expect (List.length lfm_rec = 10) "LFM2.5 has 10 recurrent bindings";
+  expect
+    (Model_program.State.Attention_binding.key_input (List.hd lfm_att)
+    = "l_kwargs_past_key_values_layers_2_keys")
+    "first attention layer input key matches";
+  expect
+    (Model_program.State.Attention_binding.key_output (List.hd lfm_att)
+    = "keys")
+    "first attention layer output key matches";
+  expect
+    (Model_program.State.Attention_binding.key_output (List.nth lfm_att 1)
+    = "keys_1")
+    "second attention layer output key is indexed keys_1";
+  expect
+    (Model_program.State.Recurrent_binding.state_input (List.hd lfm_rec)
+    = "l_kwargs_past_key_values_layers_0_conv_states")
+    "first recurrent layer input state matches";
+  expect
+    (Model_program.State.Recurrent_binding.state_output (List.hd lfm_rec)
+    = "conv_states")
+    "first recurrent layer output state matches";
+  expect
+    (Model_program.State.Recurrent_binding.state_output (List.nth lfm_rec 1)
+    = "conv_states_1")
+    "second recurrent layer output state is indexed conv_states_1";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
+
 
