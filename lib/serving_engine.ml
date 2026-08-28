@@ -1054,12 +1054,12 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
           in
           let* execution, token_id_buffer =
             match engine.prebaked_decode with
-            | Some (plan, execution, out_buf) ->
+            | Some (plan, execution, out_token_id) ->
                 let* _ =
                   Metal_runtime.Prebaked.execute plan ~token ~past_tokens
                     ~checkpoint:(Kv_cache.Checkpoint.to_int reservation.checkpoint)
                 in
-                Ok (execution, out_buf)
+                Ok (execution, out_token_id)
             | None ->
                 let* (dispatches, execution) =
                   Metal_runtime.precompile_decode_batch
@@ -1076,18 +1076,26 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
                 let* token_id =
                   optional_output execution engine.contract.decode_head.token_id
                 in
-                (match token_id, engine.decode_token_buffer with
+                let* logits =
+                  optional_output execution engine.contract.decode_head.logits
+                in
+                let head_out =
+                  match token_id with
+                  | Some out_buf -> Some out_buf
+                  | None -> logits
+                in
+                (match head_out, engine.decode_token_buffer with
                 | Some out_buf, Some in_buf ->
                     let* plan =
                       Metal_runtime.Prebaked.create ~runtime:engine.decode
                         ~dispatches ~token_buffer:in_buf ~output_buffer:out_buf
                     in
-                    engine.prebaked_decode <- Some (plan, execution, Some out_buf);
+                    engine.prebaked_decode <- Some (plan, execution, token_id);
                     let* _ =
                       Metal_runtime.Prebaked.execute plan ~token ~past_tokens
                         ~checkpoint:(Kv_cache.Checkpoint.to_int reservation.checkpoint)
                     in
-                    Ok (execution, Some out_buf)
+                    Ok (execution, token_id)
                 | _ ->
                     let* execution =
                       Metal_runtime.execute_decode_step

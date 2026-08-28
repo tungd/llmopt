@@ -53,23 +53,27 @@ module Greedy = struct
            (Bytes.length bytes))
     else Ok (token_at bytes (Bytes.length bytes - 4))
 
+  external f16_argmax_native : bytes -> int -> int = "caml_llmopt_f16_argmax"
+
   let f16_last_row ~vocabulary bytes =
     let ( let* ) = Result.bind in
     let* row = Float16_logits.last_row ~vocabulary bytes in
-    let value token = Bytes.get_uint16_le row (2 * token) |> float16 in
-    let first = value 0 in
-    if Float.is_nan first then Error "float16 logits contain NaN at token 0"
-    else
-      let rec select best_token best_value token =
-        if token = vocabulary then Ok best_token
-        else
-          let candidate = value token in
-          if Float.is_nan candidate then
-            Error
-              (Printf.sprintf "float16 logits contain NaN at token %d" token)
-          else if candidate > best_value then
-            select token candidate (token + 1)
-          else select best_token best_value (token + 1)
-      in
-      select 0 first 1
+    try Ok (f16_argmax_native row vocabulary)
+    with _ ->
+      let value token = Bytes.get_uint16_le row (2 * token) |> float16 in
+      let first = value 0 in
+      if Float.is_nan first then Error "float16 logits contain NaN at token 0"
+      else
+        let rec select best_token best_value token =
+          if token = vocabulary then Ok best_token
+          else
+            let candidate = value token in
+            if Float.is_nan candidate then
+              Error
+                (Printf.sprintf "float16 logits contain NaN at token %d" token)
+            else if candidate > best_value then
+              select token candidate (token + 1)
+            else select best_token best_value (token + 1)
+        in
+        select 0 first 1
 end

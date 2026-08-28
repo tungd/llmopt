@@ -1579,3 +1579,19 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
   }
   CAMLreturn(Val_long((intptr_t)next_token));
 }
+
+CAMLprim value caml_llmopt_f16_argmax(value v_bytes, value v_count) {
+  CAMLparam2(v_bytes, v_count);
+  const _Float16 *ptr = (const _Float16 *)String_val(v_bytes);
+  size_t count = (size_t)Long_val(v_count);
+  if (count == 0) CAMLreturn(Val_long(0));
+  _Float16 max_val = ptr[0];
+  size_t max_idx = 0;
+  for (size_t i = 1; i < count; i++) {
+    if (ptr[i] > max_val) {
+      max_val = ptr[i];
+      max_idx = i;
+    }
+  }
+  CAMLreturn(Val_long((intptr_t)max_idx));
+}
