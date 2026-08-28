@@ -1157,6 +1157,14 @@ let () =
   expect (Result.is_error suf_err)
     "specialization rejects suffix prefill tokens < min_prefill_tokens";
 
+  (* Serving engine create_from_program validation tests *)
+  let engine_err =
+    Serving_engine.create_from_program ~program:restored
+      ~model_dir:"/nonexistent/dir" ()
+  in
+  expect (Result.is_error engine_err)
+    "create_from_program fails on nonexistent package files";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 

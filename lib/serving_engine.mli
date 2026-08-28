@@ -49,6 +49,16 @@ val create :
   decode:Metal_runtime.t ->
   (t, string) result
 
+val create_from_program :
+  program:Model_program.t ->
+  model_dir:string ->
+  ?token_capacity:int ->
+  ?checkpoint_capacity:int ->
+  ?page_size:int ->
+  unit ->
+  (t, string) result
+
+val program : t -> Model_program.t option
 val prefill_tokens : t -> int
 val past_tokens : t -> int
 val prompt : t -> tokens:int array -> (Prompt.t, string) result
