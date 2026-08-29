@@ -1920,6 +1920,71 @@ kernel void llmopt_q8_0_linear_f16(
     output[row * params.n + col] = half(acc);
   }
 }
+
+kernel void llmopt_q8_0_dual_swiglu_f16(
+    device const half* normalized [[buffer(0)]],
+    device const block_q8_0* gate_weight [[buffer(1)]],
+    device const block_q8_0* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_blocks = params.k >> 5;
+  device const block_q8_0* gate_row = gate_weight + col * num_blocks;
+  device const block_q8_0* up_row = up_weight + col * num_blocks;
+  device const half* in_ptr = normalized + row * params.k;
+  float gate_acc = 0.0f;
+  float up_acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    const half gd = gate_row[b].d;
+    const int8_t gq = gate_row[b].qs[lane];
+    const half ud = up_row[b].d;
+    const int8_t uq = up_row[b].qs[lane];
+    const half in_val = in_ptr[b * 32 + lane];
+    gate_acc += float(in_val) * (float(gd) * float(gq));
+    up_acc   += float(in_val) * (float(ud) * float(uq));
+  }
+  gate_acc = simd_sum(gate_acc);
+  up_acc = simd_sum(up_acc);
+  if (lane == 0) {
+    const float silu_gate = gate_acc / (1.0f + exp(-gate_acc));
+    product[row * params.n + col] = half(silu_gate * up_acc);
+  }
+}
+
+kernel void llmopt_q8_0_down_add_f16(
+    device const half* product [[buffer(0)]],
+    device const block_q8_0* down_weight [[buffer(1)]],
+    device const half* residual [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.k;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.k;
+  const uint col = simd_idx - row * params.k;
+  const uint num_blocks = params.n >> 5;
+  device const block_q8_0* down_row = down_weight + col * num_blocks;
+  device const half* in_ptr = product + row * params.n;
+  float down_acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    const half d = down_row[b].d;
+    const int8_t q = down_row[b].qs[lane];
+    const half in_val = in_ptr[b * 32 + lane];
+    down_acc += float(in_val) * (float(d) * float(q));
+  }
+  down_acc = simd_sum(down_acc);
+  if (lane == 0) {
+    output[row * params.k + col] = half(down_acc + float(residual[row * params.k + col]));
+  }
+}
 |}
 
 let q5_0_source = {|
@@ -1983,6 +2048,135 @@ kernel void llmopt_q5_0_linear_f16(
 }
 |}
 
+let q4_0_source = {|
+struct block_q4_0 {
+    half d;
+    uint8_t qs[16];
+};
+
+kernel void llmopt_dequant_q4_0(
+    device const block_q4_0* blocks [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant QuantBlock32Params& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint block_idx = gid >> 5;
+  if (block_idx >= params.total_blocks) return;
+  device const block_q4_0& b = blocks[block_idx];
+  const half d = b.d;
+  const uint8_t byte_val = (lane < 16u) ? b.qs[lane] : b.qs[lane - 16u];
+  const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4);
+  const int q = int(nib) - 8;
+  output[block_idx * 32 + lane] = half(float(d) * float(q));
+}
+
+kernel void llmopt_q4_0_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q4_0* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_blocks = params.k >> 5;
+  device const block_q4_0* row_blocks = weight + col * num_blocks;
+  device const half* in_ptr = input + row * params.k;
+  float acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    device const block_q4_0& blk = row_blocks[b];
+    const half d = blk.d;
+    const uint8_t byte_val = (lane < 16u) ? blk.qs[lane] : blk.qs[lane - 16u];
+    const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4);
+    const int q = int(nib) - 8;
+    const half in_val = in_ptr[b * 32 + lane];
+    acc += float(in_val) * (float(d) * float(q));
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    if (params.has_bias != 0u) acc += float(bias[col]);
+    output[row * params.n + col] = half(acc);
+  }
+}
+
+kernel void llmopt_q4_0_dual_swiglu_f16(
+    device const half* normalized [[buffer(0)]],
+    device const block_q4_0* gate_weight [[buffer(1)]],
+    device const block_q4_0* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_blocks = params.k >> 5;
+  device const block_q4_0* gate_row = gate_weight + col * num_blocks;
+  device const block_q4_0* up_row = up_weight + col * num_blocks;
+  device const half* in_ptr = normalized + row * params.k;
+  float gate_acc = 0.0f;
+  float up_acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    const half gd = gate_row[b].d;
+    const uint8_t g_byte = (lane < 16u) ? gate_row[b].qs[lane] : gate_row[b].qs[lane - 16u];
+    const uint8_t g_nib = (lane < 16u) ? (g_byte & 0x0Fu) : (g_byte >> 4);
+    const int gq = int(g_nib) - 8;
+
+    const half ud = up_row[b].d;
+    const uint8_t u_byte = (lane < 16u) ? up_row[b].qs[lane] : up_row[b].qs[lane - 16u];
+    const uint8_t u_nib = (lane < 16u) ? (u_byte & 0x0Fu) : (u_byte >> 4);
+    const int uq = int(u_nib) - 8;
+
+    const half in_val = in_ptr[b * 32 + lane];
+    gate_acc += float(in_val) * (float(gd) * float(gq));
+    up_acc   += float(in_val) * (float(ud) * float(uq));
+  }
+  gate_acc = simd_sum(gate_acc);
+  up_acc = simd_sum(up_acc);
+  if (lane == 0) {
+    const float silu_gate = gate_acc / (1.0f + exp(-gate_acc));
+    product[row * params.n + col] = half(silu_gate * up_acc);
+  }
+}
+
+kernel void llmopt_q4_0_down_add_f16(
+    device const half* product [[buffer(0)]],
+    device const block_q4_0* down_weight [[buffer(1)]],
+    device const half* residual [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.k;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.k;
+  const uint col = simd_idx - row * params.k;
+  const uint num_blocks = params.n >> 5;
+  device const block_q4_0* down_row = down_weight + col * num_blocks;
+  device const half* in_ptr = product + row * params.n;
+  float down_acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    const half d = down_row[b].d;
+    const uint8_t byte_val = (lane < 16u) ? down_row[b].qs[lane] : down_row[b].qs[lane - 16u];
+    const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4);
+    const int q = int(nib) - 8;
+    const half in_val = in_ptr[b * 32 + lane];
+    down_acc += float(in_val) * (float(d) * float(q));
+  }
+  down_acc = simd_sum(down_acc);
+  if (lane == 0) {
+    output[row * params.k + col] = half(down_acc + float(residual[row * params.k + col]));
+  }
+}
+|}
+
 let block32_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_dequant_q8_0"
@@ -1993,18 +2187,42 @@ let block32_entries =
       ~operation:Kernel_abi.Operation.Cast
       ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_dequant_q4_0"
+      ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_0_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q5_0_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16 ]
+      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_0_dual_swiglu_f16"
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_0_down_add_f16"
+      ~operation:Kernel_abi.Operation.Fused_linear
+      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_dual_swiglu_f16"
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_down_add_f16"
+      ~operation:Kernel_abi.Operation.Fused_linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16 ]
 
 let add_block32_kernels program =
   Program.make
     ~source:
-      (Program.source program ^ quant_common_source ^ q8_0_source ^ q5_0_source)
+      (Program.source program ^ quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source)
     ~kernels:(Program.kernels program @ block32_entries)
 
 let metal_header =
@@ -2012,6 +2230,7 @@ let metal_header =
 
 let emit_dequant_q8_0 () = metal_header ^ quant_common_source ^ q8_0_source
 let emit_dequant_q5_0 () = metal_header ^ quant_common_source ^ q5_0_source
+let emit_dequant_q4_0 () = metal_header ^ quant_common_source ^ q4_0_source
 
 let q4_k_source = {|
 struct block_q4_K {
@@ -2109,6 +2328,150 @@ kernel void llmopt_q4_k_linear_f16(
   if (lane == 0) {
     if (params.has_bias != 0u) acc += float(bias[col]);
     output[row * params.n + col] = half(acc);
+  }
+}
+
+kernel void llmopt_q4_k_dual_swiglu_f16(
+    device const half* normalized [[buffer(0)]],
+    device const block_q4_K* gate_weight [[buffer(1)]],
+    device const block_q4_K* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q4_K* gate_row = gate_weight + col * num_superblocks;
+  device const block_q4_K* up_row = up_weight + col * num_superblocks;
+  device const half* in_ptr = normalized + row * params.k;
+  float gate_acc = 0.0f;
+  float up_acc = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q4_K& gb = gate_row[sb];
+    device const block_q4_K& ub = up_row[sb];
+    const float gd = float(gb.d);
+    const float gdmin = float(gb.dmin);
+    const float ud = float(ub.d);
+    const float udmin = float(ub.dmin);
+    float g_dl[8], g_ml[8], u_dl[8], u_ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t g_sc0 = gb.scales[j] & 63;
+      const uint8_t g_m0 = gb.scales[j + 4] & 63;
+      const uint8_t g_sc1 = (gb.scales[j + 8] & 0x0F) | ((gb.scales[j] >> 6) << 4);
+      const uint8_t g_m1 = (gb.scales[j + 8] >> 4) | ((gb.scales[j + 4] >> 6) << 4);
+      g_dl[j] = gd * float(g_sc0);
+      g_ml[j] = gdmin * float(g_m0);
+      g_dl[j + 4] = gd * float(g_sc1);
+      g_ml[j + 4] = gdmin * float(g_m1);
+
+      const uint8_t u_sc0 = ub.scales[j] & 63;
+      const uint8_t u_m0 = ub.scales[j + 4] & 63;
+      const uint8_t u_sc1 = (ub.scales[j + 8] & 0x0F) | ((ub.scales[j] >> 6) << 4);
+      const uint8_t u_m1 = (ub.scales[j + 8] >> 4) | ((ub.scales[j + 4] >> 6) << 4);
+      u_dl[j] = ud * float(u_sc0);
+      u_ml[j] = udmin * float(u_m0);
+      u_dl[j + 4] = ud * float(u_sc1);
+      u_ml[j + 4] = udmin * float(u_m1);
+    }
+    const uint8_t g_q0 = gb.qs[lane];
+    const uint8_t g_q1 = gb.qs[32 + lane];
+    const uint8_t g_q2 = gb.qs[64 + lane];
+    const uint8_t g_q3 = gb.qs[96 + lane];
+
+    const uint8_t u_q0 = ub.qs[lane];
+    const uint8_t u_q1 = ub.qs[32 + lane];
+    const uint8_t u_q2 = ub.qs[64 + lane];
+    const uint8_t u_q3 = ub.qs[96 + lane];
+
+    const uint base_idx = sb * 256 + lane;
+    const float in0 = float(in_ptr[base_idx + 0]);
+    const float in1 = float(in_ptr[base_idx + 32]);
+    const float in2 = float(in_ptr[base_idx + 64]);
+    const float in3 = float(in_ptr[base_idx + 96]);
+    const float in4 = float(in_ptr[base_idx + 128]);
+    const float in5 = float(in_ptr[base_idx + 160]);
+    const float in6 = float(in_ptr[base_idx + 192]);
+    const float in7 = float(in_ptr[base_idx + 224]);
+
+    gate_acc += in0 * (g_dl[0] * float(g_q0 & 0x0Fu) - g_ml[0])
+              + in1 * (g_dl[1] * float(g_q0 >> 4)    - g_ml[1])
+              + in2 * (g_dl[2] * float(g_q1 & 0x0Fu) - g_ml[2])
+              + in3 * (g_dl[3] * float(g_q1 >> 4)    - g_ml[3])
+              + in4 * (g_dl[4] * float(g_q2 & 0x0Fu) - g_ml[4])
+              + in5 * (g_dl[5] * float(g_q2 >> 4)    - g_ml[5])
+              + in6 * (g_dl[6] * float(g_q3 & 0x0Fu) - g_ml[6])
+              + in7 * (g_dl[7] * float(g_q3 >> 4)    - g_ml[7]);
+
+    up_acc   += in0 * (u_dl[0] * float(u_q0 & 0x0Fu) - u_ml[0])
+              + in1 * (u_dl[1] * float(u_q0 >> 4)    - u_ml[1])
+              + in2 * (u_dl[2] * float(u_q1 & 0x0Fu) - u_ml[2])
+              + in3 * (u_dl[3] * float(u_q1 >> 4)    - u_ml[3])
+              + in4 * (u_dl[4] * float(u_q2 & 0x0Fu) - u_ml[4])
+              + in5 * (u_dl[5] * float(u_q2 >> 4)    - u_ml[5])
+              + in6 * (u_dl[6] * float(u_q3 & 0x0Fu) - u_ml[6])
+              + in7 * (u_dl[7] * float(u_q3 >> 4)    - u_ml[7]);
+  }
+  gate_acc = simd_sum(gate_acc);
+  up_acc = simd_sum(up_acc);
+  if (lane == 0) {
+    const float silu_gate = gate_acc / (1.0f + exp(-gate_acc));
+    product[row * params.n + col] = half(silu_gate * up_acc);
+  }
+}
+
+kernel void llmopt_q4_k_down_add_f16(
+    device const half* product [[buffer(0)]],
+    device const block_q4_K* down_weight [[buffer(1)]],
+    device const half* residual [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.k;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.k;
+  const uint col = simd_idx - row * params.k;
+  const uint num_superblocks = params.n >> 8;
+  device const block_q4_K* down_row = down_weight + col * num_superblocks;
+  device const half* in_ptr = product + row * params.n;
+  float down_acc = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q4_K& b = down_row[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8], ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = b.scales[j] & 63;
+      const uint8_t m0 = b.scales[j + 4] & 63;
+      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
+      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    down_acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(q0 & 0x0Fu) - ml[0])
+              + float(in_ptr[base_idx + 32])  * (dl[1] * float(q0 >> 4)    - ml[1])
+              + float(in_ptr[base_idx + 64])  * (dl[2] * float(q1 & 0x0Fu) - ml[2])
+              + float(in_ptr[base_idx + 96])  * (dl[3] * float(q1 >> 4)    - ml[3])
+              + float(in_ptr[base_idx + 128]) * (dl[4] * float(q2 & 0x0Fu) - ml[4])
+              + float(in_ptr[base_idx + 160]) * (dl[5] * float(q2 >> 4)    - ml[5])
+              + float(in_ptr[base_idx + 192]) * (dl[6] * float(q3 & 0x0Fu) - ml[6])
+              + float(in_ptr[base_idx + 224]) * (dl[7] * float(q3 >> 4)    - ml[7]);
+  }
+  down_acc = simd_sum(down_acc);
+  if (lane == 0) {
+    output[row * params.k + col] = half(down_acc + float(residual[row * params.k + col]));
   }
 }
 |}
@@ -2348,7 +2711,15 @@ let kquant_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q6_k_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16 ]
+      ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_k_dual_swiglu_f16"
+      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_k_down_add_f16"
+      ~operation:Kernel_abi.Operation.Fused_linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16 ]
 
 let add_kquant_kernels program =
   Program.make
