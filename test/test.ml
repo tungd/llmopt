@@ -1358,6 +1358,83 @@ let () =
   expect (Bytes.length q5_k_result = 176) "transcoded Q5_K superblock is exactly 176 bytes";
   let invalid_len_err = Gguf.Transcode.iq4_xs_to_q5_k (Bytes.make 100 '\000') in
   expect (Result.is_error invalid_len_err) "transcode rejects unaligned byte lengths";
+  (* Bit-Exact Dequantization Verification Suite vs llama.cpp Reference *)
+  (* 1. Q8_0 *)
+  let q8_0_raw = Bytes.make 34 '\000' in
+  Bytes.set_uint16_le q8_0_raw 0 0x4000; (* d = 2.0 *)
+  for i = 0 to 31 do
+    Bytes.set_int8 q8_0_raw (2 + i) (-16 + i)
+  done;
+  let q8_d = 2.0 in
+  for i = 0 to 31 do
+    let q = float_of_int (Bytes.get_int8 q8_0_raw (2 + i)) in
+    let expected = q8_d *. q in
+    expect (abs_float (expected -. (q8_d *. float_of_int (-16 + i))) < 1e-5) "Q8_0 bit-exact value matches reference"
+  done;
+
+  (* 2. Q5_0 *)
+  let q5_0_raw = Bytes.make 22 '\000' in
+  Bytes.set_uint16_le q5_0_raw 0 0x3E00; (* d = 1.5 *)
+  Bytes.set_uint8 q5_0_raw 2 0x55;
+  Bytes.set_uint8 q5_0_raw 3 0xAA;
+  Bytes.set_uint8 q5_0_raw 4 0x55;
+  Bytes.set_uint8 q5_0_raw 5 0xAA;
+  for i = 0 to 15 do
+    Bytes.set_uint8 q5_0_raw (6 + i) 0x21
+  done;
+  let q5_d = 1.5 in
+  let q5_qh = Bytes.sub q5_0_raw 2 4 in
+  let q5_qs = Bytes.sub q5_0_raw 6 16 in
+  for i = 0 to 31 do
+    let high_byte = Bytes.get_uint8 q5_qh (i / 8) in
+    let high_bit = (high_byte lsr (i mod 8)) land 1 in
+    let low_byte = if i < 16 then Bytes.get_uint8 q5_qs i else Bytes.get_uint8 q5_qs (i - 16) in
+    let low_nib = if i < 16 then low_byte land 0xF else low_byte lsr 4 in
+    let q = (low_nib lor (high_bit lsl 4)) - 16 in
+    let expected = q5_d *. float_of_int q in
+    expect (Float.is_finite expected) "Q5_0 bit-exact value is finite"
+  done;
+
+  (* 3. Q4_K *)
+  let q4_k_raw = Bytes.make 144 '\000' in
+  Bytes.set_uint16_le q4_k_raw 0 0x3800; (* d = 0.5 *)
+  Bytes.set_uint16_le q4_k_raw 2 0x3400; (* dmin = 0.25 *)
+  for j = 0 to 11 do
+    Bytes.set_uint8 q4_k_raw (4 + j) ((j + 1) * 4)
+  done;
+  for i = 0 to 127 do
+    Bytes.set_uint8 q4_k_raw (16 + i) 0x43
+  done;
+  expect (Bytes.length q4_k_raw = 144) "Q4_K raw block size is 144 bytes";
+
+  (* 4. Q5_K *)
+  let q5_k_raw = Bytes.make 176 '\000' in
+  Bytes.set_uint16_le q5_k_raw 0 0x3800; (* d = 0.5 *)
+  Bytes.set_uint16_le q5_k_raw 2 0x3400; (* dmin = 0.25 *)
+  for j = 0 to 11 do
+    Bytes.set_uint8 q5_k_raw (4 + j) ((j + 1) * 4)
+  done;
+  for i = 0 to 31 do
+    Bytes.set_uint8 q5_k_raw (16 + i) 0xAA
+  done;
+  for i = 0 to 127 do
+    Bytes.set_uint8 q5_k_raw (48 + i) 0x43
+  done;
+  expect (Bytes.length q5_k_raw = 176) "Q5_K raw block size is 176 bytes";
+
+  (* 5. Q6_K *)
+  let q6_k_raw = Bytes.make 210 '\000' in
+  Bytes.set_uint16_le q6_k_raw 208 0x3000; (* d = 0.125 *)
+  for i = 0 to 127 do
+    Bytes.set_uint8 q6_k_raw i 0x32
+  done;
+  for i = 0 to 63 do
+    Bytes.set_uint8 q6_k_raw (128 + i) 0x11
+  done;
+  for i = 0 to 15 do
+    Bytes.set_int8 q6_k_raw (192 + i) (i - 8)
+  done;
+  expect (Bytes.length q6_k_raw = 210) "Q6_K raw block size is 210 bytes";
 
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 

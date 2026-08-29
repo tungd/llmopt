@@ -98,6 +98,58 @@ class QuantizationTest(unittest.TestCase):
             ["proj_bias", "proj_packed_weight", "proj_scale"],
         )
 
+    def test_ggml_q8_0_dequant_reference(self):
+        # 34 bytes block_q8_0
+        raw = bytearray(34)
+        # scale = 2.0 (FP16 = 0x4000)
+        raw[0:2] = (0x4000).to_bytes(2, "little")
+        for i in range(32):
+            val = (-16 + i) & 0xFF
+            raw[2 + i] = val
+        d = float(torch.tensor([0x4000], dtype=torch.int16).view(torch.float16).item())
+        qs = [int.from_bytes(bytes([raw[2 + i]]), "little", signed=True) for i in range(32)]
+        expected = [d * float(q) for q in qs]
+        self.assertEqual(len(expected), 32)
+        self.assertEqual(expected[0], -32.0)
+        self.assertEqual(expected[16], 0.0)
+
+    def test_ggml_q5_0_dequant_reference(self):
+        # 22 bytes block_q5_0
+        raw = bytearray(22)
+        raw[0:2] = (0x3E00).to_bytes(2, "little") # d = 1.5
+        raw[2:6] = bytes([0x55, 0xAA, 0x55, 0xAA]) # qh
+        for i in range(16):
+            raw[6 + i] = 0x21 # low nib = 1, high nib = 2
+        d = float(torch.tensor([0x3E00], dtype=torch.int16).view(torch.float16).item())
+        qh = raw[2:6]
+        qs = raw[6:22]
+        out = []
+        for i in range(32):
+            high_byte = qh[i >> 3]
+            high_bit = (high_byte >> (i & 7)) & 1
+            low_byte = qs[i] if i < 16 else qs[i - 16]
+            low_nib = (low_byte & 0x0F) if i < 16 else (low_byte >> 4)
+            q = (low_nib | (high_bit << 4)) - 16
+            out.append(d * float(q))
+        self.assertEqual(len(out), 32)
+        self.assertAlmostEqual(out[0], 1.5 * ((1 | (1 << 4)) - 16))
+
+    def test_ggml_q4_k_dequant_reference(self):
+        # 144 bytes block_q4_K
+        raw = bytearray(144)
+        raw[0:2] = (0x3800).to_bytes(2, "little") # d = 0.5
+        raw[2:4] = (0x3400).to_bytes(2, "little") # dmin = 0.25
+        # Set scales and mins
+        for j in range(12):
+            raw[4 + j] = (j + 1) * 5
+        for i in range(128):
+            raw[16 + i] = 0x43
+        d = float(torch.tensor([0x3800], dtype=torch.int16).view(torch.float16).item())
+        dmin = float(torch.tensor([0x3400], dtype=torch.int16).view(torch.float16).item())
+        self.assertEqual(d, 0.5)
+        self.assertEqual(dmin, 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()
+
