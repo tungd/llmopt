@@ -155,4 +155,10 @@ struct QuantLinearParams { uint m; uint n; uint k; uint has_bias; };
   benchmark_ffn_block ~ctx ~lib ~k:2048 ~n:8192 ~bytes_per_row:(2048 / 32 * 34) ~quant_name:"Q8_0"
     ~dual_name:"llmopt_q8_0_dual_swiglu_f16" ~down_name:"llmopt_q8_0_down_add_f16";
 
+  Printf.printf "\n  --- Gemma-4-E2B Complete Fused FFN Block (K=1536, N=8960) ---\n";
+  benchmark_ffn_block ~ctx ~lib ~k:1536 ~n:8960 ~bytes_per_row:(1536 / 256 * 144) ~quant_name:"Q4_K"
+    ~dual_name:"llmopt_q4_k_dual_swiglu_f16" ~down_name:"llmopt_q4_k_down_add_f16";
+  benchmark_ffn_block ~ctx ~lib ~k:1536 ~n:8960 ~bytes_per_row:(1536 / 32 * 34) ~quant_name:"Q8_0"
+    ~dual_name:"llmopt_q8_0_dual_swiglu_f16" ~down_name:"llmopt_q8_0_down_add_f16";
+
   Printf.printf "\n=================================================================\n%!"

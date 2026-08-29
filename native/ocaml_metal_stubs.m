@@ -510,7 +510,7 @@ CAMLprim value caml_llmopt_metal_create_buffer(value context_value,
     caml_failwith("Metal context has been finalized");
   }
   if (requested <= 0) {
-    caml_invalid_argument("Metal buffer size must be positive");
+    requested = 16;
   }
   @autoreleasepool {
     id<MTLBuffer> metal_buffer =

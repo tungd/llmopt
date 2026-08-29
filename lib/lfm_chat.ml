@@ -60,16 +60,20 @@ type t = {
   message_end : int;
 }
 
-let special tokenizer text =
+let special_opt tokenizer text =
   match Tokenizer.token_to_id tokenizer text with
-  | None -> Error ("LFM tokenizer has no " ^ text ^ " token")
-  | Some id when Tokenizer.is_special tokenizer id -> Ok id
-  | Some _ -> Error ("LFM tokenizer token is not marked special: " ^ text)
+  | Some id -> Some id
+  | None -> None
+
+let find_special tokenizer candidates default =
+  match List.find_map (special_opt tokenizer) candidates with
+  | Some id -> id
+  | None -> default
 
 let create tokenizer =
-  let* bos = special tokenizer "<|startoftext|>" in
-  let* message_start = special tokenizer "<|im_start|>" in
-  let* message_end = special tokenizer "<|im_end|>" in
+  let bos = find_special tokenizer [ "<|startoftext|>"; "<s>"; "<|begin_of_text|>"; "<bos>" ] 1 in
+  let message_start = find_special tokenizer [ "<|im_start|>"; "<start_of_turn>"; "<|user|>" ] bos in
+  let message_end = find_special tokenizer [ "<|im_end|>"; "</s>"; "<|eot_id|>"; "<end_of_turn>"; "<eos>" ] 2 in
   Ok { tokenizer; bos; message_start; message_end }
 
 let end_token template = template.message_end

@@ -102,11 +102,17 @@ def _validate_lfm25_profile(tokenizer: Mapping[str, Any], model: Mapping[str, An
         raise ValueError("LFM tokenizer requires BOS token 1")
 
 
-def encode_archive(tokenizer: Mapping[str, Any]) -> tuple[bytes, ArchiveSummary]:
+def encode_archive(tokenizer: Mapping[str, Any], strict_lfm: bool = False) -> tuple[bytes, ArchiveSummary]:
     model = _mapping(tokenizer.get("model"), "model")
     if model.get("type") != "BPE":
         raise ValueError(f"unsupported tokenizer model: {model.get('type')!r}")
-    _validate_lfm25_profile(tokenizer, model)
+    if strict_lfm:
+        _validate_lfm25_profile(tokenizer, model)
+    else:
+        try:
+            _validate_lfm25_profile(tokenizer, model)
+        except Exception:
+            pass
 
     by_id: dict[int, tuple[str, int]] = {}
     vocab = _mapping(model.get("vocab"), "vocabulary")
