@@ -64,7 +64,17 @@ end
 
 module Pointwise : sig
   type operand = Tensor of Value.t | Scalar of Scalar.t
-  type unary = Neg | Rsqrt | Silu | Cos | Sin | Tanh | Pow of Scalar.t
+  type unary =
+    | Neg
+    | Rsqrt
+    | Silu
+    | Cos
+    | Sin
+    | Tanh
+    | Exp
+    | Sigmoid
+    | Softplus
+    | Pow of Scalar.t
   type binary =
     | Add
     | Mul
@@ -218,6 +228,11 @@ module Primitive : sig
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t
+    | Pad_right_zero of { axis : int }
+    | Triangular of { upper : bool; diagonal : int }
+    | Masked_fill of Scalar.t
+    | Eye
+    | Batched_matmul
 
   val values : t -> Value.t list
   val to_string : t -> string

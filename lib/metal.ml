@@ -2687,6 +2687,60 @@ kernel void llmopt_q6_k_linear_f16(
 }
 |}
 
+let iq4_xs_source = {|
+struct block_iq4_xs {
+    half d;
+    ushort scales_h;
+    uint8_t scales_l[4];
+    uint8_t qs[128];
+};
+
+constant int llmopt_iq4nl_values[16] = {
+    -127, -104, -83, -65, -49, -35, -22, -10,
+       1,   13,  25,  38,  53,  69,  89, 113
+};
+
+kernel void llmopt_iq4_xs_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_iq4_xs* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_superblocks = params.k >> 8;
+  device const block_iq4_xs* row_blocks = weight + col * num_superblocks;
+  device const half* in_ptr = input + row * params.k;
+  float accumulator = 0.0f;
+  for (uint block = 0; block < num_superblocks; ++block) {
+    device const block_iq4_xs& value = row_blocks[block];
+    for (uint subblock = 0; subblock < 8; ++subblock) {
+      const uint low = (value.scales_l[subblock >> 1]
+          >> (4 * (subblock & 1))) & 0x0Fu;
+      const uint high = (value.scales_h >> (2 * subblock)) & 0x03u;
+      const int logarithmic_scale = int(low | (high << 4)) - 32;
+      const float scale = float(value.d)
+          * exp2(float(logarithmic_scale) * 0.125f);
+      const uint8_t packed = value.qs[(subblock >> 1) * 32 + lane];
+      const uint index = (subblock & 1) != 0 ? packed >> 4 : packed & 0x0Fu;
+      const float dequantized = scale * float(llmopt_iq4nl_values[index]);
+      accumulator += float(in_ptr[block * 256 + subblock * 32 + lane])
+          * dequantized;
+    }
+  }
+  accumulator = simd_sum(accumulator);
+  if (lane == 0) {
+    if (params.has_bias != 0u) accumulator += float(bias[col]);
+    output[row * params.n + col] = half(accumulator);
+  }
+}
+|}
+
 let kquant_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_dequant_q4_k"
@@ -2712,6 +2766,10 @@ let kquant_entries =
       ~name:"llmopt_q6_k_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_iq4_xs_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant IQ4_XS) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_k_dual_swiglu_f16"
       ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
@@ -3135,11 +3193,42 @@ let short_conv_source =
   ^ "  output[gid] = half(accumulator);\n"
   ^ "}\n"
 
+let short_conv_f32_weight_source = {|
+kernel void llmopt_short_conv_f16_f32(
+    device const half* input [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant ShortConvParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.batches * params.channels * params.output_width;
+  if (gid >= count) return;
+  const uint position = gid % params.output_width;
+  const uint channel = (gid / params.output_width) % params.channels;
+  const uint batch = gid / (params.output_width * params.channels);
+  float accumulator = 0.0f;
+  for (uint tap = 0; tap < params.kernel_width; ++tap) {
+    const int source_position = int(position * params.stride)
+        - int(params.padding) + int(tap * params.dilation);
+    if (source_position >= 0 && source_position < int(params.input_width)) {
+      const uint input_index = ((batch * params.channels + channel)
+          * params.input_width) + uint(source_position);
+      const uint weight_index = channel * params.kernel_width + tap;
+      accumulator += float(input[input_index]) * weight[weight_index];
+    }
+  }
+  output[gid] = half(accumulator);
+}
+|}
+
 let short_conv_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_short_conv_f16"
       ~operation:Kernel_abi.Operation.Short_conv
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_f16_f32"
+      ~operation:Kernel_abi.Operation.Short_conv
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16 ]
 
 let short_conv_step_source =
   "\nstruct ShortConvStepParams {\n"
@@ -3714,11 +3803,175 @@ let cumsum_source =
   ^ "    output[index] = accumulator;\n"
   ^ "  }\n"
   ^ "}\n"
+  ^ "\nkernel void llmopt_cumsum_f32(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant CumsumParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint lanes = params.outer * params.inner;\n"
+  ^ "  if (gid >= lanes) return;\n"
+  ^ "  const uint outer_index = gid / params.inner;\n"
+  ^ "  const uint inner_index = gid % params.inner;\n"
+  ^ "  float accumulator = 0.0f;\n"
+  ^ "  for (uint axis_index = 0; axis_index < params.width; ++axis_index) {\n"
+  ^ "    const uint index = ((outer_index * params.width + axis_index)\n"
+  ^ "        * params.inner) + inner_index;\n"
+  ^ "    accumulator += input[index];\n"
+  ^ "    output[index] = accumulator;\n"
+  ^ "  }\n"
+  ^ "}\n"
 
 let cumsum_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_cumsum_bool_i64" ~operation:Kernel_abi.Operation.Cumsum
-      ~input_dtype:Ir.Dtype.Bool ~output_dtype:Ir.Dtype.Int64 ]
+      ~input_dtype:Ir.Dtype.Bool ~output_dtype:Ir.Dtype.Int64;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_cumsum_f32" ~operation:Kernel_abi.Operation.Cumsum
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
+let tensor_primitive_source = {|
+struct PadRightZeroParams {
+  uint count; uint input_axis; uint output_axis; uint inner;
+};
+
+kernel void llmopt_pad_right_zero_f32(
+    device const float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    constant PadRightZeroParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.count) return;
+  const uint inner_index = gid % params.inner;
+  const uint axis_index = (gid / params.inner) % params.output_axis;
+  const uint outer_index = gid / (params.inner * params.output_axis);
+  if (axis_index < params.input_axis) {
+    const uint input_index = ((outer_index * params.input_axis + axis_index)
+        * params.inner) + inner_index;
+    output[gid] = input[input_index];
+  } else {
+    output[gid] = 0.0f;
+  }
+}
+
+struct TriangularParams {
+  uint count; uint rows; uint cols; uint upper; int diagonal;
+};
+
+kernel void llmopt_triangular_bool(
+    device const uchar* input [[buffer(0)]],
+    device uchar* output [[buffer(1)]],
+    constant TriangularParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.count) return;
+  const int row = int((gid / params.cols) % params.rows);
+  const int col = int(gid % params.cols);
+  const bool keep = params.upper != 0
+      ? col - row >= params.diagonal : col - row <= params.diagonal;
+  output[gid] = keep ? input[gid] : 0;
+}
+
+kernel void llmopt_triangular_f32(
+    device const float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    constant TriangularParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.count) return;
+  const int row = int((gid / params.cols) % params.rows);
+  const int col = int(gid % params.cols);
+  const bool keep = params.upper != 0
+      ? col - row >= params.diagonal : col - row <= params.diagonal;
+  output[gid] = keep ? input[gid] : 0.0f;
+}
+
+struct MaskedFillParams {
+  uint count; uint rank; uint left_scalar; uint right_scalar;
+  uint output_shape[8]; uint input_shape[8]; uint mask_shape[8];
+  long left_i64; long right_i64; float left_f32; float fill_value;
+};
+
+kernel void llmopt_masked_fill_f32(
+    device const float* input [[buffer(0)]],
+    device const uchar* mask [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant MaskedFillParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.count) return;
+  uint remaining = gid;
+  uint mask_offset = 0;
+  uint mask_stride = 1;
+  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {
+    const uint coordinate = remaining % params.output_shape[axis];
+    remaining /= params.output_shape[axis];
+    const uint dimension = params.mask_shape[axis];
+    mask_offset += (dimension == 1 ? 0 : coordinate) * mask_stride;
+    mask_stride *= dimension;
+  }
+  output[gid] = mask[mask_offset] != 0 ? params.fill_value : input[gid];
+}
+
+struct EyeParams { uint count; uint rows; uint cols; };
+
+kernel void llmopt_eye_f32(
+    device float* output [[buffer(0)]],
+    constant EyeParams& params [[buffer(1)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid < params.count)
+    output[gid] = gid / params.cols == gid % params.cols ? 1.0f : 0.0f;
+}
+
+struct BatchedMatmulParams {
+  uint count; uint m; uint n; uint k; uint rank;
+  uint batch_shape[3]; uint lhs_batch_shape[3]; uint rhs_batch_shape[3];
+};
+
+kernel void llmopt_batched_matmul_f32(
+    device const float* lhs [[buffer(0)]],
+    device const float* rhs [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant BatchedMatmulParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= params.count) return;
+  const uint col = gid % params.n;
+  const uint row = (gid / params.n) % params.m;
+  uint batch_index = gid / (params.m * params.n);
+  uint coordinates[3] = {};
+  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {
+    coordinates[axis] = batch_index % params.batch_shape[axis];
+    batch_index /= params.batch_shape[axis];
+  }
+  uint lhs_batch = 0;
+  uint rhs_batch = 0;
+  for (uint axis = 0; axis < params.rank; ++axis) {
+    lhs_batch = lhs_batch * params.lhs_batch_shape[axis]
+        + (params.lhs_batch_shape[axis] == 1 ? 0 : coordinates[axis]);
+    rhs_batch = rhs_batch * params.rhs_batch_shape[axis]
+        + (params.rhs_batch_shape[axis] == 1 ? 0 : coordinates[axis]);
+  }
+  float accumulator = 0.0f;
+  const uint lhs_base = (lhs_batch * params.m + row) * params.k;
+  const uint rhs_base = (rhs_batch * params.k) * params.n + col;
+  for (uint inner = 0; inner < params.k; ++inner)
+    accumulator += lhs[lhs_base + inner] * rhs[rhs_base + inner * params.n];
+  output[gid] = accumulator;
+}
+|}
+
+let tensor_primitive_entries =
+  let entry name operation input_dtype output_dtype =
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name ~operation
+      ~input_dtype ~output_dtype
+  in
+  [ entry "llmopt_pad_right_zero_f32" Kernel_abi.Operation.Movement
+      Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_triangular_bool" Kernel_abi.Operation.Pointwise
+      Ir.Dtype.Bool Ir.Dtype.Bool;
+    entry "llmopt_triangular_f32" Kernel_abi.Operation.Pointwise
+      Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_masked_fill_f32" Kernel_abi.Operation.Pointwise
+      Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_eye_f32" Kernel_abi.Operation.Fill Ir.Dtype.Float32
+      Ir.Dtype.Float32;
+    entry "llmopt_batched_matmul_f32" Kernel_abi.Operation.Matmul
+      Ir.Dtype.Float32 Ir.Dtype.Float32 ]
 
 let fill_source =
   "\nstruct FillBoolParams { uint count; uint value; };\n\n"
@@ -3862,6 +4115,19 @@ let pointwise_unary_kernel ~name ~input_type ~output_type ~expression =
   ^ "  }\n"
   ^ "}\n\n"
 
+let pointwise_mixed_mul_f16_f32 =
+  "kernel void llmopt_mul_f16_f32(\n"
+  ^ "    device const half* left [[buffer(0)]],\n"
+  ^ "    device const float* right [[buffer(1)]],\n"
+  ^ "    device float* output [[buffer(2)]],\n"
+  ^ "    constant PointwiseParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.count) return;\n"
+  ^ "  const uint left_offset = llmopt_pointwise_offset(gid, params, true);\n"
+  ^ "  const uint right_offset = llmopt_pointwise_offset(gid, params, false);\n"
+  ^ "  output[gid] = float(left[left_offset]) * right[right_offset];\n"
+  ^ "}\n\n"
+
 let pointwise_source =
   "\nstruct PointwiseParams {\n"
   ^ "  uint count; uint rank; uint left_scalar; uint right_scalar;\n"
@@ -3897,6 +4163,9 @@ let pointwise_source =
   ^ pointwise_binary_kernel ~name:"llmopt_sub_i64" ~input_type:"long"
       ~output_type:"long" ~scalar_field:"i64" ~scalar_cast:"long"
       ~expression:"left_value - right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_sub_f32" ~input_type:"float"
+      ~output_type:"float" ~scalar_field:"f32" ~scalar_cast:"float"
+      ~expression:"left_value - right_value"
   ^ pointwise_binary_kernel ~name:"llmopt_div_f16" ~input_type:"half"
       ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
       ~expression:"left_value / right_value"
@@ -3906,6 +4175,7 @@ let pointwise_source =
   ^ pointwise_binary_kernel ~name:"llmopt_mul_f32" ~input_type:"float"
       ~output_type:"float" ~scalar_field:"f32" ~scalar_cast:"float"
       ~expression:"left_value * right_value"
+  ^ pointwise_mixed_mul_f16_f32
   ^ pointwise_binary_kernel ~name:"llmopt_le_i64" ~input_type:"long"
       ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
       ~expression:"left_value <= right_value ? 1 : 0"
@@ -3923,15 +4193,31 @@ let pointwise_source =
       ~expression:"(left_value != 0 && right_value != 0) ? 1 : 0"
   ^ pointwise_unary_kernel ~name:"llmopt_neg_f16" ~input_type:"half"
       ~output_type:"half" ~expression:"-value"
+  ^ pointwise_unary_kernel ~name:"llmopt_neg_f32" ~input_type:"float"
+      ~output_type:"float" ~expression:"-value"
   ^ pointwise_unary_kernel ~name:"llmopt_silu_f16" ~input_type:"half"
       ~output_type:"half"
       ~expression:"half(float(value) / (1.0f + exp(-float(value))))"
+  ^ pointwise_unary_kernel ~name:"llmopt_silu_f32" ~input_type:"float"
+      ~output_type:"float" ~expression:"value / (1.0f + exp(-value))"
   ^ pointwise_unary_kernel ~name:"llmopt_cos_f32" ~input_type:"float"
       ~output_type:"float" ~expression:"cos(value)"
   ^ pointwise_unary_kernel ~name:"llmopt_sin_f32" ~input_type:"float"
       ~output_type:"float" ~expression:"sin(value)"
   ^ pointwise_unary_kernel ~name:"llmopt_tanh_f16" ~input_type:"half"
       ~output_type:"half" ~expression:"half(tanh(float(value)))"
+  ^ pointwise_unary_kernel ~name:"llmopt_exp_f32" ~input_type:"float"
+      ~output_type:"float" ~expression:"exp(value)"
+  ^ pointwise_unary_kernel ~name:"llmopt_sigmoid_f16" ~input_type:"half"
+      ~output_type:"half"
+      ~expression:"half(1.0f / (1.0f + exp(-float(value))))"
+  ^ pointwise_unary_kernel ~name:"llmopt_softplus_f32" ~input_type:"float"
+      ~output_type:"float"
+      ~expression:"value > 20.0f ? value : log(1.0f + exp(value))"
+  ^ pointwise_unary_kernel ~name:"llmopt_rsqrt_f16" ~input_type:"half"
+      ~output_type:"half" ~expression:"half(rsqrt(float(value)))"
+  ^ pointwise_unary_kernel ~name:"llmopt_rsqrt_f32" ~input_type:"float"
+      ~output_type:"float" ~expression:"rsqrt(value)"
   ^ "kernel void llmopt_pow_f32(\n"
   ^ "    device const float* input [[buffer(0)]],\n"
   ^ "    device float* output [[buffer(1)]],\n"
@@ -3953,19 +4239,28 @@ let pointwise_entries =
     entry "llmopt_add_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_add_i64" Ir.Dtype.Int64 Ir.Dtype.Int64;
     entry "llmopt_sub_i64" Ir.Dtype.Int64 Ir.Dtype.Int64;
+    entry "llmopt_sub_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_div_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_mul_f16_f32" Ir.Dtype.Float16 Ir.Dtype.Float32;
     entry "llmopt_le_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
     entry "llmopt_gt_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
     entry "llmopt_eq_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
     entry "llmopt_ne_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
     entry "llmopt_tanh_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_exp_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_sigmoid_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_softplus_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_pow_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_rsqrt_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_rsqrt_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_gelu_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_and_bool" Ir.Dtype.Bool Ir.Dtype.Bool;
     entry "llmopt_neg_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_neg_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_silu_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_silu_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_cos_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_sin_f32" Ir.Dtype.Float32 Ir.Dtype.Float32 ]
 
@@ -4117,6 +4412,7 @@ let movement_source =
   ^ movement_expand_kernel ~name:"llmopt_expand_f16" ~value_type:"half"
   ^ movement_expand_kernel ~name:"llmopt_expand_f32" ~value_type:"float"
   ^ movement_expand_kernel ~name:"llmopt_expand_bool" ~value_type:"uchar"
+  ^ movement_expand_kernel ~name:"llmopt_expand_i64" ~value_type:"long"
   ^ movement_concat_kernel ~name:"llmopt_concat_f16" ~value_type:"half"
   ^ movement_concat_kernel ~name:"llmopt_concat_f32" ~value_type:"float"
   ^ movement_roll_kernel ~name:"llmopt_roll_f16" ~value_type:"half"
@@ -4135,6 +4431,7 @@ let movement_entries =
     entry "llmopt_expand_f16" Ir.Dtype.Float16;
     entry "llmopt_expand_f32" Ir.Dtype.Float32;
     entry "llmopt_expand_bool" Ir.Dtype.Bool;
+    entry "llmopt_expand_i64" Ir.Dtype.Int64;
     entry "llmopt_concat_f16" Ir.Dtype.Float16;
     entry "llmopt_concat_f32" Ir.Dtype.Float32;
     entry "llmopt_roll_f16" Ir.Dtype.Float16 ]
@@ -4157,6 +4454,23 @@ let reduction_source =
   ^ "    accumulator += float(input[offset]);\n"
   ^ "  }\n"
   ^ "  output[gid] = half(accumulator);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_sum_f32(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant ReductionParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.outer * params.inner;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint outer_index = gid / params.inner;\n"
+  ^ "  const uint inner_index = gid % params.inner;\n"
+  ^ "  float accumulator = 0.0f;\n"
+  ^ "  for (uint axis = 0; axis < params.width; ++axis) {\n"
+  ^ "    const uint offset = ((outer_index * params.width + axis)\n"
+  ^ "        * params.inner) + inner_index;\n"
+  ^ "    accumulator += input[offset];\n"
+  ^ "  }\n"
+  ^ "  output[gid] = accumulator;\n"
   ^ "}\n\n"
   ^ "kernel void llmopt_mean_f32(\n"
   ^ "    device const float* input [[buffer(0)]],\n"
@@ -4181,14 +4495,17 @@ let reduction_entries =
       ~name:"llmopt_sum_f16" ~operation:Kernel_abi.Operation.Reduction
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_sum_f32" ~operation:Kernel_abi.Operation.Reduction
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_mean_f32" ~operation:Kernel_abi.Operation.Reduction
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
-let update_slice_source =
-  "kernel void llmopt_update_slice_f16(\n"
-  ^ "    device const half* destination [[buffer(0)]],\n"
-  ^ "    device const half* source [[buffer(1)]],\n"
-  ^ "    device half* output [[buffer(2)]],\n"
+let update_slice_kernel_source ~name ~value_type =
+  "kernel void " ^ name ^ "(\n"
+  ^ "    device const " ^ value_type ^ "* destination [[buffer(0)]],\n"
+  ^ "    device const " ^ value_type ^ "* source [[buffer(1)]],\n"
+  ^ "    device " ^ value_type ^ "* output [[buffer(2)]],\n"
   ^ "    constant IndexParams& params [[buffer(3)]],\n"
   ^ "    uint gid [[thread_position_in_grid]]) {\n"
   ^ "  if (gid >= params.count) return;\n"
@@ -4234,11 +4551,19 @@ let update_slice_source =
   ^ "  output[gid] = source[source_offset];\n"
   ^ "}\n\n"
 
+let update_slice_source =
+  update_slice_kernel_source ~name:"llmopt_update_slice_f16" ~value_type:"half"
+  ^ update_slice_kernel_source ~name:"llmopt_update_slice_f32" ~value_type:"float"
+
 let update_slice_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_update_slice_f16"
       ~operation:Kernel_abi.Operation.Update_slice
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_update_slice_f32"
+      ~operation:Kernel_abi.Operation.Update_slice
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
 let has_rms_norm graph =
   Ir.Graph.nodes graph
@@ -4314,6 +4639,13 @@ let has_materialized_movement graph =
         | Ir.Movement.Contiguous -> false)
     | _ -> false)
 
+let has_tensor_primitive graph =
+  has_primitive graph (function
+    | Ir.Primitive.Pad_right_zero _ | Ir.Primitive.Triangular _
+    | Ir.Primitive.Masked_fill _ | Ir.Primitive.Eye
+    | Ir.Primitive.Batched_matmul -> true
+    | _ -> false)
+
 let has_w4a16_linear graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -4387,9 +4719,9 @@ let has_quant_linear graph =
              Some output ) ->
              (match Ir.Value.dtype weight with
              | Ir.Dtype.Quant
-                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0) ->
+                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | IQ4_XS) ->
                  Ir.Value.dtype output = Ir.Dtype.Float16
-             | Ir.Dtype.Quant IQ4_XS | _ -> false)
+             | _ -> false)
          | _ -> false)
 
 let lower_primary graph =
@@ -4579,7 +4911,7 @@ let lower graph =
         w4a16_lm_head_argmax_entries );
       ( has_quant_linear graph,
         quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source
-        ^ q4_k_source ^ q5_k_source ^ q6_k_source,
+        ^ q4_k_source ^ q5_k_source ^ q6_k_source ^ iq4_xs_source,
         block32_entries @ kquant_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       ( has_f16_bf16_linear graph,
@@ -4591,7 +4923,9 @@ let lower graph =
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_rms_rope_qk graph, rms_rope_qk_source, rms_rope_qk_entries;
-      has_short_conv graph, short_conv_source, short_conv_entries;
+      ( has_short_conv graph,
+        short_conv_source ^ short_conv_f32_weight_source,
+        short_conv_entries );
       has_short_conv_step graph, short_conv_step_source, short_conv_step_entries;
       ( has_short_conv_step_fused graph,
         short_conv_step_fused_source,
@@ -4611,6 +4945,7 @@ let lower graph =
       ( has_primitive graph (function Ir.Primitive.Cumsum _ -> true | _ -> false),
         cumsum_source,
         cumsum_entries );
+      (has_tensor_primitive graph, tensor_primitive_source, tensor_primitive_entries);
       ( has_primitive graph (function Ir.Primitive.Fill _ -> true | _ -> false),
         fill_source,
         fill_entries );

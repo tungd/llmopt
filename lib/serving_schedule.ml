@@ -430,7 +430,9 @@ let validate_command seen_values command =
             if
               Tensor_shape.equal inferred (Ir.Value.logical_shape output)
               && Ir.Value.dtype input = Ir.Dtype.Float16
-              && Ir.Value.dtype weight = Ir.Dtype.Float16
+              &&
+              (Ir.Value.dtype weight = Ir.Dtype.Float16
+              || Ir.Value.dtype weight = Ir.Dtype.Float32)
               && Ir.Value.dtype output = Ir.Dtype.Float16
             then Ok ()
             else
@@ -746,8 +748,11 @@ let validate_command seen_values command =
               && Tensor_shape.equal
                    (Ir.Value.logical_shape input)
                    (Ir.Value.logical_shape output)
-              && Ir.Value.dtype input = Ir.Dtype.Bool
-              && Ir.Value.dtype output = Ir.Dtype.Int64
+              &&
+              ((Ir.Value.dtype input = Ir.Dtype.Bool
+                && Ir.Value.dtype output = Ir.Dtype.Int64)
+              || (Ir.Value.dtype input = Ir.Dtype.Float32
+                 && Ir.Value.dtype output = Ir.Dtype.Float32))
             then Ok ()
             else
               Error
@@ -801,10 +806,86 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d slice-update metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Pad_right_zero { axis }),
+            [ input ], Some output ) ->
+            let input_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape input)
+            in
+            let output_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape output)
+            in
+            let valid_dimensions =
+              List.length input_dimensions = List.length output_dimensions
+              && axis >= 0 && axis < List.length input_dimensions
+              && List.mapi
+                   (fun current dimension ->
+                     if current = axis then
+                       List.nth output_dimensions current >= dimension
+                     else List.nth output_dimensions current = dimension)
+                   input_dimensions
+                 |> List.for_all Fun.id
+            in
+            if
+              valid_dimensions
+              && Ir.Value.dtype input = Ir.Value.dtype output
+            then Ok ()
+            else Error "pad-right-zero metadata is inconsistent"
+        | ( Ir.Op.Primitive (Ir.Primitive.Triangular _),
+            [ input ], Some output ) ->
+            if
+              Tensor_shape.rank (Ir.Value.logical_shape input) >= 2
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape input)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Value.dtype output
+            then Ok ()
+            else Error "triangular metadata is inconsistent"
+        | ( Ir.Op.Primitive (Ir.Primitive.Masked_fill scalar),
+            [ input; mask ], Some output ) ->
+            let* broadcast =
+              Tensor_shape.broadcast (Ir.Value.logical_shape input)
+                (Ir.Value.logical_shape mask)
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            if
+              Tensor_shape.equal broadcast (Ir.Value.logical_shape output)
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape input)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Value.dtype output
+              && Ir.Value.dtype mask = Ir.Dtype.Bool
+              && scalar_matches_dtype scalar (Ir.Value.dtype output)
+            then Ok ()
+            else Error "masked-fill metadata is inconsistent"
+        | Ir.Op.Primitive Ir.Primitive.Eye, [], Some output ->
+            if
+              Tensor_shape.rank (Ir.Value.logical_shape output) = 2
+              && Ir.Value.dtype output = Ir.Dtype.Float32
+            then Ok ()
+            else Error "eye metadata is inconsistent"
+        | ( Ir.Op.Primitive Ir.Primitive.Batched_matmul,
+            [ lhs; rhs ], Some output ) ->
+            let lhs_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape lhs)
+            in
+            let rhs_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape rhs)
+            in
+            if
+              List.length lhs_dimensions >= 2
+              && List.length rhs_dimensions >= 2
+              && Ir.Value.dtype lhs = Ir.Dtype.Float32
+              && Ir.Value.dtype rhs = Ir.Dtype.Float32
+              && Ir.Value.dtype output = Ir.Dtype.Float32
+            then Ok ()
+            else Error "batched-matmul metadata is inconsistent"
         | ( Ir.Op.Primitive
               (Ir.Primitive.Arange _ | Ir.Primitive.Diff _
               | Ir.Primitive.Cumsum _ | Ir.Primitive.Fill _
               | Ir.Primitive.Gather2 | Ir.Primitive.Update_slice _
+              | Ir.Primitive.Pad_right_zero _ | Ir.Primitive.Triangular _
+              | Ir.Primitive.Masked_fill _ | Ir.Primitive.Eye
+              | Ir.Primitive.Batched_matmul
               | Ir.Primitive.Paged_attention_q8 _),
             _,
             _ ) ->
@@ -1127,6 +1208,14 @@ module Sequence = struct
         |> shape_error
     | Ir.Primitive.Update_slice _, destination :: _ ->
         Ok (Ir.Value.logical_shape destination)
+    | Ir.Primitive.Pad_right_zero _, [ _ ]
+    | Ir.Primitive.Eye, []
+    | Ir.Primitive.Batched_matmul, [ _; _ ] ->
+        map_shape substitutions original
+    | Ir.Primitive.Triangular _, [ input ] ->
+        Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.Masked_fill _, input :: _ ->
+        Ok (Ir.Value.logical_shape input)
     | _ -> Error "cannot infer specialized primitive result shape"
 
   let output_shape substitutions operation inputs original =
@@ -2183,6 +2272,9 @@ let write_pointwise writer = function
       | Ir.Pointwise.Cos -> Binary.Writer.u8 writer 3
       | Ir.Pointwise.Sin -> Binary.Writer.u8 writer 4
       | Ir.Pointwise.Tanh -> Binary.Writer.u8 writer 6
+      | Ir.Pointwise.Exp -> Binary.Writer.u8 writer 7
+      | Ir.Pointwise.Sigmoid -> Binary.Writer.u8 writer 8
+      | Ir.Pointwise.Softplus -> Binary.Writer.u8 writer 9
       | Ir.Pointwise.Pow exponent ->
           Binary.Writer.u8 writer 5;
           write_scalar writer exponent);
@@ -2217,6 +2309,9 @@ let read_pointwise values reader =
         | 4 -> Ok Ir.Pointwise.Sin
         | 5 -> read_scalar reader |> Result.map (fun scalar -> Ir.Pointwise.Pow scalar)
         | 6 -> Ok Ir.Pointwise.Tanh
+        | 7 -> Ok Ir.Pointwise.Exp
+        | 8 -> Ok Ir.Pointwise.Sigmoid
+        | 9 -> Ok Ir.Pointwise.Softplus
         | _ -> Error (Printf.sprintf "unknown pointwise unary tag: %d" tag)
       in
       let* id = Binary.Reader.u32 reader in
@@ -2361,6 +2456,18 @@ let write_primitive writer = function
   | Ir.Primitive.Update_slice index ->
       Binary.Writer.u8 writer 13;
       write_index writer index
+  | Ir.Primitive.Pad_right_zero { axis } ->
+      Binary.Writer.u8 writer 15;
+      Binary.Writer.u16 writer axis
+  | Ir.Primitive.Triangular { upper; diagonal } ->
+      Binary.Writer.u8 writer 16;
+      Binary.Writer.bool writer upper;
+      Binary.Writer.i64 writer diagonal
+  | Ir.Primitive.Masked_fill scalar ->
+      Binary.Writer.u8 writer 17;
+      write_scalar writer scalar
+  | Ir.Primitive.Eye -> Binary.Writer.u8 writer 18
+  | Ir.Primitive.Batched_matmul -> Binary.Writer.u8 writer 19
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2463,6 +2570,18 @@ let read_primitive values reader =
       Ir.Paged_attention_q8.create ~scale ~cache_layer ~attention_layers
         ~kv_heads ~group_size ~token_stride
       |> Result.map (fun config -> Ir.Primitive.Paged_attention_q8 config)
+  | 15 ->
+      Binary.Reader.u16 reader
+      |> Result.map (fun axis -> Ir.Primitive.Pad_right_zero { axis })
+  | 16 ->
+      let* upper = Binary.Reader.bool reader in
+      let* diagonal = Binary.Reader.i64 reader in
+      Ok (Ir.Primitive.Triangular { upper; diagonal })
+  | 17 ->
+      read_scalar reader
+      |> Result.map (fun scalar -> Ir.Primitive.Masked_fill scalar)
+  | 18 -> Ok Ir.Primitive.Eye
+  | 19 -> Ok Ir.Primitive.Batched_matmul
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function

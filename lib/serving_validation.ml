@@ -4,7 +4,9 @@ let quant_dtype_matches ir_quant archive_quant =
   | Ir.Dtype.Q4_K, Weight_archive.Dtype.Q4_K
   | Ir.Dtype.Q5_K, Weight_archive.Dtype.Q5_K
   | Ir.Dtype.Q6_K, Weight_archive.Dtype.Q6_K
-  | Ir.Dtype.Q5_0, Weight_archive.Dtype.Q5_0 -> true
+  | Ir.Dtype.Q5_0, Weight_archive.Dtype.Q5_0
+  | Ir.Dtype.Q4_0, Weight_archive.Dtype.Q4_0
+  | Ir.Dtype.IQ4_XS, Weight_archive.Dtype.IQ4_XS -> true
   | _ -> false
 
 let dtype_matches fx_dtype archive_dtype =

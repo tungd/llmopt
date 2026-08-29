@@ -31,6 +31,14 @@ let scalar_is_two = function
   | Ir.Scalar.Int 2 | Ir.Scalar.Float 2.0 -> true
   | _ -> false
 
+let inverse_square_root = function
+  | Ir.Pointwise.Rsqrt -> true
+  | Ir.Pointwise.Pow (Ir.Scalar.Float value) -> value = -0.5
+  | Ir.Pointwise.Pow (Ir.Scalar.Int _ | Ir.Scalar.Bool _) | Ir.Pointwise.Neg
+  | Ir.Pointwise.Silu | Ir.Pointwise.Cos | Ir.Pointwise.Sin
+  | Ir.Pointwise.Tanh | Ir.Pointwise.Exp | Ir.Pointwise.Sigmoid
+  | Ir.Pointwise.Softplus -> false
+
 let scalar_float = function
   | Ir.Scalar.Bool _ -> None
   | Ir.Scalar.Int value -> Some (Float.of_int value)
@@ -107,13 +115,14 @@ let rms_norm_replacement nodes =
           [ mean_input ],
           Some mean,
           Some (Ir.Pointwise.Add, add_left, add_right, stabilized),
-          Some (Ir.Pointwise.Rsqrt, rsqrt_input, inverse),
+          Some (inverse_op, rsqrt_input, inverse),
           Some (Ir.Pointwise.Mul, norm_left, norm_right, normalized),
           Ir.Op.Primitive (Ir.Primitive.Cast _),
           [ cast_input ],
           Some cast,
           Some (Ir.Pointwise.Mul, scale_left, scale_right, output) )
         when scalar_is_two exponent
+             && inverse_square_root inverse_op
              && value_is squared mean_input
              && axes = [ Tensor_shape.rank (Ir.Value.logical_shape input) - 1 ]
              && value_is stabilized rsqrt_input
@@ -142,6 +151,172 @@ let rms_norm_replacement nodes =
                      && not (used_in rest cast) ->
                   Some
                     ( Ir.node_replace scale_node
+                        ~op:(Ir.Op.Rms_norm { epsilon })
+                        ~inputs:[ input; weight ],
+                      rest )
+              | _ -> None)
+          | _ -> None)
+      | _ -> None)
+  | _ -> None
+
+let rms_norm_scale_then_cast_replacement nodes =
+  match nodes with
+  | pow_node :: mean_node :: add_node :: inverse_node :: normalize_node
+    :: scale_node :: cast_node :: rest ->
+      (match
+         pointwise_unary pow_node,
+         Ir.node_op mean_node,
+         Ir.node_inputs mean_node,
+         Ir.node_output mean_node,
+         pointwise_binary add_node,
+         pointwise_unary inverse_node,
+         pointwise_binary normalize_node,
+         pointwise_binary scale_node,
+         Ir.node_op cast_node,
+         Ir.node_inputs cast_node,
+         Ir.node_output cast_node
+       with
+      | ( Some (Ir.Pointwise.Pow exponent, input, squared),
+          Ir.Op.Primitive
+            (Ir.Primitive.Reduce
+              { operator = Ir.Reduction.Mean; axes; keepdim = true }),
+          [ mean_input ],
+          Some mean,
+          Some (Ir.Pointwise.Add, add_left, add_right, stabilized),
+          Some (inverse_op, inverse_input, inverse),
+          Some (Ir.Pointwise.Mul, norm_left, norm_right, normalized),
+          Some (Ir.Pointwise.Mul, scale_left, scale_right, scaled),
+          Ir.Op.Primitive (Ir.Primitive.Cast _),
+          [ cast_input ],
+          Some _output )
+        when scalar_is_two exponent
+             && inverse_square_root inverse_op
+             && value_is squared mean_input
+             && axes = [ Tensor_shape.rank (Ir.Value.logical_shape input) - 1 ]
+             && value_is stabilized inverse_input
+             && operands_match_pair norm_left norm_right input inverse
+             && value_is scaled cast_input ->
+          (match
+             tensor_and_scalar add_left add_right,
+             tensor_operand scale_left,
+             tensor_operand scale_right
+           with
+          | Some (add_tensor, epsilon), Some left, Some right
+            when value_is add_tensor mean ->
+              let weight =
+                if value_is left normalized then Some right
+                else if value_is right normalized then Some left
+                else None
+              in
+              (match weight, scalar_float epsilon with
+              | Some weight, Some epsilon
+                when Float.is_finite epsilon
+                     && not
+                          (used_in
+                             (add_node :: inverse_node :: normalize_node
+                            :: scale_node :: cast_node :: rest)
+                             squared)
+                     && not
+                          (used_in
+                             (inverse_node :: normalize_node :: scale_node
+                            :: cast_node :: rest)
+                             mean)
+                     && not
+                          (used_in
+                             (normalize_node :: scale_node :: cast_node :: rest)
+                             stabilized)
+                     && not
+                          (used_in (scale_node :: cast_node :: rest) inverse)
+                     && not (used_in (cast_node :: rest) normalized)
+                     && not (used_in rest scaled) ->
+                  Some
+                    ( Ir.node_replace cast_node
+                        ~op:(Ir.Op.Rms_norm { epsilon })
+                        ~inputs:[ input; weight ],
+                      rest )
+              | _ -> None)
+          | _ -> None)
+      | _ -> None)
+  | _ -> None
+
+let rms_norm_cast_weight_then_scale_replacement nodes =
+  match nodes with
+  | pow_node :: mean_node :: add_node :: inverse_node :: normalize_node
+    :: weight_cast_node :: scale_node :: output_cast_node :: rest ->
+      (match
+         pointwise_unary pow_node,
+         Ir.node_op mean_node,
+         Ir.node_inputs mean_node,
+         Ir.node_output mean_node,
+         pointwise_binary add_node,
+         pointwise_unary inverse_node,
+         pointwise_binary normalize_node,
+         Ir.node_op weight_cast_node,
+         Ir.node_inputs weight_cast_node,
+         Ir.node_output weight_cast_node,
+         pointwise_binary scale_node,
+         Ir.node_op output_cast_node,
+         Ir.node_inputs output_cast_node,
+         Ir.node_output output_cast_node
+       with
+      | ( Some (Ir.Pointwise.Pow exponent, input, squared),
+          Ir.Op.Primitive
+            (Ir.Primitive.Reduce
+              { operator = Ir.Reduction.Mean; axes; keepdim = true }),
+          [ mean_input ],
+          Some mean,
+          Some (Ir.Pointwise.Add, add_left, add_right, stabilized),
+          Some (inverse_op, inverse_input, inverse),
+          Some (Ir.Pointwise.Mul, norm_left, norm_right, normalized),
+          Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32),
+          [ _raw_weight ],
+          Some weight,
+          Some (Ir.Pointwise.Mul, scale_left, scale_right, scaled),
+          Ir.Op.Primitive (Ir.Primitive.Cast _),
+          [ output_cast_input ],
+          Some _output )
+        when scalar_is_two exponent
+             && inverse_square_root inverse_op
+             && value_is squared mean_input
+             && axes = [ Tensor_shape.rank (Ir.Value.logical_shape input) - 1 ]
+             && value_is stabilized inverse_input
+             && operands_match_pair norm_left norm_right input inverse
+             && operands_match_pair scale_left scale_right normalized weight
+             && value_is scaled output_cast_input ->
+          (match tensor_and_scalar add_left add_right with
+          | Some (add_tensor, epsilon) when value_is add_tensor mean ->
+              (match scalar_float epsilon with
+              | Some epsilon
+                when Float.is_finite epsilon
+                     && not
+                          (used_in
+                             (add_node :: inverse_node :: normalize_node
+                            :: weight_cast_node :: scale_node
+                            :: output_cast_node :: rest)
+                             squared)
+                     && not
+                          (used_in
+                             (inverse_node :: normalize_node :: weight_cast_node
+                            :: scale_node :: output_cast_node :: rest)
+                             mean)
+                     && not
+                          (used_in
+                             (normalize_node :: weight_cast_node :: scale_node
+                            :: output_cast_node :: rest)
+                             stabilized)
+                     && not
+                          (used_in
+                             (weight_cast_node :: scale_node :: output_cast_node
+                            :: rest)
+                             inverse)
+                     && not
+                          (used_in
+                             (weight_cast_node :: output_cast_node :: rest)
+                             normalized)
+                     && not (used_in rest scaled) ->
+                  Some
+                    ( weight_cast_node,
+                      Ir.node_replace output_cast_node
                         ~op:(Ir.Op.Rms_norm { epsilon })
                         ~inputs:[ input; weight ],
                       rest )
@@ -197,9 +372,16 @@ let run graph =
     match rms_norm_replacement remaining with
     | Some (node, rest) -> rewrite (node :: prefix) rest
     | None ->
-        (match remaining with
-        | node :: rest -> rewrite (node :: prefix) rest
-        | [] -> List.rev prefix)
+        (match rms_norm_scale_then_cast_replacement remaining with
+        | Some (node, rest) -> rewrite (node :: prefix) rest
+        | None ->
+            (match rms_norm_cast_weight_then_scale_replacement remaining with
+            | Some (weight_cast, node, rest) ->
+                rewrite (node :: weight_cast :: prefix) rest
+            | None ->
+                (match remaining with
+                | node :: rest -> rewrite (node :: prefix) rest
+                | [] -> List.rev prefix)))
   in
   let graph = Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph)) in
   absorb_preceding_casts graph

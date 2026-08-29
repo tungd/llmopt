@@ -121,7 +121,17 @@ end
 
 module Pointwise = struct
   type operand = Tensor of Value.t | Scalar of Scalar.t
-  type unary = Neg | Rsqrt | Silu | Cos | Sin | Tanh | Pow of Scalar.t
+  type unary =
+    | Neg
+    | Rsqrt
+    | Silu
+    | Cos
+    | Sin
+    | Tanh
+    | Exp
+    | Sigmoid
+    | Softplus
+    | Pow of Scalar.t
   type binary =
     | Add
     | Mul
@@ -147,6 +157,9 @@ module Pointwise = struct
     | Cos -> "cos"
     | Sin -> "sin"
     | Tanh -> "tanh"
+    | Exp -> "exp"
+    | Sigmoid -> "sigmoid"
+    | Softplus -> "softplus"
     | Pow exponent -> "pow(" ^ Scalar.to_string exponent ^ ")"
 
   let binary_to_string = function
@@ -393,12 +406,18 @@ module Primitive = struct
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t
+    | Pad_right_zero of { axis : int }
+    | Triangular of { upper : bool; diagonal : int }
+    | Masked_fill of Scalar.t
+    | Eye
+    | Batched_matmul
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
     | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _
     | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _ | Fill _
-    | Gather2 | Update_slice _ -> []
+    | Gather2 | Update_slice _ | Pad_right_zero _ | Triangular _
+    | Masked_fill _ | Eye | Batched_matmul -> []
 
   let to_string = function
     | Pointwise operation -> Pointwise.to_string operation
@@ -415,6 +434,13 @@ module Primitive = struct
     | Fill scalar -> "fill(" ^ Scalar.to_string scalar ^ ")"
     | Gather2 -> "gather2"
     | Update_slice index -> "update-" ^ Tensor_shape.Index.to_string index
+    | Pad_right_zero { axis } -> Printf.sprintf "pad-right-zero(axis=%d)" axis
+    | Triangular { upper; diagonal } ->
+        Printf.sprintf "%s(diagonal=%d)" (if upper then "triu" else "tril")
+          diagonal
+    | Masked_fill scalar -> "masked-fill(" ^ Scalar.to_string scalar ^ ")"
+    | Eye -> "eye"
+    | Batched_matmul -> "batched-matmul"
 end
 
 module Argument = struct

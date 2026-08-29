@@ -4,7 +4,7 @@ title: 'Compiler and runtime probe models'
 description: 'Models used to expose architecture coverage without becoming compiler or runtime defaults.'
 tags: [models, probes, compiler, runtime, portability]
 status: stable
-generated: { by: codex/gpt-5, at: '2026-08-29T13:54:08+07:00' }
+generated: { by: 'process:codex', at: '2026-08-29T17:05:49+07:00' }
 sources:
   - id: profile
     resource: /lib/model_profile.ml
@@ -50,8 +50,8 @@ Ninja `all` target excludes model-specific diagnostic executables.
 |---|---|---|
 | `LiquidAI/LFM2.5-350M` | Complete W4A16/Q8-KV prefill, decode, cache, tokenizer, Model Program ABI v2 serving, and a four-repeat same-text comparison with llama.cpp Q4_0 | Only end-to-end serving probe. The comparison is not GGUF/UD weight parity and remains owned by `Lfm25_probe`, probe-only diagnostics, and LFM receipts. |
 | `HuggingFaceTB/SmolLM2-135M-Instruct` | Q4_K_M GGUF: 2,131-node capture, 273 statics, 2,461-command zero-opaque native full forward; both token argmax IDs match the same-GGUF Transformers reference | Two-token no-cache median is `10.454059 ms` versus llama.cpp `3.7798125 ms` (`2.7658x`). No LLMOpt cached decode, Model Program, or HTTP serving run. |
-| `unsloth/Qwen3.5-0.8B` | UD-Q4_K_XL GGUF: 14,219-node capture, all 321 statics resolved, and a 26,151-command package inventory | No native full-forward sample: 2,984 commands remain opaque and ten mapped weights are `IQ4_XS`. llama.cpp two-token median is `7.4071875 ms`. |
-| `unsloth/gemma-4-E2B-it` | UD-Q4_K_XL GGUF: 4,399-node capture, 544 statics, 7,048-command zero-opaque native full forward; both token argmax IDs match the same-GGUF Transformers reference | Two-token no-cache median is `485.463500 ms` versus llama.cpp `17.8397915 ms` (`27.2124x`). No LLMOpt cached decode, Model Program, or HTTP serving run. |
+| `unsloth/Qwen3.5-0.8B` | UD-Q4_K_XL GGUF: 14,219-node capture, all 321 statics resolved, and a 19,176-command/9,193-dispatch zero-opaque native full forward, including direct `IQ4_XS` Linear execution | Two-token no-cache median is `168.736458 ms` versus llama.cpp `7.4071875 ms` (`22.7801x`). All logits are finite; sampled next-token parity is 2/5 because divergence remains inside the unrolled gated-delta recurrence. No cached decode, Model Program, or HTTP serving run. |
+| `unsloth/gemma-4-E2B-it` | UD-Q4_K_XL GGUF: 4,399-node capture and zero-opaque native full forward; graph-general RMSNorm fusion reduces 7,048 commands/3,226 dispatches to 3,999/1,637 and preserves both token argmax IDs | Optimized two-token no-cache median is `469.925523 ms` versus llama.cpp `17.8397915 ms` (`26.3414x`), `15.002012 ms` below the paired original. No LLMOpt cached decode, Model Program, or HTTP serving run. |
 
 # Adding a probe
 

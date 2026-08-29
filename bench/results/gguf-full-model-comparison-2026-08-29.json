@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "created_at": "2026-08-29T15:00:03+07:00",
+  "updated_at": "2026-08-29T17:05:49+07:00",
   "git_base_commit": "62540fb941c05f438a3066ccdb74cd9cbb34b498",
   "host": {
     "device": "Apple M4 Pro",
@@ -103,33 +104,20 @@
         "static_tensors": 321,
         "gguf_mappings": 320,
         "derived_tensors": 1,
-        "ir_commands": 26151,
-        "opaque_commands": 2984,
-        "opaque_histogram": {
-          "call_method clone": 2268,
-          "aten.matmul.default": 145,
-          "exp": 108,
-          "pad": 90,
-          "type_as": 61,
-          "getitem": 54,
-          "tril": 36,
-          "triu": 36,
-          "ones": 36,
-          "sigmoid_method": 18,
-          "masked_fill": 18,
-          "cumsum": 18,
-          "split": 18,
-          "zeros": 18,
-          "eye": 18,
-          "conv1d": 18,
-          "softplus": 18,
-          "torch_sigmoid": 6
-        },
-        "unsupported_gguf_weight_tensors": {
-          "quant_type": "IQ4_XS",
-          "count": 10
-        },
-        "native_execution": "not reached"
+        "ir_commands": 19176,
+        "opaque_commands": 0,
+        "declared_kernels": 106,
+        "native_dispatches": 9193,
+        "semantic_binding_normalizations": [
+          "captured add(norm_weight, 1) aliases the GGUF effective RMSNorm weight",
+          "captured neg(exp(A_log)) aliases the GGUF direct negative SSM decay"
+        ],
+        "topology_selector": "captured FX graph and tensor provenance; no GGUF architecture-ID dispatch"
+      },
+      "llmopt_full_forward_ms": {
+        "median": 168.736458,
+        "min": 163.917780,
+        "max": 172.445059
       },
       "llama_cpp_full_forward_ms": {
         "median": 7.4071875,
@@ -146,6 +134,31 @@
           7.407459,
           7.821958
         ]
+      },
+      "llmopt_over_llama_cpp_median": 22.780098114162765,
+      "logit_comparison": {
+        "reference": "same-GGUF dequantized Transformers with GGUF effective RMSNorm and direct SSM-decay semantics",
+        "elements": 496640,
+        "finite_elements": 496640,
+        "exact_elements": 155,
+        "max_abs": 11.810546875,
+        "mean_abs": 1.3159801959991455,
+        "token_argmax_actual": [1, 458],
+        "token_argmax_reference": [198, 16],
+        "per_token_correlation": [0.7773796796443541, 0.6154171796809713],
+        "llama_cpp_next_token_for_raw_ids": 16
+      },
+      "natural_prompt_next_token_sample": {
+        "matches": 2,
+        "prompts": 5,
+        "cases": [
+          {"text": "Hello world", "input_ids": [9419, 1814], "llmopt": 198, "llama_cpp": 271},
+          {"text": "The capital", "input_ids": [760, 6511], "llmopt": 314, "llama_cpp": 314},
+          {"text": "Once upon", "input_ids": [12162, 5028], "llmopt": 279, "llama_cpp": 264},
+          {"text": "I am", "input_ids": [40, 1044], "llmopt": 3221, "llama_cpp": 4313},
+          {"text": "What is", "input_ids": [3710, 369], "llmopt": 279, "llama_cpp": 279}
+        ],
+        "diagnosis": "all captured operators and GGUF tensors execute; divergence begins inside the unrolled gated-delta recurrence, which remains 9193 independent dispatches rather than one structured operator"
       },
       "llama_cpp_http": {
         "successful_requests": 4,
@@ -171,9 +184,9 @@
         "native_dispatches": 3226
       },
       "llmopt_full_forward_ms": {
-        "median": 485.4635,
-        "min": 484.48801,
-        "max": 501.17898
+        "median": 484.927535,
+        "min": 484.216928,
+        "max": 499.316931
       },
       "llama_cpp_full_forward_ms": {
         "median": 17.8397915,
@@ -191,7 +204,7 @@
           17.904125
         ]
       },
-      "llmopt_over_llama_cpp_median": 27.212397633683107,
+      "llmopt_over_llama_cpp_median": 27.18235440139533,
       "logit_comparison": {
         "reference": "Transformers model loaded from the same GGUF",
         "elements": 524288,
@@ -201,6 +214,34 @@
         "mean_abs": 0.01376807689666748,
         "token_argmax_actual": [84904, 148465],
         "token_argmax_reference": [84904, 148465]
+      },
+      "optimized_rms_fusion": {
+        "compiler_pass": "graph-general RMSNorm fusion for pow(-0.5), scale-then-cast, and cast-weight-then-scale forms",
+        "fused_rms_norms": 227,
+        "ir_commands": 3999,
+        "native_dispatches": 1637,
+        "llmopt_full_forward_ms": {
+          "median": 469.925523,
+          "min": 467.092991,
+          "max": 473.283052
+        },
+        "llmopt_over_llama_cpp_median": 26.341424618107222,
+        "paired_original_minus_optimized_ms": 15.00201199999998,
+        "optimized_vs_original_percent": -3.093660581678448,
+        "original_output_comparison": {
+          "elements": 524288,
+          "finite_elements": 524288,
+          "exact_elements": 153942,
+          "max_abs": 0.0751953125,
+          "mean_abs": 0.010092368349432945,
+          "token_argmax_original": [84904, 148465],
+          "token_argmax_optimized": [84904, 148465]
+        },
+        "remaining_inventory": {
+          "native_dispatches": 1637,
+          "linear_dispatches": 277,
+          "note": "the captured two-token graph still lowers as fine-grained operators without whole-block or attention macro fusion"
+        }
       },
       "llama_cpp_http": {
         "successful_requests": 4,

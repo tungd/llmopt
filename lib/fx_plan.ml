@@ -325,8 +325,70 @@ let fail_unsupported node reason =
     (Printf.sprintf "unsupported FX node %s (%s): %s" (Fx.Node.name node)
        (Fx.Node.target node) reason)
 
+let tensor_store_key nodes name =
+  let rec resolve seen name =
+    if List.mem name seen then None
+    else
+      match Hashtbl.find_opt nodes name with
+      | None -> None
+      | Some node ->
+          (match Fx.Node.binding node with
+          | Fx.Binding.Tensor_store { key } -> Some key
+          | Fx.Binding.Computed
+            when List.mem (String.lowercase_ascii (Fx.Node.target node))
+                   [ "float"; "to" ] ->
+              (match Fx.Node.inputs node with
+              | [ input ] -> resolve (name :: seen) input
+              | _ -> None)
+          | Fx.Binding.Computed | Fx.Binding.Runtime -> None)
+  in
+  resolve [] name
+
+let gguf_effective_norm nodes node =
+  let tensor =
+    match Fx.Node.arguments node with
+    | [ Fx.Argument.Float 1.0; Fx.Argument.Node name ]
+    | [ Fx.Argument.Node name; Fx.Argument.Float 1.0 ]
+    | [ Fx.Argument.Int 1; Fx.Argument.Node name ]
+    | [ Fx.Argument.Node name; Fx.Argument.Int 1 ] -> Some name
+    | _ -> None
+  in
+  match tensor with
+  | None -> None
+  | Some name ->
+      (match tensor_store_key nodes name with
+      | Some key
+        when String.ends_with ~suffix:"_norm.weight" key
+             && not (String.ends_with ~suffix:".ssm_norm.weight" key) ->
+          Some name
+      | _ -> None)
+
+let gguf_direct_ssm_decay nodes node =
+  let exponential_source name =
+    match Hashtbl.find_opt nodes name with
+    | Some exponential
+      when List.mem (String.lowercase_ascii (Fx.Node.target exponential))
+             [ "exp"; "torch.exp"; "torch._variablefunctionsclass.exp" ] ->
+        (match Fx.Node.inputs exponential with
+        | [ source ] -> Some source
+        | _ -> None)
+    | _ -> None
+  in
+  match Fx.Node.arguments node with
+  | [ Fx.Argument.Node name ] ->
+      (match exponential_source name with
+      | Some source ->
+          (match tensor_store_key nodes source with
+          | Some key when String.ends_with ~suffix:".ssm_a" key -> Some source
+          | _ -> None)
+      | None -> None)
+  | _ -> None
+
 let plan fx_graph =
   let env = Hashtbl.create (List.length (Fx.nodes fx_graph)) in
+  let nodes = Hashtbl.create (List.length (Fx.nodes fx_graph)) in
+  Fx.nodes fx_graph
+  |> List.iter (fun node -> Hashtbl.replace nodes (Fx.Node.name node) node);
   let deferred_chunks = Hashtbl.create 16 in
   let empty_tensors = Hashtbl.create 16 in
   let lower () =
@@ -666,8 +728,10 @@ let plan fx_graph =
             :: dilation :: groups :: _ ) ->
             if Ir.Value.dtype input <> Ir.Dtype.Float16 then
               Error "short-conv input must be float16"
-            else if Ir.Value.dtype weight <> Ir.Dtype.Float16 then
-              Error "short-conv weight must be float16"
+            else if
+              Ir.Value.dtype weight <> Ir.Dtype.Float16
+              && Ir.Value.dtype weight <> Ir.Dtype.Float32
+            then Error "short-conv weight must be float16 or float32"
             else
               let* stride = singleton_int_argument stride in
               let* padding = singleton_int_argument padding in
@@ -888,9 +952,13 @@ let plan fx_graph =
       let lower_cumsum inputs =
         match inputs with
         | [ input ] ->
-            if Ir.Value.dtype input <> Ir.Dtype.Bool
-               || Fx.Node.dtype node <> Ir.Dtype.Int64
-            then Error "packed-sequence cumsum requires bool to int64"
+            if
+              not
+                ((Ir.Value.dtype input = Ir.Dtype.Bool
+                  && Fx.Node.dtype node = Ir.Dtype.Int64)
+                || (Ir.Value.dtype input = Ir.Dtype.Float32
+                   && Fx.Node.dtype node = Ir.Dtype.Float32))
+            then Error "cumsum requires bool-to-int64 or float32 preservation"
             else if Option.is_some (keyword "dtype" node) then
               Error "packed-sequence cumsum has an explicit dtype"
             else
@@ -915,6 +983,126 @@ let plan fx_graph =
               emit_primitive node ~operation:(Ir.Primitive.Cumsum config)
                 ~inputs ~logical_shape
         | _ -> Error "cumsum requires one tensor input"
+      in
+      let lower_fill scalar inputs =
+        if inputs <> [] then Error "fill constructor cannot have tensor inputs"
+        else
+          let* logical_shape = logical_shape_for node in
+          emit_primitive node ~operation:(Ir.Primitive.Fill scalar) ~inputs:[]
+            ~logical_shape
+      in
+      let lower_eye inputs =
+        if inputs <> [] || Fx.Node.dtype node <> Ir.Dtype.Float32 then
+          Error "eye requires a float32 output and no tensor inputs"
+        else
+          let* logical_shape = logical_shape_for node in
+          if Tensor_shape.rank logical_shape <> 2 then
+            Error "eye requires a rank-two output"
+          else
+            emit_primitive node ~operation:Ir.Primitive.Eye ~inputs:[]
+              ~logical_shape
+      in
+      let lower_triangular ~upper inputs =
+        match inputs with
+        | [ input ] ->
+            let positional =
+              match Fx.Node.arguments node with
+              | _receiver :: rest -> rest
+              | [] -> []
+            in
+            let diagonal =
+              match keyword "diagonal" node, positional with
+              | Some argument, _ -> axis_argument argument
+              | None, argument :: _ -> axis_argument argument
+              | None, [] -> Ok 0
+            in
+            let* diagonal = diagonal in
+            let logical_shape = Ir.Value.logical_shape input in
+            if Tensor_shape.rank logical_shape < 2 then
+              Error "triangular input must have rank at least two"
+            else
+              emit_primitive node
+                ~operation:(Ir.Primitive.Triangular { upper; diagonal })
+                ~inputs ~logical_shape
+        | _ -> Error "triangular operation requires one tensor input"
+      in
+      let lower_masked_fill inputs =
+        match inputs, Fx.Node.arguments node with
+        | [ input; mask ], _input :: _mask :: raw_value :: _ ->
+            let* value = scalar_for raw_value in
+            let value =
+              match value, Ir.Value.dtype input with
+              | Ir.Scalar.Int value, (Ir.Dtype.Float16 | Ir.Dtype.Float32) ->
+                  Ir.Scalar.Float (Float.of_int value)
+              | value, _ -> value
+            in
+            if Ir.Value.dtype mask <> Ir.Dtype.Bool then
+              Error "masked-fill mask must be boolean"
+            else
+              let* inferred =
+                Tensor_shape.broadcast (Ir.Value.logical_shape input)
+                  (Ir.Value.logical_shape mask)
+                |> Result.map_error Tensor_shape.error_to_string
+              in
+              let* logical_shape = declared_or_inferred node inferred in
+              if
+                not
+                  (Tensor_shape.equal logical_shape
+                     (Ir.Value.logical_shape input))
+              then Error "masked-fill cannot expand its data input"
+              else
+                emit_primitive node
+                  ~operation:(Ir.Primitive.Masked_fill value) ~inputs
+                  ~logical_shape
+        | _ -> Error "masked-fill requires data, mask, and a scalar value"
+      in
+      let lower_pad_right_zero inputs =
+        match inputs, Fx.Node.arguments node with
+        | ( [ input ],
+            _input :: (Fx.Argument.Tuple padding | Fx.Argument.List padding)
+            :: Fx.Argument.String "constant" :: raw_value :: _ ) ->
+            let* value =
+              match raw_value with
+              | Fx.Argument.Null -> Ok 0.0
+              | argument -> finite_float_argument argument
+            in
+            let rec pairs acc = function
+              | Fx.Argument.Int left :: Fx.Argument.Int right :: rest ->
+                  pairs ((left, right) :: acc) rest
+              | [] -> Ok (List.rev acc)
+              | _ -> Error "pad requires integer left/right pairs"
+            in
+            let* pairs = pairs [] padding in
+            let rank = Tensor_shape.rank (Ir.Value.logical_shape input) in
+            let positive =
+              pairs
+              |> List.mapi (fun pair (left, right) -> pair, left, right)
+              |> List.filter (fun (_, left, right) -> left <> 0 || right <> 0)
+            in
+            (match positive with
+            | [ pair, 0, right ] when right > 0 && value = 0.0 ->
+                let axis = rank - pair - 1 in
+                if axis < 0 then Error "pad pair exceeds input rank"
+                else
+                  let* logical_shape = logical_shape_for node in
+                  emit_primitive node
+                    ~operation:(Ir.Primitive.Pad_right_zero { axis }) ~inputs
+                    ~logical_shape
+            | _ -> Error "only one zero-valued right padding axis is supported")
+        | _ -> Error "pad requires static constant padding"
+      in
+      let lower_batched_matmul inputs =
+        match inputs with
+        | [ lhs; rhs ]
+          when Ir.Value.dtype lhs = Ir.Dtype.Float32
+               && Ir.Value.dtype rhs = Ir.Dtype.Float32
+               && Fx.Node.dtype node = Ir.Dtype.Float32
+               && Tensor_shape.rank (Ir.Value.logical_shape lhs) >= 2
+               && Tensor_shape.rank (Ir.Value.logical_shape rhs) >= 2 ->
+            let* logical_shape = logical_shape_for node in
+            emit_primitive node ~operation:Ir.Primitive.Batched_matmul ~inputs
+              ~logical_shape
+        | _ -> Error "batched matmul requires float32 matrix tensors"
       in
       let lower_new_ones inputs =
         match inputs, Fx.Node.arguments node with
@@ -970,6 +1158,70 @@ let plan fx_graph =
               (Deferred_chunk.create ~input partitions);
             Ok ()
         | _ -> Error "chunk requires one tensor input"
+      in
+      let lower_split () =
+        match Fx.Node.inputs node, Fx.Node.arguments node with
+        | [ input_name ], _input :: raw_sections :: positional ->
+            let* input = value_for env input_name in
+            let* sections =
+              match raw_sections with
+              | Fx.Argument.List values | Fx.Argument.Tuple values ->
+                  let rec collect acc = function
+                    | [] -> Ok (List.rev acc)
+                    | Fx.Argument.Int value :: rest when value > 0 ->
+                        collect (value :: acc) rest
+                    | _ -> Error "split sections must be positive integers"
+                  in
+                  collect [] values
+              | _ -> Error "split requires an explicit section list"
+            in
+            let axis =
+              match keyword "dim" node, positional with
+              | Some argument, _ -> axis_argument argument
+              | None, argument :: _ -> axis_argument argument
+              | None, [] -> Ok 0
+            in
+            let* axis = axis in
+            let source_shape = Ir.Value.logical_shape input in
+            let* axis =
+              Tensor_shape.normalize_axis source_shape axis
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            let dimensions = Tensor_shape.dimensions source_shape in
+            let dimension = List.nth dimensions axis in
+            if List.fold_left ( + ) 0 sections <> dimension then
+              Error "split sections do not cover their source axis"
+            else
+              let full =
+                Tensor_shape.Index.Spec.Slice
+                  { start = None; stop = None; step = None }
+              in
+              let rec partitions offset acc = function
+                | [] -> Ok (List.rev acc)
+                | section :: rest ->
+                    let specs =
+                      List.init (List.length dimensions) (fun current_axis ->
+                          if current_axis = axis then
+                            Tensor_shape.Index.Spec.Slice
+                              {
+                                start = Some offset;
+                                stop = Some (offset + section);
+                                step = Some 1;
+                              }
+                          else full)
+                    in
+                    let* selection, shape =
+                      Tensor_shape.index source_shape specs
+                      |> Result.map_error Tensor_shape.error_to_string
+                    in
+                    partitions (offset + section)
+                      ((selection, shape) :: acc) rest
+              in
+              let* partitions = partitions 0 [] sections in
+              Hashtbl.replace deferred_chunks name
+                (Deferred_chunk.create ~input partitions);
+              Ok ()
+        | _ -> Error "split requires one tensor input and static sections"
       in
       let lower_index input specs =
         let* selection, inferred =
@@ -1121,6 +1373,10 @@ let plan fx_graph =
           then lower_chunk ()
           else if
             target_is target
+              [ "split"; "torch.functional.split"; "aten.split_with_sizes.default" ]
+          then lower_split ()
+          else if
+            target_is target
                  [ "_operator.getitem"; "operator.getitem"; "getitem" ]
           then lower_getitem ()
           else if
@@ -1213,8 +1469,14 @@ let plan fx_graph =
                 target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]
                 && add_alpha_is_supported node
               then
-                lower_pointwise_binary Ir.Pointwise.Add inputs
-                |> lower_or_opaque inputs
+                (match gguf_effective_norm nodes node with
+                | Some source ->
+                    let* value = value_for env source in
+                    Hashtbl.replace env name value;
+                    Ok ()
+                | None ->
+                    lower_pointwise_binary Ir.Pointwise.Add inputs
+                    |> lower_or_opaque inputs)
               else if
                 target_is target
                   [ "mul"; "mul.tensor"; "aten.mul.tensor"; "_operator.imul" ]
@@ -1243,8 +1505,14 @@ let plan fx_graph =
                 lower_pointwise_binary Ir.Pointwise.Greater inputs
                 |> lower_or_opaque inputs
               else if target_is target [ "_operator.neg"; "neg"; "aten.neg.default" ] then
-                lower_pointwise_unary Ir.Pointwise.Neg inputs
-                |> lower_or_opaque inputs
+                (match gguf_direct_ssm_decay nodes node with
+                | Some source ->
+                    let* value = value_for env source in
+                    Hashtbl.replace env name value;
+                    Ok ()
+                | None ->
+                    lower_pointwise_unary Ir.Pointwise.Neg inputs
+                    |> lower_or_opaque inputs)
               else if target_is target [ "rsqrt"; "aten.rsqrt.default"; "torch._variablefunctionsclass.rsqrt" ] then
                 lower_pointwise_unary Ir.Pointwise.Rsqrt inputs
                 |> lower_or_opaque inputs
@@ -1264,6 +1532,23 @@ let plan fx_graph =
               then
                 lower_pointwise_unary Ir.Pointwise.Tanh inputs
                 |> lower_or_opaque inputs
+              else if target_is target [ "exp"; "aten.exp.default" ] then
+                lower_pointwise_unary Ir.Pointwise.Exp inputs
+                |> lower_or_opaque inputs
+              else if
+                target_is target
+                  [ "sigmoid"; "torch._variablefunctionsclass.sigmoid";
+                    "aten.sigmoid.default" ]
+              then
+                lower_pointwise_unary Ir.Pointwise.Sigmoid inputs
+                |> lower_or_opaque inputs
+              else if
+                target_is target
+                  [ "softplus"; "torch._c._nn.softplus";
+                    "torch.nn.functional.softplus" ]
+              then
+                lower_pointwise_unary Ir.Pointwise.Softplus inputs
+                |> lower_or_opaque inputs
               else if target_is target [ "pow"; "aten.pow.tensor_scalar" ] then
                 lower_pow inputs |> lower_or_opaque inputs
               else if target_is target [ "mean"; "aten.mean.dim" ] then
@@ -1278,6 +1563,18 @@ let plan fx_graph =
                 lower_cast (Fx.Node.dtype node) inputs |> lower_or_opaque inputs
               else if target_is target [ "type_as" ] then
                 lower_type_as inputs |> lower_or_opaque inputs
+              else if target_is target [ "clone"; "aten.clone.default" ] then
+                (match inputs with
+                | [ input ]
+                  when Fx.Node.keyword_arguments node = []
+                       && Ir.Value.dtype input = Fx.Node.dtype node ->
+                    let* declared = logical_shape_for node in
+                    if Tensor_shape.equal declared (Ir.Value.logical_shape input)
+                    then (
+                      Hashtbl.replace env name input;
+                      Ok ())
+                    else lower_opaque inputs
+                | _ -> lower_opaque inputs)
               else if target_is target [ "float" ] then
                 lower_cast Ir.Dtype.Float32 inputs |> lower_or_opaque inputs
               else if target_is target [ "view"; "aten.view.default" ] then
@@ -1295,7 +1592,11 @@ let plan fx_graph =
                 lower_roll inputs |> lower_or_opaque inputs
               else if
                 target_is target [ "torch._c._nn.pad"; "aten.pad.default" ]
-              then lower_crop_pad inputs |> lower_or_opaque inputs
+              then
+                (match lower_crop_pad inputs with
+                | Ok value -> bind_primitive (Ok value)
+                | Error _ ->
+                    lower_pad_right_zero inputs |> lower_or_opaque inputs)
               else if
                 target_is target
                      [ "zeros_like"; "torch._variablefunctionsclass.zeros_like";
@@ -1324,6 +1625,30 @@ let plan fx_graph =
                 lower_cumsum inputs |> lower_or_opaque inputs
               else if target_is target [ "new_ones"; "aten.new_ones.default" ] then
                 lower_new_ones inputs |> lower_or_opaque inputs
+              else if
+                target_is target
+                  [ "ones"; "torch._variablefunctionsclass.ones";
+                    "aten.ones.default" ]
+              then
+                lower_fill (Ir.Scalar.Bool true) inputs |> lower_or_opaque inputs
+              else if
+                target_is target
+                  [ "zeros"; "torch._variablefunctionsclass.zeros";
+                    "aten.zeros.default" ]
+              then
+                lower_fill (Ir.Scalar.Float 0.0) inputs |> lower_or_opaque inputs
+              else if
+                target_is target
+                  [ "eye"; "torch._variablefunctionsclass.eye";
+                    "aten.eye.default" ]
+              then lower_eye inputs |> lower_or_opaque inputs
+              else if target_is target [ "triu"; "aten.triu.default" ] then
+                lower_triangular ~upper:true inputs |> lower_or_opaque inputs
+              else if target_is target [ "tril"; "aten.tril.default" ] then
+                lower_triangular ~upper:false inputs |> lower_or_opaque inputs
+              else if
+                target_is target [ "masked_fill"; "aten.masked_fill.scalar" ]
+              then lower_masked_fill inputs |> lower_or_opaque inputs
               else if
                 target_is target
                      [ "torch._variablefunctionsclass.conv1d";
@@ -1382,7 +1707,8 @@ let plan fx_graph =
                 (match inputs with
                 | [ lhs; rhs ] ->
                     (match Shape.matmul (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
-                    | Error _ -> lower_opaque inputs
+                    | Error _ ->
+                        lower_batched_matmul inputs |> lower_or_opaque inputs
                     | Ok inferred_shape ->
                         let logical_shape, shape =
                           declared_or_matrix node inferred_shape

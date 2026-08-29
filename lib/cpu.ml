@@ -227,6 +227,9 @@ let pointwise_unary operator value =
   | Ir.Pointwise.Cos -> cos value
   | Ir.Pointwise.Sin -> sin value
   | Ir.Pointwise.Tanh -> tanh value
+  | Ir.Pointwise.Exp -> exp value
+  | Ir.Pointwise.Sigmoid -> 1.0 /. (1.0 +. exp (-.value))
+  | Ir.Pointwise.Softplus -> if value > 20.0 then value else log1p (exp value)
   | Ir.Pointwise.Pow exponent -> value ** Ir.Scalar.to_float exponent
 
 let pointwise_binary operator left right =

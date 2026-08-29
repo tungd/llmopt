@@ -799,6 +799,56 @@ module Parameters = struct
           Bytes.set_int32_le bytes 132 (scalar_f32 scalar))
         right_scalar;
       Ok bytes
+
+  let masked_fill ~output_shape ~input_shape ~mask_shape scalar =
+    let* bytes =
+      pointwise ~output_shape
+        ~left_shape:(Some (Tensor_shape.dimensions input_shape))
+        ~right_shape:(Some (Tensor_shape.dimensions mask_shape))
+        ~left_scalar:None ~right_scalar:None
+    in
+    Bytes.set_int32_le bytes 132 (scalar_f32 scalar);
+    Ok bytes
+
+  let batched_matmul ~lhs_shape ~rhs_shape ~output_shape =
+    let lhs = Tensor_shape.dimensions lhs_shape in
+    let rhs = Tensor_shape.dimensions rhs_shape in
+    let output = Tensor_shape.dimensions output_shape in
+    let split_matrix dimensions =
+      match List.rev dimensions with
+      | last :: penultimate :: leading ->
+          Ok (List.rev leading, penultimate, last)
+      | _ -> Error "batched matmul inputs must have rank at least two"
+    in
+    let* lhs_batch, m, k = split_matrix lhs in
+    let* rhs_batch, rhs_k, n = split_matrix rhs in
+    let* output_batch, output_m, output_n = split_matrix output in
+    let rank = List.length output_batch in
+    if rank > 3 then Error "Metal batched matmul supports at most three batch axes"
+    else if k <> rhs_k || m <> output_m || n <> output_n then
+      Error "batched matmul matrix dimensions are inconsistent"
+    else
+      let align dimensions =
+        List.init (rank - List.length dimensions) (Fun.const 1) @ dimensions
+      in
+      let lhs_batch = align lhs_batch in
+      let rhs_batch = align rhs_batch in
+      if
+        not
+          (List.for_all2
+             (fun dimension output -> dimension = 1 || dimension = output)
+             lhs_batch output_batch
+          && List.for_all2
+               (fun dimension output -> dimension = 1 || dimension = output)
+               rhs_batch output_batch)
+      then Error "batched matmul batch dimensions do not broadcast"
+      else
+        let pad dimensions = dimensions @ List.init (3 - rank) (Fun.const 1) in
+        let values =
+          [ Tensor_shape.numel output_shape; m; n; k; rank ]
+          @ pad output_batch @ pad lhs_batch @ pad rhs_batch
+        in
+        u32s values
 end
 
 module Cache = struct
@@ -1523,8 +1573,7 @@ let quant_linear_kernel_name = function
   | Ir.Dtype.Q6_K -> Ok "llmopt_q6_k_linear_f16"
   | Ir.Dtype.Q5_0 -> Ok "llmopt_q5_0_linear_f16"
   | Ir.Dtype.Q4_0 -> Ok "llmopt_q4_0_linear_f16"
-  | Ir.Dtype.IQ4_XS ->
-      Error "IQ4_XS must be transcoded before Metal linear execution"
+  | Ir.Dtype.IQ4_XS -> Ok "llmopt_iq4_xs_linear_f16"
 
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
@@ -1915,6 +1964,11 @@ let pointwise_kernel operation output =
   let tensor_dtypes =
     operation |> Ir.Pointwise.values |> List.map Ir.Value.dtype
   in
+  match operation, tensor_dtypes, output_dtype with
+  | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _),
+    [ Ir.Dtype.Float16; Ir.Dtype.Float32 ], Ir.Dtype.Float32 ->
+      Ok ("llmopt_mul_f16_f32", Ir.Dtype.Float16)
+  | _ ->
   let* input_dtype =
     match tensor_dtypes with
     | [] -> Error "Metal pointwise operation requires at least one tensor operand"
@@ -1935,6 +1989,9 @@ let pointwise_kernel operation output =
     | Ir.Pointwise.Binary (Ir.Pointwise.Sub, _, _), Ir.Dtype.Int64,
       Ir.Dtype.Int64 ->
         Some "llmopt_sub_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Sub, _, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_sub_f32"
     | Ir.Pointwise.Binary (Ir.Pointwise.Div, _, _), Ir.Dtype.Float16,
       Ir.Dtype.Float16 ->
         Some "llmopt_div_f16"
@@ -1962,9 +2019,15 @@ let pointwise_kernel operation output =
     | Ir.Pointwise.Unary (Ir.Pointwise.Neg, _), Ir.Dtype.Float16,
       Ir.Dtype.Float16 ->
         Some "llmopt_neg_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Neg, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_neg_f32"
     | Ir.Pointwise.Unary (Ir.Pointwise.Silu, _), Ir.Dtype.Float16,
       Ir.Dtype.Float16 ->
         Some "llmopt_silu_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Silu, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_silu_f32"
     | Ir.Pointwise.Unary (Ir.Pointwise.Cos, _), Ir.Dtype.Float32,
       Ir.Dtype.Float32 ->
         Some "llmopt_cos_f32"
@@ -1974,9 +2037,24 @@ let pointwise_kernel operation output =
     | Ir.Pointwise.Unary (Ir.Pointwise.Tanh, _), Ir.Dtype.Float16,
       Ir.Dtype.Float16 ->
         Some "llmopt_tanh_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Exp, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_exp_f32"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Sigmoid, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_sigmoid_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Softplus, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_softplus_f32"
     | Ir.Pointwise.Unary (Ir.Pointwise.Pow _, _), Ir.Dtype.Float32,
       Ir.Dtype.Float32 ->
         Some "llmopt_pow_f32"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_rsqrt_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_rsqrt_f32"
     | _ -> None
   in
   match name with
@@ -2012,6 +2090,7 @@ let movement_kernel movement input output =
       | Ir.Movement.Expand, Ir.Dtype.Float16 -> Some "llmopt_expand_f16"
       | Ir.Movement.Expand, Ir.Dtype.Float32 -> Some "llmopt_expand_f32"
       | Ir.Movement.Expand, Ir.Dtype.Bool -> Some "llmopt_expand_bool"
+      | Ir.Movement.Expand, Ir.Dtype.Int64 -> Some "llmopt_expand_i64"
       | Ir.Movement.Concat _, Ir.Dtype.Float16 -> Some "llmopt_concat_f16"
       | Ir.Movement.Concat _, Ir.Dtype.Float32 -> Some "llmopt_concat_f32"
       | Ir.Movement.Roll _, Ir.Dtype.Float16 -> Some "llmopt_roll_f16"
@@ -2034,6 +2113,8 @@ let reduction_kernel reduction input output =
   with
   | Ir.Reduction.Sum, [ axis ], Ir.Dtype.Float16, Ir.Dtype.Float16 ->
       Ok ("llmopt_sum_f16", axis)
+  | Ir.Reduction.Sum, [ axis ], Ir.Dtype.Float32, Ir.Dtype.Float32 ->
+      Ok ("llmopt_sum_f32", axis)
   | Ir.Reduction.Mean, [ axis ], Ir.Dtype.Float32, Ir.Dtype.Float32 ->
       Ok ("llmopt_mean_f32", axis)
   | _ ->
@@ -2051,6 +2132,8 @@ let update_slice_kernel destination source output =
   with
   | Ir.Dtype.Float16, Ir.Dtype.Float16, Ir.Dtype.Float16 ->
       Ok "llmopt_update_slice_f16"
+  | Ir.Dtype.Float32, Ir.Dtype.Float32, Ir.Dtype.Float32 ->
+      Ok "llmopt_update_slice_f32"
   | destination_dtype, source_dtype, output_dtype ->
       Error
         (Printf.sprintf "unsupported Metal slice-update kernel: %s + %s -> %s"
@@ -2698,6 +2781,101 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                  ~operation:Kernel_abi.Operation.Fill
                  ~input_dtype:(Ir.Value.dtype output) ~buffers:[] ~parameters
                  ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive (Ir.Primitive.Pad_right_zero { axis }),
+            [ input ], Some output ) ->
+            let input_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape input)
+            in
+            let output_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape output)
+            in
+            let input_axis = List.nth input_dimensions axis in
+            let output_axis = List.nth output_dimensions axis in
+            let inner =
+              input_dimensions |> List.filteri (fun index _ -> index > axis)
+              |> List.fold_left ( * ) 1
+            in
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* buffers = find_values state [ input ] in
+            let* parameters =
+              Parameters.u32s [ count; input_axis; output_axis; inner ]
+            in
+            dispatched
+              (dispatch_output ~name:"llmopt_pad_right_zero_f32" runtime state
+                 output ~operation:Kernel_abi.Operation.Movement
+                 ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
+                 ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive
+              (Ir.Primitive.Triangular { upper; diagonal }),
+            [ input ], Some output ) ->
+            let dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape output)
+            in
+            let rows, cols =
+              match List.rev dimensions with
+              | cols :: rows :: _ -> rows, cols
+              | _ -> 0, 0
+            in
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* buffers = find_values state [ input ] in
+            let* parameters =
+              Parameters.u32s
+                [ count; rows; cols; if upper then 1 else 0; diagonal ]
+            in
+            let name =
+              match Ir.Value.dtype input with
+              | Ir.Dtype.Bool -> "llmopt_triangular_bool"
+              | Ir.Dtype.Float32 -> "llmopt_triangular_f32"
+              | _ -> ""
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Pointwise
+                 ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
+                 ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive (Ir.Primitive.Masked_fill scalar),
+            [ input; mask ], Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* buffers = find_values state [ input; mask ] in
+            let* parameters =
+              Parameters.masked_fill
+                ~output_shape:(Ir.Value.logical_shape output)
+                ~input_shape:(Ir.Value.logical_shape input)
+                ~mask_shape:(Ir.Value.logical_shape mask) scalar
+            in
+            dispatched
+              (dispatch_output ~name:"llmopt_masked_fill_f32" runtime state
+                 output ~operation:Kernel_abi.Operation.Pointwise
+                 ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
+                 ~grid:(count, 1, 1))
+        | Ir.Op.Primitive Ir.Primitive.Eye, [], Some output ->
+            let rows, cols =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape output) with
+              | [ rows; cols ] -> rows, cols
+              | _ -> 0, 0
+            in
+            let count = rows * cols in
+            let* parameters = Parameters.u32s [ count; rows; cols ] in
+            dispatched
+              (dispatch_output ~name:"llmopt_eye_f32" runtime state output
+                 ~operation:Kernel_abi.Operation.Fill
+                 ~input_dtype:Ir.Dtype.Float32 ~buffers:[] ~parameters
+                 ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive Ir.Primitive.Batched_matmul,
+            [ lhs; rhs ], Some output ) ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* buffers = find_values state [ lhs; rhs ] in
+            let* parameters =
+              Parameters.batched_matmul
+                ~lhs_shape:(Ir.Value.logical_shape lhs)
+                ~rhs_shape:(Ir.Value.logical_shape rhs)
+                ~output_shape:(Ir.Value.logical_shape output)
+            in
+            dispatched
+              (dispatch_output ~name:"llmopt_batched_matmul_f32" runtime state
+                 output ~operation:Kernel_abi.Operation.Matmul
+                 ~input_dtype:Ir.Dtype.Float32 ~buffers ~parameters
+                 ~grid:(count, 1, 1))
         | ( Ir.Op.Primitive (Ir.Primitive.Short_conv config),
             [ input; weight ],
             Some output ) ->
@@ -2724,10 +2902,16 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Ir.Short_conv.stride config; Ir.Short_conv.padding config;
                   Ir.Short_conv.dilation config ]
             in
+            let name =
+              match Ir.Value.dtype weight with
+              | Ir.Dtype.Float16 -> "llmopt_short_conv_f16"
+              | Ir.Dtype.Float32 -> "llmopt_short_conv_f16_f32"
+              | _ -> ""
+            in
             dispatched
-              (dispatch_output runtime state output
+              (dispatch_output ~name runtime state output
                  ~operation:Kernel_abi.Operation.Short_conv
-                 ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
+                 ~input_dtype:(Ir.Value.dtype weight) ~buffers ~parameters
                  ~grid:(Tensor_shape.numel (Ir.Value.logical_shape output), 1, 1))
         | ( Ir.Op.Primitive (Ir.Primitive.Attention config),
             [ query; key; value; mask ],

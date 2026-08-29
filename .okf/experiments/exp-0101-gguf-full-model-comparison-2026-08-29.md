@@ -1,10 +1,10 @@
 ---
 type: Experiment
 title: 'Captured full-model GGUF execution across SmolLM, Qwen, and Gemma'
-description: 'Two-token full forwards and llama.cpp measurements distinguish executable graph coverage, numerical comparison, and serving-only context for three probe models.'
+description: 'Two-token full forwards and llama.cpp measurements distinguish executable graph coverage, numerical comparison, and compiler optimization for three probe models.'
 tags: [experiment, pytorch, fx, gguf, ud, metal, llama.cpp, smollm, qwen, gemma]
 status: stable
-generated: { by: 'process:codex', at: '2026-08-29T15:00:03+07:00' }
+generated: { by: 'process:codex', at: '2026-08-29T17:05:49+07:00' }
 sources:
   - id: receipt
     resource: /bench/results/gguf-full-model-comparison-2026-08-29.json
@@ -50,8 +50,8 @@ or LLMOpt HTTP-serving comparison.
 | Probe | Captured package | Numerical observation | Two-token median |
 |---|---|---|---:|
 | SmolLM2-135M Q4_K_M | 2,131 FX nodes, 273 statics, 2,461 commands, zero opaque, native execution | 98,304/98,304 finite; 15,455 exact; max abs `4.9296875`; both token argmax IDs `198` | LLMOpt `10.454059 ms`; llama.cpp `3.7798125 ms`; ratio `2.7658` |
-| Qwen3.5-0.8B UD-Q4_K_XL | 14,219 FX nodes, 321 statics, 26,151 commands, 2,984 opaque | No native full forward: 2,268 clone nodes dominate the opaque inventory, recurrent-attention operations remain, and ten mapped weights are `IQ4_XS` | llama.cpp `7.4071875 ms`; no LLMOpt sample |
-| Gemma-4-E2B-it UD-Q4_K_XL | 4,399 FX nodes, 544 statics, 7,048 commands, zero opaque, native execution | 524,288/524,288 finite; 119,746 exact; max abs `0.109619140625`; token argmax IDs `84904,148465` match | LLMOpt `485.463500 ms`; llama.cpp `17.8397915 ms`; ratio `27.2124` |
+| Qwen3.5-0.8B UD-Q4_K_XL | 14,219 FX nodes, 321 statics, 19,176 commands, zero opaque, 9,193 native dispatches | 496,640/496,640 finite; raw-ID argmax `1,458` versus corrected same-GGUF reference `198,16`; 2/5 sampled natural-prompt next tokens match llama.cpp | LLMOpt `168.736458 ms`; llama.cpp `7.4071875 ms`; ratio `22.7801` |
+| Gemma-4-E2B-it UD-Q4_K_XL | Original 7,048 commands/3,226 dispatches; graph-general RMSNorm fusion produces 3,999 commands/1,637 dispatches with 227 fused norms | Optimized output remains finite and preserves original argmax IDs `84904,148465`; 153,942/524,288 elements exact to the original, max abs `0.0751953125` | Optimized LLMOpt `469.925523 ms`; llama.cpp `17.8397915 ms`; ratio `26.3414` |
 
 SmolLM binds 272 GGUF tensors plus one derived RoPE tensor. Gemma binds 505
 GGUF tensors plus 39 captured derived scalars and RoPE tensors. Its first native
@@ -59,6 +59,35 @@ execution exposed one non-finite Metal GELU result at finite input `12.296875`;
 clamping the tanh argument removed that propagation, after which the complete
 forward and independent same-GGUF Transformers comparison produced the finite
 result above.
+
+Qwen now lowers clone aliases, deferred split slices, recurrent pointwise and
+reduction operations, padding and triangular mask construction, batched
+matmuls, float32 convolution weights, and direct `IQ4_XS` Linear execution.
+The GGUF binding uses tensor provenance to recognize two serialized-value
+conventions: effective RMSNorm weights replace captured `weight + 1`, and
+direct negative SSM decay replaces captured `-exp(A_log)`. Neither rule reads
+`general.architecture`.
+
+The zero-opaque Qwen result is executable coverage, not token parity. Layerwise
+comparison stays close through captured layer 3 and diverges in layer 4, the
+next unrolled gated-delta layer. The 18 recurrent layers currently lower their
+padded 64-token matrix/update computation as thousands of individual commands;
+a graph-recognized gated-delta macro operator is the next compiler optimization
+suggested by this profile.
+
+# Gemma compiler optimization
+
+The RMSNorm pass now recognizes inverse square root expressed as `pow(-0.5)`,
+scale-before-output-cast, and a separately cast weight. These are graph forms,
+not Gemma or architecture-name conditions. In the final sequential pair, the
+original package measured `484.927535 ms` and the fused package measured
+`469.925523 ms`, a `15.002012 ms` (`3.0937%`) reduction. The pass removes 1,589
+dispatches while retaining the same two argmax IDs.
+
+The remaining fused package still has 1,637 dispatches, including 277 two-row
+Linear operations, and no whole attention- or transformer-block fusion. The
+largest remaining difference from llama.cpp is therefore fine-grained captured
+execution and kernel/dispatch organization, not missing Gemma operators.
 
 # llama.cpp serving context
 
@@ -77,9 +106,10 @@ counts `reasoning_content` when `content` is empty.
 
 # Boundary
 
-SmolLM and Gemma now have complete captured no-cache GGUF execution and direct
-`llama-bench` measurements. Qwen has a complete capture and package inventory
-but no native LLMOpt timing. None of these three captures includes an LLMOpt
+SmolLM, Qwen, and Gemma now have complete captured no-cache GGUF execution and
+direct `llama-bench` measurements. Qwen's sampled next-token comparison matches
+llama.cpp on 2/5 natural prompts, so the receipt preserves its remaining
+gated-delta numerical difference. None of these three captures includes an LLMOpt
 Model Program with cache state, tokenizer/chat assets, repeated decode, or an
 HTTP endpoint, so the serving measurements in this record are llama.cpp context
 only.

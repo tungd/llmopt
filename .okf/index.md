@@ -52,7 +52,7 @@ configuration.
 * [Superseded SmolLM2 cross-model claim](experiments/exp-0096-cross-model-smollm2-validation.md) - retracts unsupported full-model and performance claims and points to reproducible replacement evidence.
 * [Architecture-neutral GGUF FX native Linear parity](experiments/exp-0099-gguf-fx-native-linear-parity-2026-08-29.md) - bounded SmolLM, Qwen, and Gemma GGUF-backed Linear execution plus full-capture inventories.
 * [Current LFM Model Program comparison with llama.cpp](experiments/exp-0100-model-program-v2-llama-cpp-comparison-2026-08-29.md) - four paired same-text runs for the current ABI-v2 LFM serving engine and llama.cpp Q4_0.
-* [Captured full-model GGUF comparison](experiments/exp-0101-gguf-full-model-comparison-2026-08-29.md) - SmolLM and Gemma native no-cache full forwards, Qwen capture blockers, same-GGUF numerical checks, and llama.cpp timing context.
+* [Captured full-model GGUF comparison](experiments/exp-0101-gguf-full-model-comparison-2026-08-29.md) - zero-opaque native SmolLM, Qwen, and Gemma forwards, Qwen gated-delta numerical evidence, Gemma RMSNorm fusion, and llama.cpp timing context.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.
