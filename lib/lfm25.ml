@@ -15,7 +15,7 @@ module Config = struct
     layer_types : layer list;
   }
 
-  let default =
+  let probe_350m =
     {
       hidden_size = 1024;
       intermediate_size = 6656;

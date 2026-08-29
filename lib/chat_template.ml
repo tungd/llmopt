@@ -60,20 +60,14 @@ type t = {
   message_end : int;
 }
 
-let special_opt tokenizer text =
-  match Tokenizer.token_to_id tokenizer text with
-  | Some id -> Some id
-  | None -> None
-
-let find_special tokenizer candidates default =
-  match List.find_map (special_opt tokenizer) candidates with
-  | Some id -> id
-  | None -> default
-
-let create tokenizer =
-  let bos = find_special tokenizer [ "<|startoftext|>"; "<s>"; "<|begin_of_text|>"; "<bos>" ] 1 in
-  let message_start = find_special tokenizer [ "<|im_start|>"; "<start_of_turn>"; "<|user|>" ] bos in
-  let message_end = find_special tokenizer [ "<|im_end|>"; "</s>"; "<|eot_id|>"; "<end_of_turn>"; "<eos>" ] 2 in
+let create ~bos ~message_start ~message_end tokenizer =
+  let validate label id =
+    if Tokenizer.has_token_id tokenizer id then Ok ()
+    else Error (Printf.sprintf "chat template %s token id %d is absent" label id)
+  in
+  let* () = validate "BOS" bos in
+  let* () = validate "message-start" message_start in
+  let* () = validate "message-end" message_end in
   Ok { tokenizer; bos; message_start; message_end }
 
 let end_token template = template.message_end
@@ -109,7 +103,7 @@ let encode ?(add_generation_prompt = true) ?(preserve_thinking = false)
     template messages =
   let output = Int_buffer.create () in
   let append_ordinary text =
-    let* ids = Tokenizer.encode ~add_bos:false template.tokenizer text in
+    let* ids = Tokenizer.encode template.tokenizer text in
     Int_buffer.add_array output ids;
     Ok ()
   in

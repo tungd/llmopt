@@ -14,7 +14,12 @@ end
 
 type t
 
-val create : Tokenizer.t -> (t, string) result
+val create :
+  bos:int ->
+  message_start:int ->
+  message_end:int ->
+  Tokenizer.t ->
+  (t, string) result
 
 val encode :
   ?add_generation_prompt:bool ->

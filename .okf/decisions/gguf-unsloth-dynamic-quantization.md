@@ -22,27 +22,37 @@ sources:
 
 # Decision
 
-`llmopt` retains **PyTorch Dynamo FX (`torch.compile(model, backend=llmopt_backend)`)** as its primary graph capture and execution planning frontend, while adding first-class **GGUF** (with Unsloth Dynamic / UD quant schemes) as an alternative high-performance weight distribution format alongside native safetensors / `weights.llmopt`.
+`llmopt` retains **PyTorch Dynamo FX (`torch.compile(model, backend=llmopt_backend)`)** as the authority for graph topology and execution planning, and targets **GGUF with Unsloth Dynamic / UD quant schemes** as the primary weight-distribution format. `weights.llmopt` remains an internal package/archive representation, not the product's fixed quantization policy.
 
 This gives users flexible options:
-1. **PyTorch Capture Architecture**: Captures arbitrary model architectures directly from Python/PyTorch (`AutoModelForCausalLM`, Dynamo FX) with automated state binding, KV-cache planning, and pass optimizations.
-2. **Dual Weight Store Formats**:
-   - **Safetensors / `weights.llmopt`**: Direct weight archives generated from PyTorch checkpoints.
-   - **GGUF / Unsloth Dynamic (UD)**: Pre-quantized mixed-precision GGUF files (`UD-Q4_K_XL`, `UD-Q8_K_XL`, `Q4_K_M`, `Q8_0`) for superior quantization quality and zero-conversion deployment.
+1. **PyTorch Capture Authority**: Captures model computation directly from Python/PyTorch (`AutoModelForCausalLM`, Dynamo FX). Operator topology, parameter use, entrypoints, and state roles come from that capture and the compilation session.
+2. **GGUF / Unsloth Dynamic Weights**: Uses pre-quantized mixed-precision GGUF tensors (`UD-Q4_K_XL`, `UD-Q8_K_XL`, `Q4_K_M`, `Q8_0`) while retaining the captured graph as the executable architecture.
 3. **Structured Quantized Block Descriptors**: Formal superblock and block-quant descriptors (`Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `Q5_0`, `F16`, `BF16`, `F32`) in `Ir.Dtype` and `Weight_archive.Dtype`.
 4. **Two Dequantization Kernel Families**:
    - **Legacy Block-32 Family**: `Q8_0`, `Q5_0`, `Q4_0` (32-element blocks with FP16 scale).
    - **K-Quant Superblock-256 Family**: `Q4_K`, `Q5_K`, and `Q6_K` (256-element superblocks with 8 sub-blocks of 32 elements, 6-bit scales and mins).
-5. **AOT Code Specialization**: Bake quant block layouts, sub-block extraction, and tile dimensions directly into compile-time specialized Metal MSL megakernels (`w4a16_dual_swiglu`, `w4a16_down_add`, `w4a16_lm_head`), eliminating dynamic loop strides and runtime branches.
+5. **AOT Code Specialization**: Bake each captured parameter's declared GGUF quant block layout, sub-block extraction, and tile dimensions directly into specialized Metal MSL kernels, eliminating runtime architecture or quant-format dispatch.
 6. **Offline AOT Transcoding for Exotic Types**: Rare non-uniform codebook types (e.g. `IQ4_XS`, which accounts for only ~6% of tensors in `UD-Q4_K_XL`) are transcoded offline to `Q5_K` at package assembly time, avoiding GPU codebook kernel bloat.
 7. **Deterministic Bit-Exact Verification**: Verify dequantization correctness by comparing `llmopt` dequantized tensors byte-for-byte against `llama.cpp`'s reference dequantization on real GGUF binaries.
+
+# Graph authority and tensor binding
+
+GGUF `general.architecture` and family-specific metadata may be inspected and
+recorded as provenance, but never select compiler passes, schedule rules,
+runtime classes, or model adapters. This differs from llama.cpp's
+architecture-ID dispatch: llmopt already has the executable graph.
+
+The compilation session binds each lifted FX parameter to a GGUF tensor using
+an explicit name map plus shape and dtype/quant-descriptor validation. Missing,
+duplicate, or shape-incompatible mappings are errors. The importer does not
+reconstruct the network from GGUF tensor names or architecture metadata.
 
 # Context & Problem
 
 The current `llmopt` quantization stack has three structural limitations:
 
-- **Uniform 4-Bit Policy**: `quantization.py` replaces every `nn.Linear` (including `lm_head` and sensitive attention projections) with symmetric W4A16 group-64 quantization, degrading model perplexity compared to sensitivity-aware mixed-precision formats.
-- **Frontend Asset Reconstruction**: Tokenizer assets, Jinja chat templates, and architectural metadata must be manually supplied or inferred. GGUF carries these assets in-file.
+- **Uniform 4-Bit Policy**: `quantization.py` replaces every `nn.Linear` (including `lm_head` and sensitive attention projections) with symmetric W4A16 group-64 quantization, which cannot preserve UD's per-tensor sensitivity choices.
+- **Disconnected Assets**: Tokenizer and chat metadata are not yet linked from GGUF into the explicit Model Program processor contract.
 - **Closed ABI**: `kernel_ir.mli` and `weight_archive.ml` assume a fixed 64-element group size, preventing ingestion of industry-standard 256-element superblocks or asymmetric scales/mins.
 
 # Architecture & Scope
@@ -51,15 +61,17 @@ The current `llmopt` quantization stack has three structural limitations:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          GGUF / UD INGESTION PIPELINE                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. GGUF Parser: Reads metadata, KV config, tokenizer, tensor headers        │
-│ 2. Offline Transcoder: Converts IQ4_XS tensors to Q5_K                      │
-│ 3. AOT Compiler: Maps each tensor to specialized Metal MSL megakernels     │
+│ 1. FX Capture: Defines operators, parameter use, entrypoints, and state     │
+│ 2. GGUF Parser: Reads tokenizer metadata and quantized tensor descriptors   │
+│ 3. Tensor Binder: Explicit FX parameter -> GGUF tensor map + validation     │
+│ 4. Offline Transcoder: Converts IQ4_XS tensors to Q5_K                      │
+│ 5. AOT Compiler: Maps each tensor to specialized Metal MSL megakernels     │
 │    • Q8_0 (Block-32, 1 scale)                                               │
 │    • Q4_K (Superblock-256, 4-bit nibbles + sub-block scales/mins)           │
 │    • Q5_K (Superblock-256, 5-bit nibbles + high plane + scales/mins)        │
 │    • Q6_K (Superblock-256, 6-bit nibbles + high plane + int8 scales)        │
-│ 4. Bit-Exact Unit Tests: Validates dequant against llama.cpp reference      │
-│ 5. Model Program & Serving: Bakes into prebaked Metal ICB serving bundle   │
+│ 6. Bit-Exact Unit Tests: Validates dequant against llama.cpp reference      │
+│ 7. Model Program & Serving: Bakes into prebaked Metal ICB serving bundle   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 

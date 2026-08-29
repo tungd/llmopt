@@ -21,11 +21,30 @@ module Identity : sig
 end
 
 module Processor : sig
+  module Chat : sig
+    type format = Chatml
+    type t
+
+    val format_to_string : format -> string
+
+    val create :
+      format:format ->
+      bos_token_id:int ->
+      message_start_token_id:int ->
+      message_end_token_id:int ->
+      (t, string) result
+
+    val format : t -> format
+    val bos_token_id : t -> int
+    val message_start_token_id : t -> int
+    val message_end_token_id : t -> int
+  end
+
   type t
 
-  val create : tokenizer:Artifact.t -> ?chat_template:Artifact.t -> unit -> t
+  val create : tokenizer:Artifact.t -> ?chat:Chat.t -> unit -> t
   val tokenizer : t -> Artifact.t
-  val chat_template : t -> Artifact.t option
+  val chat : t -> Chat.t option
 end
 
 module Entrypoint : sig
@@ -115,6 +134,7 @@ module State : sig
       head_dim:int ->
       recurrent_layers:int ->
       recurrent_dim:int ->
+      recurrent_window:int ->
       (t, string) result
 
     val attention_layers : t -> int
@@ -122,6 +142,7 @@ module State : sig
     val head_dim : t -> int
     val recurrent_layers : t -> int
     val recurrent_dim : t -> int
+    val recurrent_window : t -> int
   end
 
   type t

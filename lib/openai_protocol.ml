@@ -42,16 +42,16 @@ let optional context name fields decode ~default =
   | Some value -> decode (context ^ "." ^ name) value
 
 let role = function
-  | "system" -> Ok Lfm_chat.Role.System
-  | "user" -> Ok Lfm_chat.Role.User
-  | "assistant" -> Ok Lfm_chat.Role.Assistant
-  | "tool" -> Ok Lfm_chat.Role.Tool
+  | "system" -> Ok Chat_template.Role.System
+  | "user" -> Ok Chat_template.Role.User
+  | "assistant" -> Ok Chat_template.Role.Assistant
+  | "tool" -> Ok Chat_template.Role.Tool
   | value -> Error (Printf.sprintf "unsupported chat role: %S" value)
 
 module Request = struct
   type t = {
     model : string;
-    messages : Lfm_chat.Message.t list;
+    messages : Chat_template.Message.t list;
     max_tokens : int;
     ignore_eos : bool;
     sampling_params : Sampling.Params.t;
@@ -63,7 +63,7 @@ module Request = struct
     let* role_name = required context "role" fields string in
     let* role = role role_name in
     let* content = required context "content" fields string in
-    Ok (Lfm_chat.Message.create ~role ~content)
+    Ok (Chat_template.Message.create ~role ~content)
 
   let messages context = function
     | `List [] -> Error (context ^ " must not be empty")

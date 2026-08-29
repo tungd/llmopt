@@ -142,13 +142,61 @@ type options = {
   decode_graph : string;
   output_dir : string;
   greedy : bool;
+  model : string;
+  architecture : string option;
+  family : string option;
+  vocab_size : int option;
+  max_positions : int option;
+  chat_format : Model_program.Processor.Chat.format option;
+  bos_token_id : int option;
+  message_start_token_id : int option;
+  message_end_token_id : int option;
+  minimum_prefill_tokens : int;
+  attention_states : (string * string * string * string) list;
+  recurrent_states : (string * string) list;
 }
 
 let usage () =
   prerr_endline
     "usage: llmopt-pipeline --weights <weights.llmopt> --tokenizer <tokenizer.llmopt> \
-     --prefill <graph.llmopt> --decode <graph.llmopt> --output <output-engine-directory>";
+     --prefill <graph.llmopt> --decode <graph.llmopt> --output <output-engine-directory> \
+     --model <id> --vocab-size <count> --max-positions <count> \
+     --chat-format chatml --bos-token-id <id> \
+     --message-start-token-id <id> --message-end-token-id <id> \
+     [--architecture <name>] [--family <name>] [--minimum-prefill-tokens <count>] \
+     [--attention-state <key-in>:<value-in>:<key-out>:<value-out>]... \
+     [--recurrent-state <state-in>:<state-out>]...";
   exit 64
+
+let positive value =
+  match int_of_string_opt value with
+  | Some value when value > 0 -> value
+  | _ -> usage ()
+
+let nonnegative value =
+  match int_of_string_opt value with
+  | Some value when value >= 0 -> value
+  | _ -> usage ()
+
+let attention_state value =
+  match String.split_on_char ':' value with
+  | [ key_input; value_input; key_output; value_output ]
+    when
+      List.for_all (fun value -> String.trim value <> "")
+        [ key_input; value_input; key_output; value_output ] ->
+      key_input, value_input, key_output, value_output
+  | _ -> usage ()
+
+let recurrent_state value =
+  match String.split_on_char ':' value with
+  | [ state_input; state_output ]
+    when state_input <> "" && state_output <> "" ->
+      state_input, state_output
+  | _ -> usage ()
+
+let chat_format = function
+  | "chatml" -> Model_program.Processor.Chat.Chatml
+  | _ -> usage ()
 
 let parse_arguments () =
   let rec loop opts = function
@@ -159,6 +207,34 @@ let parse_arguments () =
     | "--decode" :: v :: rest -> loop { opts with decode_graph = v } rest
     | "--output" :: v :: rest -> loop { opts with output_dir = v } rest
     | "--no-greedy" :: rest -> loop { opts with greedy = false } rest
+    | "--model" :: v :: rest -> loop { opts with model = v } rest
+    | "--architecture" :: v :: rest ->
+        loop { opts with architecture = Some v } rest
+    | "--family" :: v :: rest -> loop { opts with family = Some v } rest
+    | "--vocab-size" :: v :: rest ->
+        loop { opts with vocab_size = Some (positive v) } rest
+    | "--max-positions" :: v :: rest ->
+        loop { opts with max_positions = Some (positive v) } rest
+    | "--chat-format" :: v :: rest ->
+        loop { opts with chat_format = Some (chat_format v) } rest
+    | "--bos-token-id" :: v :: rest ->
+        loop { opts with bos_token_id = Some (nonnegative v) } rest
+    | "--message-start-token-id" :: v :: rest ->
+        loop { opts with message_start_token_id = Some (nonnegative v) } rest
+    | "--message-end-token-id" :: v :: rest ->
+        loop { opts with message_end_token_id = Some (nonnegative v) } rest
+    | "--minimum-prefill-tokens" :: v :: rest ->
+        loop { opts with minimum_prefill_tokens = positive v } rest
+    | "--attention-state" :: v :: rest ->
+        loop
+          { opts with
+            attention_states = attention_state v :: opts.attention_states }
+          rest
+    | "--recurrent-state" :: v :: rest ->
+        loop
+          { opts with
+            recurrent_states = recurrent_state v :: opts.recurrent_states }
+          rest
     | _ -> usage ()
   in
   match Array.to_list Sys.argv with
@@ -172,6 +248,18 @@ let parse_arguments () =
             decode_graph = "";
             output_dir = "";
             greedy = true;
+            model = "";
+            architecture = None;
+            family = None;
+            vocab_size = None;
+            max_positions = None;
+            chat_format = None;
+            bos_token_id = None;
+            message_start_token_id = None;
+            message_end_token_id = None;
+            minimum_prefill_tokens = 1;
+            attention_states = [];
+            recurrent_states = [];
           }
           rest
       in
@@ -185,8 +273,65 @@ let parse_arguments () =
       else opts
   | [] -> usage ()
 
+let model_profile opts =
+  match
+    ( opts.model,
+      opts.vocab_size,
+      opts.max_positions,
+      opts.chat_format,
+      opts.bos_token_id,
+      opts.message_start_token_id,
+      opts.message_end_token_id )
+  with
+  | "", _, _, _, _, _, _
+  | _, None, _, _, _, _, _
+  | _, _, None, _, _, _, _
+  | _, _, _, None, _, _, _
+  | _, _, _, _, None, _, _
+  | _, _, _, _, _, None, _
+  | _, _, _, _, _, _, None ->
+      Error
+        "pipeline requires explicit model, generation, and chat token metadata"
+  | ( model,
+      Some vocab_size,
+      Some max_positions,
+      Some chat_format,
+      Some bos_token_id,
+      Some message_start_token_id,
+      Some message_end_token_id ) ->
+      Model_profile.create ~model ?architecture:opts.architecture
+        ?family:opts.family ~vocab_size ~max_positions
+        ~chat_format
+        ~bos_token_id ~message_start_token_id ~message_end_token_id
+        ~minimum_prefill_tokens:opts.minimum_prefill_tokens ()
+
+let state_bindings opts =
+  let rec attentions index output = function
+    | [] -> Ok (List.rev output)
+    | (key_input, value_input, key_output, value_output) :: rest ->
+        let* binding =
+          Model_program.State.Attention_binding.create ~cache_layer:index
+            ~key_input ~value_input ~key_output ~value_output
+        in
+        attentions (index + 1) (binding :: output) rest
+  in
+  let rec recurrents index output = function
+    | [] -> Ok (List.rev output)
+    | (state_input, state_output) :: rest ->
+        let* binding =
+          Model_program.State.Recurrent_binding.create ~cache_layer:index
+            ~state_input ~state_output
+        in
+        recurrents (index + 1) (binding :: output) rest
+  in
+  let* attentions = attentions 0 [] (List.rev opts.attention_states) in
+  let* recurrents = recurrents 0 [] (List.rev opts.recurrent_states) in
+  Ok (attentions, recurrents)
+
 let run () =
   let opts = parse_arguments () in
+  let* profile = model_profile opts in
+  let* attentions, recurrents = state_bindings opts in
   Printf.printf "[llmopt-pipeline] Building unified engine at: %s\n%!" opts.output_dir;
   ensure_directory opts.output_dir;
 
@@ -220,8 +365,7 @@ let run () =
   let* decode_art = Model_program.Artifact.create "decode/package.llmopt" in
   let* tok_art = Model_program.Artifact.create "tokenizer.llmopt" in
   let* program =
-    Lfm25_program.of_packages
-      ~config:Lfm25.Config.default
+    Model_program_linker.of_packages ~profile ~attentions ~recurrents
       ~tokenizer:tok_art
       ~prefill_path:prefill_art
       ~prefill:prefill_pkg

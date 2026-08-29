@@ -15,7 +15,10 @@ type t
 type generation = t
 
 val create :
-  tokenizer:Tokenizer.t -> engine:Serving_engine.t -> (t, string) result
+  tokenizer:Tokenizer.t ->
+  chat:Model_program.Processor.Chat.t ->
+  engine:Serving_engine.t ->
+  (t, string) result
 
 val create_from_program :
   program:Model_program.t ->
@@ -37,7 +40,7 @@ val create_from_dir :
 val program : t -> Model_program.t option
 val tokenizer : t -> Tokenizer.t
 val engine : t -> Serving_engine.t
-val chat : t -> Lfm_chat.t
+val chat : t -> Chat_template.t
 
 module Native_engine : sig
   type t = Serving_engine.t
@@ -60,7 +63,7 @@ module Session : sig
     config:Generation_core.Config.t ->
     ?sampling_params:Sampling.Params.t ->
     ?ignore_eos:bool ->
-    messages:Lfm_chat.Message.t list ->
+    messages:Chat_template.Message.t list ->
     unit ->
     (session * int, string) result
 
@@ -79,5 +82,5 @@ val generate :
   ?ignore_eos:bool ->
   t ->
   config:Generation_core.Config.t ->
-  messages:Lfm_chat.Message.t list ->
+  messages:Chat_template.Message.t list ->
   (Result.t, string) result

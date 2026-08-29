@@ -143,6 +143,15 @@ let run root =
   Printf.printf "  Tokenizer: %s\n"
     (Model_program.Artifact.path
        (Model_program.Processor.tokenizer (Model_program.processor program)));
+  (match Model_program.Processor.chat (Model_program.processor program) with
+  | None -> Printf.printf "  Chat: undeclared (legacy program)\n"
+  | Some chat ->
+      Printf.printf "  Chat: %s (bos=%d, message_start=%d, message_end=%d)\n"
+        (Model_program.Processor.Chat.format chat
+        |> Model_program.Processor.Chat.format_to_string)
+        (Model_program.Processor.Chat.bos_token_id chat)
+        (Model_program.Processor.Chat.message_start_token_id chat)
+        (Model_program.Processor.Chat.message_end_token_id chat));
   Printf.printf "  Prefill entrypoint: %s (input: %s)\n" prefill_rel
     (Model_program.Entrypoint.input_ids (Model_program.prefill program));
   Printf.printf "  Decode entrypoint: %s (input: %s)\n" decode_rel
@@ -150,12 +159,13 @@ let run root =
   Printf.printf "  Generation: vocab_size=%d, max_positions=%d\n"
     (Model_program.Generation.vocab_size gen)
     (Model_program.Generation.max_positions gen);
-  Printf.printf "  State: %d attention layers (%d kv_heads x %d head_dim), %d recurrent layers (%d dim)\n"
+  Printf.printf "  State: %d attention layers (%d kv_heads x %d head_dim), %d recurrent layers (%d dim x %d window)\n"
     (Model_program.State.Cache_layout.attention_layers layout)
     (Model_program.State.Cache_layout.kv_heads layout)
     (Model_program.State.Cache_layout.head_dim layout)
     (Model_program.State.Cache_layout.recurrent_layers layout)
-    (Model_program.State.Cache_layout.recurrent_dim layout);
+    (Model_program.State.Cache_layout.recurrent_dim layout)
+    (Model_program.State.Cache_layout.recurrent_window layout);
   Printf.printf "  Specialization: min_prefill_tokens=%d\n"
     (Model_program.Specialization.min_prefill_tokens (Model_program.specialization program));
   Ok ()

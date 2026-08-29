@@ -33,13 +33,17 @@ val tensor_inputs : t -> Tensor_input.t list
 val runtime_inputs : t -> (string * Ir.Value.t) list
 val opaque_count : t -> int
 
-module Lfm25 : sig
-  (** Rebuild a captured LFM prefill template for [tokens]. The request must
-      cover the model's three-token recurrent window. When the [logits] output
+module Sequence : sig
+  (** Rebuild a captured prefill template for [tokens]. The request must
+      cover [minimum_tokens]. When the [logits] output
       is the full-sequence vocabulary projection, specialize its existing
       identity index and W4A16 linear command to the final token row. *)
   val specialize_prefill :
-    captured_tokens:int -> tokens:int -> t -> (t, string) result
+    minimum_tokens:int ->
+    captured_tokens:int ->
+    tokens:int ->
+    t ->
+    (t, string) result
 
   val rope_cosine_input : string
   val rope_sine_input : string
@@ -66,6 +70,7 @@ module Lfm25 : sig
   val recurrent_in_input : int -> string
 
   val specialize_suffix_prefill_paged_q8 :
+    minimum_tokens:int ->
     captured_tokens:int ->
     tokens:int ->
     past_tokens:int ->

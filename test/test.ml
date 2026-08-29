@@ -146,10 +146,13 @@ let () =
 
   let tokenizer_bytes = tokenizer_fixture () in
   let tokenizer = Tokenizer.of_bytes tokenizer_bytes |> expect_ok in
-  expect_int_array (Tokenizer.encode tokenizer "ab" |> expect_ok) [| 0; 3 |]
-    "binary tokenizer performs ranked BPE and prepends BOS";
+  expect_int_array (Tokenizer.encode tokenizer "ab" |> expect_ok) [| 3 |]
+    "binary tokenizer performs ranked BPE without inventing BOS";
   expect_int_array
-    (Tokenizer.encode ~add_bos:false tokenizer "python ab" |> expect_ok)
+    (Tokenizer.encode ~bos_token_id:0 tokenizer "python ab" |> expect_ok)
+    [| 0; 6; 4; 3 |] "explicit BOS composes with added-token BPE";
+  expect_int_array
+    (Tokenizer.encode tokenizer "python ab" |> expect_ok)
     [| 6; 4; 3 |] "added-token matching composes with byte-level BPE";
   expect
     (Tokenizer.decode tokenizer [| 0; 5; 2 |] |> expect_ok = " ab")
@@ -257,8 +260,8 @@ let () =
   expect (not (Serving_queue.is_congested capacity_queue))
     "capacity accounting clears congestion below the low watermark";
 
-  expect_ok (Lfm25.Config.validate Lfm25.Config.default);
-  expect (Lfm25.Config.default.dtype = Ir.Dtype.Float16)
+  expect_ok (Lfm25.Config.validate Lfm25.Config.probe_350m);
+  expect (Lfm25.Config.probe_350m.dtype = Ir.Dtype.Float16)
     "canonical model uses float16 activations";
 
   let graph = Ir.Graph.create () in
@@ -512,7 +515,7 @@ let () =
   Ir.Graph.add_output rope_graph ~name:"rope" rope_output;
   let rope_schedule =
     rope_graph |> Serving_schedule.of_graph |> expect_ok
-    |> Serving_schedule.Lfm25.specialize_decode ~captured_past:1 ~past_tokens:1
+    |> Serving_schedule.Sequence.specialize_decode ~captured_past:1 ~past_tokens:1
     |> expect_ok
   in
   let rope_runtime_names =
@@ -658,7 +661,8 @@ let () =
   Ir.Graph.add_output suffix_graph ~name:"attention" attention_output;
   let base_schedule = suffix_graph |> Serving_schedule.of_graph |> expect_ok in
   let suffix_schedule =
-    Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+    Serving_schedule.Sequence.specialize_suffix_prefill_paged_q8
+      ~minimum_tokens:3
       ~captured_tokens ~tokens:suffix_tokens ~past_tokens
       ~cache:suffix_cache base_schedule
     |> expect_ok
@@ -727,7 +731,8 @@ let () =
     "suffix prefill continues each conv layer from its checkpoint input";
   expect
     (match
-       Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+       Serving_schedule.Sequence.specialize_suffix_prefill_paged_q8
+         ~minimum_tokens:3
          ~captured_tokens ~tokens:suffix_tokens ~past_tokens:0
          ~cache:suffix_cache base_schedule
      with
@@ -736,7 +741,8 @@ let () =
     "suffix prefill rejects a zero past length";
   expect
     (match
-       Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+       Serving_schedule.Sequence.specialize_suffix_prefill_paged_q8
+         ~minimum_tokens:3
          ~captured_tokens ~tokens:2 ~past_tokens
          ~cache:suffix_cache base_schedule
      with
@@ -745,7 +751,8 @@ let () =
     "suffix prefill rejects a suffix shorter than the recurrent window";
   expect
     (match
-       Serving_schedule.Lfm25.specialize_suffix_prefill_paged_q8
+       Serving_schedule.Sequence.specialize_suffix_prefill_paged_q8
+         ~minimum_tokens:3
          ~captured_tokens:0 ~tokens:suffix_tokens ~past_tokens
          ~cache:suffix_cache base_schedule
      with
@@ -881,20 +888,20 @@ let () =
   expect (stoch_choice1 = stoch_choice2) "seeded stochastic sampling is deterministic";
   expect (stoch_choice1 = 10 || stoch_choice1 = 20) "stochastic sampling chooses from top candidates";
 
-  (* Model Program contract and ABI v1 tests *)
+  (* Model Program contract and ABI tests *)
   let identity =
     expect_ok
       (Model_program.Identity.create ~model:"test-model"
          ~architecture:"transformer" ~family:"llama" ())
   in
   let tok_art = expect_ok (Model_program.Artifact.create "tokenizer.llmopt") in
-  let chat_art =
-    expect_ok (Model_program.Artifact.create "chat_template.json")
+  let chat =
+    expect_ok
+      (Model_program.Processor.Chat.create ~bos_token_id:1
+         ~format:Model_program.Processor.Chat.Chatml
+         ~message_start_token_id:6 ~message_end_token_id:7)
   in
-  let processor =
-    Model_program.Processor.create ~tokenizer:tok_art
-      ~chat_template:chat_art ()
-  in
+  let processor = Model_program.Processor.create ~tokenizer:tok_art ~chat () in
   let prefill_pkg =
     expect_ok (Model_program.Artifact.create "prefill/package.llmopt")
   in
@@ -924,7 +931,8 @@ let () =
   let layout =
     expect_ok
       (Model_program.State.Cache_layout.create ~attention_layers:2 ~kv_heads:4
-         ~head_dim:64 ~recurrent_layers:1 ~recurrent_dim:128)
+         ~head_dim:64 ~recurrent_layers:1 ~recurrent_dim:128
+         ~recurrent_window:3)
   in
   let att0 =
     expect_ok
@@ -959,7 +967,9 @@ let () =
       (Model_program.create ~identity ~processor ~prefill:prefill_entry
          ~decode:decode_entry ~generation ~state ~specialization)
   in
-  expect (Model_program.abi_version program = 1) "model program abi version is 1";
+  expect
+    (Model_program.abi_version program = Model_program.current_abi_version)
+    "model program uses the current ABI version";
   expect
     (Model_program.Identity.model (Model_program.identity program)
     = "test-model")
@@ -985,6 +995,11 @@ let () =
        (Model_program.Processor.tokenizer (Model_program.processor restored))
     = "tokenizer.llmopt")
     "restored tokenizer path matches";
+  expect
+    (Model_program.Processor.chat (Model_program.processor restored)
+    |> Option.map Model_program.Processor.Chat.message_end_token_id
+    = Some 7)
+    "restored explicit chat token contract matches";
   expect
     (Model_program.Generation.vocab_size (Model_program.generation restored)
     = 32000)
@@ -1012,6 +1027,11 @@ let () =
     = 1)
     "restored state layout recurrent layers matches";
   expect
+    (Model_program.State.Cache_layout.recurrent_window
+       (Model_program.State.layout (Model_program.state restored))
+    = 3)
+    "restored state layout recurrent window matches";
+  expect
     (Model_program.Specialization.min_prefill_tokens
        (Model_program.specialization restored)
     = 3)
@@ -1038,7 +1058,8 @@ let () =
   expect
     (Result.is_error
        (Model_program.State.Cache_layout.create ~attention_layers:1 ~kv_heads:0
-          ~head_dim:64 ~recurrent_layers:0 ~recurrent_dim:0))
+          ~head_dim:64 ~recurrent_layers:0 ~recurrent_dim:0
+          ~recurrent_window:0))
     "rejects cache layout with zero kv heads when attention layers > 0";
   expect
     (Result.is_error
@@ -1050,8 +1071,8 @@ let () =
        (Model_program.Specialization.create ~min_prefill_tokens:0 ()))
     "rejects min prefill tokens < 1";
 
-  (* LFM2.5 Model Program adapter tests *)
-  let lfm_att, lfm_rec = Lfm25_program.cache_bindings Lfm25.Config.default in
+  (* LFM2.5 probe fixture tests *)
+  let lfm_att, lfm_rec = Lfm25_probe.cache_bindings () in
   expect (List.length lfm_att = 6) "LFM2.5 has 6 attention bindings";
   expect (List.length lfm_rec = 10) "LFM2.5 has 10 recurrent bindings";
   expect
@@ -1083,6 +1104,7 @@ let () =
   let lfm_layout =
     Model_program.State.Cache_layout.create ~attention_layers:6 ~kv_heads:8
       ~head_dim:64 ~recurrent_layers:10 ~recurrent_dim:1024
+      ~recurrent_window:3
     |> Result.get_ok
   in
   let lfm_state =
@@ -1115,6 +1137,7 @@ let () =
   let tf_layout =
     Model_program.State.Cache_layout.create ~attention_layers:2 ~kv_heads:8
       ~head_dim:64 ~recurrent_layers:0 ~recurrent_dim:0
+      ~recurrent_window:0
     |> Result.get_ok
   in
   let tf_state =
@@ -1468,6 +1491,3 @@ let () =
             expect (Weight_archive.Tensor.byte_length t > 0) "token_embd byte_length > 0");
 
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
-
-
-

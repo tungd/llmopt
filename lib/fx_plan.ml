@@ -552,13 +552,13 @@ let plan fx_graph =
             let rank = List.length dimensions in
             if rank = 0 then Error "crop pad requires a ranked tensor"
             else if left > 0 || right > 0 then
-              Error "captured LFM cache pad must be a pure crop"
+              Error "captured cache pad must be a pure crop"
             else
               let width = List.nth dimensions (rank - 1) in
               let start = -left in
               let stop = width + right in
               if start < 0 || stop < start || stop > width then
-                Error "captured LFM cache crop is outside its source"
+                Error "captured cache crop is outside its source"
               else
                 let full =
                   Tensor_shape.Index.Spec.Slice
@@ -578,7 +578,7 @@ let plan fx_graph =
                   ~operation:
                     (Ir.Primitive.Movement (Ir.Movement.Index selection))
                   ~inputs ~logical_shape
-        | _ -> Error "captured LFM cache pad requires one static crop pair"
+        | _ -> Error "captured cache pad requires one static crop pair"
       in
       let lower_zeros_like inputs =
         match inputs with
@@ -661,9 +661,9 @@ let plan fx_graph =
             _input :: _weight :: Fx.Argument.Null :: stride :: padding
             :: dilation :: groups :: _ ) ->
             if Ir.Value.dtype input <> Ir.Dtype.Float16 then
-              Error "LFM short-conv input must be float16"
+              Error "short-conv input must be float16"
             else if Ir.Value.dtype weight <> Ir.Dtype.Float16 then
-              Error "LFM short-conv weight must be float16"
+              Error "short-conv weight must be float16"
             else
               let* stride = singleton_int_argument stride in
               let* padding = singleton_int_argument padding in
@@ -684,7 +684,7 @@ let plan fx_graph =
                 ~inputs ~logical_shape
         | _ ->
             Error
-              "LFM short-conv requires input, weight, null bias, and static parameters"
+              "short-conv requires input, weight, null bias, and static parameters"
       in
       let lower_attention inputs =
         match inputs with
@@ -692,9 +692,9 @@ let plan fx_graph =
             if Ir.Value.dtype query <> Ir.Dtype.Float16
                || Ir.Value.dtype key <> Ir.Dtype.Float16
                || Ir.Value.dtype value <> Ir.Dtype.Float16
-            then Error "LFM attention query, key, and value must be float16"
+            then Error "attention query, key, and value must be float16"
             else if Ir.Value.dtype mask <> Ir.Dtype.Bool then
-              Error "LFM attention mask must be boolean"
+              Error "attention mask must be boolean"
             else
               let dropout =
                 match keyword "dropout_p" node with
@@ -717,15 +717,15 @@ let plan fx_graph =
                      with
                     | head_dimension :: _ when head_dimension > 0 ->
                         Ok (1.0 /. sqrt (Float.of_int head_dimension))
-                    | _ -> Error "LFM attention has no positive head width")
+                    | _ -> Error "attention has no positive head width")
               in
               let* dropout = dropout in
               let* causal = causal in
               let* scale = scale in
               if dropout <> 0.0 then
-                Error "LFM inference attention requires zero dropout"
+                Error "inference attention requires zero dropout"
               else if causal then
-                Error "LFM captured masked attention must be non-causal"
+                Error "captured masked attention must be non-causal"
               else
                 let* config = Ir.Attention.create ~scale ~causal in
                 let* inferred =
@@ -739,7 +739,7 @@ let plan fx_graph =
                 let* logical_shape = declared_or_inferred node inferred in
                 emit_primitive node ~operation:(Ir.Primitive.Attention config)
                   ~inputs ~logical_shape
-        | _ -> Error "LFM attention requires query, key, value, and mask"
+        | _ -> Error "attention requires query, key, value, and mask"
       in
       let lower_embedding inputs =
         match inputs, Fx.Node.arguments node with
@@ -747,11 +747,11 @@ let plan fx_graph =
             _indices :: _weight :: padding_index :: max_norm :: norm_type
             :: scale_grad_by_frequency :: sparse :: _ ) ->
             if Ir.Value.dtype indices <> Ir.Dtype.Int64 then
-              Error "LFM embedding indices must be int64"
+              Error "embedding indices must be int64"
             else if Ir.Value.dtype weight <> Ir.Dtype.Float16 then
-              Error "LFM embedding weight must be float16"
+              Error "embedding weight must be float16"
             else if max_norm <> Fx.Argument.Null then
-              Error "LFM inference embedding does not support max_norm"
+              Error "inference embedding does not support max_norm"
             else
               let* padding_index = optional_int_argument padding_index in
               let* _norm_type = finite_float_argument norm_type in
@@ -765,12 +765,12 @@ let plan fx_graph =
                 | [] -> 0
               in
               if scale_grad_by_frequency || sparse then
-                Error "LFM inference embedding requires dense unscaled lookup"
+                Error "inference embedding requires dense unscaled lookup"
               else if
                 Option.exists
                   (fun index -> index < -vocabulary || index >= vocabulary)
                   padding_index
-              then Error "LFM embedding padding index is out of range"
+              then Error "embedding padding index is out of range"
               else
                 let* inferred =
                   Tensor_shape.embedding (Ir.Value.logical_shape indices)
@@ -780,18 +780,18 @@ let plan fx_graph =
                 let* logical_shape = declared_or_inferred node inferred in
                 emit_primitive node ~operation:Ir.Primitive.Embedding ~inputs
                   ~logical_shape
-        | _ -> Error "LFM embedding requires static inference options"
+        | _ -> Error "embedding requires static inference options"
       in
       let lower_arange inputs =
         if inputs <> [] then Error "arange cannot have tensor inputs"
         else if Fx.Node.dtype node <> Ir.Dtype.Int64 then
-          Error "LFM position arange must produce int64"
+          Error "position arange must produce int64"
         else if
           not
             (List.for_all
                (fun (name, _) -> name = "device")
                (Fx.Node.keyword_arguments node))
-        then Error "LFM position arange has unsupported keyword arguments"
+        then Error "position arange has unsupported keyword arguments"
         else
           let* start, stop, step =
             match Fx.Node.arguments node with
@@ -824,7 +824,7 @@ let plan fx_graph =
             if Ir.Value.dtype source <> Ir.Dtype.Int64
                || Ir.Value.dtype prepend <> Ir.Dtype.Int64
                || Fx.Node.dtype node <> Ir.Dtype.Int64
-            then Error "LFM position diff requires int64 tensors"
+            then Error "position diff requires int64 tensors"
             else
               let n =
                 match keyword "n" node, positional with
@@ -853,11 +853,11 @@ let plan fx_graph =
                     Ok (Ir.Value.equal value prepend)
                 | _ -> Ok false
               in
-              if n <> 1 then Error "LFM position diff requires n=1"
+              if n <> 1 then Error "position diff requires n=1"
               else if not prepend_matches then
-                Error "LFM position diff requires its captured prepend tensor"
+                Error "position diff requires its captured prepend tensor"
               else if not append_supported then
-                Error "LFM position diff does not support append"
+                Error "position diff does not support append"
               else
                 let* axis =
                   Tensor_shape.normalize_axis (Ir.Value.logical_shape source) axis
@@ -879,9 +879,9 @@ let plan fx_graph =
         | [ input ] ->
             if Ir.Value.dtype input <> Ir.Dtype.Bool
                || Fx.Node.dtype node <> Ir.Dtype.Int64
-            then Error "LFM packed-sequence cumsum requires bool to int64"
+            then Error "packed-sequence cumsum requires bool to int64"
             else if Option.is_some (keyword "dtype" node) then
-              Error "LFM packed-sequence cumsum has an explicit dtype"
+              Error "packed-sequence cumsum has an explicit dtype"
             else
               let positional =
                 match Fx.Node.arguments node with _receiver :: rest -> rest | [] -> []
@@ -914,13 +914,13 @@ let plan fx_graph =
               | None -> Error "new_ones requires an explicit bool dtype"
             in
             if dtype <> "torch.bool" || Fx.Node.dtype node <> Ir.Dtype.Bool then
-              Error "LFM scalar new_ones must produce bool"
+              Error "scalar new_ones must produce bool"
             else if
               not
                 (List.for_all
                    (fun (name, _) -> name = "dtype")
                    (Fx.Node.keyword_arguments node))
-            then Error "LFM scalar new_ones has unsupported keyword arguments"
+            then Error "scalar new_ones has unsupported keyword arguments"
             else
               let* logical_shape = declared_or_inferred node Tensor_shape.scalar in
               emit_primitive node
@@ -1002,7 +1002,7 @@ let plan fx_graph =
                              || Ir.Value.dtype first_index <> Ir.Dtype.Int64
                              || Ir.Value.dtype second_index <> Ir.Dtype.Int64
                              || Fx.Node.dtype node <> Ir.Dtype.Int64
-                          then Error "LFM two-index gather requires int64 tensors"
+                          then Error "two-index gather requires int64 tensors"
                           else
                             let* inferred =
                               Tensor_shape.gather2

@@ -7,7 +7,7 @@ from pathlib import Path
 from llmopt_backend.tokenizer_archive import (
     LFM25_SPLIT_PATTERN,
     MAGIC,
-    PROFILE_LFM25,
+    PROFILE_BPE,
     encode_archive,
     write_archive,
 )
@@ -81,7 +81,7 @@ class TokenizerArchiveTests(unittest.TestCase):
         magic, version, profile, tokens, merges, maximum = struct.unpack_from(
             "<8sHHIII", first
         )
-        self.assertEqual((magic, version, profile), (MAGIC, 1, PROFILE_LFM25))
+        self.assertEqual((magic, version, profile), (MAGIC, 1, PROFILE_BPE))
         self.assertEqual((tokens, merges, maximum), (5, 1, 4))
         with self.assertRaises((UnicodeDecodeError, json.JSONDecodeError)):
             json.loads(first.decode("utf-8"))
@@ -99,11 +99,18 @@ class TokenizerArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicts"):
             encode_archive(fixture)
 
-    def test_rejects_non_lfm_pretokenizer(self):
+    def test_accepts_non_lfm_bpe_by_default(self):
+        fixture = self.fixture()
+        fixture["pre_tokenizer"] = {"type": "ByteLevel"}
+        payload, summary = encode_archive(fixture)
+        self.assertTrue(payload.startswith(MAGIC))
+        self.assertEqual(summary.token_count, 5)
+
+    def test_strict_lfm_probe_rejects_non_lfm_pretokenizer(self):
         fixture = self.fixture()
         fixture["pre_tokenizer"] = {"type": "ByteLevel"}
         with self.assertRaisesRegex(ValueError, "LFM pre-tokenizer"):
-            encode_archive(fixture)
+            encode_archive(fixture, strict_lfm=True)
 
 
 if __name__ == "__main__":

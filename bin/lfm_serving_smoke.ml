@@ -13,12 +13,12 @@ let input_ids value =
     let token = String.trim token in
     match int_of_string_opt token with
     | Some token
-      when token >= 0 && token < Lfm25.Config.default.vocab_size ->
+      when token >= 0 && token < Lfm25.Config.probe_350m.vocab_size ->
         Ok token
     | Some token ->
         Error
           (Printf.sprintf "input token ID %d is outside [0, %d)" token
-             Lfm25.Config.default.vocab_size)
+             Lfm25.Config.probe_350m.vocab_size)
     | None -> Error ("invalid input token ID: " ^ token)
   in
   if values = [] || List.exists (fun value -> String.trim value = "") values
@@ -127,7 +127,7 @@ let logits_row step =
   | Some buffer ->
       let* bytes = Metal_runtime.Buffer.contents buffer in
       Sampling.Float16_logits.last_row
-        ~vocabulary:Lfm25.Config.default.vocab_size bytes
+        ~vocabulary:Lfm25.Config.probe_350m.vocab_size bytes
 
 let greedy step =
   match Serving_engine.Step.token_id step with
@@ -138,7 +138,7 @@ let greedy step =
   | None ->
       let* row = logits_row step in
       Sampling.Greedy.f16_last_row
-        ~vocabulary:Lfm25.Config.default.vocab_size row
+        ~vocabulary:Lfm25.Config.probe_350m.vocab_size row
 
 let write_bytes path bytes =
   try
@@ -193,8 +193,8 @@ let run () =
     | None ->
         let* prefill_path = Model_program.Artifact.create "prefill/package.llmopt" in
         let* decode_path = Model_program.Artifact.create "decode/package.llmopt" in
-        Lfm25_program.of_packages ~config:Lfm25.Config.default
-          ~prefill_path ~prefill:prefill_package ~decode_path ~decode:decode_package ()
+        Lfm25_probe.of_packages ~prefill_path ~prefill:prefill_package
+          ~decode_path ~decode:decode_package ()
   in
   let state = Model_program.state program in
   let* config =

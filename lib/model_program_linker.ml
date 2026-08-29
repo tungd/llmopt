@@ -2,74 +2,6 @@ let ( let* ) = Result.bind
 
 module String_map = Map.Make (String)
 
-let indexed_name base index =
-  if index = 0 then base else base ^ "_" ^ string_of_int index
-
-let discover_bindings decode_inputs =
-  let rec build layer_idx attn_idx rec_idx attentions recurrents =
-    let prefix = "l_kwargs_past_key_values_layers_" ^ string_of_int layer_idx in
-    let key_in = prefix ^ "_keys" in
-    let conv_in = prefix ^ "_conv_states" in
-    if String_map.mem key_in decode_inputs then
-      let binding =
-        Model_program.State.Attention_binding.create
-          ~cache_layer:attn_idx
-          ~key_input:key_in
-          ~value_input:(prefix ^ "_values")
-          ~key_output:(indexed_name "keys" attn_idx)
-          ~value_output:(indexed_name "values" attn_idx)
-        |> Result.get_ok
-      in
-      build (layer_idx + 1) (attn_idx + 1) rec_idx (binding :: attentions) recurrents
-    else if String_map.mem conv_in decode_inputs then
-      let binding =
-        Model_program.State.Recurrent_binding.create
-          ~cache_layer:rec_idx
-          ~state_input:conv_in
-          ~state_output:(indexed_name "conv_states" rec_idx)
-        |> Result.get_ok
-      in
-      build (layer_idx + 1) attn_idx (rec_idx + 1) attentions (binding :: recurrents)
-    else
-      List.rev attentions, List.rev recurrents
-  in
-  build 0 0 0 [] []
-
-let cache_bindings (model : Lfm25.Config.t) =
-  let rec build model_layer attention_index recurrent_index attentions recurrents =
-    function
-    | [] -> List.rev attentions, List.rev recurrents
-    | Lfm25.Config.Full_attention :: rest ->
-        let prefix =
-          "l_kwargs_past_key_values_layers_" ^ string_of_int model_layer
-        in
-        let binding =
-          Model_program.State.Attention_binding.create
-            ~cache_layer:attention_index
-            ~key_input:(prefix ^ "_keys")
-            ~value_input:(prefix ^ "_values")
-            ~key_output:(indexed_name "keys" attention_index)
-            ~value_output:(indexed_name "values" attention_index)
-          |> Result.get_ok
-        in
-        build (model_layer + 1) (attention_index + 1) recurrent_index
-          (binding :: attentions) recurrents rest
-    | Lfm25.Config.Conv :: rest ->
-        let prefix =
-          "l_kwargs_past_key_values_layers_" ^ string_of_int model_layer
-        in
-        let binding =
-          Model_program.State.Recurrent_binding.create
-            ~cache_layer:recurrent_index
-            ~state_input:(prefix ^ "_conv_states")
-            ~state_output:(indexed_name "conv_states" recurrent_index)
-          |> Result.get_ok
-        in
-        build (model_layer + 1) attention_index (recurrent_index + 1) attentions
-          (binding :: recurrents) rest
-  in
-  build 0 0 0 [] [] model.layer_types
-
 let runtime_inputs package =
   package |> Serving_package.schedule |> Serving_schedule.runtime_inputs
   |> List.to_seq |> String_map.of_seq
@@ -168,17 +100,32 @@ let head_names head =
     Model_program.Entrypoint.Head.token_id head ]
   |> List.filter_map Fun.id
 
-let validate_entrypoints_full ~config ~prefill ~decode =
-  let input_ids = "l_kwargs_input_ids_" in
-  let decode_inputs = runtime_inputs decode in
-  let attentions, recurrents =
-    let disc_att, disc_rec = discover_bindings decode_inputs in
-    if disc_att <> [] || disc_rec <> [] then disc_att, disc_rec
-    else cache_bindings config
+let discover_input_ids prefill_inputs decode_inputs =
+  let candidates =
+    String_map.bindings prefill_inputs
+    |> List.filter_map (fun (name, value) ->
+           match Ir.Value.dtype value, dimensions value,
+                 String_map.find_opt name decode_inputs with
+           | Ir.Dtype.Int64, [ 1; tokens ], Some decode
+             when tokens > 0 && Ir.Value.dtype decode = Ir.Dtype.Int64
+                  && dimensions decode = [ 1; 1 ] ->
+               Some name
+           | _ -> None)
   in
+  match candidates with
+  | [ name ] -> Ok name
+  | [] -> Error "entrypoint packages have no shared int64 [1,tokens] input"
+  | names ->
+      Error
+        (Printf.sprintf "entrypoint packages have ambiguous token inputs: %s"
+           (String.concat ", " names))
+
+let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode =
+  let decode_inputs = runtime_inputs decode in
   let prefill_inputs = runtime_inputs prefill in
   let prefill_outputs = named_outputs prefill in
   let decode_outputs = named_outputs decode in
+  let* input_ids = discover_input_ids prefill_inputs decode_inputs in
   let* prefill_ids =
     match String_map.find_opt input_ids prefill_inputs with
     | Some value when Ir.Value.dtype value = Ir.Dtype.Int64 -> Ok value
@@ -199,7 +146,7 @@ let validate_entrypoints_full ~config ~prefill ~decode =
   in
   let* heads, head_dim, past_tokens =
     match attentions with
-    | [] -> Ok (config.num_key_value_heads, config.hidden_size / config.num_attention_heads, prefill_tokens)
+    | [] -> Ok (0, 0, prefill_tokens)
     | first :: _ ->
         (match String_map.find_opt (Model_program.State.Attention_binding.key_input first) decode_inputs with
         | Some value ->
@@ -215,16 +162,19 @@ let validate_entrypoints_full ~config ~prefill ~decode =
                      (shape_string shape)))
         | None -> Error "decode package is missing its first attention key")
   in
-  let recurrent_dim, recurrent_cache =
+  let* recurrent_dim, recurrent_cache =
     match recurrents with
-    | [] -> config.hidden_size, config.conv_l_cache
+    | [] -> Ok (0, 0)
     | first :: _ ->
         (match String_map.find_opt (Model_program.State.Recurrent_binding.state_input first) decode_inputs with
         | Some value ->
             (match dimensions value with
-            | [ 1; h; c ] -> h, c
-            | _ -> config.hidden_size, config.conv_l_cache)
-        | None -> config.hidden_size, config.conv_l_cache)
+            | [ 1; h; c ] when h > 0 && c > 0 -> Ok (h, c)
+            | shape ->
+                Error
+                  (Printf.sprintf "decode recurrent input has shape [%s]"
+                     (shape_string shape)))
+        | None -> Error "decode package is missing its first recurrent input")
   in
   let recurrent_shape = [ 1; recurrent_dim; recurrent_cache ] in
   if past_tokens <> prefill_tokens then
@@ -292,10 +242,16 @@ let validate_entrypoints_full ~config ~prefill ~decode =
     let* () = validate_recurrent recurrents in
     let* prefill_head =
       validate_head prefill_outputs ~tokens:prefill_tokens
-        ~vocabulary:config.vocab_size "prefill output"
+        ~vocabulary:
+          (Model_profile.generation profile
+          |> Model_program.Generation.vocab_size)
+        "prefill output"
     in
     let* decode_head =
-      validate_head decode_outputs ~tokens:1 ~vocabulary:config.vocab_size
+      validate_head decode_outputs ~tokens:1
+        ~vocabulary:
+          (Model_profile.generation profile
+          |> Model_program.Generation.vocab_size)
         "decode output"
     in
     let expected_prefill_inputs = [ input_ids ] in
@@ -343,41 +299,50 @@ let validate_entrypoints_full ~config ~prefill ~decode =
     let* () =
       expect_names decode_outputs expected_decode_outputs "decode output"
     in
-    Ok (prefill_tokens, past_tokens, prefill_head, decode_head, attentions, recurrents, heads, head_dim, recurrent_dim)
+    Ok
+      ( input_ids,
+        prefill_tokens,
+        past_tokens,
+        prefill_head,
+        decode_head,
+        attentions,
+        recurrents,
+        heads,
+        head_dim,
+        recurrent_dim,
+        recurrent_cache )
 
-let validate_entrypoints ~config ~prefill ~decode =
-  let* prefill_tokens, past_tokens, prefill_head, decode_head, _, _, _, _, _ =
-    validate_entrypoints_full ~config ~prefill ~decode
+let validate_entrypoints ~profile ~attentions ~recurrents ~prefill ~decode =
+  let* _, prefill_tokens, past_tokens, prefill_head, decode_head, _, _, _, _, _,
+       _ =
+    validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode
   in
   Ok (prefill_tokens, past_tokens, prefill_head, decode_head)
 
-let of_packages ~(config : Lfm25.Config.t) ?tokenizer ?chat_template
-    ~prefill_path ~prefill ~decode_path ~decode () =
-  let* _prefill_tokens, _past_tokens, prefill_head, decode_head, attentions, recurrents, heads, head_dim, recurrent_dim =
-    validate_entrypoints_full ~config ~prefill ~decode
+let of_packages ~profile ~attentions ~recurrents ?tokenizer ~prefill_path
+    ~prefill ~decode_path ~decode () =
+  let* input_ids, _prefill_tokens, _past_tokens, prefill_head, decode_head,
+       attentions, recurrents, heads, head_dim, recurrent_dim, recurrent_cache =
+    validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode
   in
-  let* identity =
-    Model_program.Identity.create ~model:"llmopt-model"
-      ~architecture:"transformer" ~family:"transformer" ()
-  in
+  let identity = Model_profile.identity profile in
   let* tokenizer =
     match tokenizer with
     | Some tok -> Ok tok
     | None -> Model_program.Artifact.create "tokenizer.llmopt"
   in
-  let processor = Model_program.Processor.create ~tokenizer ?chat_template () in
+  let processor =
+    Model_program.Processor.create ~tokenizer ~chat:(Model_profile.chat profile) ()
+  in
   let* prefill_entry =
     Model_program.Entrypoint.create ~kind:Model_program.Entrypoint.Prefill
-      ~package:prefill_path ~input_ids:"l_kwargs_input_ids_" ~head:prefill_head
+      ~package:prefill_path ~input_ids ~head:prefill_head
   in
   let* decode_entry =
     Model_program.Entrypoint.create ~kind:Model_program.Entrypoint.Decode
-      ~package:decode_path ~input_ids:"l_kwargs_input_ids_" ~head:decode_head
+      ~package:decode_path ~input_ids ~head:decode_head
   in
-  let* generation =
-    Model_program.Generation.create ~vocab_size:config.vocab_size
-      ~max_positions:config.max_position_embeddings ()
-  in
+  let generation = Model_profile.generation profile in
   let num_attention = List.length attentions in
   let num_recurrent = List.length recurrents in
   let recurrent_dim = if num_recurrent = 0 then 0 else recurrent_dim in
@@ -386,13 +351,15 @@ let of_packages ~(config : Lfm25.Config.t) ?tokenizer ?chat_template
       ~kv_heads:heads
       ~head_dim:head_dim
       ~recurrent_layers:num_recurrent ~recurrent_dim:recurrent_dim
+      ~recurrent_window:recurrent_cache
   in
   let* state = Model_program.State.create ~layout ~attentions ~recurrents in
   let* specialization =
-    Model_program.Specialization.create ~min_prefill_tokens:3
-      ~rope_cosine_input:Serving_schedule.Lfm25.rope_cosine_input
-      ~rope_sine_input:Serving_schedule.Lfm25.rope_sine_input
-      ~paged_slots_input:Serving_schedule.Lfm25.q8_attention_slots_input ()
+    Model_program.Specialization.create
+      ~min_prefill_tokens:(Model_profile.minimum_prefill_tokens profile)
+      ~rope_cosine_input:Serving_schedule.Sequence.rope_cosine_input
+      ~rope_sine_input:Serving_schedule.Sequence.rope_sine_input
+      ~paged_slots_input:Serving_schedule.Sequence.q8_attention_slots_input ()
   in
   Model_program.create ~identity ~processor ~prefill:prefill_entry
     ~decode:decode_entry ~generation ~state ~specialization

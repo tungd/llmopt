@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 MAGIC = b"LLMOPTTK"
 VERSION = 1
-PROFILE_LFM25 = 1
+PROFILE_BPE = 1
 LFM25_SPLIT_PATTERN = (
     r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|"
     r"\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
@@ -147,7 +147,7 @@ def encode_archive(tokenizer: Mapping[str, Any], strict_lfm: bool = False) -> tu
     maximum = max(by_id)
     parts = [
         _HEADER.pack(
-            MAGIC, VERSION, PROFILE_LFM25, len(by_id), len(merges), maximum
+            MAGIC, VERSION, PROFILE_BPE, len(by_id), len(merges), maximum
         )
     ]
     for encoded_id, (token, flags) in sorted(by_id.items()):
@@ -189,7 +189,7 @@ def write_archive(
 __all__ = [
     "MAGIC",
     "VERSION",
-    "PROFILE_LFM25",
+    "PROFILE_BPE",
     "LFM25_SPLIT_PATTERN",
     "ArchiveSummary",
     "encode_archive",

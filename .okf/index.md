@@ -4,15 +4,21 @@ okf_version: '0.2'
 
 # llmopt: effect-driven tile compiler research
 
-The executable project contract is W4A16 weights plus grouped-Q8 KV/recurrent
-state. Q8-weight and FP16-KV material below is historical evidence, not an
-available compiler, package, runtime, CLI, or benchmark configuration.
+The product boundary is a model-neutral PyTorch/Dynamo capture and a declared
+`model.llmopt` execution contract. The current Metal backend uses W4A16 weights
+plus grouped-Q8 KV/recurrent state; those formats are backend capabilities, not
+a built-in model profile or the target weight policy. GGUF with Unsloth Dynamic
+mixed quantization is the target weight-distribution path; FX capture, not a
+GGUF architecture identifier, defines executable topology. Q8-weight and FP16-KV material below is historical
+evidence, not an available compiler, package, runtime, CLI, or benchmark
+configuration.
 
 ## Orientation
 
 * [Architecture](architecture.md) - current Dynamo/FX to OCaml planning pipeline.
 * [Complete OCaml serving goal](goal-serving-runtime.md) - requirement-by-requirement end state and evidence map.
-* [Target model](target-lfm25.md) - LFM2.5-350M facts and target-specific constants.
+* [Probe models](probe-models.md) - model coverage without product defaults.
+* [LFM2.5 probe](target-lfm25.md) - hybrid probe facts and probe-only constants.
 * [Research tracking](tracking.md) - open questions, slices, and evidence status.
 
 ## Decisions

@@ -81,19 +81,19 @@ let specialize ~cache prefill decode =
   let decode_schedule = Serving_package.schedule decode in
   let* captured_prefill, captured_past = template_lengths prefill decode in
   let* prefill_13 =
-    Serving_schedule.Lfm25.specialize_prefill
+    Serving_schedule.Sequence.specialize_prefill ~minimum_tokens:3
       ~captured_tokens:captured_prefill ~tokens:13 prefill_schedule
   in
   let* prefill_128 =
-    Serving_schedule.Lfm25.specialize_prefill
+    Serving_schedule.Sequence.specialize_prefill ~minimum_tokens:3
       ~captured_tokens:captured_prefill ~tokens:128 prefill_schedule
   in
   let* prefill_4096 =
-    Serving_schedule.Lfm25.specialize_prefill
+    Serving_schedule.Sequence.specialize_prefill ~minimum_tokens:3
       ~captured_tokens:captured_prefill ~tokens:4096 prefill_schedule
   in
   let specialize_decode past_tokens =
-    Serving_schedule.Lfm25.specialize_decode_paged_q8 ~captured_past
+    Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past
       ~past_tokens ~cache decode_schedule
   in
   let* decode_one = specialize_decode 1 in
@@ -155,8 +155,7 @@ let run () =
     let* prefill_path = Model_program.Artifact.create "prefill/package.llmopt" in
     let* decode_path = Model_program.Artifact.create "decode/package.llmopt" in
     let* lfm_program =
-      Lfm25_program.of_packages ~config:Lfm25.Config.default
-        ~prefill_path ~prefill ~decode_path ~decode ()
+      Lfm25_probe.of_packages ~prefill_path ~prefill ~decode_path ~decode ()
     in
     let state = Model_program.state lfm_program in
     let* config =

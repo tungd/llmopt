@@ -866,7 +866,7 @@ let opaque_count schedule =
       match command.Command.op with Ir.Op.Opaque _ -> count + 1 | _ -> count)
     0 schedule.commands
 
-module Lfm25 = struct
+module Sequence = struct
   module Value_map = Map.Make (struct
     type t = Ir.Value_id.t
 
@@ -874,8 +874,6 @@ module Lfm25 = struct
   end)
 
   type substitutions = (int * int) list
-
-  let recurrent_window = 3
 
   let substitute substitutions value =
     List.assoc_opt value substitutions |> Option.value ~default:value
@@ -926,7 +924,7 @@ module Lfm25 = struct
     | Some value -> Ok value
     | None ->
         Error
-          (Printf.sprintf "LFM specialization lost value %d"
+          (Printf.sprintf "sequence specialization lost value %d"
              (value_id value))
 
   let map_operand substitutions values = function
@@ -1297,10 +1295,10 @@ module Lfm25 = struct
               | Some (m, n, k) -> Ok (linear_node, indexed, m, n, k)
               | None ->
                   Error
-                    "LFM prefill logits is not produced by a supported projection command")
+                    "prefill logits is not produced by a supported projection command")
           | _ ->
               Error
-                "LFM prefill logits is not produced by a supported projection command"
+                "prefill logits is not produced by a supported projection command"
         in
         (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
         | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
@@ -1322,15 +1320,15 @@ module Lfm25 = struct
                   Ok (index_node, source)
               | _ ->
                   Error
-                    "LFM prefill logits projection is not fed by a sole-consumer identity index"
+                    "prefill logits projection is not fed by a sole-consumer identity index"
             in
             (match Tensor_shape.dimensions (Ir.Value.logical_shape source) with
             | [ 1; source_tokens; width ]
               when source_tokens = tokens && width = k ->
                 Ok (Some { index_node; linear_node })
             | _ ->
-                Error "LFM prefill logits index has an unexpected source shape")
-        | _ -> Error "LFM prefill logits has an unexpected projection shape")
+                Error "prefill logits index has an unexpected source shape")
+        | _ -> Error "prefill logits has an unexpected projection shape")
 
   let last_token_index = function
     | [ input ] ->
@@ -1356,8 +1354,8 @@ module Lfm25 = struct
             Ok
               (Ir.Op.Primitive
                  (Ir.Primitive.Movement (Ir.Movement.Index index)))
-        | _ -> Error "LFM final-token index expects a rank-three tensor")
-    | _ -> Error "LFM final-token index expects one input"
+        | _ -> Error "final-token index expects a rank-three tensor")
+    | _ -> Error "final-token index expects one input"
 
   let last_token_linear_output operation inputs original =
     match projection_dimensions operation, inputs with
@@ -1374,8 +1372,8 @@ module Lfm25 = struct
                     ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
                     ~shape ~dtype:(Ir.Value.dtype original))
              with Invalid_argument message -> Error message)
-        | _ -> Error "LFM final-token linear input has an unexpected shape")
-    | _ -> Error "LFM final-token projection expects a one-row linear command"
+        | _ -> Error "final-token linear input has an unexpected shape")
+    | _ -> Error "final-token projection expects a one-row linear command"
 
   let specialize ?projection substitutions schedule =
     let commands = schedule.commands in
@@ -1408,7 +1406,7 @@ module Lfm25 = struct
                     Ok (Ir.Op.W4a16_linear { m = 1; n; k; bias })
                 | _ ->
                     Error
-                      "LFM final-token projection node is no longer supported")
+                      "final-token projection node is no longer supported")
             | Some _ | None ->
                 map_operation substitutions values command.Command.op
           in
@@ -1451,13 +1449,15 @@ module Lfm25 = struct
     in
     map_commands Value_map.empty [] commands
 
-  let specialize_prefill ~captured_tokens ~tokens schedule =
+  let specialize_prefill ~minimum_tokens ~captured_tokens ~tokens schedule =
     if captured_tokens <= 0 then Error "captured prefill length must be positive"
-    else if tokens < recurrent_window then
+    else if minimum_tokens <= 0 then
+      Error "minimum prefill length must be positive"
+    else if tokens < minimum_tokens then
       Error
         (Printf.sprintf
-           "LFM prefill length must cover the %d-token recurrent window"
-           recurrent_window)
+           "prefill length must be at least %d tokens"
+           minimum_tokens)
     else
       let* projection = last_token_projection schedule in
       specialize ?projection [ captured_tokens, tokens ] schedule
@@ -1555,7 +1555,7 @@ module Lfm25 = struct
     | (first_config, _, _, first_cosine, first_sine) :: rest ->
         let half_dimension = Ir.Rms_rope.half_dimension first_config in
         if half_dimension > max_int / 2 then
-          Error "LFM decode RoPE width overflows"
+          Error "decode RoPE width overflows"
         else
           let width = 2 * half_dimension in
           let expected_shape = [ 1; 1; tokens; width ] in
@@ -1565,18 +1565,18 @@ module Lfm25 = struct
                = expected_shape
           in
           if not (valid_trig first_cosine && valid_trig first_sine) then
-            Error "LFM decode RoPE trigonometric input has unexpected metadata"
+            Error "decode RoPE trigonometric input has unexpected metadata"
           else if
             List.exists
               (fun (config, _, _, cosine, sine) ->
                 Ir.Rms_rope.half_dimension config <> half_dimension
                 || not (valid_trig cosine && valid_trig sine))
               rest
-          then Error "LFM decode RoPE commands disagree on trigonometric metadata"
+          then Error "decode RoPE commands disagree on trigonometric metadata"
           else
             let maximum = max_value_id commands in
             if maximum > max_int - 2 then
-              Error "LFM decode RoPE value ids overflow"
+              Error "decode RoPE value ids overflow"
             else
               let* shape =
                 Tensor_shape.create expected_shape
@@ -1883,14 +1883,14 @@ module Lfm25 = struct
       in
       create (prune (fill_command :: commands))
 
-  let specialize_suffix_prefill_paged_q8 ~captured_tokens ~tokens ~past_tokens
-      ~cache schedule =
+  let specialize_suffix_prefill_paged_q8 ~minimum_tokens ~captured_tokens
+      ~tokens ~past_tokens ~cache schedule =
     if past_tokens <= 0 then Error "suffix prefill past length must be positive"
     else if past_tokens > max_int - tokens then
       Error "suffix prefill total length overflows"
     else
       let* schedule =
-        specialize_prefill ~captured_tokens ~tokens schedule
+        specialize_prefill ~minimum_tokens ~captured_tokens ~tokens schedule
       in
       let* schedule = specialize_rope ~tokens schedule in
       let* schedule = direct_q8_attention ~past_tokens ~cache schedule in

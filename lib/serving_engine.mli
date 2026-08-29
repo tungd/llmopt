@@ -4,6 +4,7 @@ module Step : sig
   val logits : t -> Metal_runtime.Buffer.t option
   val token_id : t -> Metal_runtime.Buffer.t option
   val tokens : t -> int array
+  val vocabulary : t -> int
   val cached_prefix : t -> int
   val kernels : t -> string list
 end
@@ -61,6 +62,7 @@ val create_from_program :
   (t, string) result
 
 val program : t -> Model_program.t option
+val vocabulary : t -> int
 val prefill_tokens : t -> int
 val past_tokens : t -> int
 val prompt : t -> tokens:int array -> (Prompt.t, string) result

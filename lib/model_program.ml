@@ -58,14 +58,41 @@ module Identity = struct
 end
 
 module Processor = struct
+  module Chat = struct
+    type format = Chatml
+
+    type t = {
+      format : format;
+      bos_token_id : int;
+      message_start_token_id : int;
+      message_end_token_id : int;
+    }
+
+    let format_to_string = function Chatml -> "chatml"
+
+    let create ~format ~bos_token_id ~message_start_token_id
+        ~message_end_token_id =
+      if
+        bos_token_id < 0 || message_start_token_id < 0
+        || message_end_token_id < 0
+      then Error "model-program chat token ids must be nonnegative"
+      else
+        Ok { format; bos_token_id; message_start_token_id; message_end_token_id }
+
+    let format chat = chat.format
+    let bos_token_id chat = chat.bos_token_id
+    let message_start_token_id chat = chat.message_start_token_id
+    let message_end_token_id chat = chat.message_end_token_id
+  end
+
   type t = {
     tokenizer : Artifact.t;
-    chat_template : Artifact.t option;
+    chat : Chat.t option;
   }
 
-  let create ~tokenizer ?chat_template () = { tokenizer; chat_template }
+  let create ~tokenizer ?chat () = { tokenizer; chat }
   let tokenizer processor = processor.tokenizer
-  let chat_template processor = processor.chat_template
+  let chat processor = processor.chat
 end
 
 module Entrypoint = struct
@@ -221,9 +248,11 @@ module State = struct
       head_dim : int;
       recurrent_layers : int;
       recurrent_dim : int;
+      recurrent_window : int;
     }
 
-    let create ~attention_layers ~kv_heads ~head_dim ~recurrent_layers ~recurrent_dim =
+    let create ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
+        ~recurrent_dim ~recurrent_window =
       if attention_layers < 0 then
         Error "cache layout attention_layers cannot be negative"
       else if kv_heads < 0 then
@@ -234,24 +263,43 @@ module State = struct
         Error "cache layout recurrent_layers cannot be negative"
       else if recurrent_dim < 0 then
         Error "cache layout recurrent_dim cannot be negative"
+      else if recurrent_window < 0 then
+        Error "cache layout recurrent_window cannot be negative"
       else if attention_layers > 0 && kv_heads <= 0 then
         Error "cache layout with attention layers requires positive kv_heads"
       else if attention_layers > 0 && head_dim <= 0 then
         Error "cache layout with attention layers requires positive head_dim"
       else if attention_layers = 0 && (kv_heads <> 0 || head_dim <> 0) then
         Error "cache layout with zero attention layers must have zero kv_heads and head_dim"
-      else if recurrent_layers > 0 && recurrent_dim <= 0 then
-        Error "cache layout with recurrent layers requires positive recurrent_dim"
-      else if recurrent_layers = 0 && recurrent_dim <> 0 then
-        Error "cache layout with zero recurrent layers must have zero recurrent_dim"
+      else if
+        recurrent_layers > 0
+        && (recurrent_dim <= 0 || recurrent_window <= 0)
+      then
+        Error
+          "cache layout with recurrent layers requires positive recurrent dimensions"
+      else if
+        recurrent_layers = 0
+        && (recurrent_dim <> 0 || recurrent_window <> 0)
+      then
+        Error
+          "cache layout with zero recurrent layers must have zero recurrent dimensions"
       else
-        Ok { attention_layers; kv_heads; head_dim; recurrent_layers; recurrent_dim }
+        Ok
+          {
+            attention_layers;
+            kv_heads;
+            head_dim;
+            recurrent_layers;
+            recurrent_dim;
+            recurrent_window;
+          }
 
     let attention_layers layout = layout.attention_layers
     let kv_heads layout = layout.kv_heads
     let head_dim layout = layout.head_dim
     let recurrent_layers layout = layout.recurrent_layers
     let recurrent_dim layout = layout.recurrent_dim
+    let recurrent_window layout = layout.recurrent_window
   end
 
   type t = {
@@ -367,19 +415,33 @@ type t = {
   specialization : Specialization.t;
 }
 
-let current_abi_version = 1
+let current_abi_version = 2
 
 let validate program =
   if program.prefill.Entrypoint.kind <> Entrypoint.Prefill then
     Error "model-program prefill entrypoint must have kind Prefill"
   else if program.decode.Entrypoint.kind <> Entrypoint.Decode then
     Error "model-program decode entrypoint must have kind Decode"
-  else Ok ()
+  else if
+    program.abi_version >= 2 && Option.is_none (Processor.chat program.processor)
+  then Error "model-program ABI v2 requires an explicit chat contract"
+  else
+    match Processor.chat program.processor with
+    | Some chat
+      when
+        List.exists
+          (fun id -> id >= Generation.vocab_size program.generation)
+          [ Processor.Chat.bos_token_id chat;
+            Processor.Chat.message_start_token_id chat;
+            Processor.Chat.message_end_token_id chat ] ->
+        Error "model-program chat token id exceeds vocabulary"
+    | Some _ | None -> Ok ()
 
-let create ~identity ~processor ~prefill ~decode ~generation ~state ~specialization =
+let make ~abi_version ~identity ~processor ~prefill ~decode ~generation ~state
+    ~specialization =
   let program =
     {
-      abi_version = current_abi_version;
+      abi_version;
       identity;
       processor;
       prefill;
@@ -391,6 +453,11 @@ let create ~identity ~processor ~prefill ~decode ~generation ~state ~specializat
   in
   let* () = validate program in
   Ok program
+
+let create ~identity ~processor ~prefill ~decode ~generation ~state
+    ~specialization =
+  make ~abi_version:current_abi_version ~identity ~processor ~prefill ~decode
+    ~generation ~state ~specialization
 
 let abi_version program = program.abi_version
 let identity program = program.identity
@@ -449,7 +516,14 @@ let to_bytes program =
 
   (* Processor *)
   write_artifact writer (Processor.tokenizer program.processor);
-  write_option writer write_artifact (Processor.chat_template program.processor);
+  write_option writer
+    (fun writer chat ->
+      Binary.Writer.u8 writer
+        (match Processor.Chat.format chat with Processor.Chat.Chatml -> 1);
+      Binary.Writer.u32 writer (Processor.Chat.bos_token_id chat);
+      Binary.Writer.u32 writer (Processor.Chat.message_start_token_id chat);
+      Binary.Writer.u32 writer (Processor.Chat.message_end_token_id chat))
+    (Processor.chat program.processor);
 
   (* Prefill entrypoint *)
   write_entrypoint writer program.prefill;
@@ -470,6 +544,7 @@ let to_bytes program =
   Binary.Writer.u16 writer (State.Cache_layout.head_dim layout);
   Binary.Writer.u16 writer (State.Cache_layout.recurrent_layers layout);
   Binary.Writer.u16 writer (State.Cache_layout.recurrent_dim layout);
+  Binary.Writer.u16 writer (State.Cache_layout.recurrent_window layout);
 
   let attentions = State.attentions program.state in
   Binary.Writer.u16 writer (List.length attentions);
@@ -507,7 +582,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid model-program magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> current_abi_version then
+    if version <> 1 && version <> current_abi_version then
       Error (Printf.sprintf "unsupported model-program version: %d" version)
     else
       let* model = Binary.Reader.string reader in
@@ -516,8 +591,27 @@ let of_bytes bytes =
       let* identity = Identity.create ~model ?architecture ?family () in
 
       let* tokenizer = read_artifact reader in
-      let* chat_template = read_option reader read_artifact in
-      let processor = Processor.create ~tokenizer ?chat_template () in
+      let* chat =
+        if version = 1 then
+          let* _legacy_chat_template = read_option reader read_artifact in
+          Ok None
+        else
+          read_option reader (fun reader ->
+              let* format_tag = Binary.Reader.u8 reader in
+              let* format =
+                match format_tag with
+                | 1 -> Ok Processor.Chat.Chatml
+                | tag ->
+                    Error
+                      (Printf.sprintf "unsupported chat template format: %d" tag)
+              in
+              let* bos_token_id = Binary.Reader.u32 reader in
+              let* message_start_token_id = Binary.Reader.u32 reader in
+              let* message_end_token_id = Binary.Reader.u32 reader in
+              Processor.Chat.create ~format ~bos_token_id
+                ~message_start_token_id ~message_end_token_id)
+      in
+      let processor = Processor.create ~tokenizer ?chat () in
 
       let* prefill = read_entrypoint reader Entrypoint.Prefill in
       let* decode = read_entrypoint reader Entrypoint.Decode in
@@ -533,7 +627,17 @@ let of_bytes bytes =
       let* head_dim = Binary.Reader.u16 reader in
       let* recurrent_layers = Binary.Reader.u16 reader in
       let* recurrent_dim = Binary.Reader.u16 reader in
-      let* layout = State.Cache_layout.create ~attention_layers ~kv_heads ~head_dim ~recurrent_layers ~recurrent_dim in
+      let* recurrent_window =
+        if version >= 2 then Binary.Reader.u16 reader
+        else if recurrent_layers = 0 then Ok 0
+        else
+          Error
+            "model-program v1 recurrent state has no declared window; recompile the program"
+      in
+      let* layout =
+        State.Cache_layout.create ~attention_layers ~kv_heads ~head_dim
+          ~recurrent_layers ~recurrent_dim ~recurrent_window
+      in
 
       let* att_count = Binary.Reader.u16 reader in
       let rec read_attentions acc remaining =
@@ -569,8 +673,8 @@ let of_bytes bytes =
       let* specialization = Specialization.create ~min_prefill_tokens ?rope_cosine_input ?rope_sine_input ?paged_slots_input () in
 
       let* () = Binary.Reader.finish reader in
-      create ~identity ~processor ~prefill ~decode ~generation ~state ~specialization
-      |> Result.map (fun prog -> { prog with abi_version = version })
+      make ~abi_version:version ~identity ~processor ~prefill ~decode ~generation
+        ~state ~specialization
 
 let write_file path program =
   try
@@ -602,9 +706,6 @@ let validate_files ~root program =
       Entrypoint.package program.prefill;
       Entrypoint.package program.decode;
     ]
-    @ Option.fold ~none:[]
-        ~some:(fun tpl -> [ tpl ])
-        (Processor.chat_template program.processor)
   in
   let rec check = function
     | [] -> Ok ()

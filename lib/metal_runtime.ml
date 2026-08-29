@@ -1260,8 +1260,8 @@ module Cache = struct
   let q8_attention_inputs cache ~slots =
     let* slots = slots_buffer cache slots in
     Ok
-      [ Serving_schedule.Lfm25.q8_attention_pool_input, cache.token_pool;
-        Serving_schedule.Lfm25.q8_attention_slots_input, slots ]
+      [ Serving_schedule.Sequence.q8_attention_pool_input, cache.token_pool;
+        Serving_schedule.Sequence.q8_attention_slots_input, slots ]
 
   let update_pack_slot cache slot =
     Buffer.set_u32_array cache.pack_slots_scratch ~offset:0

@@ -161,13 +161,13 @@ let () =
   let target_graph =
     snd
       (capture_or_fail (fun () ->
-           Lfm25.linear_kernel ~config:Lfm25.Config.default ~rows:1 ()))
+           Lfm25.linear_kernel ~config:Lfm25.Config.probe_350m ~rows:1 ()))
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_linear" target_graph;
   let rms_norm_graph =
     snd
       (capture_or_fail (fun () ->
-           Lfm25.rms_norm_kernel ~config:Lfm25.Config.default ~rows:2
+           Lfm25.rms_norm_kernel ~config:Lfm25.Config.probe_350m ~rows:2
              ~epsilon:1e-5 ()))
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_rms_norm"
@@ -175,7 +175,7 @@ let () =
   let short_conv_graph =
     snd
       (capture_or_fail (fun () ->
-           Lfm25.short_conv_kernel ~config:Lfm25.Config.default ~batch:1
+           Lfm25.short_conv_kernel ~config:Lfm25.Config.probe_350m ~batch:1
              ~tokens:6 ()))
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_short_conv"
@@ -183,7 +183,7 @@ let () =
   let attention_graph =
     snd
       (capture_or_fail (fun () ->
-           Lfm25.attention_kernel ~config:Lfm25.Config.default ~batch:1
+           Lfm25.attention_kernel ~config:Lfm25.Config.probe_350m ~batch:1
              ~tokens:6 ()))
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_attention"
@@ -191,7 +191,7 @@ let () =
   let embedding_graph =
     snd
       (capture_or_fail (fun () ->
-           Lfm25.embedding_kernel ~config:Lfm25.Config.default ~batch:1
+           Lfm25.embedding_kernel ~config:Lfm25.Config.probe_350m ~batch:1
              ~tokens:6 ()))
   in
   emit_metal_graph ~directory:!emit_directory ~stem:"lfm25_embedding"

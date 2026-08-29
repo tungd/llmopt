@@ -1,4 +1,4 @@
-(** Target-independent structured tensor SSA for the closed LFM W4A16 path.
+(** Target-independent structured tensor SSA for quantized model paths.
 
     The quantized linear primitive is deliberately concrete: it means
     symmetric packed W4 weights with FP16 activations and FP16 scales in

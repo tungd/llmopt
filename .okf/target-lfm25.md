@@ -1,11 +1,11 @@
 ---
-type: Target Model
-title: 'Liquid AI LFM2.5-350M'
-description: 'The primary model target for llmopt on Apple Silicon.'
+type: Probe Model
+title: 'Liquid AI LFM2.5-350M probe'
+description: 'An explicit hybrid recurrent/attention compiler and runtime probe, not a product default.'
 resource: https://huggingface.co/LiquidAI/LFM2.5-350M
-tags: [target, lfm2.5, apple-silicon, inference]
+tags: [probe, lfm2.5, hybrid, apple-silicon, inference]
 status: stable
-generated: { by: codex/gpt-5, at: '2026-08-20T11:24:21Z' }
+generated: { by: codex/gpt-5, at: '2026-08-29T13:05:00+07:00' }
 sources:
   - id: lfm25-config
     resource: https://huggingface.co/LiquidAI/LFM2.5-350M/raw/main/config.json
@@ -15,9 +15,17 @@ sources:
     title: LFM2.5-350M model card
 ---
 
+# Role
+
+LFM2.5-350M probes the compiler's hybrid recurrent/attention coverage and the
+native runtime's mixed persistent-state lifecycle. Its checked-in constants
+are confined to `Lfm25.Config.probe_350m`, `Lfm25_probe`, dedicated probe
+binaries, tests, and historical experiment receipts. The generic pipeline,
+Model Program linker, generation loop, and server do not select this profile.
+
 # Shape and topology
 
-The checked-in target descriptor mirrors the supplied model configuration:
+The checked-in probe descriptor mirrors the supplied model configuration:
 
 | Field | Value |
 |---|---:|
@@ -38,8 +46,8 @@ The configuration enables `block_auto_adjust_ff_dim`. Transformers applies
 integer `2/3` scaling and rounds upward to `block_multiple_of=256`, so the
 declared 6656 becomes an executable width of 4608. Captured `w1`/`w3`
 projections therefore use `[4608,1024]` weights and `w2` uses `[1024,4608]`.
-The target descriptor in [lib/lfm25.ml](../lib/lfm25.ml) records both values;
-compiler fixtures consume the effective width.[^lfm25-config]
+The probe descriptor in [lib/lfm25.ml](../lib/lfm25.ml) records both values;
+probe fixtures consume the effective width.[^lfm25-config]
 
 # Provenance
 

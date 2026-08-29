@@ -1,120 +1,73 @@
 # llmopt
 
-`llmopt` is an AOT optimizing compiler and native Apple Silicon serving runtime for LLMs. It ingests standard PyTorch Dynamo FX graphs, applies modular hardware-aware optimization and fusion passes in OCaml, generates optimal Metal MSL megakernels, and executes with zero JIT overhead on Apple Silicon unified memory.
+`llmopt` is an AOT compiler research system and native Apple Silicon runtime
+for models captured as standard PyTorch Dynamo/FX graphs. PyTorch owns model
+capture; OCaml owns typed IR, optimization, scheduling, package linking, and
+the native serving runtime.
 
----
+## Product direction
 
-## Product Vision
+The product boundary is the captured model program, not a built-in model
+family:
 
-The goal of `llmopt` is to **eliminate the trade-off between model adoption agility and bare-metal performance**:
-
-1. **Zero-Bespoke-C++ Adoption**: Ingest standard PyTorch Hugging Face models directly via `torch.compile(model, backend=llmopt)` without requiring manual C++ kernel rewrites or custom operator bindings.
-2. **Hardware-Aware AOT Megakernel Fusion**: Target Apple Silicon microarchitecture (SIMD lanes, SRAM banks, L1 cache lines, memory bandwidth, and peak FP16 compute) to fold entire subgraphs (SwiGLU, RMSNorm-RoPE, QKV projections, Short-Conv, LM-Head Argmax) into bank-conflict-free Metal megakernels.
-3. **Zero Driver Overhead Serving**: Pre-bake complete multi-layer decode graphs into Metal Indirect Command Buffers (`MTLIndirectCommandBuffer`), reducing CPU dispatch overhead to ~16 microseconds per token.
-4. **Generalization Across Architectures**: Proven performance parity with `llama.cpp` across distinct model families (e.g. hybrid Conv/Attention `LFM2.5-350M` and pure Transformer `SmolLM2-135M` / Llama architecture).
-
----
-
-## Compiler Architecture & Optimization Passes
-
-`llmopt` implements a modular compiler pass pipeline (`Pass.Pipeline.t`) that lowers high-level FX graphs into optimized hardware execution packages:
-
-```
- PyTorch Dynamo FX Graph
-            │
-            ▼
-┌────────────────────────────────────────────────────────┐
-│  llmopt OCaml AOT Compiler Pipeline                   │
-├────────────────────────────────────────────────────────┤
-│  1. Target_hardware Discovery & Probing                │
-│     • Memory hierarchy: 32 SIMD lanes, 32 SRAM banks   │
-│     • Probed memory bandwidth & FP16 TFLOPS            │
-│                                                        │
-│  2. Graph Transformations & Megakernel Fusions         │
-│     • Pass_fuse_swiglu_ffn: Dual gate/up & down-add   │
-│     • Pass_fuse_rms_rope: Combined QK RoPE megakernel  │
-│     • Pass_fuse_linear_bias: QKV pairing & GQA elision │
-│     • Pass_fuse_short_conv: Prefill/step causal conv   │
-│     • Pass_fuse_lm_head_argmax: Direct i32 token emit  │
-│                                                        │
-│  3. DAG Analysis & Memory Planning                     │
-│     • Pass_co_schedule: Ready antichain concurrency    │
-│     • Target_hardware.Prefill_cost_model: Roofline &   │
-│       SLA-bounded dynamic prefill chunking             │
-│     • Serving_memory_plan: Liveness analysis & reuse   │
-│                                                        │
-│  4. Metal Codegen & Package Assembly                   │
-│     • Vectorized half2 memory loads & single-mult      │
-│     • Emits kernel.metal, kernel.metallib, package     │
-└────────────────────────────────────────────────────────┘
-            │
-            ▼
-┌────────────────────────────────────────────────────────┐
-│  llmopt Native Metal Serving Runtime                   │
-├────────────────────────────────────────────────────────┤
-│  • MTLIndirectCommandBuffer (Prebaked Decode ICB)      │
-│  • Paged grouped-Q8 KV cache & prefix retention        │
-│  • Webs_iomux non-blocking HTTP streaming (Iomux.Poll) │
-│  • Native C/NEON SIMD FP16 Argmax (caml_llmopt_argmax) │
-└────────────────────────────────────────────────────────┘
+```text
+PyTorch model + processor assets + declared entrypoints
+                         |
+                         v
+                 Dynamo/FX capture
+                         |
+                         v
+        OCaml IR, optimization, and target lowering
+                         |
+                         v
+       model.llmopt + packages + tensors + processor
+                         |
+                         v
+             native Apple Silicon runtime
 ```
 
-### Key Compiler Passes
+The generic compiler and runtime do not select an architecture from a model
+name, a GGUF architecture identifier, or a built-in profile. Architecture and
+family strings are optional provenance only. Until the high-level PyTorch
+compilation session derives the complete program, the low-level linker requires
+model identity, generation/chat metadata, and state-binding roles explicitly.
 
-- **`Pass_fuse_swiglu_ffn`**: Folds 7-node Gate-SiLU / Up-Multiply / Down-Add subgraphs into dual-projection (`llmopt_w4a16_dual_swiglu_f16_g64`) and down-residual (`llmopt_w4a16_down_add_f16_g64`) megakernels.
-- **`Pass_fuse_rms_rope`**: Fuses RMSNorm and independent Q/K RoPE projections into a single bank-conflict-free `llmopt_rms_rope_qk_f16` dispatch, eliminating 6 dispatches per layer.
-- **`Pass_fuse_linear_bias`**: Fuses Q, K, V linear projections into unified packed QKV projection kernels and eliminates redundant GQA repeat transpositions at compile time.
-- **`Pass_fuse_short_conv` & `Pass_fuse_short_conv_step`**: Folds 13-command prefill and 16-command decode conv subgraphs into streaming causal conv megakernels (`llmopt_short_conv_prefill_f16` and `llmopt_short_conv_step_f16`).
-- **`Pass_fuse_lm_head_argmax`**: Fuses W4A16 linear projection with on-device vocabulary reduction, emitting direct `i32` token IDs with native SIMD FP16 argmax.
-- **`Pass_co_schedule`**: Performs SSA dependency DAG analysis and ready antichain co-scheduling (`MTLDispatchTypeConcurrent`) with concurrency-safe workspace memory planning.
-- **`Target_hardware.Prefill_cost_model`**: Analytically derives roofline arithmetic intensity knees ($M_{\text{knee}} = \lceil (W/B) \cdot (P / 2 \cdot \text{Params}) \rceil$), GPU core saturation limits ($M \ge 32$), and SLA-bounded chunk budgets ($M^* \in [64, 512]$ aligned to 64 tokens) from probed hardware parameters.
+`model.llmopt` is the root execution contract. It links compiled entrypoints
+and declares processor assets, vocabulary and position limits, persistent
+state, sequence specialization, and cache layout. The serving runtime consumes
+that contract instead of reconstructing model-family facts.
 
----
+## Current compiler and runtime
 
-## Benchmark Results vs `llama.cpp` (Apple M4 Pro)
+- Standard Dynamo/FX capture and a versioned binary graph transport.
+- Typed OCaml tensor IR, effect-aware planning, fusion passes, liveness-based
+  memory planning, and Metal package generation.
+- A versioned Model Program linking prefill/decode packages, tokenizer,
+  weights, state bindings, and generation metadata.
+- Native Metal execution and an OpenAI-compatible streaming HTTP server.
+- GGUF with Unsloth Dynamic mixed quantization is the target weight-distribution
+  path. The captured FX graph owns architecture and parameter use; GGUF supplies
+  tensor payloads and quant descriptors, not execution dispatch.
+- The already implemented native serving path includes packed group-64 W4A16
+  linear kernels and grouped-Q8 attention/recurrent state. This is retained
+  execution evidence, not the product's fixed quantization policy.
 
-> [!NOTE]
-> **Measurement Methodology**: On macOS / Apple Silicon, absolute latency figures can swing by $\pm 20\%$ across separate invocations due to OS background tasks and thermal frequency scaling. Reliable comparison requires **multi-run paired measurements** executed on warm servers against the exact same trace, reporting the within-run **paired ratio ($\text{llmopt} / \text{llama.cpp}$)**.
+## Probe models
 
-### 1. `LiquidAI/LFM2.5-350M` (Hybrid Conv/Attention Architecture)
+Models in this repository are probes of compiler and runtime coverage:
 
-Multi-run paired OpenAI-compatible SSE streaming HTTP benchmark against `llama.cpp` (`llama-server` with Metal acceleration, Q4_0):
+- `LiquidAI/LFM2.5-350M` probes a hybrid recurrent/attention topology. Its
+  dimensions and flattened capture names live in `Lfm25_probe` and the
+  explicit `probe-lfm25` build target only.
+- `HuggingFaceTB/SmolLM2-135M` records a transformer-family cross-model
+  compilation and Metal-lowering experiment.
 
-| Metric | `llama.cpp` (Q4_0) | `llmopt` (W4A16) | Paired Ratio ($\frac{\text{llmopt}}{\text{llama.cpp}}$) | Status vs $\pm 5\%$ Gate |
-| :--- | :--- | :--- | :--- | :--- |
-| **Decode Latency (TPOT)** | 2.28 – 3.25 ms | 2.71 – 3.67 ms | **$1.13\times - 1.26\times$** (median **$1.20\times$**) | ~20% gap |
-| **Time to First Token (TTFT)** | 15.7 – 19.6 ms | 19.1 – 22.7 ms | **$1.16\times - 1.31\times$** (median **$1.25\times$**) | ~25% gap |
-| **ERS Benchmark Score** | 0.813 – 0.823 | 0.719 – 0.792 | **$\Delta = -0.06$ to $-0.09$** | 7–10% delta |
-| **Request Success Rate** | 100% (4/4) | 100% (4/4) | **$1.00\times$** | Parity |
+Neither probe is selected by the generic pipeline, package loader, generation
+loop, or server. LFM-specific diagnostic executables are excluded from the
+default `all` build, while probe fixtures remain available to the test binary.
+Measurement receipts remain in the [OKF bundle](.okf/index.md).
 
-### 2. `HuggingFaceTB/SmolLM2-135M` (Pure Transformer / Llama Architecture)
-
-Cross-model generalization validation on standard 30-layer Llama architecture (9 Q heads, 3 KV heads, GQA, SwiGLU, RMSNorm, RoPE):
-
-| Metric | `llama.cpp` (`llama-bench` Q4_K_M) | `llmopt` (Compiled Metal GPU) | Paired Comparison |
-| :--- | :--- | :--- | :--- |
-| **Decode Step Latency (TPOT)** | **$2.60\text{ ms} \pm 0.08\text{ ms}$** | **$2.45\text{ ms} \pm 0.12\text{ ms}$** | **$0.94\times$** (Parity) |
-| **Decode Throughput** | **$384.26 \pm 10.93\text{ tok/s}$** | **$408.16 \pm 18.50\text{ tok/s}$** | **$1.06\times$** |
-| **Prefill Latency (pp6)** | **$5.95\text{ ms} \pm 0.85\text{ ms}$** | **$5.80\text{ ms} \pm 0.60\text{ ms}$** | **$0.97\times$** (Parity) |
-| **Prefill Throughput (pp6)** | **$1,007.39 \pm 143.90\text{ tok/s}$** | **$1,034.48 \pm 102.20\text{ tok/s}$** | **$1.03\times$** |
-| **Opaque Dispatches** | N/A (Hand-written C/Metal) | **0 opaque dispatches** (100% compiled) | 100% AOT compiled |
-| **Numerical Parity with PyTorch** | Quantization delta | **Exact argmax token match (token 260)** | Exact match |
-
----
-
-## Canonical Model Contract
-
-- **Weights**: W4A16 packed unsigned int4 weights, group size 64, float16 group scales, and float16 activations.
-- **Cache**: Grouped int8 (Q8) attention KV and recurrent checkpoints, group size 64, float16 scales.
-- **Archive**: Single binary tensor archive (`weights.llmopt`) mmap-mapped directly to Metal buffers.
-- **Serving Engine**: Pure OCaml + native Metal bridge; no Python or PyTorch runtime dependency at serving time.
-- **Protocols**: OpenAI-compatible `POST /v1/chat/completions` with SSE streaming, `/health`, `/healthz`, and radix prefix cache reuse accounting.
-
----
-
-## Quickstart
-
-### 1. Build
+## Build and test
 
 Ninja is the primary build orchestrator:
 
@@ -123,10 +76,27 @@ ninja -f ninja.build all
 ninja -f ninja.build test
 ```
 
-### 2. Compile an FX Graph to Native Serving Engine
+Build the LFM2.5-specific diagnostic tools explicitly when working on that
+probe:
+
+```sh
+ninja -f ninja.build probe-lfm25
+```
+
+## Link a Model Program
+
+The current low-level pipeline links already captured packages. Model metadata
+is explicit; there is no implicit profile:
 
 ```sh
 _build/bin/llmopt-pipeline \
+  --model org/model \
+  --vocab-size 32000 \
+  --max-positions 4096 \
+  --chat-format chatml \
+  --bos-token-id 1 \
+  --message-start-token-id 2 \
+  --message-end-token-id 3 \
   --weights /path/to/graphs/weights.llmopt \
   --tokenizer /path/to/tokenizer.llmopt \
   --prefill /path/to/graphs/graph-0000/graph.llmopt \
@@ -134,30 +104,36 @@ _build/bin/llmopt-pipeline \
   --output /path/to/engine
 ```
 
-### 3. Launch Native HTTP Server
+The linker derives token input and physical state dimensions from captured
+packages. Stateful captures also provide repeatable explicit role mappings via
+`--attention-state key-in:value-in:key-out:value-out` and
+`--recurrent-state state-in:state-out`; the high-level capture session will
+eventually emit these directly. `--minimum-prefill-tokens` is optional when a
+captured program needs a minimum specialized sequence length.
+
+## Serve
+
+Generic entrypoints accept a directory containing `model.llmopt`; legacy bare
+prefill/decode package pairs are not interpreted as a particular model:
 
 ```sh
+_build/bin/llmopt-model-program-check /path/to/engine/model.llmopt
 _build/bin/llmopt-serve /path/to/engine --port 8000
 ```
-
-Query via OpenAI-compatible HTTP client:
 
 ```sh
 curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "lfm-2.5-350m",
-    "messages": [{"role": "user", "content": "What is the capital of France?"}],
+    "model": "org/model",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "max_tokens": 32,
     "stream": true
   }'
 ```
 
----
+## Project knowledge
 
-## Documentation & Research Tracking
-
-The [`.okf bundle`](.okf/index.md) contains the complete architectural records, technical decisions, and benchmark receipts:
-- [Architecture & Planning Pipeline](.okf/architecture.md)
-- [Cross-Model SmolLM2 Validation](.okf/experiments/exp-0096-cross-model-smollm2-validation.md)
-- [Hardware-Derived Prefill Cost Model](.okf/experiments/exp-0097-hardware-derived-prefill-cost-model.md)
-- [Update Log](.okf/log.md)
+The [OKF index](.okf/index.md) links the current architecture, Model Program
+decision, [GGUF/UD direction](.okf/decisions/gguf-unsloth-dynamic-quantization.md),
+probe catalog, experiment receipts, and research log.

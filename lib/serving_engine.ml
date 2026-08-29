@@ -37,6 +37,7 @@ module Step = struct
     logits : Metal_runtime.Buffer.t option;
     token_id : Metal_runtime.Buffer.t option;
     tokens : int array;
+    vocabulary : int;
     cached_prefix : int;
     kernels : string list;
   }
@@ -44,6 +45,7 @@ module Step = struct
   let logits step = step.logits
   let token_id step = step.token_id
   let tokens step = Array.copy step.tokens
+  let vocabulary step = step.vocabulary
   let cached_prefix step = step.cached_prefix
   let kernels step = step.kernels
 end
@@ -92,6 +94,7 @@ type t = {
 }
 
 let program engine = engine.program
+let vocabulary engine = engine.contract.vocab_size
 
 let runtime_inputs package =
   package |> Serving_package.schedule |> Serving_schedule.runtime_inputs
@@ -394,7 +397,8 @@ let contract ?program ~config ~prefill ~decode () =
   let recurrent_shape =
     if Model_program.State.Cache_layout.recurrent_layers layout > 0 then
       let dim = Model_program.State.Cache_layout.recurrent_dim layout in
-      [ 1; dim; 3 ]
+      let window = Model_program.State.Cache_layout.recurrent_window layout in
+      [ 1; dim; window ]
     else [ 1; 0; 0 ]
   in
   contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
@@ -903,6 +907,7 @@ let prefill engine ~tokens =
         Step.logits;
         token_id;
         tokens = Array.copy tokens;
+        vocabulary = engine.contract.vocab_size;
         cached_prefix;
         kernels = Metal_runtime.Execution.kernels execution;
       }
@@ -1223,6 +1228,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
               Step.logits;
               token_id = token_id_buffer;
               tokens;
+              vocabulary = engine.contract.vocab_size;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;
             }
@@ -1421,6 +1427,7 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
               Step.logits;
               token_id;
               tokens = Array.copy tokens;
+              vocabulary = engine.contract.vocab_size;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;
             }
@@ -1526,6 +1533,7 @@ let suffix_prefill engine match_ ~tokens ~cached_tokens =
               Step.logits;
               token_id;
               tokens = Array.copy tokens;
+              vocabulary = engine.contract.vocab_size;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;
             }

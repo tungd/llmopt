@@ -1,5 +1,14 @@
 # LOOP-model-program-execution-contract.md
 
+> Follow-up (2026-08-29): the completed milestone was generalized after this
+> checklist. Generic surfaces are now `Model_profile`, `Model_program_linker`,
+> `Chat_template`, `Serving_schedule.Sequence`, `bin/pipeline.ml`,
+> `bin/generate.ml`, and `bin/serve.ml`. LFM2.5 metadata remains only in the
+> explicit `Lfm25_probe` fixture, probe binaries, tests, and historical
+> receipts; `model.llmopt` ABI v2 declares recurrent-window width. The checked
+> items below retain their implementation-time symbol names as historical
+> evidence.
+
 ## GOAL
 
 Introduce the first package-resident Model Program milestone: compile the

@@ -24,7 +24,7 @@ module Native_engine = struct
         | Some buffer ->
             let* bytes = Metal_runtime.Buffer.contents buffer in
             Sampling.sample ~params
-              ~vocabulary:Lfm25.Config.default.vocab_size bytes
+              ~vocabulary:(Serving_engine.Step.vocabulary step) bytes
         | None -> Error "serving step has neither token_id nor logits output")
 end
 
@@ -57,13 +57,23 @@ end
 
 type t = {
   tokenizer : Tokenizer.t;
-  chat : Lfm_chat.t;
+  chat : Chat_template.t;
   engine : Serving_engine.t;
 }
 type generation = t
 
-let create ~tokenizer ~engine =
-  let* chat = Lfm_chat.create tokenizer in
+let create ~tokenizer ~chat:chat_contract ~engine =
+  let* chat =
+    match Model_program.Processor.Chat.format chat_contract with
+    | Model_program.Processor.Chat.Chatml ->
+        Chat_template.create
+          ~bos:(Model_program.Processor.Chat.bos_token_id chat_contract)
+          ~message_start:
+            (Model_program.Processor.Chat.message_start_token_id chat_contract)
+          ~message_end:
+            (Model_program.Processor.Chat.message_end_token_id chat_contract)
+          tokenizer
+  in
   Ok { tokenizer; chat; engine }
 
 let create_from_program ~program ~model_dir ?token_capacity ?checkpoint_capacity
@@ -74,11 +84,16 @@ let create_from_program ~program ~model_dir ?token_capacity ?checkpoint_capacity
   in
   let tokenizer_path = Filename.concat model_dir tokenizer_name in
   let* tokenizer = Tokenizer.of_file tokenizer_path in
+  let* chat =
+    match Model_program.Processor.chat (Model_program.processor program) with
+    | Some chat -> Ok chat
+    | None -> Error "model program has no explicit chat token contract"
+  in
   let* engine =
     Serving_engine.create_from_program ~program ~model_dir ?token_capacity
       ?checkpoint_capacity ?page_size ()
   in
-  create ~tokenizer ~engine
+  create ~tokenizer ~chat ~engine
 
 let create_from_dir ~model_dir ?token_capacity ?checkpoint_capacity ?page_size () =
   let program_path = Filename.concat model_dir "model.llmopt" in
@@ -100,10 +115,10 @@ module Session = struct
 
   let init ~generation:parent ~config ?(sampling_params = Sampling.Params.greedy)
       ?(ignore_eos = false) ~messages () =
-    let* prompt = Lfm_chat.encode parent.chat messages in
+    let* prompt = Chat_template.encode parent.chat messages in
     let is_stop =
       if ignore_eos then Fun.const false
-      else Lfm_chat.is_end_token parent.chat
+      else Chat_template.is_end_token parent.chat
     in
     let* driver_state, first_token =
       Driver.State.init parent.engine ~config ~sampling_params ~is_stop ~prompt
@@ -127,10 +142,10 @@ end
 
 let generate ?emit ?(sampling_params = Sampling.Params.greedy)
     ?(ignore_eos = false) generation ~config ~messages =
-  let* prompt = Lfm_chat.encode generation.chat messages in
+  let* prompt = Chat_template.encode generation.chat messages in
   let is_stop =
     if ignore_eos then Fun.const false
-    else Lfm_chat.is_end_token generation.chat
+    else Chat_template.is_end_token generation.chat
   in
   let* result =
     Driver.run ?emit ~sampling_params generation.engine ~config

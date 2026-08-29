@@ -22,13 +22,15 @@ module Config = struct
       let recurrent_dim =
         Model_program.State.Cache_layout.recurrent_dim layout
       in
+      let recurrent_window =
+        Model_program.State.Cache_layout.recurrent_window layout
+      in
       if attention_layers > 0 && head_dim <> Kv_cache.Layout.q8_head_dim then
         Error "serving Q8 KV requires attention head_dim=64"
       else
         let recurrent_width =
           if recurrent_layers = 0 then 0 else recurrent_dim
         in
-        let recurrent_window = if recurrent_layers = 0 then 0 else 3 in
         match
           Kv_cache.Layout.create ~format:Kv_cache.Format.default
             ~attention_layers ~kv_heads ~head_dim ~recurrent_layers

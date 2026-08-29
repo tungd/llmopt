@@ -1,10 +1,10 @@
 ---
 type: Architecture
 title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
-description: 'PyTorch Dynamo supplies FX graphs, OCaml plans and emits Metal, and the intended OCaml serving runtime owns prefix/KV state and dispatch.'
+description: 'PyTorch Dynamo supplies FX graphs, OCaml links a declared Model Program, plans and emits Metal, and the native runtime consumes program-owned state and generation metadata.'
 tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
 status: draft
-generated: { by: codex/gpt-5, at: '2026-08-25T10:28:14Z' }
+generated: { by: codex/gpt-5, at: '2026-08-29T13:05:00+07:00' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -49,8 +49,14 @@ sources:
     resource: /lib/openai_protocol.ml
     title: Typed external OpenAI compatibility edge
   - id: local-serving-server
-    resource: /bin/lfm_serve.ml
-    title: Persistent native OCaml HTTP server
+    resource: /bin/serve.ml
+    title: Generic persistent native OCaml HTTP server
+  - id: local-model-program
+    resource: /lib/model_program.ml
+    title: Root execution contract
+  - id: local-model-linker
+    resource: /lib/model_program_linker.ml
+    title: Model-neutral captured-package linker
   - id: local-weight-archive
     resource: /lib/weight_archive.ml
     title: Versioned binary weight-archive parser and tensor index
@@ -115,11 +121,16 @@ sources:
 
 # Overview
 
-The canonical model contract is packed group-64 W4A16 for every linear module
-and grouped-Q8 for attention KV plus recurrent checkpoints. The current IR,
-kernel ABI, schedule ABI v19, package ABI v17, runtime, serving CLI, and Python
-capture surface expose no Q8-weight or FP16-KV alternative. Earlier Q8-weight
-and selectable-cache sections below describe superseded experiments only.
+The product contract is a captured model plus an explicit, package-resident
+Model Program. The generic pipeline and runtime carry no built-in model-family
+profile and do not dispatch on GGUF architecture identifiers. FX owns topology;
+the target GGUF/UD path supplies per-tensor quantized payloads through explicit
+captured-parameter bindings. The implemented Metal backend contract is packed group-64 W4A16 for every
+linear module and grouped-Q8 for attention KV plus recurrent checkpoints. The
+current IR, kernel ABI, schedule ABI v19, package ABI v17, runtime, serving CLI,
+and Python capture surface expose no Q8-weight or FP16-KV alternative. Earlier
+Q8-weight and selectable-cache sections below describe superseded experiments
+only.
 
 The public frontend is a PyTorch `torch.compile` backend. Dynamo calls the
 backend with an FX `GraphModule` and example inputs, and the backend returns a
@@ -153,6 +164,8 @@ diagnostics; neither format is read by serving.
 | op support, shape checks, effect planning | OCaml planner |
 | graph transforms | Pure OCaml passes |
 | Metal/LLVM source generation | OCaml backends |
+| model identity and generation limits | Compilation session via explicit `Model_profile` data |
+| root entrypoint/state linking and validation | `Model_program_linker` and `Model_program` |
 | compiled graph package manifest and artifact validation | OCaml compiler and Ninja |
 | tensor archive indexing, mapping, and Metal buffer views | OCaml runtime plus Objective-C Metal bindings |
 | direct FX execution and device dispatch | Python FX GraphModule plus PyTorch MPS |
@@ -163,14 +176,15 @@ diagnostics; neither format is read by serving.
 | serving KV format policy and slot allocation | OCaml serving runtime |
 
 The direct FX callable remains a PyTorch MPS comparison path. Separately, the
-native OCaml server loads and executes the complete captured LFM2.5-350M
-prefill/decode package, owns radix and physical Q8 KV/recurrent state, and
-serves the HTTP/SSE benchmark without Python or PyTorch in its hot path.
+native OCaml server loads a complete `model.llmopt`, owns radix and physical Q8
+KV/recurrent state declared by that program, and serves HTTP/SSE without Python
+or PyTorch in its hot path. LFM2.5-350M is the preserved hybrid execution probe,
+not a server default.
 
 # Current scope
 
-The cross-language planner supports the complete preserved LFM2.5 prefill and
-decode graphs with zero opaque schedule commands. It lowers packed group-64
+The cross-language planner supports the complete preserved LFM2.5 probe
+prefill and decode graphs with zero opaque schedule commands. It lowers packed group-64
 W4A16 linear operations, typed pointwise and movement primitives, ShortConv,
 attention, RMSNorm/RoPE, embedding, mask construction, casts, outputs, and the
 fixed grouped-Q8 cache boundary. The Python `torch.compile` path remains a
@@ -189,7 +203,7 @@ single-threadgroup output-channel loop.
 The OCaml serving cache is now a mandatory part of the intended runtime design,
 not an optional execution mode. It implements compressed radix edges, separate
 namespaces, protected-prefix leases, LRU leaf eviction, and an owned KV slot
-pool. LFM2.5's recurrent ShortConv state is represented by checkpoints only at
+pool. In the LFM2.5 probe, recurrent ShortConv state is represented by checkpoints only at
 materialized radix nodes: splitting an edge does not synthesize recurrent
 state, so prefix matching falls back to the deepest valid checkpoint. This
 adapts the corresponding behavior from SGLang's radix and hybrid/Mamba cache

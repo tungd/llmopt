@@ -19,7 +19,7 @@ let usage () =
   prerr_endline
     "usage: llmopt-generate [--model-dir directory] [--max-new-tokens count] \
      [--token-capacity count] [--checkpoint-capacity count] \
-     [<tokenizer.llmopt> <prefill-directory> <decode-directory> | <model-directory>] \
+     [<model-directory>] \
      <role> <content> [<role> <content> ...]";
   exit 64
 
@@ -49,10 +49,10 @@ let arguments () =
   | [] -> usage ()
 
 let role = function
-  | "system" -> Ok Lfm_chat.Role.System
-  | "user" -> Ok Lfm_chat.Role.User
-  | "assistant" -> Ok Lfm_chat.Role.Assistant
-  | "tool" -> Ok Lfm_chat.Role.Tool
+  | "system" -> Ok Chat_template.Role.System
+  | "user" -> Ok Chat_template.Role.User
+  | "assistant" -> Ok Chat_template.Role.Assistant
+  | "tool" -> Ok Chat_template.Role.Tool
   | value -> Error (Printf.sprintf "unsupported chat role: %S" value)
 
 let parse_messages arguments =
@@ -61,13 +61,10 @@ let parse_messages arguments =
     | [] -> Ok (List.rev output)
     | role_name :: content :: rest ->
         let* role = role role_name in
-        parse (Lfm_chat.Message.create ~role ~content :: output) rest
+        parse (Chat_template.Message.create ~role ~content :: output) rest
     | [ _ ] -> Error "chat messages require role/content pairs"
   in
   parse [] arguments
-
-let package root =
-  Serving_package.of_file (Filename.concat root "package.llmopt")
 
 let ids values =
   values |> Array.to_list |> List.map string_of_int |> String.concat ","
@@ -93,54 +90,13 @@ let run () =
         Ok (gen, messages)
     | None ->
         (match positional with
-        | candidate :: rest
-          when Sys.file_exists (Filename.concat candidate "model.llmopt") ->
+        | candidate :: rest ->
             let* messages = parse_messages rest in
             let* gen =
               Generation.create_from_dir ~model_dir:candidate
                 ~token_capacity:options.token_capacity
                 ~checkpoint_capacity:options.checkpoint_capacity ()
             in
-            Ok (gen, messages)
-        | tokenizer_path :: prefill_root :: decode_root :: message_arguments ->
-            let* messages = parse_messages message_arguments in
-            let* tokenizer = Tokenizer.of_file tokenizer_path in
-            let* prefill_package = package prefill_root in
-            let* decode_package = package decode_root in
-            let page_size =
-              prefill_package |> Serving_package.cache
-              |> Serving_package.Cache.page_size
-            in
-            let* prefill_path = Model_program.Artifact.create "prefill/package.llmopt" in
-            let* decode_path = Model_program.Artifact.create "decode/package.llmopt" in
-            let* program =
-              Lfm25_program.of_packages ~config:Lfm25.Config.default
-                ~prefill_path ~prefill:prefill_package ~decode_path ~decode:decode_package ()
-            in
-            let state = Model_program.state program in
-            let* cache_config =
-              Serving_cache.Config.of_state_plan ~state
-                ~token_capacity:options.token_capacity
-                ~checkpoint_capacity:options.checkpoint_capacity ~page_size ()
-            in
-            let* () =
-              Serving_engine.validate_packages ~config:cache_config ~program
-                ~prefill:prefill_package ~decode:decode_package ()
-            in
-            let* runtimes =
-              Metal_runtime.load_packages
-                [ prefill_root, prefill_package; decode_root, decode_package ]
-            in
-            let* prefill_runtime, decode_runtime =
-              match runtimes with
-              | [ prefill; decode ] -> Ok (prefill, decode)
-              | _ -> Error "serving pair load returned an invalid runtime count"
-            in
-            let* engine =
-              Serving_engine.create ~config:cache_config ~prefill:prefill_runtime
-                ~decode:decode_runtime
-            in
-            let* gen = Generation.create ~tokenizer ~engine in
             Ok (gen, messages)
         | _ -> usage ())
   in

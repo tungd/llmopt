@@ -23,7 +23,7 @@ let usage () =
   prerr_endline
     "usage: llmopt-serve [--model-dir directory] [--host address] [--port number] \
      [--token-capacity count] [--checkpoint-capacity count] \
-     [--max-body-bytes count] [<model-directory | engine-directory | tokenizer.llmopt prefill-dir decode-dir>]";
+     [--max-body-bytes count] [<model-directory>]";
   exit 64
 
 let positive name value =
@@ -59,9 +59,6 @@ let arguments () =
   | _ :: arguments -> parse defaults [] arguments
   | [] -> usage ()
 
-let package root =
-  Serving_package.of_file (Filename.concat root "package.llmopt")
-
 type service = {
   tokenizer : Tokenizer.t;
   generation : Generation.t;
@@ -76,46 +73,6 @@ let load_from_dir options model_dir =
   in
   let tokenizer = Generation.tokenizer generation in
   Ok ({ tokenizer; generation; request_number = 0 }, "Apple Silicon")
-
-let load options tokenizer_path prefill_root decode_root =
-  let* tokenizer = Tokenizer.of_file tokenizer_path in
-  let* prefill_package = package prefill_root in
-  let* decode_package = package decode_root in
-  let page_size =
-    prefill_package |> Serving_package.cache |> Serving_package.Cache.page_size
-  in
-  let* prefill_path = Model_program.Artifact.create "prefill/package.llmopt" in
-  let* decode_path = Model_program.Artifact.create "decode/package.llmopt" in
-  let* program =
-    Lfm25_program.of_packages ~config:Lfm25.Config.default
-      ~prefill_path ~prefill:prefill_package ~decode_path ~decode:decode_package ()
-  in
-  let state = Model_program.state program in
-  let* cache_config =
-    Serving_cache.Config.of_state_plan ~state
-      ~token_capacity:options.token_capacity
-      ~checkpoint_capacity:options.checkpoint_capacity ~page_size ()
-  in
-  let* () =
-    Serving_engine.validate_packages ~config:cache_config ~program
-      ~prefill:prefill_package ~decode:decode_package ()
-  in
-  let* runtimes =
-    Metal_runtime.load_packages
-      [ prefill_root, prefill_package; decode_root, decode_package ]
-  in
-  let* prefill, decode =
-    match runtimes with
-    | [ prefill; decode ] -> Ok (prefill, decode)
-    | _ -> Error "serving pair load returned an invalid runtime count"
-  in
-  let* engine =
-    Serving_engine.create ~config:cache_config ~prefill ~decode
-  in
-  let* generation = Generation.create ~tokenizer ~engine in
-  Ok
-    ( { tokenizer; generation; request_number = 0 },
-      Metal_runtime.device_name prefill )
 
 type active_request = {
   id : Serving_queue.Request_id.t;
@@ -215,7 +172,7 @@ let serve service options =
                 let sampling_params =
                   Openai_protocol.Request.sampling_params parsed_req
                 in
-                (match Lfm_chat.encode (Generation.chat service.generation)
+                (match Chat_template.encode (Generation.chat service.generation)
                          (Openai_protocol.Request.messages parsed_req) with
                 | Error err ->
                     json_response Webs.Http.Status.bad_request_400
@@ -400,7 +357,7 @@ let serve service options =
               | Serving_queue.Pending_prefill { prompt_tokens; max_new_tokens; ignore_eos; sampling_params; _ } ->
                   let is_stop =
                     if ignore_eos then Fun.const false
-                    else Lfm_chat.is_end_token (Generation.chat service.generation)
+                    else Chat_template.is_end_token (Generation.chat service.generation)
                   in
                   let config_res = Generation_core.Config.create ~max_new_tokens in
                   (match config_res with
@@ -484,20 +441,7 @@ let run () =
     | Some dir -> load_from_dir options dir
     | None ->
         (match positional with
-        | [ candidate ] when Sys.file_exists (Filename.concat candidate "model.llmopt") ->
-            load_from_dir options candidate
-        | [ tokenizer; prefill; decode ] -> load options tokenizer prefill decode
-        | [ engine_directory ] ->
-            let tokenizer = Filename.concat engine_directory "tokenizer.llmopt" in
-            let prefill = Filename.concat engine_directory "prefill" in
-            let decode = Filename.concat engine_directory "decode" in
-            if not (Sys.file_exists tokenizer) then
-              Error (Printf.sprintf "engine directory missing tokenizer: %s" tokenizer)
-            else if not (Sys.file_exists prefill) then
-              Error (Printf.sprintf "engine directory missing prefill: %s" prefill)
-            else if not (Sys.file_exists decode) then
-              Error (Printf.sprintf "engine directory missing decode: %s" decode)
-            else load options tokenizer prefill decode
+        | [ model_dir ] -> load_from_dir options model_dir
         | _ -> usage ())
   in
   Printf.eprintf "device: %s; kv: %s\n%!" device

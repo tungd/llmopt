@@ -14,7 +14,7 @@ module Config : sig
     layer_types : layer list;
   }
 
-  val default : t
+  val probe_350m : t
   val validate : t -> (unit, string) result
   val count_layers : layer -> t -> int
 end

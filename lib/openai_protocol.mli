@@ -3,7 +3,7 @@ module Request : sig
 
   val of_string : string -> (t, string) result
   val model : t -> string
-  val messages : t -> Lfm_chat.Message.t list
+  val messages : t -> Chat_template.Message.t list
   val max_tokens : t -> int
   val ignore_eos : t -> bool
   val sampling_params : t -> Sampling.Params.t

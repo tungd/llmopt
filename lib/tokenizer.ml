@@ -161,6 +161,8 @@ let token tokenizer id =
 let is_special tokenizer id =
   match token tokenizer id with Some token -> token.special | None -> false
 
+let has_token_id tokenizer id = Option.is_some (token tokenizer id)
+
 type rune = {
   value : Uchar.t;
   first : int;
@@ -397,13 +399,12 @@ let encode_ordinary tokenizer text =
   in
   encode [] pieces
 
-let encode ?(add_bos = true) tokenizer text =
+let encode ?bos_token_id tokenizer text =
   let* bos =
-    if not add_bos then Ok []
-    else
-      match token_to_id tokenizer "<|startoftext|>" with
-      | Some id -> Ok [ id ]
-      | None -> Error "tokenizer has no <|startoftext|> token"
+    match bos_token_id with
+    | None -> Ok []
+    | Some id when has_token_id tokenizer id -> Ok [ id ]
+    | Some id -> Error (Printf.sprintf "tokenizer has no BOS token id %d" id)
   in
   let rec split output ordinary_start cursor =
     if cursor = String.length text then
