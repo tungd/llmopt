@@ -50,6 +50,49 @@ module Dtype = struct
     | Quant q -> quant_to_string q
 end
 
+module Tensor_layout = struct
+  type t = Dense of Dtype.t | Block_quantized of Dtype.quant_type
+
+  let of_dtype = function
+    | Dtype.Quant quant -> Block_quantized quant
+    | dtype -> Dense dtype
+
+  let block_elements = function
+    | Dtype.Q8_0 | Dtype.Q5_0 | Dtype.Q4_0 -> 32
+    | Dtype.Q4_K | Dtype.Q5_K | Dtype.Q6_K | Dtype.IQ4_XS -> 256
+
+  let block_bytes = function
+    | Dtype.Q8_0 -> 34
+    | Dtype.Q4_K -> 144
+    | Dtype.Q5_K -> 176
+    | Dtype.Q6_K -> 210
+    | Dtype.Q5_0 -> 22
+    | Dtype.Q4_0 -> 18
+    | Dtype.IQ4_XS -> 136
+
+  let physical_bytes layout shape =
+    let elements = Tensor_shape.numel shape in
+    if elements <= 0 then Error "tensor layout requires at least one element"
+    else
+      match layout with
+      | Dense dtype ->
+          let byte_width =
+            match dtype with
+            | Dtype.Float32 | Dtype.Int32 -> Ok 4
+            | Dtype.Float16 | Dtype.Bfloat16 -> Ok 2
+            | Dtype.Int64 -> Ok 8
+            | Dtype.Int8 | Dtype.UInt8 | Dtype.Bool -> Ok 1
+            | Dtype.Quant _ -> Error "dense tensor layout cannot contain quantized dtype"
+          in
+          Result.bind byte_width (fun byte_width ->
+              if elements > max_int / byte_width then
+                Error "tensor layout byte length overflows"
+              else Ok (elements * byte_width))
+      | Block_quantized quant ->
+          Tensor_shape.physical_bytes shape
+            ~block_size:(block_elements quant) ~bytes_per_block:(block_bytes quant)
+end
+
 module Memory_space = struct
   type t = Global | Shared | Register | Private
 
@@ -101,7 +144,55 @@ module Value = struct
   let shape value = value.shape
   let logical_shape value = value.logical_shape
   let dtype value = value.dtype
+  let layout value = Tensor_layout.of_dtype value.dtype
   let equal left right = left.id = right.id
+end
+
+module Linear_storage = struct
+  type layout =
+    | Dense of Dtype.t
+    | Block_quantized of Dtype.quant_type
+    | Groupwise_packed of { bits : int; group_elements : int }
+
+  type t = {
+    layout : layout;
+    weight : Value.t;
+    scale : Value.t option;
+    bias : Value.t option;
+  }
+
+  let classify ~has_bias ~weight ~parameters =
+    let split_bias parameters =
+      match has_bias, List.rev parameters with
+      | false, _ -> Ok (parameters, None)
+      | true, bias :: reversed -> Ok (List.rev reversed, Some bias)
+      | true, [] -> Error "biased Linear has no bias parameter"
+    in
+    Result.bind (split_bias parameters) (fun (storage_parameters, bias) ->
+        match Value.dtype weight, storage_parameters with
+        | Dtype.UInt8, [ scale ] when Value.dtype scale = Dtype.Float16 ->
+            Ok
+              { layout = Groupwise_packed { bits = 4; group_elements = 64 };
+                weight;
+                scale = Some scale;
+                bias }
+        | Dtype.Quant quant, [] ->
+            Ok { layout = Block_quantized quant; weight; scale = None; bias }
+        | dtype, [] -> (
+            match Tensor_layout.of_dtype dtype with
+            | Tensor_layout.Dense dtype ->
+                Ok { layout = Dense dtype; weight; scale = None; bias }
+            | Tensor_layout.Block_quantized _ -> assert false)
+        | Dtype.UInt8, _ ->
+            Error "packed groupwise Linear requires one float16 scale tensor"
+        | Dtype.Quant _, _ ->
+            Error "block-quantized Linear has unexpected storage parameters"
+        | _ -> Error "dense Linear has unexpected storage parameters")
+
+  let is_quantized storage =
+    match storage.layout with Dense _ -> false | Block_quantized _ | Groupwise_packed _ -> true
+
+  let has_separate_scale storage = Option.is_some storage.scale
 end
 
 module Scalar = struct

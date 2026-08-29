@@ -1,5 +1,5 @@
 module Dtype : sig
-  type quant_type =
+  type quant_type = Ir.Dtype.quant_type =
     | Q8_0
     | Q4_K
     | Q5_K

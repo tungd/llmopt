@@ -1538,6 +1538,48 @@ let () =
     Tensor_shape.physical_bytes shape_256 ~block_size:256 ~bytes_per_block:144
   in
   expect (q4k_bytes = Ok (4 * 144)) "physical_bytes for 1024 elements with Q4_K is 576";
+  expect
+    (Ir.Tensor_layout.physical_bytes
+       (Ir.Tensor_layout.Block_quantized Ir.Dtype.Q4_K)
+       shape_256
+    = q4k_bytes)
+    "IR tensor layout is the physical-byte authority for Q4_K";
+  expect
+    (Weight_archive.Dtype.Q4_K = Ir.Dtype.Q4_K)
+    "weight archives share the IR quant format type";
+  let layout_weight =
+    Ir.Value.make_tensor ~id:50001
+      ~shape:(Tensor_shape.of_ints_exn [ 128; 64 ])
+      ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_K)
+  in
+  let block_storage =
+    Ir.Linear_storage.classify ~has_bias:false ~weight:layout_weight
+      ~parameters:[]
+    |> expect_ok
+  in
+  expect
+    (block_storage.layout = Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K
+     && Ir.Linear_storage.is_quantized block_storage
+     && not (Ir.Linear_storage.has_separate_scale block_storage))
+    "Linear storage classifies GGUF quantization from tensor layout";
+  let packed_weight =
+    Ir.Value.make_tensor ~id:50002
+      ~shape:(Tensor_shape.of_ints_exn [ 128; 32 ]) ~dtype:Ir.Dtype.UInt8
+  in
+  let packed_scale =
+    Ir.Value.make_tensor ~id:50003
+      ~shape:(Tensor_shape.of_ints_exn [ 128; 1 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let packed_storage =
+    Ir.Linear_storage.classify ~has_bias:false ~weight:packed_weight
+      ~parameters:[ packed_scale ]
+    |> expect_ok
+  in
+  expect
+    (packed_storage.layout
+       = Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 64 }
+     && Ir.Linear_storage.has_separate_scale packed_storage)
+    "legacy packed W4 is represented as one Linear storage layout";
   let unaligned_shape = Tensor_shape.of_ints_exn [ 2; 250 ] in
   let unaligned_err =
     Tensor_shape.physical_bytes unaligned_shape ~block_size:256 ~bytes_per_block:144

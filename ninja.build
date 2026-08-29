@@ -307,8 +307,8 @@ build _build/ocaml/lfm25_probe.cmx: ocaml_module lib/lfm25_probe.ml | _build/oca
 build _build/ocaml/serving_specialization.cmi: ocaml_interface lib/serving_specialization.mli | _build/ocaml/model_program.cmi _build/ocaml/serving_schedule.cmi _build/ocaml/kv_cache.cmi
 build _build/ocaml/serving_specialization.cmx: ocaml_module lib/serving_specialization.ml | _build/ocaml/serving_specialization.cmi _build/ocaml/model_program.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/kv_cache.cmx
 
-build _build/ocaml/weight_archive.cmi: ocaml_interface lib/weight_archive.mli
-build _build/ocaml/weight_archive.cmx: ocaml_module lib/weight_archive.ml | _build/ocaml/weight_archive.cmi _build/ocaml/binary.cmx
+build _build/ocaml/weight_archive.cmi: ocaml_interface lib/weight_archive.mli | _build/ocaml/ir.cmi
+build _build/ocaml/weight_archive.cmx: ocaml_module lib/weight_archive.ml | _build/ocaml/weight_archive.cmi _build/ocaml/binary.cmx _build/ocaml/ir.cmx
 
 build _build/ocaml/gguf.cmi: ocaml_interface lib/gguf.mli | _build/ocaml/weight_archive.cmi
 build _build/ocaml/gguf.cmx: ocaml_module lib/gguf.ml | _build/ocaml/gguf.cmi _build/ocaml/binary.cmx _build/ocaml/weight_archive.cmx

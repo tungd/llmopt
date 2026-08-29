@@ -43,38 +43,9 @@ let workspace_bytes plan = plan.workspace_bytes
 let bytes_without_reuse plan = plan.bytes_without_reuse
 let allocation_count plan = Value_map.cardinal plan.allocation_by_owner
 
-let quant_block_bytes = function
-  | Ir.Dtype.Q8_0 -> 32, 34
-  | Ir.Dtype.Q4_K -> 256, 144
-  | Ir.Dtype.Q5_K -> 256, 176
-  | Ir.Dtype.Q6_K -> 256, 210
-  | Ir.Dtype.Q5_0 -> 32, 22
-  | Ir.Dtype.Q4_0 -> 32, 18
-  | Ir.Dtype.IQ4_XS -> 256, 136
-
 let value_bytes value =
   let shape = Ir.Value.logical_shape value in
-  let elements = Tensor_shape.numel shape in
-  if elements <= 0 then
-    Error "workspace tensor must contain at least one element"
-  else
-    match Ir.Value.dtype value with
-    | Ir.Dtype.Float32 | Ir.Dtype.Int32 ->
-        if elements > max_int / 4 then
-          Error "workspace tensor byte length overflows"
-        else Ok (elements * 4)
-    | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 ->
-        if elements > max_int / 2 then
-          Error "workspace tensor byte length overflows"
-        else Ok (elements * 2)
-    | Ir.Dtype.Int64 ->
-        if elements > max_int / 8 then
-          Error "workspace tensor byte length overflows"
-        else Ok (elements * 8)
-    | Ir.Dtype.Int8 | Ir.Dtype.UInt8 | Ir.Dtype.Bool -> Ok elements
-    | Ir.Dtype.Quant q ->
-        let block_size, bytes_per_block = quant_block_bytes q in
-        Tensor_shape.physical_bytes shape ~block_size ~bytes_per_block
+  Ir.Tensor_layout.physical_bytes (Ir.Value.layout value) shape
 
 let alignment = 256
 

@@ -24,6 +24,15 @@ module Dtype : sig
   val quant_of_string : string -> quant_type option
 end
 
+module Tensor_layout : sig
+  type t = Dense of Dtype.t | Block_quantized of Dtype.quant_type
+
+  val of_dtype : Dtype.t -> t
+  val block_elements : Dtype.quant_type -> int
+  val block_bytes : Dtype.quant_type -> int
+  val physical_bytes : t -> Tensor_shape.t -> (int, string) result
+end
+
 module Memory_space : sig
   type t = Global | Shared | Register | Private
   val to_string : t -> string
@@ -53,7 +62,31 @@ module Value : sig
   val shape : t -> Shape.t
   val logical_shape : t -> Tensor_shape.t
   val dtype : t -> Dtype.t
+  val layout : t -> Tensor_layout.t
   val equal : t -> t -> bool
+end
+
+module Linear_storage : sig
+  type layout =
+    | Dense of Dtype.t
+    | Block_quantized of Dtype.quant_type
+    | Groupwise_packed of { bits : int; group_elements : int }
+
+  type t = {
+    layout : layout;
+    weight : Value.t;
+    scale : Value.t option;
+    bias : Value.t option;
+  }
+
+  val classify :
+    has_bias:bool ->
+    weight:Value.t ->
+    parameters:Value.t list ->
+    (t, string) result
+
+  val is_quantized : t -> bool
+  val has_separate_scale : t -> bool
 end
 
 module Scalar : sig

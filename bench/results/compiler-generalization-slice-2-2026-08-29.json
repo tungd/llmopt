@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-29T23:37:06+07:00",
+  "git_base_commit": "ac8512f",
+  "slice": "tensor-layout-and-linear-storage",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "change": {
+    "tensor_layout": "one IR authority owns dense and block-quantized physical layouts",
+    "archive": "weight archives share Ir.Dtype.quant_type and delegate block geometry to tensor layout",
+    "linear_storage": "dense, GGUF block-quantized, and separately scaled groupwise W4 are classified as layouts",
+    "consumers": [
+      "Kernel IR Linear validation",
+      "SwiGLU resource accounting",
+      "serving workspace planning",
+      "archive-to-schedule quant validation"
+    ],
+    "execution_effect": "representation and validation only; package command and dispatch counts are unchanged"
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 10,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-perf-attention-specialized",
+        "dispatches": 9193,
+        "median_ms": 137.146592,
+        "min_ms": 131.640911,
+        "max_ms": 152.865887
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 8.7125415,
+        "mean_ms": 10.499279,
+        "samples_ns": [7557458, 7490750, 8779375, 13552375, 14728333, 14432708, 8645708, 13760291, 7958375, 8087417]
+      },
+      "llmopt_over_llama_cpp_median": 15.741294
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-perf-attention-specialized",
+        "dispatches": 1637,
+        "median_ms": 63.612938,
+        "min_ms": 56.675911,
+        "max_ms": 70.007086
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 23.0834165,
+        "mean_ms": 21.324958,
+        "samples_ns": [24140917, 18255333, 22971625, 23874041, 17106458, 23888792, 17549458, 23750125, 18517625, 23195208]
+      },
+      "llmopt_over_llama_cpp_median": 2.755790
+    }
+  ],
+  "validation": {
+    "ocaml_and_python_tests": "pass",
+    "okf": "conformant with 8 pre-existing warnings",
+    "layout_and_storage_regressions": "pass"
+  }
+}

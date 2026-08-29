@@ -55,6 +55,7 @@ configuration.
 * [Captured full-model GGUF comparison](experiments/exp-0101-gguf-full-model-comparison-2026-08-29.md) - zero-opaque native SmolLM, Qwen, and Gemma forwards, Qwen gated-delta numerical evidence, Gemma RMSNorm fusion, and llama.cpp timing context.
 * [Captured-shape SIMD attention specialization](experiments/exp-0102-captured-attention-specialization-2026-08-29.md) - FX-shape-selected h256/h512 Metal kernels and controlled Gemma/Qwen full-forward timing.
 * [Quantization-neutral Linear region discovery](experiments/exp-0103-semantic-linear-regions-2026-08-29.md) - semantic Linear fusion regions across mixed GGUF layouts plus fresh Qwen/Gemma comparison timing.
+* [Tensor-layout quantization and Linear storage classification](experiments/exp-0104-tensor-layout-capabilities-2026-08-29.md) - shared quant layout geometry and Linear storage facts for compiler passes and later tactics.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.

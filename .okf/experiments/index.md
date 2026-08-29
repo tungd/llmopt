@@ -102,3 +102,4 @@
 * [Captured full-model GGUF comparison](exp-0101-gguf-full-model-comparison-2026-08-29.md) - zero-opaque native SmolLM, Qwen, and Gemma forwards, Qwen gated-delta numerical evidence, Gemma RMSNorm fusion, and llama.cpp timing context.
 * [Captured-shape SIMD attention specialization](exp-0102-captured-attention-specialization-2026-08-29.md) - graph-driven h256/h512 kernels cut Gemma and Qwen full-forward latency while preserving baseline argmax IDs.
 * [Quantization-neutral Linear region discovery](exp-0103-semantic-linear-regions-2026-08-29.md) - semantic Linear fusion recovery across mixed GGUF layouts with fresh Qwen/Gemma llama.cpp context.
+* [Tensor-layout quantization and Linear storage classification](exp-0104-tensor-layout-capabilities-2026-08-29.md) - one physical-layout authority and closed Linear storage representation across archive, IR, pass, and planner seams.

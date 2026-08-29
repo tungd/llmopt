@@ -24,6 +24,7 @@ module Primitive : sig
     n : int;
     k : int;
     bias : bool;
+    storage : Ir.Linear_storage.layout;
   }
 
   type t =
@@ -33,7 +34,13 @@ module Primitive : sig
     | Binary of binary
 
   val rms_norm : epsilon:float -> t
-  val linear : m:int -> n:int -> k:int -> bias:bool -> t
+  val linear :
+    m:int ->
+    n:int ->
+    k:int ->
+    bias:bool ->
+    storage:Ir.Linear_storage.layout ->
+    t
   val unary : unary -> t
   val binary : binary -> t
   val to_string : t -> string

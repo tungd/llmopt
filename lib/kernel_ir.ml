@@ -15,7 +15,13 @@ end
 module Primitive = struct
   type unary = Silu
   type binary = Mul | Add
-  type linear = { m : int; n : int; k : int; bias : bool }
+  type linear = {
+    m : int;
+    n : int;
+    k : int;
+    bias : bool;
+    storage : Ir.Linear_storage.layout;
+  }
 
   type t =
     | Rms_norm of { epsilon : float }
@@ -24,15 +30,15 @@ module Primitive = struct
     | Binary of binary
 
   let rms_norm ~epsilon = Rms_norm { epsilon }
-  let linear ~m ~n ~k ~bias = Linear { m; n; k; bias }
+  let linear ~m ~n ~k ~bias ~storage = Linear { m; n; k; bias; storage }
   let unary operation = Unary operation
   let binary operation = Binary operation
 
   let to_string = function
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
-    | Linear { m; n; k; bias = false } ->
+    | Linear { m; n; k; bias = false; _ } ->
         Printf.sprintf "linear[%dx%dx%d]" m n k
-    | Linear { m; n; k; bias = true } ->
+    | Linear { m; n; k; bias = true; _ } ->
         Printf.sprintf "linear+bias[%dx%dx%d]" m n k
     | Unary Silu -> "silu"
     | Binary Mul -> "mul"
@@ -279,7 +285,7 @@ let validate_primitive map binding =
                   && is_float output.dtype
                 then Ok ()
                 else invalid "RMSNorm metadata is inconsistent"))
-  | Primitive.Linear { m; n; k; bias } -> (
+  | Primitive.Linear { m; n; k; bias; storage } -> (
       if m <= 0 || n <= 0 || k <= 0 then
         invalid "linear dimensions must be positive"
       else
@@ -298,23 +304,28 @@ let validate_primitive map binding =
                      | [] -> false)
                 in
                 let weight_ok, bias_slots =
-                  match weight_dtype, parameters with
-                  | Ir.Dtype.UInt8, scale :: bias_slots -> (
+                  match storage, parameters with
+                  | Ir.Linear_storage.Groupwise_packed
+                      { bits = 4; group_elements },
+                    scale :: bias_slots -> (
                       match input_metadata map scale with
                       | Ok (scale_shape, scale_dtype) ->
-                          ( k mod 64 = 0
+                          ( group_elements > 0 && k mod group_elements = 0
                             && expected_matrix_shape weight_shape ~rows:n
                                  ~columns:((k + 1) / 2)
+                            && weight_dtype = Ir.Dtype.UInt8
                             && scale_dtype = Ir.Dtype.Float16
-                            && dims scale_shape = [ n; (k + 63) / 64 ],
+                            && dims scale_shape = [ n; k / group_elements ],
                             bias_slots )
                       | Error _ -> false, bias_slots)
-                  | Ir.Dtype.Quant _, bias_slots ->
-                      (expected_matrix_shape weight_shape ~rows:n ~columns:k,
-                       bias_slots)
-                  | dtype, bias_slots when is_float dtype ->
-                      (expected_matrix_shape weight_shape ~rows:n ~columns:k,
-                       bias_slots)
+                  | Ir.Linear_storage.Block_quantized expected, bias_slots ->
+                      ( weight_dtype = Ir.Dtype.Quant expected
+                        && expected_matrix_shape weight_shape ~rows:n ~columns:k,
+                        bias_slots )
+                  | Ir.Linear_storage.Dense expected, bias_slots ->
+                      ( weight_dtype = expected && is_float expected
+                        && expected_matrix_shape weight_shape ~rows:n ~columns:k,
+                        bias_slots )
                   | _ -> false, parameters
                 in
                 let bias_ok =

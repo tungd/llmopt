@@ -125,26 +125,13 @@ let output_spec slot value =
 let make_binding ~slot ~value ~primitive ~inputs =
   Kernel_ir.make_binding ~outputs:[ output_spec slot value ] ~primitive ~inputs
 
-let quant_block_bytes = function
-  | Ir.Dtype.Q8_0 -> 32, 34L
-  | Ir.Dtype.Q4_K -> 256, 144L
-  | Ir.Dtype.Q5_K -> 256, 176L
-  | Ir.Dtype.Q6_K -> 256, 210L
-  | Ir.Dtype.Q5_0 -> 32, 22L
-  | Ir.Dtype.Q4_0 -> 32, 18L
-  | Ir.Dtype.IQ4_XS -> 256, 136L
-
 let bytes_for_value value =
-  let elements = numel value in
-  match Ir.Value.dtype value with
-  | Ir.Dtype.Float32 | Ir.Dtype.Int32 -> Int64.mul (Int64.of_int elements) 4L
-  | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 -> Int64.mul (Int64.of_int elements) 2L
-  | Ir.Dtype.Int64 -> Int64.mul (Int64.of_int elements) 8L
-  | Ir.Dtype.Int8 | Ir.Dtype.UInt8 | Ir.Dtype.Bool -> Int64.of_int elements
-  | Ir.Dtype.Quant q ->
-      let blk, bpb = quant_block_bytes q in
-      let blocks = (elements + blk - 1) / blk in
-      Int64.mul (Int64.of_int blocks) bpb
+  match
+    Ir.Tensor_layout.physical_bytes (Ir.Value.layout value)
+      (Ir.Value.logical_shape value)
+  with
+  | Ok bytes -> Int64.of_int bytes
+  | Error _ -> 0L
 
 let sum_int64 values = List.fold_left Int64.add 0L values
 
@@ -182,13 +169,21 @@ type projection = {
   bias : bool;
   input : Ir.Value.t;
   parameters : Ir.Value.t list;
+  storage : Ir.Linear_storage.layout;
 }
 
 let projection node =
   match Ir.node_op node, Ir.node_inputs node with
   | Ir.Op.Linear { m; n; k; bias }, input :: parameters
   | Ir.Op.W4a16_linear { m; n; k; bias }, input :: parameters ->
-      Ok { m; n; k; bias; input; parameters }
+      (match parameters with
+      | weight :: storage_parameters ->
+          let* classified =
+            Ir.Linear_storage.classify ~has_bias:bias ~weight
+              ~parameters:storage_parameters
+          in
+          Ok { m; n; k; bias; input; parameters; storage = classified.layout }
+      | [] -> Error "SwiGLU Linear projection has no weight")
   | _ -> Error "SwiGLU projection capture is not a Linear node"
 
 let region_of_match match_ =
@@ -288,7 +283,8 @@ let region_of_match match_ =
     let* gate_linear_binding =
       make_binding ~slot:gate_linear_slot ~value:gate_linear
         ~primitive:
-          (Kernel_ir.Primitive.linear ~m ~n ~k ~bias:gate_projection.bias)
+          (Kernel_ir.Primitive.linear ~m ~n ~k ~bias:gate_projection.bias
+             ~storage:gate_projection.storage)
         ~inputs:(norm_slot :: gate_parameter_slots)
     in
     let* gate_binding =
@@ -299,7 +295,8 @@ let region_of_match match_ =
     let* up_binding =
       make_binding ~slot:up_slot ~value:up
         ~primitive:
-          (Kernel_ir.Primitive.linear ~m ~n ~k ~bias:up_projection.bias)
+          (Kernel_ir.Primitive.linear ~m ~n ~k ~bias:up_projection.bias
+             ~storage:up_projection.storage)
         ~inputs:(norm_slot :: up_parameter_slots)
     in
     let* product_binding =
@@ -311,7 +308,7 @@ let region_of_match match_ =
       make_binding ~slot:down_slot ~value:down
         ~primitive:
           (Kernel_ir.Primitive.linear ~m ~n:k ~k:n
-             ~bias:down_projection.bias)
+             ~bias:down_projection.bias ~storage:down_projection.storage)
         ~inputs:(product_slot :: down_parameter_slots)
     in
     let* output_binding =
