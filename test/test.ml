@@ -1348,6 +1348,17 @@ let () =
   expect (compile_msl_string q5_k_src) "q5_k MSL compiles cleanly with xcrun metal";
   expect (compile_msl_string q6_k_src) "q6_k MSL compiles cleanly with xcrun metal";
 
+  (* Build-Time Transcoder Tests (IQ4_XS -> Q5_K) *)
+  let iq4_xs_buf = Bytes.make 136 '\000' in
+  Bytes.set_uint16_le iq4_xs_buf 0 0x3800; (* d = 0.5 *)
+  for i = 8 to 135 do
+    Bytes.set_uint8 iq4_xs_buf i 0x88 (* index 8 = +1 in codebook *)
+  done;
+  let q5_k_result = Gguf.Transcode.iq4_xs_to_q5_k iq4_xs_buf |> Result.get_ok in
+  expect (Bytes.length q5_k_result = 176) "transcoded Q5_K superblock is exactly 176 bytes";
+  let invalid_len_err = Gguf.Transcode.iq4_xs_to_q5_k (Bytes.make 100 '\000') in
+  expect (Result.is_error invalid_len_err) "transcode rejects unaligned byte lengths";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 

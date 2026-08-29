@@ -293,3 +293,153 @@ let feed_forward_length t = model_param t "feed_forward_length"
 let head_count t = model_param t "attention.head_count"
 let head_count_kv t = model_param t "attention.head_count_kv"
 let chat_template t = find_string t "tokenizer.chat_template"
+
+module Transcode = struct
+  let kvalues_iq4nl =
+    [| -127; -104; -83; -65; -49; -35; -22; -10;
+        1;   13;  25;  38;  53;  69;  89; 113 |]
+
+  let iq4_xs_superblock_bytes = 136
+  let q5_k_superblock_bytes = 176
+
+  let decode_f16 bytes offset =
+    let u16 = Bytes.get_uint16_le bytes offset in
+    let sign = (u16 lsr 15) land 1 in
+    let exp = (u16 lsr 10) land 31 in
+    let frac = u16 land 1023 in
+    if exp = 0 then
+      if frac = 0 then (if sign = 1 then -0.0 else 0.0)
+      else
+        let f = float_of_int frac /. 1024.0 in
+        let res = ldexp f (-14) in
+        if sign = 1 then -.res else res
+    else if exp = 31 then
+      if frac = 0 then (if sign = 1 then neg_infinity else infinity)
+      else nan
+    else
+      let f = 1.0 +. (float_of_int frac /. 1024.0) in
+      let res = ldexp f (exp - 15) in
+      if sign = 1 then -.res else res
+
+  let encode_f16 f =
+    if Float.is_nan f then 0x7e00
+    else if f = infinity then 0x7c00
+    else if f = neg_infinity then 0xfc00
+    else if f = 0.0 then 0
+    else if f = -0.0 then 0x8000
+    else
+      let sign = if f < 0.0 then 1 else 0 in
+      let abs_f = abs_float f in
+      let frac, exp = frexp abs_f in
+      let exp16 = exp + 14 in
+      if exp16 <= 0 then
+        let mant = int_of_float (ldexp frac (10 + exp16)) in
+        (sign lsl 15) lor mant
+      else if exp16 >= 31 then
+        (sign lsl 15) lor 0x7c00
+      else
+        let mant = int_of_float ((frac *. 2.0 -. 1.0) *. 1024.0 +. 0.5) in
+        (sign lsl 15) lor (exp16 lsl 10) lor (mant land 1023)
+
+  let dequantize_iq4_xs_superblock (src : bytes) (offset : int) (dst : float array) : unit =
+    let d = decode_f16 src offset in
+    let scales_h = Bytes.get_uint16_le src (offset + 2) in
+    let scales_l = Bytes.sub src (offset + 4) 4 in
+    let db = Array.make 8 0.0 in
+    for j = 0 to 7 do
+      let low = (Bytes.get_uint8 scales_l (j / 2) lsr (4 * (j mod 2))) land 0xF in
+      let high = (scales_h lsr (2 * j)) land 3 in
+      let ls = (low lor (high lsl 4)) - 32 in
+      db.(j) <- d *. (2.0 ** (float_of_int ls /. 8.0))
+    done;
+    for sb = 0 to 7 do
+      let scale = db.(sb) in
+      let qs_offset = offset + 8 + (sb / 2) * 32 in
+      let use_high_nibble = sb mod 2 = 1 in
+      for i = 0 to 31 do
+        let byte = Bytes.get_uint8 src (qs_offset + i) in
+        let nibble = if use_high_nibble then byte lsr 4 else byte land 0xF in
+        let kval = float_of_int kvalues_iq4nl.(nibble) in
+        dst.(sb * 32 + i) <- scale *. kval
+      done
+    done
+
+  let quantize_q5_k_superblock (src : float array) (dst : bytes) (offset : int) : unit =
+    let sub_mins = Array.make 8 0.0 in
+    let sub_maxs = Array.make 8 0.0 in
+    let sub_ranges = Array.make 8 0.0 in
+    for sb = 0 to 7 do
+      let min_v = ref infinity in
+      let max_v = ref neg_infinity in
+      for i = 0 to 31 do
+        let v = src.(sb * 32 + i) in
+        if v < !min_v then min_v := v;
+        if v > !max_v then max_v := v
+      done;
+      sub_mins.(sb) <- !min_v;
+      sub_maxs.(sb) <- !max_v;
+      sub_ranges.(sb) <- max 0.0 (!max_v -. !min_v)
+    done;
+    let max_range = ref 1e-7 in
+    let max_min = ref 0.0 in
+    for sb = 0 to 7 do
+      if sub_ranges.(sb) > !max_range then max_range := sub_ranges.(sb);
+      let m = -. sub_mins.(sb) in
+      if m > !max_min then max_min := m
+    done;
+    let d = !max_range /. (31.0 *. 63.0) in
+    let dmin = if !max_min > 0.0 then !max_min /. 63.0 else 0.0 in
+    let sc = Array.make 8 0 in
+    let m = Array.make 8 0 in
+    for sb = 0 to 7 do
+      sc.(sb) <- max 0 (min 63 (int_of_float ((sub_ranges.(sb) /. (31.0 *. d)) +. 0.5)));
+      m.(sb) <- (if dmin > 0.0 then max 0 (min 63 (int_of_float (((-. sub_mins.(sb)) /. dmin) +. 0.5))) else 0)
+    done;
+    Bytes.set_uint16_le dst offset (encode_f16 d);
+    Bytes.set_uint16_le dst (offset + 2) (encode_f16 dmin);
+    for j = 0 to 3 do
+      let sc_low = sc.(j) in
+      let m_low = m.(j) in
+      let sc_high = sc.(j + 4) in
+      let m_high = m.(j + 4) in
+      Bytes.set_uint8 dst (offset + 4 + j) ((sc_low land 63) lor ((sc_high lsr 4) lsl 6));
+      Bytes.set_uint8 dst (offset + 8 + j) ((m_low land 63) lor ((m_high lsr 4) lsl 6));
+      Bytes.set_uint8 dst (offset + 12 + j) ((sc_high land 0xF) lor ((m_high land 0xF) lsl 4))
+    done;
+    let qh = Bytes.make 32 '\000' in
+    for sb = 0 to 7 do
+      let dl = d *. float_of_int sc.(sb) in
+      let ml = dmin *. float_of_int m.(sb) in
+      let qs_base = offset + 16 + 32 + (sb / 2) * 32 in
+      let is_odd = sb mod 2 = 1 in
+      for i = 0 to 31 do
+        let v = src.(sb * 32 + i) in
+        let q = if dl > 0.0 then max 0 (min 31 (int_of_float (((v +. ml) /. dl) +. 0.5))) else 0 in
+        let low_nib = q land 0xF in
+        let high_bit = (q lsr 4) land 1 in
+        let prev_qh = Bytes.get_uint8 qh i in
+        Bytes.set_uint8 qh i (prev_qh lor (high_bit lsl sb));
+        let cur_qs = Bytes.get_uint8 dst (qs_base + i) in
+        let new_qs = if is_odd then (cur_qs land 0x0F) lor (low_nib lsl 4) else (cur_qs land 0xF0) lor low_nib in
+        Bytes.set_uint8 dst (qs_base + i) new_qs
+      done
+    done;
+    Bytes.blit qh 0 dst (offset + 16) 32
+
+  let iq4_xs_to_q5_k (src : bytes) : (bytes, string) result =
+    let len = Bytes.length src in
+    if len mod iq4_xs_superblock_bytes <> 0 then
+      Error (Printf.sprintf "input length %d is not a multiple of IQ4_XS superblock size %d" len iq4_xs_superblock_bytes)
+    else
+      let superblocks = len / iq4_xs_superblock_bytes in
+      let dst_len = superblocks * q5_k_superblock_bytes in
+      let dst = Bytes.make dst_len '\000' in
+      let float_buf = Array.make 256 0.0 in
+      for sb = 0 to superblocks - 1 do
+        let src_offset = sb * iq4_xs_superblock_bytes in
+        let dst_offset = sb * q5_k_superblock_bytes in
+        dequantize_iq4_xs_superblock src src_offset float_buf;
+        quantize_q5_k_superblock float_buf dst dst_offset
+      done;
+      Ok dst
+end

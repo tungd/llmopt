@@ -63,3 +63,7 @@ val feed_forward_length : t -> int option
 val head_count : t -> int option
 val head_count_kv : t -> int option
 val chat_template : t -> string option
+
+module Transcode : sig
+  val iq4_xs_to_q5_k : bytes -> (bytes, string) result
+end
