@@ -108,3 +108,4 @@
 * [Captured triangular recurrence fusion](exp-0107-triangular-recurrence-fusion-2026-08-30.md) - structural carried-state lowering and semantic kernel dispatch with fresh Qwen/Gemma llama.cpp context.
 * [Paired-row mixed-quant Linear tactics](exp-0108-paired-row-mixed-quant-linear-2026-08-30.md) - shape/layout/dtype-selected paired execution across all supported GGUF quant layouts.
 * [SIMD-group batched matmul tactic](exp-0109-simdgroup-batched-matmul-2026-08-30.md) - aligned SIMD matrix execution plus a tiled fallback selected from captured shape.
+* [Sub-SIMD short-row K-quant Linear tactics](exp-0110-subsimd-short-row-kquant-linear-2026-08-30.md) - four-column vectorized Q4_K/Q5_K/Q6_K execution selected from captured shape and layout.

@@ -88,8 +88,23 @@ module Tactic = struct
           && block_quantized problem quant
           && supports_simd problem.target ~threads:256) }
 
+  let four_column_quant_registration quant : linear_registration =
+    { build =
+        (fun _ ->
+          { name = quant_kernel_name quant ^ "_m2_x4";
+            threadgroup = (64, 1, 1) });
+      accepts =
+        (fun (problem : linear_problem) ->
+          problem.m = 2 && problem.n > 0 && problem.k > 0
+          && problem.k mod block_elements quant = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem quant
+          && supports_simd problem.target ~threads:64) }
+
   let linear_registry : linear_registration list =
-    List.map paired_quant_registration
+    List.map four_column_quant_registration
+      [ Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
+    @ List.map paired_quant_registration
       [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
         Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
     @ List.map quant_registration
@@ -2637,6 +2652,87 @@ kernel void llmopt_q4_k_linear_f16_m2(
   }
 }
 
+kernel void llmopt_q4_k_linear_f16_m2_x4(
+    device const half* input [[buffer(0)]],
+    device const block_q4_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column_group = gid >> 5;
+  const uint column_in_group = lane >> 3;
+  const uint local_lane = lane & 7u;
+  const uint col = (column_group << 2) + column_in_group;
+  if (col >= params.n) return;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q4_K* row_blocks = weight + col * num_superblocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q4_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    const uint superblock_base = sb << 8;
+    for (uint pair = 0; pair < 4; ++pair) {
+      const uint low_group = pair << 1;
+      const uint high_group = low_group + 1;
+      const uint low_scale = low_group < 4
+        ? uint(b.scales[low_group] & 63u)
+        : uint((b.scales[low_group + 4] & 0x0Fu)
+            | ((b.scales[low_group - 4] >> 6) << 4));
+      const uint low_min = low_group < 4
+        ? uint(b.scales[low_group + 4] & 63u)
+        : uint((b.scales[low_group + 4] >> 4)
+            | ((b.scales[low_group] >> 6) << 4));
+      const uint high_scale = high_group < 4
+        ? uint(b.scales[high_group] & 63u)
+        : uint((b.scales[high_group + 4] & 0x0Fu)
+            | ((b.scales[high_group - 4] >> 6) << 4));
+      const uint high_min = high_group < 4
+        ? uint(b.scales[high_group + 4] & 63u)
+        : uint((b.scales[high_group + 4] >> 4)
+            | ((b.scales[high_group] >> 6) << 4));
+      const uint packed_offset = (pair << 5) + (local_lane << 2);
+      const uchar4 packed =
+        *reinterpret_cast<device const uchar4*>(b.qs + packed_offset);
+      const float4 qlow = float4(packed & uchar4(15u));
+      const float4 qhigh = float4(packed >> 4);
+      const uint input_offset = superblock_base + (low_group << 5)
+        + (local_lane << 2);
+      const float4 x0low = float4(
+        *reinterpret_cast<device const half4*>(in0 + input_offset));
+      const float4 x0high = float4(
+        *reinterpret_cast<device const half4*>(in0 + input_offset + 32));
+      const float4 x1low = float4(
+        *reinterpret_cast<device const half4*>(in1 + input_offset));
+      const float4 x1high = float4(
+        *reinterpret_cast<device const half4*>(in1 + input_offset + 32));
+      acc0 += d * float(low_scale) * dot(x0low, qlow)
+        - dmin * float(low_min) * dot(x0low, float4(1.0f));
+      acc0 += d * float(high_scale) * dot(x0high, qhigh)
+        - dmin * float(high_min) * dot(x0high, float4(1.0f));
+      acc1 += d * float(low_scale) * dot(x1low, qlow)
+        - dmin * float(low_min) * dot(x1low, float4(1.0f));
+      acc1 += d * float(high_scale) * dot(x1high, qhigh)
+        - dmin * float(high_min) * dot(x1high, float4(1.0f));
+    }
+  }
+  acc0 += simd_shuffle_down(acc0, 4);
+  acc1 += simd_shuffle_down(acc1, 4);
+  acc0 += simd_shuffle_down(acc0, 2);
+  acc1 += simd_shuffle_down(acc1, 2);
+  acc0 += simd_shuffle_down(acc0, 1);
+  acc1 += simd_shuffle_down(acc1, 1);
+  if (local_lane == 0) {
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(acc0 + bias_value);
+    output[params.n + col] = half(acc1 + bias_value);
+  }
+}
+
 kernel void llmopt_q4_k_dual_swiglu_f16(
     device const half* normalized [[buffer(0)]],
     device const block_q4_K* gate_weight [[buffer(1)]],
@@ -2971,6 +3067,91 @@ kernel void llmopt_q5_k_linear_f16_m2(
     output[params.n + col] = half(acc1 + bias_value);
   }
 }
+
+kernel void llmopt_q5_k_linear_f16_m2_x4(
+    device const half* input [[buffer(0)]],
+    device const block_q5_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column_group = gid >> 5;
+  const uint column_in_group = lane >> 3;
+  const uint local_lane = lane & 7u;
+  const uint col = (column_group << 2) + column_in_group;
+  if (col >= params.n) return;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q5_K* row_blocks = weight + col * num_superblocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q5_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    const uint superblock_base = sb << 8;
+    const uchar4 high_bits =
+      *reinterpret_cast<device const uchar4*>(b.qh + (local_lane << 2));
+    for (uint pair = 0; pair < 4; ++pair) {
+      const uint low_group = pair << 1;
+      const uint high_group = low_group + 1;
+      const uint low_scale = low_group < 4
+        ? uint(b.scales[low_group] & 63u)
+        : uint((b.scales[low_group + 4] & 0x0Fu)
+            | ((b.scales[low_group - 4] >> 6) << 4));
+      const uint low_min = low_group < 4
+        ? uint(b.scales[low_group + 4] & 63u)
+        : uint((b.scales[low_group + 4] >> 4)
+            | ((b.scales[low_group] >> 6) << 4));
+      const uint high_scale = high_group < 4
+        ? uint(b.scales[high_group] & 63u)
+        : uint((b.scales[high_group + 4] & 0x0Fu)
+            | ((b.scales[high_group - 4] >> 6) << 4));
+      const uint high_min = high_group < 4
+        ? uint(b.scales[high_group + 4] & 63u)
+        : uint((b.scales[high_group + 4] >> 4)
+            | ((b.scales[high_group] >> 6) << 4));
+      const uint packed_offset = (pair << 5) + (local_lane << 2);
+      const uchar4 packed =
+        *reinterpret_cast<device const uchar4*>(b.qs + packed_offset);
+      const float4 qlow = float4((packed & uchar4(15u))
+        | (((high_bits >> low_group) & uchar4(1u)) << 4));
+      const float4 qhigh = float4((packed >> 4)
+        | (((high_bits >> high_group) & uchar4(1u)) << 4));
+      const uint input_offset = superblock_base + (low_group << 5)
+        + (local_lane << 2);
+      const float4 x0low = float4(
+        *reinterpret_cast<device const half4*>(in0 + input_offset));
+      const float4 x0high = float4(
+        *reinterpret_cast<device const half4*>(in0 + input_offset + 32));
+      const float4 x1low = float4(
+        *reinterpret_cast<device const half4*>(in1 + input_offset));
+      const float4 x1high = float4(
+        *reinterpret_cast<device const half4*>(in1 + input_offset + 32));
+      acc0 += d * float(low_scale) * dot(x0low, qlow)
+        - dmin * float(low_min) * dot(x0low, float4(1.0f));
+      acc0 += d * float(high_scale) * dot(x0high, qhigh)
+        - dmin * float(high_min) * dot(x0high, float4(1.0f));
+      acc1 += d * float(low_scale) * dot(x1low, qlow)
+        - dmin * float(low_min) * dot(x1low, float4(1.0f));
+      acc1 += d * float(high_scale) * dot(x1high, qhigh)
+        - dmin * float(high_min) * dot(x1high, float4(1.0f));
+    }
+  }
+  acc0 += simd_shuffle_down(acc0, 4);
+  acc1 += simd_shuffle_down(acc1, 4);
+  acc0 += simd_shuffle_down(acc0, 2);
+  acc1 += simd_shuffle_down(acc1, 2);
+  acc0 += simd_shuffle_down(acc0, 1);
+  acc1 += simd_shuffle_down(acc1, 1);
+  if (local_lane == 0) {
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(acc0 + bias_value);
+    output[params.n + col] = half(acc1 + bias_value);
+  }
+}
 |}
 
 let q6_k_source = {|
@@ -3121,6 +3302,71 @@ kernel void llmopt_q6_k_linear_f16_m2(
     output[params.n + col] = half(acc1 + bias_value);
   }
 }
+
+kernel void llmopt_q6_k_linear_f16_m2_x4(
+    device const half* input [[buffer(0)]],
+    device const block_q6_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column_group = gid >> 5;
+  const uint column_in_group = lane >> 3;
+  const uint local_lane = lane & 7u;
+  const uint col = (column_group << 2) + column_in_group;
+  if (col >= params.n) return;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q6_K* row_blocks = weight + col * num_superblocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q6_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const uint superblock_base = sb << 8;
+    for (uint group = 0; group < 8; ++group) {
+      const uint half_index = group >> 2;
+      const uint group_in_half = group & 3u;
+      const uint quant_offset = (half_index << 6)
+        + ((group_in_half & 1u) << 5) + (local_lane << 2);
+      const uint high_offset = (half_index << 5) + (local_lane << 2);
+      const uchar4 packed =
+        *reinterpret_cast<device const uchar4*>(b.ql + quant_offset);
+      const uchar4 high =
+        *reinterpret_cast<device const uchar4*>(b.qh + high_offset);
+      const uchar4 low = group_in_half < 2
+        ? (packed & uchar4(15u)) : (packed >> 4);
+      const uint high_shift = group_in_half << 1;
+      const int4 quantized = int4(low
+        | (((high >> high_shift) & uchar4(3u)) << 4)) - int4(32);
+      const uint scale_index = (half_index << 3)
+        + (group_in_half << 1) + (local_lane >> 2);
+      const float scale = d * float(b.scales[scale_index]);
+      const uint input_offset = superblock_base + (group << 5)
+        + (local_lane << 2);
+      const float4 x0 = float4(
+        *reinterpret_cast<device const half4*>(in0 + input_offset));
+      const float4 x1 = float4(
+        *reinterpret_cast<device const half4*>(in1 + input_offset));
+      const float4 q = float4(quantized);
+      acc0 += scale * dot(x0, q);
+      acc1 += scale * dot(x1, q);
+    }
+  }
+  acc0 += simd_shuffle_down(acc0, 4);
+  acc1 += simd_shuffle_down(acc1, 4);
+  acc0 += simd_shuffle_down(acc0, 2);
+  acc1 += simd_shuffle_down(acc1, 2);
+  acc0 += simd_shuffle_down(acc0, 1);
+  acc1 += simd_shuffle_down(acc1, 1);
+  if (local_lane == 0) {
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(acc0 + bias_value);
+    output[params.n + col] = half(acc1 + bias_value);
+  }
+}
 |}
 
 let iq4_xs_source = {|
@@ -3240,6 +3486,10 @@ let kquant_entries =
       ~name:"llmopt_q4_k_linear_f16_m2"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_q4_k_linear_f16_m2_x4"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q5_k_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
@@ -3248,12 +3498,20 @@ let kquant_entries =
       ~name:"llmopt_q5_k_linear_f16_m2"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_q5_k_linear_f16_m2_x4"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q6_k_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q6_k_linear_f16_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_q6_k_linear_f16_m2_x4"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)

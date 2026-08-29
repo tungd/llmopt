@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T04:31:36+07:00",
+  "git_base_commit": "d0dd66c",
+  "slice": "subsimd-short-row-kquant-linear",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "diagnosis": {
+    "gemma_intact_median_ms": 30.821919,
+    "gemma_noop_medians_ms": {
+      "q4_k_m2_x4": 22.013545,
+      "q5_k_m2_x4": 26.095033,
+      "q6_k_m2_x4": 28.626919,
+      "dense_bf16": 29.437900,
+      "dense_f32": 28.341532
+    },
+    "note": "family no-op deltas are diagnostic, non-additive, and measured in separate processes"
+  },
+  "change": {
+    "selection": "semantic Linear with captured m=2, block layout Q4_K/Q5_K/Q6_K, f16 I/O, and SIMD32 target",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "columns_per_simdgroup": 4,
+    "input_rows_per_simdgroup": 2,
+    "simdgroups_per_threadgroup": 2,
+    "vector_width": 4,
+    "fallback": "existing paired-row then generic quantized Linear tactics",
+    "selected_sites": {
+      "qwen": {"Q4_K": 48, "Q5_K": 57, "Q6_K": 18},
+      "gemma": {"Q4_K": 139, "Q5_K": 21, "Q6_K": 46}
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 20,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-q4-m2-x4",
+        "kernels": 105,
+        "commands": 4470,
+        "dispatches": 2407,
+        "median_ms": 39.842010,
+        "min_ms": 38.774967,
+        "max_ms": 48.682213,
+        "previous_median_ms": 43.148398,
+        "delta_ms": -3.306388,
+        "latency_reduction_percent": 7.662829,
+        "output_sha256": "f667f8504af4e12159b14431c6ff4c9a0705741d9cf52ff0892b6d8840ffb175",
+        "previous_output_mean_abs": 0.0035780077,
+        "previous_output_max_abs": 0.021484375,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.9870835,
+        "mean_ms": 8.503087,
+        "samples_ns": [12047500, 8602458, 8967583, 8113500, 7864833, 7898791, 7727042, 7907458, 7835000, 8066709]
+      },
+      "llmopt_over_llama_cpp_median": 4.988305
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-q4-m2-x4",
+        "kernels": 94,
+        "commands": 3999,
+        "dispatches": 1637,
+        "median_ms": 30.259609,
+        "min_ms": 28.244019,
+        "max_ms": 46.249866,
+        "previous_median_ms": 39.534926,
+        "delta_ms": -9.275317,
+        "latency_reduction_percent": 23.461071,
+        "output_sha256": "83c52646af30845dbaf26b1737af807b13dc153c7bb187a60a7de022df279f99",
+        "previous_output_mean_abs": 0.0118573792,
+        "previous_output_max_abs": 0.078125,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.2974375,
+        "mean_ms": 17.4211,
+        "samples_ns": [17132500, 17100750, 18154541, 16701334, 17835625, 16644584, 16652666, 17462375, 17816125, 18710500]
+      },
+      "llmopt_over_llama_cpp_median": 1.749369
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "pass, 454 dispatches and exact outputs",
+    "metal_compilation": "pass for native fixture and both full-model packages",
+    "qwen_package": "valid, 105 kernels, 4470 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3999 commands, 0 opaque",
+    "numerical_scope": "both probes preserve both row argmax IDs; reordered sub-SIMD reductions change rounded Float16 intermediates"
+  }
+}

@@ -1501,6 +1501,14 @@ let linear_f16_grid columns =
     Error "Metal float16 linear grid dimension overflows"
   else Ok (rounded_columns * simd_width)
 
+let short_row_quant_grid column_groups =
+  let simdgroups_per_threadgroup = 2 in
+  let simd_width = 32 in
+  let* rounded_groups = round_up column_groups simdgroups_per_threadgroup in
+  if rounded_groups > max_int / simd_width then
+    Error "Metal short-row quantized Linear grid dimension overflows"
+  else Ok (rounded_groups * simd_width)
+
 let simd_rows_grid rows = linear_f16_grid rows
 
 let rms_norm_kernel_name input_dtype weight_dtype =
@@ -1588,7 +1596,8 @@ let quant_linear_kernel_name = function
 
 let quant_linear_kernel_names ~m quant =
   let generic = quant_linear_kernel_name quant in
-  if m = 2 then [ generic ^ "_m2"; generic ] else [ generic ]
+  if m = 2 then [ generic ^ "_m2_x4"; generic ^ "_m2"; generic ]
+  else [ generic ]
 
 let select_quant_linear_kernel runtime ~m quant =
   let input_dtype = Ir.Dtype.Quant quant in
@@ -2571,9 +2580,15 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Parameters.u32s [ m; n; k; if Option.is_some bias_value then 1 else 0 ]
                 in
                 let columns =
-                  if String.ends_with ~suffix:"_m2" name then n else m * n
+                  if String.ends_with ~suffix:"_m2_x4" name then (n + 3) / 4
+                  else if String.ends_with ~suffix:"_m2" name then n
+                  else m * n
                 in
-                let* grid_x = linear_f16_grid columns in
+                let* grid_x =
+                  if String.ends_with ~suffix:"_m2_x4" name then
+                    short_row_quant_grid columns
+                  else linear_f16_grid columns
+                in
                 dispatched
                   (dispatch_output ~name runtime state output
                      ~operation:Kernel_abi.Operation.Linear

@@ -61,6 +61,7 @@ configuration.
 * [Captured triangular recurrence fusion](experiments/exp-0107-triangular-recurrence-fusion-2026-08-30.md) - graph-topology-selected recurrence lowering, semantic kernel ABI repair, typed S-expression dumps, and fresh Qwen/Gemma comparison timing.
 * [Paired-row mixed-quant Linear tactics](experiments/exp-0108-paired-row-mixed-quant-linear-2026-08-30.md) - paired weight-decode reuse across every supported GGUF quant layout with fresh Qwen/Gemma comparison timing.
 * [SIMD-group batched matmul tactic](experiments/exp-0109-simdgroup-batched-matmul-2026-08-30.md) - broadcast-aware SIMD matrix tiles selected from captured batched-matmul geometry.
+* [Sub-SIMD short-row K-quant Linear tactics](experiments/exp-0110-subsimd-short-row-kquant-linear-2026-08-30.md) - four-column SIMD execution for captured two-row Q4_K/Q5_K/Q6_K Linear.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.
