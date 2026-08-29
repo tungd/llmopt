@@ -22,17 +22,20 @@ sources:
 
 # Decision
 
-`llmopt` adopts **GGUF** containing **Unsloth Dynamic (UD)** quantized weights as its primary external model and weight distribution format.
+`llmopt` retains **PyTorch Dynamo FX (`torch.compile(model, backend=llmopt_backend)`)** as its primary graph capture and execution planning frontend, while adding first-class **GGUF** (with Unsloth Dynamic / UD quant schemes) as an alternative high-performance weight distribution format alongside native safetensors / `weights.llmopt`.
 
-Rather than maintaining a bespoke PyTorch weight quantizer or generic runtime interpreters with runtime branching, `llmopt` leverages its **AOT compiler pipeline and Metal code generator** to specialize execution:
-
-1. **Structured Quantized Block Descriptors**: Replace flat tensor types and hardcoded `group_size = 64` with formal superblock and block-quant descriptors (`Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `Q5_0`, `F16`, `BF16`, `F32`).
-2. **Two Dequantization Kernel Families**:
-   - **Legacy Block-32 Family**: `Q8_0` (8-bit int, 1 FP16 scale per 32 weights) and `Q5_0` (5-bit fallback for sub-256 row widths).
+This gives users flexible options:
+1. **PyTorch Capture Architecture**: Captures arbitrary model architectures directly from Python/PyTorch (`AutoModelForCausalLM`, Dynamo FX) with automated state binding, KV-cache planning, and pass optimizations.
+2. **Dual Weight Store Formats**:
+   - **Safetensors / `weights.llmopt`**: Direct weight archives generated from PyTorch checkpoints.
+   - **GGUF / Unsloth Dynamic (UD)**: Pre-quantized mixed-precision GGUF files (`UD-Q4_K_XL`, `UD-Q8_K_XL`, `Q4_K_M`, `Q8_0`) for superior quantization quality and zero-conversion deployment.
+3. **Structured Quantized Block Descriptors**: Formal superblock and block-quant descriptors (`Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `Q5_0`, `F16`, `BF16`, `F32`) in `Ir.Dtype` and `Weight_archive.Dtype`.
+4. **Two Dequantization Kernel Families**:
+   - **Legacy Block-32 Family**: `Q8_0`, `Q5_0`, `Q4_0` (32-element blocks with FP16 scale).
    - **K-Quant Superblock-256 Family**: `Q4_K`, `Q5_K`, and `Q6_K` (256-element superblocks with 8 sub-blocks of 32 elements, 6-bit scales and mins).
-3. **AOT Code Specialization**: Bake quant block layouts, sub-block extraction, and tile dimensions directly into compile-time specialized Metal MSL megakernels (`w4a16_dual_swiglu`, `w4a16_down_add`, `w4a16_lm_head`), eliminating dynamic loop strides and runtime branches.
-4. **Offline AOT Transcoding for Exotic Types**: Rare non-uniform codebook types (e.g. `IQ4_XS`, which accounts for only ~6% of tensors in `UD-Q4_K_XL`) are transcoded offline to `Q5_K` at package assembly time, avoiding GPU codebook kernel bloat.
-5. **Deterministic Bit-Exact Verification**: Verify dequantization correctness by comparing `llmopt` dequantized tensors byte-for-byte against `llama.cpp`'s reference dequantization on real GGUF binaries.
+5. **AOT Code Specialization**: Bake quant block layouts, sub-block extraction, and tile dimensions directly into compile-time specialized Metal MSL megakernels (`w4a16_dual_swiglu`, `w4a16_down_add`, `w4a16_lm_head`), eliminating dynamic loop strides and runtime branches.
+6. **Offline AOT Transcoding for Exotic Types**: Rare non-uniform codebook types (e.g. `IQ4_XS`, which accounts for only ~6% of tensors in `UD-Q4_K_XL`) are transcoded offline to `Q5_K` at package assembly time, avoiding GPU codebook kernel bloat.
+7. **Deterministic Bit-Exact Verification**: Verify dequantization correctness by comparing `llmopt` dequantized tensors byte-for-byte against `llama.cpp`'s reference dequantization on real GGUF binaries.
 
 # Context & Problem
 
