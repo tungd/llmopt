@@ -3,7 +3,7 @@ type: Decision
 title: 'Target GGUF and Unsloth Dynamic (UD) Quantization with AOT Code Specialization'
 description: 'Adopt GGUF and Unsloth Dynamic (UD) quant schemes as the primary weight format, using AOT code specialization to bake dequantization parameters directly into specialized Metal megakernels with zero runtime dispatch penalty.'
 tags: [decision, quantization, gguf, unsloth, metal, compiler, dequantization, aot]
-status: draft
+status: stable
 generated: { by: human:tung, at: '2026-08-29T01:53:30+07:00' }
 sources:
   - id: requested-direction

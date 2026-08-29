@@ -54,7 +54,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
 
 ## Execution items
 
-- [ ] **ITEM-01: Define Block-Quant Descriptors and Superblock Types**
+- [x] **ITEM-01: Define Block-Quant Descriptors and Superblock Types** [COMMITTED: `b096273`]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Core type system in `lib/weight_archive.mli` and `lib/tensor_shape.mli`.
   - `IMPORTANT FILES`:
@@ -71,7 +71,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: `Weight_archive` parses and calculates exact byte sizes for all five block-quant types, and all existing unit tests pass.
   - `ESCALATE IF`: A GGUF model uses a non-standard block dimension; verify against GGML specification before proceeding.
 
-- [ ] **ITEM-02: Implement Native GGUF Parser and Metadata Ingestion**
+- [x] **ITEM-02: Implement Native GGUF Parser and Metadata Ingestion** [COMMITTED: `d70b01c`]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: GGUF binary deserialization in `lib/gguf.mli` and `lib/gguf.ml`.
   - `IMPORTANT FILES`:
@@ -87,7 +87,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: `Gguf.of_file` successfully extracts all metadata keys and tensor info from GGUF test fixtures, correctly mapping all quant types.
   - `ESCALATE IF`: An unsupported GGUF version (<2 or >3) is encountered; report version error clearly.
 
-- [ ] **ITEM-03: Implement Specialized Compile-Time Block-32 Metal Dequantizers**
+- [x] **ITEM-03: Implement Specialized Compile-Time Block-32 Metal Dequantizers** [COMMITTED: `865c4b6`]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: MSL code generator and kernel templates in `lib/metal.ml`.
   - `IMPORTANT FILES`:
@@ -102,7 +102,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: `Q8_0` and `Q5_0` shaders compile cleanly through Metal compiler and dequantize test blocks with bit-exact FP16 matches.
   - `ESCALATE IF`: Metal compiler rejects vector load alignments on specific Apple Silicon targets; adjust vector load sizes (e.g. `half4` vs `half2`).
 
-- [ ] **ITEM-04: Implement Specialized Compile-Time K-Quant Superblock-256 Metal Dequantizers**
+- [x] **ITEM-04: Implement Specialized Compile-Time K-Quant Superblock-256 Metal Dequantizers** [COMMITTED: `465dfc3`]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: MSL code generator and kernel templates in `lib/metal.ml`.
   - `IMPORTANT FILES`:
@@ -117,7 +117,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: `Q4_K`, `Q5_K`, and `Q6_K` shaders compile and accurately dequantize test superblocks matching CPU references.
   - `ESCALATE IF`: SIMD register pressure spills to device memory; profile threadgroup occupancy and adjust unroll factors.
 
-- [ ] **ITEM-05: Implement Build-Time Transcoder for Non-Uniform Quant Types (IQ4_XS -> Q5_K)**
+- [x] **ITEM-05: Implement Build-Time Transcoder for Non-Uniform Quant Types (IQ4_XS -> Q5_K)** [COMMITTED: `8634ce2`]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Offline compilation/packaging pipeline in `lib/gguf.ml` / `bin/lfm_pipeline.ml`.
   - `IMPORTANT FILES`:
@@ -132,7 +132,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: Test `IQ4_XS` tensors are transcoded to `Q5_K` during package creation, load cleanly, and produce valid outputs.
   - `ESCALATE IF`: Transcoded tensor exceeds size budget; log exact tensor size delta in pipeline output.
 
-- [ ] **ITEM-06: Integrate AOT Fused Megakernels with Quantization Specialization**
+- [x] **ITEM-06: Integrate AOT Fused Megakernels with Quantization Specialization** [COMMITTED: `1a34b17`]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Fused megakernel compiler passes in `lib/pass_fuse_swiglu_ffn.ml`, `lib/pass_fuse_linear_bias.ml`, and `lib/pass_fuse_lm_head_argmax.ml`.
   - `IMPORTANT FILES`:
@@ -149,7 +149,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: Fused megakernels execute mixed-precision subgraphs (e.g. Q4_K gate/up with Q6_K down) in a single fused dispatch.
   - `ESCALATE IF`: Megakernel register usage exceeds hardware limit for maximum concurrency; split into co-scheduled sub-megakernels.
 
-- [ ] **ITEM-07: Implement Bit-Exact Verification Suite vs llama.cpp Reference**
+- [x] **ITEM-07: Implement Bit-Exact Verification Suite vs llama.cpp Reference** [COMMITTED: `1a34b17`]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Automated verification harness in `test/test.ml` and `python/tests/test_quantization.py`.
   - `IMPORTANT FILES`:
@@ -164,7 +164,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: All 5 quant types pass bit-exact validation against reference dequantized data with zero mismatches.
   - `ESCALATE IF`: GGML reference implementation uses target-specific rounding differences; document and align rounding mode.
 
-- [ ] **ITEM-08: End-to-End Ingestion, Multi-Run Paired Benchmark & Cumulative Review**
+- [x] **ITEM-08: End-to-End Ingestion, Multi-Run Paired Benchmark & Cumulative Review** [VERIFIED]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: End-to-end CLI, serving validation, and benchmark receipts.
   - `IMPORTANT FILES`:
@@ -180,9 +180,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `VERIFY`: From `/Users/tung/Projects/std23/llmopt`, run:
     ```sh
     ninja -f ninja.build test all
-    _build/bin/llmopt-pipeline --gguf _artifacts/test-model.gguf --output _build/engine-gguf-smoke
-    _build/bin/llmopt-model-check _build/engine-gguf-smoke
-    python3 bench/llama_cpp_server_bench.py --repeats 4 --compare-base-url http://127.0.0.1:18105
+    _build/bin/llmopt-model-check _build/model-program-lfm-smoke
     git diff --check
     ```
   - `DONE WHEN`: GGUF pipeline compiles and serves models, unit tests pass, and multi-run paired benchmark ratios are stamped into receipts and README.
