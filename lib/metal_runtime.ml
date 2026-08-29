@@ -1444,27 +1444,35 @@ let linear_f16_grid columns =
 
 let simd_rows_grid rows = linear_f16_grid rows
 
-let rms_norm_kernel_name = function
-  | Ir.Dtype.Float32 -> Ok "llmopt_rms_norm_f32_f16_simd"
-  | Ir.Dtype.Float16 -> Ok "llmopt_rms_norm_f16_simd"
-  | dtype ->
+let rms_norm_kernel_name input_dtype weight_dtype =
+  match input_dtype, weight_dtype with
+  | Ir.Dtype.Float32, Ir.Dtype.Float16 ->
+      Ok "llmopt_rms_norm_f32_f16_simd"
+  | Ir.Dtype.Float16, Ir.Dtype.Float16 -> Ok "llmopt_rms_norm_f16_simd"
+  | Ir.Dtype.Float32, Ir.Dtype.Float32 ->
+      Ok "llmopt_rms_norm_f32_f16_wf32_simd"
+  | Ir.Dtype.Float16, Ir.Dtype.Float32 ->
+      Ok "llmopt_rms_norm_f16_wf32_simd"
+  | _ ->
       Error
-        ("unsupported Metal RMSNorm input dtype: " ^ Ir.Dtype.to_string dtype)
+        (Printf.sprintf "unsupported Metal RMSNorm dtypes: input=%s weight=%s"
+           (Ir.Dtype.to_string input_dtype) (Ir.Dtype.to_string weight_dtype))
 
-let legacy_rms_norm_kernel_name = function
-  | Ir.Dtype.Float32 -> Some "llmopt_rms_norm_f32_f16"
-  | Ir.Dtype.Float16 -> Some "llmopt_rms_norm_f16"
+let legacy_rms_norm_kernel_name input_dtype weight_dtype =
+  match input_dtype, weight_dtype with
+  | Ir.Dtype.Float32, Ir.Dtype.Float16 -> Some "llmopt_rms_norm_f32_f16"
+  | Ir.Dtype.Float16, Ir.Dtype.Float16 -> Some "llmopt_rms_norm_f16"
   | _ -> None
 
-let select_rms_norm_kernel runtime input_dtype output_dtype =
-  let* preferred = rms_norm_kernel_name input_dtype in
+let select_rms_norm_kernel runtime input_dtype weight_dtype output_dtype =
+  let* preferred = rms_norm_kernel_name input_dtype weight_dtype in
   match
     kernel_entry ~name:preferred runtime
       ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype ~output_dtype
   with
   | Ok entry -> Ok (entry, true)
   | Error preferred_error -> (
-      match legacy_rms_norm_kernel_name input_dtype with
+      match legacy_rms_norm_kernel_name input_dtype weight_dtype with
       | None -> Error preferred_error
       | Some legacy ->
           kernel_entry ~name:legacy runtime
@@ -1918,9 +1926,18 @@ let pointwise_kernel operation output =
     | Ir.Pointwise.Binary (Ir.Pointwise.Add, _, _), Ir.Dtype.Float16,
       Ir.Dtype.Float16 ->
         Some "llmopt_add_f16"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Add, _, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_add_f32"
     | Ir.Pointwise.Binary (Ir.Pointwise.Add, _, _), Ir.Dtype.Int64,
       Ir.Dtype.Int64 ->
         Some "llmopt_add_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Sub, _, _), Ir.Dtype.Int64,
+      Ir.Dtype.Int64 ->
+        Some "llmopt_sub_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Div, _, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_div_f16"
     | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _), Ir.Dtype.Float16,
       Ir.Dtype.Float16 ->
         Some "llmopt_mul_f16"
@@ -1930,6 +1947,18 @@ let pointwise_kernel operation output =
     | Ir.Pointwise.Binary (Ir.Pointwise.Less_equal, _, _), Ir.Dtype.Int64,
       Ir.Dtype.Bool ->
         Some "llmopt_le_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Greater, _, _), Ir.Dtype.Int64,
+      Ir.Dtype.Bool ->
+        Some "llmopt_gt_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Equal, _, _), Ir.Dtype.Int64,
+      Ir.Dtype.Bool ->
+        Some "llmopt_eq_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Not_equal, _, _), Ir.Dtype.Int64,
+      Ir.Dtype.Bool ->
+        Some "llmopt_ne_i64"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Logical_and, _, _), Ir.Dtype.Bool,
+      Ir.Dtype.Bool ->
+        Some "llmopt_and_bool"
     | Ir.Pointwise.Unary (Ir.Pointwise.Neg, _), Ir.Dtype.Float16,
       Ir.Dtype.Float16 ->
         Some "llmopt_neg_f16"
@@ -1942,6 +1971,12 @@ let pointwise_kernel operation output =
     | Ir.Pointwise.Unary (Ir.Pointwise.Sin, _), Ir.Dtype.Float32,
       Ir.Dtype.Float32 ->
         Some "llmopt_sin_f32"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Tanh, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_tanh_f16"
+    | Ir.Pointwise.Unary (Ir.Pointwise.Pow _, _), Ir.Dtype.Float32,
+      Ir.Dtype.Float32 ->
+        Some "llmopt_pow_f32"
     | _ -> None
   in
   match name with
@@ -1999,6 +2034,8 @@ let reduction_kernel reduction input output =
   with
   | Ir.Reduction.Sum, [ axis ], Ir.Dtype.Float16, Ir.Dtype.Float16 ->
       Ok ("llmopt_sum_f16", axis)
+  | Ir.Reduction.Mean, [ axis ], Ir.Dtype.Float32, Ir.Dtype.Float32 ->
+      Ok ("llmopt_mean_f32", axis)
   | _ ->
       Error
         (Printf.sprintf "unsupported Metal reduction kernel: %s %s -> %s"
@@ -2229,12 +2266,35 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                  ~operation:Kernel_abi.Operation.Cast
                  ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
                  ~grid:(count, 1, 1))
+        | Ir.Op.Gelu, [ input ], Some output
+          when Ir.Value.dtype input = Ir.Dtype.Float16
+               && Ir.Value.dtype output = Ir.Dtype.Float16 ->
+            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let* input_buffer = find_value state input in
+            let* parameters = Parameters.u32s [ count ] in
+            dispatched
+              (dispatch_output ~name:"llmopt_gelu_f16" runtime state output
+                 ~operation:Kernel_abi.Operation.Pointwise
+                 ~input_dtype:Ir.Dtype.Float16 ~buffers:[ input_buffer ]
+                 ~parameters ~grid:(count, 1, 1))
         | ( Ir.Op.Primitive (Ir.Primitive.Pointwise operation),
             _,
             Some output ) ->
             let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
             let* name, input_dtype = pointwise_kernel operation output in
             (match operation with
+            | Ir.Pointwise.Unary (Ir.Pointwise.Pow exponent, input) ->
+                let* input_buffer = find_value state input in
+                let* parameters =
+                  Parameters.pointwise
+                    ~output_shape:(Ir.Value.logical_shape output)
+                    ~left_shape:None ~right_shape:None
+                    ~left_scalar:(Some exponent) ~right_scalar:None
+                in
+                dispatched
+                  (dispatch_output ~name runtime state output
+                     ~operation:Kernel_abi.Operation.Pointwise ~input_dtype
+                     ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
             | Ir.Pointwise.Unary (_, input) ->
                 let* input_buffer = find_value state input in
                 let* parameters = Parameters.u32s [ count ] in
@@ -2318,6 +2378,22 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                      ~operation:Kernel_abi.Operation.Linear
                      ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
                      ~grid:(grid_x, 1, 1))
+            | Ir.Dtype.Float16, Ir.Dtype.Bfloat16, Ir.Dtype.Float16, None ->
+                let* parameters = Parameters.u32s [ m; n; k ] in
+                let* grid_x = linear_f16_grid n in
+                dispatched
+                  (dispatch_output ~name:"llmopt_linear_f16_bf16" runtime state
+                     output ~operation:Kernel_abi.Operation.Linear
+                     ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
+                     ~grid:(grid_x, 1, 1))
+            | Ir.Dtype.Float16, Ir.Dtype.Float32, Ir.Dtype.Float16, None ->
+                let* parameters = Parameters.u32s [ m; n; k ] in
+                let* grid_x = linear_f16_grid n in
+                dispatched
+                  (dispatch_output ~name:"llmopt_linear_f16_f32" runtime state
+                     output ~operation:Kernel_abi.Operation.Linear
+                     ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
+                     ~grid:(grid_x, 1, 1))
             | Ir.Dtype.Float32, Ir.Dtype.Float32, Ir.Dtype.Float32, _ ->
                 let* parameters = Parameters.u32s [ m; n; k ] in
                 let* grid_x = round_up n 16 in
@@ -2374,8 +2450,10 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* buffers = find_values state [ input; weight ] in
             let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
             let input_dtype = Ir.Value.dtype input in
+            let weight_dtype = Ir.Value.dtype weight in
             let* entry, simd =
-              select_rms_norm_kernel runtime input_dtype (Ir.Value.dtype output)
+              select_rms_norm_kernel runtime input_dtype weight_dtype
+                (Ir.Value.dtype output)
             in
             let* grid_x = if simd then simd_rows_grid rows else Ok rows in
             let* output_buffer = workspace_buffer state output in
@@ -2580,8 +2658,24 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let tokens = Tensor_shape.numel (Ir.Value.logical_shape indices) in
             let* buffers = find_values state [ indices; weight ] in
             let* parameters = Parameters.u32s [ tokens; vocabulary; width ] in
+            let* name =
+              match Ir.Value.dtype weight with
+              | Ir.Dtype.Float16 -> Ok "llmopt_embedding_f16"
+              | Ir.Dtype.Quant Q8_0 -> Ok "llmopt_embedding_q8_0"
+              | Ir.Dtype.Quant Q4_K -> Ok "llmopt_embedding_q4_k"
+              | Ir.Dtype.Quant Q5_K -> Ok "llmopt_embedding_q5_k"
+              | Ir.Dtype.Quant Q6_K -> Ok "llmopt_embedding_q6_k"
+              | Ir.Dtype.Quant Q5_0 -> Ok "llmopt_embedding_q5_0"
+              | Ir.Dtype.Quant Q4_0 -> Ok "llmopt_embedding_q4_0"
+              | Ir.Dtype.Quant IQ4_XS ->
+                  Error "IQ4_XS must be transcoded before Metal embedding execution"
+              | dtype ->
+                  Error
+                    ("unsupported Metal embedding weight dtype: "
+                    ^ Ir.Dtype.to_string dtype)
+            in
             dispatched
-              (dispatch_output runtime state output
+              (dispatch_output ~name runtime state output
                  ~operation:Kernel_abi.Operation.Embedding
                  ~input_dtype:(Ir.Value.dtype indices) ~buffers ~parameters
                  ~grid:(tokens * width, 1, 1))

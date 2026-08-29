@@ -684,7 +684,13 @@ let validate_command seen_values command =
             if
               Tensor_shape.equal inferred (Ir.Value.logical_shape output)
               && Ir.Value.dtype indices = Ir.Dtype.Int64
-              && Ir.Value.dtype weight = Ir.Dtype.Float16
+              &&
+              (match Ir.Value.dtype weight with
+              | Ir.Dtype.Float16
+              | Ir.Dtype.Quant
+                  (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0) ->
+                  true
+              | Ir.Dtype.Quant IQ4_XS | _ -> false)
               && Ir.Value.dtype output = Ir.Dtype.Float16
             then Ok ()
             else
@@ -2176,6 +2182,7 @@ let write_pointwise writer = function
       | Ir.Pointwise.Silu -> Binary.Writer.u8 writer 2
       | Ir.Pointwise.Cos -> Binary.Writer.u8 writer 3
       | Ir.Pointwise.Sin -> Binary.Writer.u8 writer 4
+      | Ir.Pointwise.Tanh -> Binary.Writer.u8 writer 6
       | Ir.Pointwise.Pow exponent ->
           Binary.Writer.u8 writer 5;
           write_scalar writer exponent);
@@ -2190,7 +2197,9 @@ let write_pointwise writer = function
         | Ir.Pointwise.Logical_and -> 3
         | Ir.Pointwise.Equal -> 4
         | Ir.Pointwise.Not_equal -> 5
-        | Ir.Pointwise.Less_equal -> 6);
+        | Ir.Pointwise.Less_equal -> 6
+        | Ir.Pointwise.Div -> 7
+        | Ir.Pointwise.Greater -> 8);
       write_pointwise_operand writer left;
       write_pointwise_operand writer right
 
@@ -2207,6 +2216,7 @@ let read_pointwise values reader =
         | 3 -> Ok Ir.Pointwise.Cos
         | 4 -> Ok Ir.Pointwise.Sin
         | 5 -> read_scalar reader |> Result.map (fun scalar -> Ir.Pointwise.Pow scalar)
+        | 6 -> Ok Ir.Pointwise.Tanh
         | _ -> Error (Printf.sprintf "unknown pointwise unary tag: %d" tag)
       in
       let* id = Binary.Reader.u32 reader in
@@ -2223,6 +2233,8 @@ let read_pointwise values reader =
         | 4 -> Ok Ir.Pointwise.Equal
         | 5 -> Ok Ir.Pointwise.Not_equal
         | 6 -> Ok Ir.Pointwise.Less_equal
+        | 7 -> Ok Ir.Pointwise.Div
+        | 8 -> Ok Ir.Pointwise.Greater
         | _ -> Error (Printf.sprintf "unknown pointwise binary tag: %d" tag)
       in
       let* left = read_pointwise_operand values reader in

@@ -209,6 +209,10 @@ def run_case(
     execution = subprocess.check_output(
         [
             str(runner),
+            "--warmup",
+            "0",
+            "--repeat",
+            "1",
             str(directory),
             input_name,
             str(input_path),

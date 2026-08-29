@@ -226,6 +226,7 @@ let pointwise_unary operator value =
   | Ir.Pointwise.Silu -> value /. (1.0 +. exp (-.value))
   | Ir.Pointwise.Cos -> cos value
   | Ir.Pointwise.Sin -> sin value
+  | Ir.Pointwise.Tanh -> tanh value
   | Ir.Pointwise.Pow exponent -> value ** Ir.Scalar.to_float exponent
 
 let pointwise_binary operator left right =
@@ -233,11 +234,13 @@ let pointwise_binary operator left right =
   | Ir.Pointwise.Add -> left +. right
   | Ir.Pointwise.Mul -> left *. right
   | Ir.Pointwise.Sub -> left -. right
+  | Ir.Pointwise.Div -> left /. right
   | Ir.Pointwise.Logical_and ->
       if scalar_truth left && scalar_truth right then 1.0 else 0.0
   | Ir.Pointwise.Equal -> if left = right then 1.0 else 0.0
   | Ir.Pointwise.Not_equal -> if left <> right then 1.0 else 0.0
   | Ir.Pointwise.Less_equal -> if left <= right then 1.0 else 0.0
+  | Ir.Pointwise.Greater -> if left > right then 1.0 else 0.0
 
 let pointwise state operation output_value output =
   let output_shape = Ir.Value.logical_shape output_value in

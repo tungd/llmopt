@@ -2767,6 +2767,78 @@ let linear_f16_entries =
       ~name:"llmopt_linear_f16" ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let linear_f16_bf16_source =
+  "\nconstant uint LINEAR_BF16_SIMD_WIDTH = 32;\n"
+  ^ "constant uint LINEAR_BF16_ROWS_PER_BLOCK = 8;\n\n"
+  ^ "struct LinearBf16Params { uint m; uint n; uint k; };\n\n"
+  ^ "kernel void llmopt_linear_f16_bf16(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const bfloat* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant LinearBf16Params& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint column = gid / LINEAR_BF16_SIMD_WIDTH;\n"
+  ^ "  if (column >= params.n) return;\n"
+  ^ "  const uint weight_base = column * params.k;\n"
+  ^ "  for (uint row_base = 0; row_base < params.m;\n"
+  ^ "       row_base += LINEAR_BF16_ROWS_PER_BLOCK) {\n"
+  ^ "    float accumulators[8] = {};\n"
+  ^ "    const uint rows = min(LINEAR_BF16_ROWS_PER_BLOCK, params.m - row_base);\n"
+  ^ "    for (uint inner = lane; inner < params.k; inner += LINEAR_BF16_SIMD_WIDTH) {\n"
+  ^ "      const float weight_value = float(weight[weight_base + inner]);\n"
+  ^ "      for (uint row = 0; row < rows; ++row)\n"
+  ^ "        accumulators[row] +=\n"
+  ^ "            float(input[(row_base + row) * params.k + inner]) * weight_value;\n"
+  ^ "    }\n"
+  ^ "    for (uint row = 0; row < rows; ++row) {\n"
+  ^ "      const float value = simd_sum(accumulators[row]);\n"
+  ^ "      if (lane == 0) output[(row_base + row) * params.n + column] = half(value);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let linear_f16_bf16_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_linear_f16_bf16" ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let linear_f16_f32_source =
+  "\nconstant uint LINEAR_F32_WEIGHT_SIMD_WIDTH = 32;\n"
+  ^ "constant uint LINEAR_F32_WEIGHT_ROWS_PER_BLOCK = 8;\n\n"
+  ^ "struct LinearF32WeightParams { uint m; uint n; uint k; };\n\n"
+  ^ "kernel void llmopt_linear_f16_f32(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant LinearF32WeightParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint column = gid / LINEAR_F32_WEIGHT_SIMD_WIDTH;\n"
+  ^ "  if (column >= params.n) return;\n"
+  ^ "  const uint weight_base = column * params.k;\n"
+  ^ "  for (uint row_base = 0; row_base < params.m;\n"
+  ^ "       row_base += LINEAR_F32_WEIGHT_ROWS_PER_BLOCK) {\n"
+  ^ "    float accumulators[8] = {};\n"
+  ^ "    const uint rows = min(LINEAR_F32_WEIGHT_ROWS_PER_BLOCK, params.m - row_base);\n"
+  ^ "    for (uint inner = lane; inner < params.k; inner += LINEAR_F32_WEIGHT_SIMD_WIDTH) {\n"
+  ^ "      const float weight_value = weight[weight_base + inner];\n"
+  ^ "      for (uint row = 0; row < rows; ++row)\n"
+  ^ "        accumulators[row] +=\n"
+  ^ "            float(input[(row_base + row) * params.k + inner]) * weight_value;\n"
+  ^ "    }\n"
+  ^ "    for (uint row = 0; row < rows; ++row) {\n"
+  ^ "      const float value = simd_sum(accumulators[row]);\n"
+  ^ "      if (lane == 0) output[(row_base + row) * params.n + column] = half(value);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let linear_f16_f32_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_linear_f16_f32" ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let rms_norm_source =
   "\nconstant uint RMS_NORM_SIMD_WIDTH = 32;\n"
   ^ "constant uint RMS_NORM_ROWS_PER_THREADGROUP = 8;\n\n"
@@ -2848,6 +2920,50 @@ let rms_norm_source =
   ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
   ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
   ^ "    output[base + col] = half(float(input[base + col]) * inverse * float(weight[col]));\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f32_f16_wf32_simd(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = input[base + col];\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(input[base + col] * inverse * weight[col]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f16_wf32_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse * weight[col]);\n"
   ^ "}\n"
 
 let rms_norm_entries =
@@ -2857,6 +2973,14 @@ let rms_norm_entries =
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_rms_norm_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_f32_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_f16_wf32_simd"
       ~operation:Kernel_abi.Operation.Rms_norm
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
@@ -3316,29 +3440,209 @@ let attention_entries =
       ~operation:Kernel_abi.Operation.Attention
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
-let embedding_source =
-  "\nstruct EmbeddingParams { uint tokens; uint vocabulary; uint width; };\n\n"
-  ^ "kernel void llmopt_embedding_f16(\n"
-  ^ "    device const long* indices [[buffer(0)]],\n"
-  ^ "    device const half* weight [[buffer(1)]],\n"
-  ^ "    device half* output [[buffer(2)]],\n"
-  ^ "    constant EmbeddingParams& params [[buffer(3)]],\n"
-  ^ "    uint gid [[thread_position_in_grid]]) {\n"
-  ^ "  const uint count = params.tokens * params.width;\n"
-  ^ "  if (gid >= count) return;\n"
-  ^ "  const uint token = gid / params.width;\n"
-  ^ "  const uint dimension = gid % params.width;\n"
-  ^ "  const long index = indices[token];\n"
-  ^ "  output[gid] = (index >= 0 && index < long(params.vocabulary))\n"
-  ^ "      ? weight[ulong(index) * params.width + dimension]\n"
-  ^ "      : half(0.0h);\n"
-  ^ "}\n"
+let embedding_source = {|
+struct EmbeddingParams { uint tokens; uint vocabulary; uint width; };
+
+struct embedding_block_q8_0 { half d; int8_t qs[32]; };
+struct embedding_block_q5_0 { half d; uint8_t qh[4]; uint8_t qs[16]; };
+struct embedding_block_q4_0 { half d; uint8_t qs[16]; };
+struct embedding_block_q4_K {
+  half d; half dmin; uint8_t scales[12]; uint8_t qs[128];
+};
+struct embedding_block_q5_K {
+  half d; half dmin; uint8_t scales[12]; uint8_t qh[32]; uint8_t qs[128];
+};
+struct embedding_block_q6_K {
+  uint8_t ql[128]; uint8_t qh[64]; int8_t scales[16]; half d;
+};
+
+inline half llmopt_embedding_q4_k_value(
+    device const embedding_block_q4_K& block, uint within) {
+  const uint segment = within >> 5;
+  const uint lane = within & 31u;
+  const uint j = segment & 3u;
+  const uint scale = segment < 4u
+      ? uint(block.scales[j] & 63u)
+      : uint((block.scales[j + 8u] & 15u) | ((block.scales[j] >> 6) << 4));
+  const uint minimum = segment < 4u
+      ? uint(block.scales[j + 4u] & 63u)
+      : uint((block.scales[j + 8u] >> 4) | ((block.scales[j + 4u] >> 6) << 4));
+  const uint packed = block.qs[(segment >> 1) * 32u + lane];
+  const uint q = (segment & 1u) == 0u ? packed & 15u : packed >> 4;
+  return half(float(block.d) * float(scale) * float(q)
+      - float(block.dmin) * float(minimum));
+}
+
+inline half llmopt_embedding_q5_k_value(
+    device const embedding_block_q5_K& block, uint within) {
+  const uint segment = within >> 5;
+  const uint lane = within & 31u;
+  const uint j = segment & 3u;
+  const uint scale = segment < 4u
+      ? uint(block.scales[j] & 63u)
+      : uint((block.scales[j + 8u] & 15u) | ((block.scales[j] >> 6) << 4));
+  const uint minimum = segment < 4u
+      ? uint(block.scales[j + 4u] & 63u)
+      : uint((block.scales[j + 8u] >> 4) | ((block.scales[j + 4u] >> 6) << 4));
+  const uint packed = block.qs[(segment >> 1) * 32u + lane];
+  const uint low = (segment & 1u) == 0u ? packed & 15u : packed >> 4;
+  const uint q = low | (((block.qh[lane] >> segment) & 1u) << 4);
+  return half(float(block.d) * float(scale) * float(q)
+      - float(block.dmin) * float(minimum));
+}
+
+inline half llmopt_embedding_q6_k_value(
+    device const embedding_block_q6_K& block, uint within) {
+  const uint segment = within >> 5;
+  const uint lane = within & 31u;
+  const uint half_index = segment >> 2;
+  const uint local = segment & 3u;
+  const uint ql_base = half_index * 64u + ((local & 1u) * 32u);
+  const uint qh_base = half_index * 32u;
+  const uint low = (local < 2u)
+      ? uint(block.ql[ql_base + lane] & 15u)
+      : uint(block.ql[ql_base + lane] >> 4);
+  const uint high = (uint(block.qh[qh_base + lane]) >> (local * 2u)) & 3u;
+  const int q = int(low | (high << 4)) - 32;
+  const uint scale_index = half_index * 8u + (lane >> 4) + (local * 2u);
+  return half(float(block.d) * float(block.scales[scale_index]) * float(q));
+}
+
+kernel void llmopt_embedding_f16(
+    device const long* indices [[buffer(0)]],
+    device const half* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  output[gid] = (index >= 0 && index < long(params.vocabulary))
+      ? weight[ulong(index) * params.width + dimension]
+      : half(0.0h);
+}
+
+kernel void llmopt_embedding_q8_0(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_q8_0* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  device const embedding_block_q8_0& block = weight[element >> 5];
+  output[gid] = half(float(block.d) * float(block.qs[element & 31u]));
+}
+
+kernel void llmopt_embedding_q5_0(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_q5_0* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  const uint within = uint(element & 31u);
+  device const embedding_block_q5_0& block = weight[element >> 5];
+  const uint high = (block.qh[within >> 3] >> (within & 7u)) & 1u;
+  const uint packed = block.qs[within & 15u];
+  const uint low = within < 16u ? packed & 15u : packed >> 4;
+  output[gid] = half(float(block.d) * float(int(low | (high << 4)) - 16));
+}
+
+kernel void llmopt_embedding_q4_0(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_q4_0* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  const uint within = uint(element & 31u);
+  device const embedding_block_q4_0& block = weight[element >> 5];
+  const uint packed = block.qs[within & 15u];
+  const uint q = within < 16u ? packed & 15u : packed >> 4;
+  output[gid] = half(float(block.d) * float(int(q) - 8));
+}
+
+kernel void llmopt_embedding_q4_k(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_q4_K* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  output[gid] = llmopt_embedding_q4_k_value(weight[element >> 8], uint(element & 255u));
+}
+
+kernel void llmopt_embedding_q5_k(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_q5_K* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  output[gid] = llmopt_embedding_q5_k_value(weight[element >> 8], uint(element & 255u));
+}
+
+kernel void llmopt_embedding_q6_k(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_q6_K* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  output[gid] = llmopt_embedding_q6_k_value(weight[element >> 8], uint(element & 255u));
+}
+|}
 
 let embedding_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_embedding_f16"
-      ~operation:Kernel_abi.Operation.Embedding
-      ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float16 ]
+  [ "llmopt_embedding_f16";
+    "llmopt_embedding_q8_0";
+    "llmopt_embedding_q5_0";
+    "llmopt_embedding_q4_0";
+    "llmopt_embedding_q4_k";
+    "llmopt_embedding_q5_k";
+    "llmopt_embedding_q6_k" ]
+  |> List.map (fun name ->
+         kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name
+           ~operation:Kernel_abi.Operation.Embedding
+           ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float16)
 
 let arange_source =
   "\nstruct ArangeParams { uint count; long start; long step; };\n\n"
@@ -3584,9 +3888,18 @@ let pointwise_source =
   ^ pointwise_binary_kernel ~name:"llmopt_add_f16" ~input_type:"half"
       ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
       ~expression:"left_value + right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_add_f32" ~input_type:"float"
+      ~output_type:"float" ~scalar_field:"f32" ~scalar_cast:"float"
+      ~expression:"left_value + right_value"
   ^ pointwise_binary_kernel ~name:"llmopt_add_i64" ~input_type:"long"
       ~output_type:"long" ~scalar_field:"i64" ~scalar_cast:"long"
       ~expression:"left_value + right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_sub_i64" ~input_type:"long"
+      ~output_type:"long" ~scalar_field:"i64" ~scalar_cast:"long"
+      ~expression:"left_value - right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_div_f16" ~input_type:"half"
+      ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
+      ~expression:"left_value / right_value"
   ^ pointwise_binary_kernel ~name:"llmopt_mul_f16" ~input_type:"half"
       ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
       ~expression:"left_value * right_value"
@@ -3596,6 +3909,18 @@ let pointwise_source =
   ^ pointwise_binary_kernel ~name:"llmopt_le_i64" ~input_type:"long"
       ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
       ~expression:"left_value <= right_value ? 1 : 0"
+  ^ pointwise_binary_kernel ~name:"llmopt_gt_i64" ~input_type:"long"
+      ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
+      ~expression:"left_value > right_value ? 1 : 0"
+  ^ pointwise_binary_kernel ~name:"llmopt_eq_i64" ~input_type:"long"
+      ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
+      ~expression:"left_value == right_value ? 1 : 0"
+  ^ pointwise_binary_kernel ~name:"llmopt_ne_i64" ~input_type:"long"
+      ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
+      ~expression:"left_value != right_value ? 1 : 0"
+  ^ pointwise_binary_kernel ~name:"llmopt_and_bool" ~input_type:"uchar"
+      ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"uchar"
+      ~expression:"(left_value != 0 && right_value != 0) ? 1 : 0"
   ^ pointwise_unary_kernel ~name:"llmopt_neg_f16" ~input_type:"half"
       ~output_type:"half" ~expression:"-value"
   ^ pointwise_unary_kernel ~name:"llmopt_silu_f16" ~input_type:"half"
@@ -3605,6 +3930,19 @@ let pointwise_source =
       ~output_type:"float" ~expression:"cos(value)"
   ^ pointwise_unary_kernel ~name:"llmopt_sin_f32" ~input_type:"float"
       ~output_type:"float" ~expression:"sin(value)"
+  ^ pointwise_unary_kernel ~name:"llmopt_tanh_f16" ~input_type:"half"
+      ~output_type:"half" ~expression:"half(tanh(float(value)))"
+  ^ "kernel void llmopt_pow_f32(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant PointwiseParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid < params.count) output[gid] = pow(input[gid], params.left_f32);\n"
+  ^ "}\n\n"
+  ^ pointwise_unary_kernel ~name:"llmopt_gelu_f16" ~input_type:"half"
+      ~output_type:"half"
+      ~expression:
+        "half(0.5f * float(value) * (1.0f + tanh(clamp(0.7978845608f * (float(value) + 0.044715f * float(value) * float(value) * float(value)), -10.0f, 10.0f))))"
 
 let pointwise_entries =
   let entry name input_dtype output_dtype =
@@ -3612,10 +3950,20 @@ let pointwise_entries =
       ~operation:Kernel_abi.Operation.Pointwise ~input_dtype ~output_dtype
   in
   [ entry "llmopt_add_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_add_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_add_i64" Ir.Dtype.Int64 Ir.Dtype.Int64;
+    entry "llmopt_sub_i64" Ir.Dtype.Int64 Ir.Dtype.Int64;
+    entry "llmopt_div_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_le_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
+    entry "llmopt_gt_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
+    entry "llmopt_eq_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
+    entry "llmopt_ne_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
+    entry "llmopt_tanh_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_pow_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_gelu_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_and_bool" Ir.Dtype.Bool Ir.Dtype.Bool;
     entry "llmopt_neg_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_silu_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_cos_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
@@ -3810,11 +4158,31 @@ let reduction_source =
   ^ "  }\n"
   ^ "  output[gid] = half(accumulator);\n"
   ^ "}\n\n"
+  ^ "kernel void llmopt_mean_f32(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant ReductionParams& params [[buffer(2)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  const uint count = params.outer * params.inner;\n"
+  ^ "  if (gid >= count) return;\n"
+  ^ "  const uint outer_index = gid / params.inner;\n"
+  ^ "  const uint inner_index = gid % params.inner;\n"
+  ^ "  float accumulator = 0.0f;\n"
+  ^ "  for (uint axis = 0; axis < params.width; ++axis) {\n"
+  ^ "    const uint offset = ((outer_index * params.width + axis)\n"
+  ^ "        * params.inner) + inner_index;\n"
+  ^ "    accumulator += input[offset];\n"
+  ^ "  }\n"
+  ^ "  output[gid] = accumulator / float(params.width);\n"
+  ^ "}\n\n"
 
 let reduction_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_sum_f16" ~operation:Kernel_abi.Operation.Reduction
-      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_mean_f32" ~operation:Kernel_abi.Operation.Reduction
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
 let update_slice_source =
   "kernel void llmopt_update_slice_f16(\n"
@@ -3983,6 +4351,30 @@ let has_f16_linear graph =
              Some output ) ->
              Ir.Value.dtype input = Ir.Dtype.Float16
              && Ir.Value.dtype weight = Ir.Dtype.Float16
+             && Ir.Value.dtype output = Ir.Dtype.Float16
+         | _ -> false)
+
+let has_f16_bf16_linear graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | ( Ir.Op.Linear { bias = false; _ },
+             [ input; weight ],
+             Some output ) ->
+             Ir.Value.dtype input = Ir.Dtype.Float16
+             && Ir.Value.dtype weight = Ir.Dtype.Bfloat16
+             && Ir.Value.dtype output = Ir.Dtype.Float16
+         | _ -> false)
+
+let has_f16_f32_linear graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | ( Ir.Op.Linear { bias = false; _ },
+             [ input; weight ],
+             Some output ) ->
+             Ir.Value.dtype input = Ir.Dtype.Float16
+             && Ir.Value.dtype weight = Ir.Dtype.Float32
              && Ir.Value.dtype output = Ir.Dtype.Float16
          | _ -> false)
 
@@ -4190,6 +4582,12 @@ let lower graph =
         ^ q4_k_source ^ q5_k_source ^ q6_k_source,
         block32_entries @ kquant_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
+      ( has_f16_bf16_linear graph,
+        linear_f16_bf16_source,
+        linear_f16_bf16_entries );
+      ( has_f16_f32_linear graph,
+        linear_f16_f32_source,
+        linear_f16_f32_entries );
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_rms_rope_qk graph, rms_rope_qk_source, rms_rope_qk_entries;
@@ -4228,8 +4626,7 @@ let lower graph =
       (materialized_movement || update_slice, movement_parameters_source, []);
       materialized_movement, movement_source, movement_entries;
       ( has_primitive graph (function
-          | Ir.Primitive.Reduce
-              { Ir.Reduction.operator = Ir.Reduction.Sum; _ } -> true
+          | Ir.Primitive.Reduce _ -> true
           | _ -> false),
         reduction_source,
         reduction_entries );

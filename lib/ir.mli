@@ -64,8 +64,17 @@ end
 
 module Pointwise : sig
   type operand = Tensor of Value.t | Scalar of Scalar.t
-  type unary = Neg | Rsqrt | Silu | Cos | Sin | Pow of Scalar.t
-  type binary = Add | Mul | Sub | Logical_and | Equal | Not_equal | Less_equal
+  type unary = Neg | Rsqrt | Silu | Cos | Sin | Tanh | Pow of Scalar.t
+  type binary =
+    | Add
+    | Mul
+    | Sub
+    | Div
+    | Logical_and
+    | Equal
+    | Not_equal
+    | Less_equal
+    | Greater
   type t = Unary of unary * Value.t | Binary of binary * operand * operand
 
   val values : t -> Value.t list

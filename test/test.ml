@@ -264,6 +264,135 @@ let () =
   expect (Lfm25.Config.probe_350m.dtype = Ir.Dtype.Float16)
     "canonical model uses float16 activations";
 
+  let embedding_graph = Ir.Graph.create () in
+  let embedding_indices =
+    tensor_input embedding_graph ~name:"input_ids"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 2 ] ~dtype:Ir.Dtype.Int64
+  in
+  let embedding_weight =
+    tensor_input embedding_graph ~name:"token_embd.weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "token_embd.weight" })
+      ~shape:[ 49152; 576 ] ~dtype:(Ir.Dtype.Quant Q8_0)
+  in
+  let embedding_output =
+    Ir.Graph.fresh_tensor_value embedding_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 2; 576 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append embedding_graph
+    ~op:(Ir.Op.Primitive Ir.Primitive.Embedding)
+    ~inputs:[ embedding_indices; embedding_weight ]
+    ~output:(Some embedding_output);
+  Ir.Graph.add_output embedding_graph ~name:"hidden" embedding_output;
+  ignore (Serving_schedule.of_graph embedding_graph |> expect_ok);
+  let embedding_program = Metal.lower embedding_graph |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source embedding_program)
+       "kernel void llmopt_embedding_q8_0")
+    "Metal lowering emits a GGUF Q8 embedding kernel";
+  expect
+    (Metal.Program.kernels embedding_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_embedding_q8_0"))
+    "GGUF Q8 embedding kernel is declared in the package ABI";
+
+  let rms_graph = Ir.Graph.create () in
+  let rms_input =
+    tensor_input rms_graph ~name:"hidden" ~source:Ir.Input_source.Runtime
+      ~shape:[ 2; 576 ] ~dtype:Ir.Dtype.Float16
+  in
+  let rms_weight =
+    tensor_input rms_graph ~name:"attn_norm.weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "attn_norm.weight" })
+      ~shape:[ 576 ] ~dtype:Ir.Dtype.Float32
+  in
+  let rms_output =
+    Ir.Graph.fresh_tensor_value rms_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 576 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append rms_graph ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
+    ~inputs:[ rms_input; rms_weight ] ~output:(Some rms_output);
+  Ir.Graph.add_output rms_graph ~name:"normalized" rms_output;
+  let rms_program = Metal.lower rms_graph |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source rms_program)
+       "kernel void llmopt_rms_norm_f16_wf32_simd")
+    "Metal lowering preserves GGUF float32 RMSNorm weights";
+
+  let mixed_graph = Ir.Graph.create () in
+  let mixed_input =
+    tensor_input mixed_graph ~name:"mixed_input" ~source:Ir.Input_source.Runtime
+      ~shape:[ 2; 4 ] ~dtype:Ir.Dtype.Float16
+  in
+  let mixed_f32_weight =
+    tensor_input mixed_graph ~name:"mixed_f32_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "mixed_f32_weight" })
+      ~shape:[ 3; 4 ] ~dtype:Ir.Dtype.Float32
+  in
+  let mixed_bf16_weight =
+    tensor_input mixed_graph ~name:"mixed_bf16_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "mixed_bf16_weight" })
+      ~shape:[ 3; 4 ] ~dtype:Ir.Dtype.Bfloat16
+  in
+  let mixed_output dtype shape =
+    Ir.Graph.fresh_tensor_value mixed_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+  in
+  let f32_linear = mixed_output Ir.Dtype.Float16 [ 2; 3 ] in
+  Ir.Graph.append mixed_graph
+    ~op:(Ir.Op.Linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ mixed_input; mixed_f32_weight ] ~output:(Some f32_linear);
+  let bf16_linear = mixed_output Ir.Dtype.Float16 [ 2; 3 ] in
+  Ir.Graph.append mixed_graph
+    ~op:(Ir.Op.Linear { m = 2; n = 3; k = 4; bias = false })
+    ~inputs:[ mixed_input; mixed_bf16_weight ] ~output:(Some bf16_linear);
+  let gelu_output = mixed_output Ir.Dtype.Float16 [ 2; 3 ] in
+  Ir.Graph.append mixed_graph ~op:Ir.Op.Gelu ~inputs:[ f32_linear ]
+    ~output:(Some gelu_output);
+  let f32_input =
+    tensor_input mixed_graph ~name:"f32_input" ~source:Ir.Input_source.Runtime
+      ~shape:[ 2; 4 ] ~dtype:Ir.Dtype.Float32
+  in
+  let squared = mixed_output Ir.Dtype.Float32 [ 2; 4 ] in
+  Ir.Graph.append mixed_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Pow (Ir.Scalar.Int 2), f32_input))))
+    ~inputs:[ f32_input ] ~output:(Some squared);
+  let mean = mixed_output Ir.Dtype.Float32 [ 2; 1 ] in
+  Ir.Graph.append mixed_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Reduce
+            { Ir.Reduction.operator = Mean; axes = [ 1 ]; keepdim = true }))
+    ~inputs:[ squared ] ~output:(Some mean);
+  let shifted = mixed_output Ir.Dtype.Float32 [ 2; 1 ] in
+  Ir.Graph.append mixed_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor mean,
+                 Ir.Pointwise.Scalar (Ir.Scalar.Float 1e-6) ))))
+    ~inputs:[ mean ] ~output:(Some shifted);
+  Ir.Graph.add_output mixed_graph ~name:"gelu" gelu_output;
+  Ir.Graph.add_output mixed_graph ~name:"bf16_linear" bf16_linear;
+  Ir.Graph.add_output mixed_graph ~name:"shifted" shifted;
+  ignore (Serving_schedule.of_graph mixed_graph |> expect_ok);
+  let mixed_source = Metal.lower mixed_graph |> expect_ok |> Metal.Program.source in
+  [ "kernel void llmopt_linear_f16_f32";
+    "kernel void llmopt_linear_f16_bf16";
+    "kernel void llmopt_gelu_f16";
+    "tanh(clamp(";
+    "kernel void llmopt_pow_f32";
+    "kernel void llmopt_add_f32";
+    "kernel void llmopt_mean_f32" ]
+  |> List.iter (fun declaration ->
+         expect (contains_substring mixed_source declaration)
+           ("Gemma graph support emits " ^ declaration));
+
   let graph = Ir.Graph.create () in
   let hidden =
     tensor_input graph ~name:"hidden" ~source:Ir.Input_source.Runtime

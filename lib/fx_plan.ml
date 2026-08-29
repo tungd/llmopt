@@ -408,6 +408,11 @@ let plan fx_graph =
               ~logical_shape
         | _ -> Error "cast requires one tensor input"
       in
+      let lower_type_as inputs =
+        match inputs with
+        | input :: _dtype_witness :: _ -> lower_cast (Fx.Node.dtype node) [ input ]
+        | _ -> Error "type_as requires a tensor and a dtype witness"
+      in
       let lower_reduction operator inputs =
         match inputs with
         | [ input ] ->
@@ -747,8 +752,15 @@ let plan fx_graph =
             :: scale_grad_by_frequency :: sparse :: _ ) ->
             if Ir.Value.dtype indices <> Ir.Dtype.Int64 then
               Error "embedding indices must be int64"
-            else if Ir.Value.dtype weight <> Ir.Dtype.Float16 then
-              Error "embedding weight must be float16"
+            else if
+              match Ir.Value.dtype weight with
+              | Ir.Dtype.Float16
+              | Ir.Dtype.Quant
+                  (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0) ->
+                  false
+              | Ir.Dtype.Quant IQ4_XS | _ -> true
+            then
+              Error "embedding weight must be float16 or a supported GGUF quant type"
             else if max_norm <> Fx.Argument.Null then
               Error "inference embedding does not support max_norm"
             else
@@ -1203,11 +1215,17 @@ let plan fx_graph =
               then
                 lower_pointwise_binary Ir.Pointwise.Add inputs
                 |> lower_or_opaque inputs
-              else if target_is target [ "mul"; "mul.tensor"; "aten.mul.tensor" ] then
+              else if
+                target_is target
+                  [ "mul"; "mul.tensor"; "aten.mul.tensor"; "_operator.imul" ]
+              then
                 lower_pointwise_binary Ir.Pointwise.Mul inputs
                 |> lower_or_opaque inputs
               else if target_is target [ "sub"; "sub.tensor"; "aten.sub.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Sub inputs
+                |> lower_or_opaque inputs
+              else if target_is target [ "_operator.truediv"; "truediv" ] then
+                lower_pointwise_binary Ir.Pointwise.Div inputs
                 |> lower_or_opaque inputs
               else if target_is target [ "_operator.and_"; "and"; "aten.bitwise_and.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Logical_and inputs
@@ -1220,6 +1238,9 @@ let plan fx_graph =
                 |> lower_or_opaque inputs
               else if target_is target [ "_operator.le"; "le"; "aten.le.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Less_equal inputs
+                |> lower_or_opaque inputs
+              else if target_is target [ "_operator.gt"; "gt"; "aten.gt.tensor" ] then
+                lower_pointwise_binary Ir.Pointwise.Greater inputs
                 |> lower_or_opaque inputs
               else if target_is target [ "_operator.neg"; "neg"; "aten.neg.default" ] then
                 lower_pointwise_unary Ir.Pointwise.Neg inputs
@@ -1236,6 +1257,13 @@ let plan fx_graph =
               else if target_is target [ "sin"; "aten.sin.default" ] then
                 lower_pointwise_unary Ir.Pointwise.Sin inputs
                 |> lower_or_opaque inputs
+              else if
+                target_is target
+                  [ "tanh"; "aten.tanh.default";
+                    "torch._variablefunctionsclass.tanh" ]
+              then
+                lower_pointwise_unary Ir.Pointwise.Tanh inputs
+                |> lower_or_opaque inputs
               else if target_is target [ "pow"; "aten.pow.tensor_scalar" ] then
                 lower_pow inputs |> lower_or_opaque inputs
               else if target_is target [ "mean"; "aten.mean.dim" ] then
@@ -1248,6 +1276,8 @@ let plan fx_graph =
                 lower_reduction Ir.Reduction.Sum inputs |> lower_or_opaque inputs
               else if target_is target [ "to"; "_to_copy"; "aten._to_copy.default" ] then
                 lower_cast (Fx.Node.dtype node) inputs |> lower_or_opaque inputs
+              else if target_is target [ "type_as" ] then
+                lower_type_as inputs |> lower_or_opaque inputs
               else if target_is target [ "float" ] then
                 lower_cast Ir.Dtype.Float32 inputs |> lower_or_opaque inputs
               else if target_is target [ "view"; "aten.view.default" ] then

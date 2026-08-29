@@ -20,9 +20,18 @@ from racebench.score import (
     ttft_score,
 )
 from racebench.trace import WorkloadTrace, validate_warmup_policy
+from racebench.http import _delta_text
 
 
 class RacebenchContractTest(unittest.TestCase):
+    def test_stream_delta_accepts_reasoning_content(self):
+        self.assertEqual(_delta_text({"content": "answer"}), "answer")
+        self.assertEqual(
+            _delta_text({"content": None, "reasoning_content": "thought"}),
+            "thought",
+        )
+        self.assertIsNone(_delta_text({"content": None, "reasoning_content": None}))
+
     def test_reference_latency_formula(self):
         self.assertAlmostEqual(ttft_score(10.0), 1.0)
         self.assertAlmostEqual(ttft_score(400.0), 0.0)

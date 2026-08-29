@@ -121,8 +121,17 @@ end
 
 module Pointwise = struct
   type operand = Tensor of Value.t | Scalar of Scalar.t
-  type unary = Neg | Rsqrt | Silu | Cos | Sin | Pow of Scalar.t
-  type binary = Add | Mul | Sub | Logical_and | Equal | Not_equal | Less_equal
+  type unary = Neg | Rsqrt | Silu | Cos | Sin | Tanh | Pow of Scalar.t
+  type binary =
+    | Add
+    | Mul
+    | Sub
+    | Div
+    | Logical_and
+    | Equal
+    | Not_equal
+    | Less_equal
+    | Greater
   type t = Unary of unary * Value.t | Binary of binary * operand * operand
 
   let values = function
@@ -137,16 +146,19 @@ module Pointwise = struct
     | Silu -> "silu"
     | Cos -> "cos"
     | Sin -> "sin"
+    | Tanh -> "tanh"
     | Pow exponent -> "pow(" ^ Scalar.to_string exponent ^ ")"
 
   let binary_to_string = function
     | Add -> "add"
     | Mul -> "mul"
     | Sub -> "sub"
+    | Div -> "div"
     | Logical_and -> "and"
     | Equal -> "eq"
     | Not_equal -> "ne"
     | Less_equal -> "le"
+    | Greater -> "gt"
 
   let to_string = function
     | Unary (operator, _) -> unary_to_string operator

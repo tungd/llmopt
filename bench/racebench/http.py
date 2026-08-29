@@ -30,6 +30,15 @@ class HttpBenchmarkError(RuntimeError):
     """Raised for invalid endpoint configuration."""
 
 
+def _delta_text(delta: dict[str, Any]) -> str | None:
+    """Return the visible or reasoning text carried by a streamed delta."""
+    content = delta.get("content")
+    if content:
+        return str(content)
+    reasoning = delta.get("reasoning_content")
+    return str(reasoning) if reasoning else None
+
+
 def _open_connection(
     base_url: str, timeout_s: float
 ) -> tuple[http.client.HTTPConnection, str]:
@@ -116,7 +125,7 @@ def _stream_request(
                 continue
             delta = choices[0].get("delta") or {}
             token_id = delta.get("x_llmopt_token_id")
-            content = delta.get("content")
+            content = _delta_text(delta)
             if token_id is not None:
                 observed_at = time.perf_counter()
                 first_token_at = first_token_at or observed_at
