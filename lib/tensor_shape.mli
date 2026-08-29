@@ -96,5 +96,6 @@ val concat : t list -> axis:int -> (t, error) result
 val chunk : t -> chunks:int -> axis:int -> ((Index.t * t) list, error) result
 val matrix : t -> (Shape.t, error) result
 val matrix_exn : t -> Shape.t
+val physical_bytes : t -> block_size:int -> bytes_per_block:int -> (int, string) result
 val to_string : t -> string
 val error_to_string : error -> string

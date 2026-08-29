@@ -1,8 +1,28 @@
 module Dtype : sig
-  type t = F32 | F16 | BF16 | I64 | I32 | I8 | Bool | U8
+  type quant_type =
+    | Q8_0
+    | Q4_K
+    | Q5_K
+    | Q6_K
+    | Q5_0
+
+  type t =
+    | F32
+    | F16
+    | BF16
+    | I64
+    | I32
+    | I8
+    | Bool
+    | U8
+    | Quant of quant_type
 
   val to_string : t -> string
   val byte_width : t -> int
+  val block_size : quant_type -> int
+  val bytes_per_block : quant_type -> int
+  val quant_to_string : quant_type -> string
+  val quant_of_string : string -> quant_type option
 end
 
 module Tensor : sig

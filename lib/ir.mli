@@ -1,6 +1,25 @@
 module Dtype : sig
-  type t = Float32 | Float16 | Bfloat16 | Int64 | Int32 | Int8 | UInt8 | Bool
+  type quant_type =
+    | Q8_0
+    | Q4_K
+    | Q5_K
+    | Q6_K
+    | Q5_0
+
+  type t =
+    | Float32
+    | Float16
+    | Bfloat16
+    | Int64
+    | Int32
+    | Int8
+    | UInt8
+    | Bool
+    | Quant of quant_type
+
   val to_string : t -> string
+  val quant_to_string : quant_type -> string
+  val quant_of_string : string -> quant_type option
 end
 
 module Memory_space : sig

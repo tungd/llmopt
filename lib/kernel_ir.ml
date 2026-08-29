@@ -216,7 +216,7 @@ type metadata = Tensor_shape.t * Ir.Dtype.t
 let is_float = function
   | Ir.Dtype.Float32 | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 -> true
   | Ir.Dtype.Int64 | Ir.Dtype.Int32 | Ir.Dtype.Int8 | Ir.Dtype.UInt8
-  | Ir.Dtype.Bool -> false
+  | Ir.Dtype.Bool | Ir.Dtype.Quant _ -> false
 
 let dims shape = Tensor_shape.dimensions shape
 let numel shape = Tensor_shape.numel shape

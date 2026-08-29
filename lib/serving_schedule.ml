@@ -1907,6 +1907,11 @@ let dtype_tag = function
   | Ir.Dtype.Int8 -> 5
   | Ir.Dtype.Bool -> 6
   | Ir.Dtype.UInt8 -> 7
+  | Ir.Dtype.Quant Q8_0 -> 8
+  | Ir.Dtype.Quant Q4_K -> 9
+  | Ir.Dtype.Quant Q5_K -> 10
+  | Ir.Dtype.Quant Q6_K -> 11
+  | Ir.Dtype.Quant Q5_0 -> 12
 
 let dtype_of_tag = function
   | 0 -> Ok Ir.Dtype.Float32
@@ -1917,6 +1922,11 @@ let dtype_of_tag = function
   | 5 -> Ok Ir.Dtype.Int8
   | 6 -> Ok Ir.Dtype.Bool
   | 7 -> Ok Ir.Dtype.UInt8
+  | 8 -> Ok (Ir.Dtype.Quant Q8_0)
+  | 9 -> Ok (Ir.Dtype.Quant Q4_K)
+  | 10 -> Ok (Ir.Dtype.Quant Q5_K)
+  | 11 -> Ok (Ir.Dtype.Quant Q6_K)
+  | 12 -> Ok (Ir.Dtype.Quant Q5_0)
   | tag -> Error (Printf.sprintf "unknown schedule dtype tag: %d" tag)
 
 let write_shape writer shape =

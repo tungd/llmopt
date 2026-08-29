@@ -657,3 +657,17 @@ let matrix_exn shape =
   match matrix shape with
   | Ok matrix -> matrix
   | Error error -> invalid_arg (error_to_string error)
+
+let physical_bytes shape ~block_size ~bytes_per_block =
+  if block_size <= 0 || bytes_per_block <= 0 then
+    Error "block_size and bytes_per_block must be positive"
+  else
+    let elements = numel shape in
+    if elements mod block_size <> 0 then
+      Error
+        (Printf.sprintf
+           "tensor elements %d is not a multiple of block size %d" elements
+           block_size)
+    else if elements / block_size > max_int / bytes_per_block then
+      Error "physical bytes computation overflowed host integer"
+    else Ok ((elements / block_size) * bytes_per_block)

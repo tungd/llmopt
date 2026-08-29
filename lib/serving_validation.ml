@@ -1,3 +1,12 @@
+let quant_dtype_matches ir_quant archive_quant =
+  match ir_quant, archive_quant with
+  | Ir.Dtype.Q8_0, Weight_archive.Dtype.Q8_0
+  | Ir.Dtype.Q4_K, Weight_archive.Dtype.Q4_K
+  | Ir.Dtype.Q5_K, Weight_archive.Dtype.Q5_K
+  | Ir.Dtype.Q6_K, Weight_archive.Dtype.Q6_K
+  | Ir.Dtype.Q5_0, Weight_archive.Dtype.Q5_0 -> true
+  | _ -> false
+
 let dtype_matches fx_dtype archive_dtype =
   match fx_dtype, archive_dtype with
   | Ir.Dtype.Float32, Weight_archive.Dtype.F32
@@ -8,6 +17,7 @@ let dtype_matches fx_dtype archive_dtype =
   | Ir.Dtype.Int8, Weight_archive.Dtype.I8
   | Ir.Dtype.UInt8, Weight_archive.Dtype.U8
   | Ir.Dtype.Bool, Weight_archive.Dtype.Bool -> true
+  | Ir.Dtype.Quant q1, Weight_archive.Dtype.Quant q2 -> quant_dtype_matches q1 q2
   | _ -> false
 
 let validate_tensor archive input =

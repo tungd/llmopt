@@ -6,7 +6,52 @@ let alignment = 256
 let prefix_bytes = 24
 
 module Dtype = struct
-  type t = F32 | F16 | BF16 | I64 | I32 | I8 | Bool | U8
+  type quant_type =
+    | Q8_0
+    | Q4_K
+    | Q5_K
+    | Q6_K
+    | Q5_0
+
+  type t =
+    | F32
+    | F16
+    | BF16
+    | I64
+    | I32
+    | I8
+    | Bool
+    | U8
+    | Quant of quant_type
+
+  let quant_to_string = function
+    | Q8_0 -> "Q8_0"
+    | Q4_K -> "Q4_K"
+    | Q5_K -> "Q5_K"
+    | Q6_K -> "Q6_K"
+    | Q5_0 -> "Q5_0"
+
+  let quant_of_string = function
+    | "Q8_0" | "q8_0" -> Some Q8_0
+    | "Q4_K" | "q4_k" -> Some Q4_K
+    | "Q5_K" | "q5_k" -> Some Q5_K
+    | "Q6_K" | "q6_k" -> Some Q6_K
+    | "Q5_0" | "q5_0" -> Some Q5_0
+    | _ -> None
+
+  let block_size = function
+    | Q8_0 -> 32
+    | Q4_K -> 256
+    | Q5_K -> 256
+    | Q6_K -> 256
+    | Q5_0 -> 32
+
+  let bytes_per_block = function
+    | Q8_0 -> 34
+    | Q4_K -> 144
+    | Q5_K -> 176
+    | Q6_K -> 210
+    | Q5_0 -> 22
 
   let to_string = function
     | F32 -> "F32"
@@ -17,6 +62,7 @@ module Dtype = struct
     | I8 -> "I8"
     | Bool -> "BOOL"
     | U8 -> "U8"
+    | Quant q -> quant_to_string q
 
   let of_tag = function
     | 0 -> Ok F32
@@ -27,6 +73,11 @@ module Dtype = struct
     | 5 -> Ok I8
     | 6 -> Ok Bool
     | 7 -> Ok U8
+    | 8 -> Ok (Quant Q8_0)
+    | 9 -> Ok (Quant Q4_K)
+    | 10 -> Ok (Quant Q5_K)
+    | 11 -> Ok (Quant Q6_K)
+    | 12 -> Ok (Quant Q5_0)
     | tag -> Error (Printf.sprintf "unknown weight-archive dtype tag: %d" tag)
 
   let byte_width = function
@@ -34,6 +85,7 @@ module Dtype = struct
     | F16 | BF16 -> 2
     | I64 -> 8
     | I8 | Bool | U8 -> 1
+    | Quant q -> bytes_per_block q
 end
 
 module Tensor = struct
@@ -115,15 +167,42 @@ let parse_tensor reader ~previous_name =
     let* elements = checked_product shape in
     if elements = 0 || byte_length = 0 then
       Error ("weight archive tensor " ^ name ^ " is empty")
-    else if Dtype.byte_width dtype > max_int / elements then
-      Error ("weight archive tensor " ^ name ^ " byte size overflows")
-    else if byte_length <> elements * Dtype.byte_width dtype then
-      Error
-        ("weight archive tensor " ^ name
-       ^ " byte length disagrees with its dtype and shape")
-    else if offset mod alignment <> 0 then
-      Error ("weight archive tensor " ^ name ^ " offset is not aligned")
-    else Ok { Tensor.name = name; dtype; shape; offset; byte_length }
+    else
+      let* expected_byte_length =
+        match dtype with
+        | Dtype.F32 | Dtype.I32 ->
+            if elements > max_int / 4 then
+              Error ("weight archive tensor " ^ name ^ " byte size overflows")
+            else Ok (elements * 4)
+        | Dtype.F16 | Dtype.BF16 ->
+            if elements > max_int / 2 then
+              Error ("weight archive tensor " ^ name ^ " byte size overflows")
+            else Ok (elements * 2)
+        | Dtype.I64 ->
+            if elements > max_int / 8 then
+              Error ("weight archive tensor " ^ name ^ " byte size overflows")
+            else Ok (elements * 8)
+        | Dtype.I8 | Dtype.Bool | Dtype.U8 -> Ok elements
+        | Dtype.Quant q ->
+            let blk = Dtype.block_size q in
+            let bpb = Dtype.bytes_per_block q in
+            if elements mod blk <> 0 then
+              Error
+                (Printf.sprintf
+                   "weight archive tensor %s element count %d is not a \
+                    multiple of quant block size %d"
+                   name elements blk)
+            else if elements / blk > max_int / bpb then
+              Error ("weight archive tensor " ^ name ^ " byte size overflows")
+            else Ok ((elements / blk) * bpb)
+      in
+      if byte_length <> expected_byte_length then
+        Error
+          ("weight archive tensor " ^ name
+         ^ " byte length disagrees with its dtype and shape")
+      else if offset mod alignment <> 0 then
+        Error ("weight archive tensor " ^ name ^ " offset is not aligned")
+      else Ok { Tensor.name = name; dtype; shape; offset; byte_length }
 
 let all_zero bytes =
   let rec loop index =

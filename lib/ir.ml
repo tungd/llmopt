@@ -1,5 +1,36 @@
 module Dtype = struct
-  type t = Float32 | Float16 | Bfloat16 | Int64 | Int32 | Int8 | UInt8 | Bool
+  type quant_type =
+    | Q8_0
+    | Q4_K
+    | Q5_K
+    | Q6_K
+    | Q5_0
+
+  type t =
+    | Float32
+    | Float16
+    | Bfloat16
+    | Int64
+    | Int32
+    | Int8
+    | UInt8
+    | Bool
+    | Quant of quant_type
+
+  let quant_to_string = function
+    | Q8_0 -> "Q8_0"
+    | Q4_K -> "Q4_K"
+    | Q5_K -> "Q5_K"
+    | Q6_K -> "Q6_K"
+    | Q5_0 -> "Q5_0"
+
+  let quant_of_string = function
+    | "Q8_0" | "q8_0" -> Some Q8_0
+    | "Q4_K" | "q4_k" -> Some Q4_K
+    | "Q5_K" | "q5_k" -> Some Q5_K
+    | "Q6_K" | "q6_k" -> Some Q6_K
+    | "Q5_0" | "q5_0" -> Some Q5_0
+    | _ -> None
 
   let to_string = function
     | Float32 -> "f32"
@@ -10,6 +41,7 @@ module Dtype = struct
     | Int8 -> "i8"
     | UInt8 -> "u8"
     | Bool -> "bool"
+    | Quant q -> quant_to_string q
 end
 
 module Memory_space = struct

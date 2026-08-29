@@ -1184,6 +1184,70 @@ let () =
   expect (Result.is_error gen_dir_err)
     "generation create_from_dir fails on nonexistent model.llmopt";
 
+  (* Block-quant descriptor & physical bytes tests *)
+  expect
+    (Weight_archive.Dtype.quant_to_string Weight_archive.Dtype.Q8_0 = "Q8_0")
+    "Q8_0 quant_to_string";
+  expect
+    (Weight_archive.Dtype.quant_to_string Weight_archive.Dtype.Q4_K = "Q4_K")
+    "Q4_K quant_to_string";
+  expect
+    (Weight_archive.Dtype.quant_to_string Weight_archive.Dtype.Q5_K = "Q5_K")
+    "Q5_K quant_to_string";
+  expect
+    (Weight_archive.Dtype.quant_to_string Weight_archive.Dtype.Q6_K = "Q6_K")
+    "Q6_K quant_to_string";
+  expect
+    (Weight_archive.Dtype.quant_to_string Weight_archive.Dtype.Q5_0 = "Q5_0")
+    "Q5_0 quant_to_string";
+  expect
+    (Weight_archive.Dtype.quant_of_string "Q4_K" = Some Weight_archive.Dtype.Q4_K)
+    "quant_of_string Q4_K";
+  expect
+    (Weight_archive.Dtype.quant_of_string "q8_0" = Some Weight_archive.Dtype.Q8_0)
+    "quant_of_string q8_0 lowercase";
+  expect
+    (Weight_archive.Dtype.block_size Weight_archive.Dtype.Q8_0 = 32)
+    "Q8_0 block size is 32";
+  expect
+    (Weight_archive.Dtype.bytes_per_block Weight_archive.Dtype.Q8_0 = 34)
+    "Q8_0 bytes per block is 34";
+  expect
+    (Weight_archive.Dtype.block_size Weight_archive.Dtype.Q4_K = 256)
+    "Q4_K block size is 256";
+  expect
+    (Weight_archive.Dtype.bytes_per_block Weight_archive.Dtype.Q4_K = 144)
+    "Q4_K bytes per block is 144";
+  expect
+    (Weight_archive.Dtype.block_size Weight_archive.Dtype.Q5_K = 256)
+    "Q5_K block size is 256";
+  expect
+    (Weight_archive.Dtype.bytes_per_block Weight_archive.Dtype.Q5_K = 176)
+    "Q5_K bytes per block is 176";
+  expect
+    (Weight_archive.Dtype.block_size Weight_archive.Dtype.Q6_K = 256)
+    "Q6_K block size is 256";
+  expect
+    (Weight_archive.Dtype.bytes_per_block Weight_archive.Dtype.Q6_K = 210)
+    "Q6_K bytes per block is 210";
+  expect
+    (Weight_archive.Dtype.block_size Weight_archive.Dtype.Q5_0 = 32)
+    "Q5_0 block size is 32";
+  expect
+    (Weight_archive.Dtype.bytes_per_block Weight_archive.Dtype.Q5_0 = 22)
+    "Q5_0 bytes per block is 22";
+
+  let shape_256 = Tensor_shape.of_ints_exn [ 2; 512 ] in
+  let q4k_bytes =
+    Tensor_shape.physical_bytes shape_256 ~block_size:256 ~bytes_per_block:144
+  in
+  expect (q4k_bytes = Ok (4 * 144)) "physical_bytes for 1024 elements with Q4_K is 576";
+  let unaligned_shape = Tensor_shape.of_ints_exn [ 2; 250 ] in
+  let unaligned_err =
+    Tensor_shape.physical_bytes unaligned_shape ~block_size:256 ~bytes_per_block:144
+  in
+  expect (Result.is_error unaligned_err) "physical_bytes rejects unaligned element counts";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 

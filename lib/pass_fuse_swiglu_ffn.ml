@@ -133,17 +133,24 @@ let output_spec slot value =
 let make_binding ~slot ~value ~primitive ~inputs =
   Kernel_ir.make_binding ~outputs:[ output_spec slot value ] ~primitive ~inputs
 
-let dtype_bytes = function
-  | Ir.Dtype.Float32 -> 4L
-  | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 -> 2L
-  | Ir.Dtype.Int64 -> 8L
-  | Ir.Dtype.Int32 -> 4L
-  | Ir.Dtype.Int8 | Ir.Dtype.UInt8 | Ir.Dtype.Bool -> 1L
+let quant_block_bytes = function
+  | Ir.Dtype.Q8_0 -> 32, 34L
+  | Ir.Dtype.Q4_K -> 256, 144L
+  | Ir.Dtype.Q5_K -> 256, 176L
+  | Ir.Dtype.Q6_K -> 256, 210L
+  | Ir.Dtype.Q5_0 -> 32, 22L
 
 let bytes_for_value value =
-  Int64.mul
-    (Int64.of_int (numel value))
-    (dtype_bytes (Ir.Value.dtype value))
+  let elements = numel value in
+  match Ir.Value.dtype value with
+  | Ir.Dtype.Float32 | Ir.Dtype.Int32 -> Int64.mul (Int64.of_int elements) 4L
+  | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 -> Int64.mul (Int64.of_int elements) 2L
+  | Ir.Dtype.Int64 -> Int64.mul (Int64.of_int elements) 8L
+  | Ir.Dtype.Int8 | Ir.Dtype.UInt8 | Ir.Dtype.Bool -> Int64.of_int elements
+  | Ir.Dtype.Quant q ->
+      let blk, bpb = quant_block_bytes q in
+      let blocks = (elements + blk - 1) / blk in
+      Int64.mul (Int64.of_int blocks) bpb
 
 let sum_int64 values = List.fold_left Int64.add 0L values
 
