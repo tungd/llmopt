@@ -1855,6 +1855,160 @@ let add_cache_kernels program =
   Program.make ~source:(Program.source program ^ cache_source)
     ~kernels:(Program.kernels program @ cache_entries)
 
+let quant_common_source = {|
+struct QuantBlock32Params {
+    uint total_blocks;
+};
+
+struct QuantLinearParams {
+    uint m;
+    uint n;
+    uint k;
+    uint has_bias;
+};
+|}
+
+let q8_0_source = {|
+struct block_q8_0 {
+    half d;
+    int8_t qs[32];
+};
+
+kernel void llmopt_dequant_q8_0(
+    device const block_q8_0* blocks [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant QuantBlock32Params& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint block_idx = gid >> 5;
+  if (block_idx >= params.total_blocks) return;
+  const half d = blocks[block_idx].d;
+  const int8_t q = blocks[block_idx].qs[lane];
+  output[block_idx * 32 + lane] = half(float(d) * float(q));
+}
+
+kernel void llmopt_q8_0_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q8_0* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_blocks = params.k >> 5;
+  device const block_q8_0* row_blocks = weight + col * num_blocks;
+  device const half* in_ptr = input + row * params.k;
+  float acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    const half d = row_blocks[b].d;
+    const int8_t q = row_blocks[b].qs[lane];
+    const half in_val = in_ptr[b * 32 + lane];
+    acc += float(in_val) * (float(d) * float(q));
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    if (params.has_bias != 0u) acc += float(bias[col]);
+    output[row * params.n + col] = half(acc);
+  }
+}
+|}
+
+let q5_0_source = {|
+struct block_q5_0 {
+    half d;
+    uint8_t qh[4];
+    uint8_t qs[16];
+};
+
+kernel void llmopt_dequant_q5_0(
+    device const block_q5_0* blocks [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant QuantBlock32Params& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint block_idx = gid >> 5;
+  if (block_idx >= params.total_blocks) return;
+  device const block_q5_0& b = blocks[block_idx];
+  const half d = b.d;
+  const uint8_t high_byte = b.qh[lane >> 3];
+  const uint8_t high_bit = (high_byte >> (lane & 7u)) & 1u;
+  const uint8_t low_byte = (lane < 16u) ? b.qs[lane] : b.qs[lane - 16u];
+  const uint8_t low_nib = (lane < 16u) ? (low_byte & 0x0Fu) : (low_byte >> 4);
+  const int q = int(low_nib | (high_bit << 4)) - 16;
+  output[block_idx * 32 + lane] = half(float(d) * float(q));
+}
+
+kernel void llmopt_q5_0_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q5_0* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_blocks = params.k >> 5;
+  device const block_q5_0* row_blocks = weight + col * num_blocks;
+  device const half* in_ptr = input + row * params.k;
+  float acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    device const block_q5_0& blk = row_blocks[b];
+    const half d = blk.d;
+    const uint8_t high_byte = blk.qh[lane >> 3];
+    const uint8_t high_bit = (high_byte >> (lane & 7u)) & 1u;
+    const uint8_t low_byte = (lane < 16u) ? blk.qs[lane] : blk.qs[lane - 16u];
+    const uint8_t low_nib = (lane < 16u) ? (low_byte & 0x0Fu) : (low_byte >> 4);
+    const int q = int(low_nib | (high_bit << 4)) - 16;
+    const half in_val = in_ptr[b * 32 + lane];
+    acc += float(in_val) * (float(d) * float(q));
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    if (params.has_bias != 0u) acc += float(bias[col]);
+    output[row * params.n + col] = half(acc);
+  }
+}
+|}
+
+let block32_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_dequant_q8_0"
+      ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_dequant_q5_0"
+      ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_0_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q5_0_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16 ]
+
+let add_block32_kernels program =
+  Program.make
+    ~source:
+      (Program.source program ^ quant_common_source ^ q8_0_source ^ q5_0_source)
+    ~kernels:(Program.kernels program @ block32_entries)
+
+let metal_header =
+  "#include <metal_stdlib>\n#include <metal_matrix>\nusing namespace metal;\n"
+
+let emit_dequant_q8_0 () = metal_header ^ quant_common_source ^ q8_0_source
+let emit_dequant_q5_0 () = metal_header ^ quant_common_source ^ q5_0_source
+
 let linear_f16_source =
   "\nconstant uint LINEAR_SIMD_WIDTH = 32;\n"
   ^ "constant uint LINEAR_ROWS_PER_BLOCK = 8;\n\n"

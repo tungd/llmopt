@@ -1312,6 +1312,30 @@ let () =
   expect (t2.dtype = Weight_archive.Dtype.Quant Q6_K) "t2 dtype is Quant Q6_K";
   expect (t2.byte_length = 107520) "t2 byte_length is 107520";
 
+  (* Block-32 Metal Dequantization & Shader Tests *)
+  let q8_0_src = Metal.emit_dequant_q8_0 () in
+  expect (String.length q8_0_src > 0) "q8_0 MSL shader emitted";
+  let q5_0_src = Metal.emit_dequant_q5_0 () in
+  expect (String.length q5_0_src > 0) "q5_0 MSL shader emitted";
+
+  let compile_msl_string src =
+    let tmp_src = Filename.temp_file "test_metal" ".metal" in
+    let tmp_air = Filename.temp_file "test_metal" ".air" in
+    let oc = open_out tmp_src in
+    output_string oc src;
+    close_out oc;
+    let cmd =
+      Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
+        (Filename.quote tmp_src) (Filename.quote tmp_air)
+    in
+    let res = Sys.command cmd = 0 in
+    (try Sys.remove tmp_src with _ -> ());
+    (try Sys.remove tmp_air with _ -> ());
+    res
+  in
+  expect (compile_msl_string q8_0_src) "q8_0 MSL compiles cleanly with xcrun metal";
+  expect (compile_msl_string q5_0_src) "q5_0 MSL compiles cleanly with xcrun metal";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 
