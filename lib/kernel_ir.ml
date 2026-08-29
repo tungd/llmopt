@@ -100,6 +100,207 @@ module Effect = struct
   let barriers effects = effects.barriers
 end
 
+module Scan = struct
+  type iteration = {
+    index : int;
+    member_node_ids : int list;
+    state_input : Ir.Value.t;
+    state_output : Ir.Value.t;
+    body_inputs : Ir.Value.t list;
+  }
+
+  type t = {
+    name : string;
+    axis : int;
+    iterations : iteration list;
+    sequence_inputs : Ir.Value.t list;
+    stacked_outputs : Ir.Value.t list;
+  }
+
+  let same_metadata left right =
+    Ir.Value.dtype left = Ir.Value.dtype right
+    && Tensor_shape.equal
+         (Ir.Value.logical_shape left)
+         (Ir.Value.logical_shape right)
+
+  let create ~name ~axis ~iterations ~sequence_inputs ~stacked_outputs =
+    let member_node_ids =
+      List.concat_map (fun iteration -> iteration.member_node_ids) iterations
+    in
+    let rec unique seen = function
+      | [] -> true
+      | id :: rest ->
+          id >= 0 && not (List.mem id seen) && unique (id :: seen) rest
+    in
+    let rec chain previous_index previous_output = function
+      | [] -> Ok ()
+      | iteration :: rest ->
+          if iteration.index <> previous_index + 1 then
+            Error "scan iteration indices must be consecutive"
+          else if not (Ir.Value.equal iteration.state_input previous_output) then
+            Error "scan carried state is not connected between iterations"
+          else if
+            not
+              (same_metadata iteration.state_input iteration.state_output)
+          then Error "scan carried state metadata changes across an iteration"
+          else chain iteration.index iteration.state_output rest
+    in
+    match iterations with
+    | [] -> Error "scan requires at least one iteration"
+    | first :: rest ->
+        if String.trim name = "" then Error "scan name cannot be empty"
+        else if axis < 0 then Error "scan axis must be normalized"
+        else if
+          axis >= Tensor_shape.rank (Ir.Value.logical_shape first.state_input)
+        then Error "scan axis is outside carried-state rank"
+        else if not (unique [] member_node_ids) then
+          Error "scan member node IDs must be unique and non-negative"
+        else if not (same_metadata first.state_input first.state_output) then
+          Error "scan carried state metadata changes across an iteration"
+        else
+          Result.map
+            (fun () -> { name; axis; iterations; sequence_inputs; stacked_outputs })
+            (chain first.index first.state_output rest)
+
+  let name scan = scan.name
+  let axis scan = scan.axis
+  let trip_count scan = List.length scan.iterations
+  let iterations scan = scan.iterations
+  let sequence_inputs scan = scan.sequence_inputs
+  let stacked_outputs scan = scan.stacked_outputs
+  let initial_state scan = (List.hd scan.iterations).state_input
+  let final_state scan = (List.hd (List.rev scan.iterations)).state_output
+
+  let member_node_ids scan =
+    List.concat_map (fun iteration -> iteration.member_node_ids) scan.iterations
+
+  let to_string scan =
+    Printf.sprintf
+      "scan %s axis=%d start=%d trip-count=%d state=%s"
+      scan.name scan.axis (List.hd scan.iterations).index
+      (trip_count scan)
+      (Tensor_shape.to_string
+         (Ir.Value.logical_shape (initial_state scan)))
+
+  module Value_map = Map.Make (struct
+    type t = Ir.Value_id.t
+
+    let compare = Ir.Value_id.compare
+  end)
+
+  type update = {
+    node_id : int;
+    index : Tensor_shape.Index.t;
+    destination : Ir.Value.t;
+    source : Ir.Value.t;
+    output : Ir.Value.t;
+  }
+
+  let updates graph =
+    Ir.Graph.nodes graph
+    |> List.filter_map (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | ( Ir.Op.Primitive (Ir.Primitive.Update_slice index),
+               [ destination; source ],
+               Some output ) ->
+               Some
+                 { node_id = Ir.node_id node;
+                   index;
+                   destination;
+                   source;
+                   output }
+           | _ -> None)
+
+  let advancing_axis chain =
+    let selectors =
+      List.map
+        (fun update -> Tensor_shape.Index.selectors update.index)
+        chain
+    in
+    match selectors with
+    | [] -> None
+    | first :: _ ->
+        let rank = List.length first in
+        let at axis selectors =
+          match List.nth_opt selectors axis with
+          | Some (Tensor_shape.Index.At index) -> Some index
+          | _ -> None
+        in
+        let rec find axis =
+          if axis = rank then None
+          else
+            let indices = List.map (at axis) selectors in
+            let rec consecutive = function
+              | Some left :: (Some right :: _ as rest) when right = left + 1 ->
+                  consecutive rest
+              | [ Some _ ] -> true
+              | _ -> false
+            in
+            if consecutive indices then
+              match List.hd indices with
+              | Some start -> Some (axis, start)
+              | None -> assert false
+            else find (axis + 1)
+        in
+        find 0
+
+  let recover graph =
+    let updates = updates graph in
+    let value_id value = Ir.Value.id value in
+    let by_output =
+      List.fold_left
+        (fun map update -> Value_map.add (value_id update.output) update map)
+        Value_map.empty updates
+    in
+    let successors =
+      List.fold_left
+        (fun map update ->
+          match Value_map.find_opt (value_id update.destination) by_output with
+          | None -> map
+          | Some previous ->
+              let existing =
+                Value_map.find_opt (value_id previous.output) map
+                |> Option.value ~default:[]
+              in
+              Value_map.add (value_id previous.output) (update :: existing) map)
+        Value_map.empty updates
+    in
+    let heads =
+      List.filter
+        (fun update ->
+          not (Value_map.mem (value_id update.destination) by_output))
+        updates
+    in
+    let rec follow chain update =
+      match Value_map.find_opt (value_id update.output) successors with
+      | Some [ next ] -> follow (next :: chain) next
+      | _ -> List.rev chain
+    in
+    heads
+    |> List.filter_map (fun head ->
+           let chain = follow [ head ] head in
+           match chain, advancing_axis chain with
+           | _ :: _ :: _, Some (axis, start) ->
+               let iterations =
+                 List.mapi
+                   (fun offset update ->
+                     { index = start + offset;
+                       member_node_ids = [ update.node_id ];
+                       state_input = update.destination;
+                       state_output = update.output;
+                       body_inputs = [ update.source ] })
+                   chain
+               in
+               create ~name:"carried-update" ~axis ~iterations
+                 ~sequence_inputs:[] ~stacked_outputs:[]
+               |> Result.to_option
+           | _ -> None)
+    |> List.sort (fun left right ->
+           Int.compare
+             (List.hd (member_node_ids left))
+             (List.hd (member_node_ids right)))
+end
+
 module Resource = struct
   type t = {
     scalar_ops : int64;

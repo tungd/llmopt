@@ -125,15 +125,24 @@ let () =
           in
           let planned = Passes.Optimization.execution_graph optimization in
           let fusion_regions = Passes.Optimization.fusion_regions optimization in
+          let scan_regions = Passes.Optimization.scan_regions optimization in
           let graph_plan = Format.asprintf "%a" Ir.Graph.pp planned in
           let plan =
-            match fusion_regions with
-            | [] -> graph_plan
-            | regions ->
-                graph_plan ^ "\nstructured-regions:\n"
-                ^ (regions |> List.map Kernel_ir.to_string
-                  |> String.concat "\n")
-                ^ "\n"
+            graph_plan
+            ^ (match fusion_regions with
+              | [] -> ""
+              | regions ->
+                  "\nstructured-regions:\n"
+                  ^ (regions |> List.map Kernel_ir.to_string
+                    |> String.concat "\n")
+                  ^ "\n")
+            ^ (match scan_regions with
+              | [] -> ""
+              | regions ->
+                  "\nstructured-scans:\n"
+                  ^ (regions |> List.map Kernel_ir.Scan.to_string
+                    |> String.concat "\n")
+                  ^ "\n")
           in
           (match Serving_schedule.of_graph planned with
           | Error message ->
@@ -203,4 +212,6 @@ let () =
             (List.length (Fx.nodes fx_graph))
             (List.length (Ir.Graph.nodes planned));
           Printf.printf "discovered %d structured fusion regions\n"
-            (List.length fusion_regions))
+            (List.length fusion_regions);
+          Printf.printf "recovered %d structured scan regions\n"
+            (List.length scan_regions))

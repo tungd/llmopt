@@ -11,6 +11,7 @@ val fuse_rms_norm : Ir.Graph.t -> Ir.Graph.t
 val fuse_rms_rope : Ir.Graph.t -> Ir.Graph.t
 val fuse_short_conv : Ir.Graph.t -> Ir.Graph.t
 val discover_swiglu_ffn : Ir.Graph.t -> (Kernel_ir.t list, string) result
+val recover_scans : Ir.Graph.t -> Kernel_ir.Scan.t list
 val fuse_swiglu_ffn : Ir.Graph.t -> (Ir.Graph.t, string) result
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
 val fuse_lm_head_argmax : Ir.Graph.t -> Ir.Graph.t
@@ -32,6 +33,9 @@ module Optimization : sig
 
   (** Structured fusion candidates; these do not mutate [semantic_graph]. *)
   val fusion_regions : t -> Kernel_ir.t list
+
+  (** Typed carried-state regions recovered from statically unrolled updates. *)
+  val scan_regions : t -> Kernel_ir.Scan.t list
 
   (** Executable rewrite suffix followed by plan-based co-scheduling. *)
   val execution_graph : t -> Ir.Graph.t

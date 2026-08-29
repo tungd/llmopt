@@ -678,6 +678,65 @@ let () =
          |> List.length)
         = 3)
     "Kernel IR represents mixed GGUF projections as semantic Linear bindings";
+
+  let scan_graph = Ir.Graph.create () in
+  let scan_initial =
+    tensor_input scan_graph ~name:"scan_initial" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 3; 4 ] ~dtype:Ir.Dtype.Float32
+  in
+  let rec append_scan_updates state index =
+    if index = 3 then state
+    else
+      let source =
+        tensor_input scan_graph
+          ~name:(Printf.sprintf "scan_source_%d" index)
+          ~source:Ir.Input_source.Runtime ~shape:[ 1; 4 ]
+          ~dtype:Ir.Dtype.Float32
+      in
+      let slice =
+        Tensor_shape.Index.of_selectors
+          [ Tensor_shape.Index.Slice { start = 0; step = 1; length = 1 };
+            Tensor_shape.Index.At index;
+            Tensor_shape.Index.Slice { start = 0; step = 1; length = 4 } ]
+        |> expect_ok
+      in
+      let output =
+        Ir.Graph.fresh_tensor_value scan_graph
+          ~shape:(Tensor_shape.of_ints_exn [ 1; 3; 4 ])
+          ~dtype:Ir.Dtype.Float32
+      in
+      Ir.Graph.append scan_graph
+        ~op:(Ir.Op.Primitive (Ir.Primitive.Update_slice slice))
+        ~inputs:[ state; source ] ~output:(Some output);
+      append_scan_updates output (index + 1)
+  in
+  let scan_final = append_scan_updates scan_initial 0 in
+  Ir.Graph.add_output scan_graph ~name:"scan_final" scan_final;
+  let scans = Passes.recover_scans scan_graph in
+  expect
+    (match scans with
+    | [ scan ] ->
+        Kernel_ir.Scan.axis scan = 1
+        && Kernel_ir.Scan.trip_count scan = 3
+        && Ir.Value.equal (Kernel_ir.Scan.initial_state scan) scan_initial
+        && Ir.Value.equal (Kernel_ir.Scan.final_state scan) scan_final
+    | _ -> false)
+    "typed Scan recovery finds a consecutive carried-state update chain";
+  let invalid_scan_output =
+    Ir.Value.make_tensor ~id:50004
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 3; 5 ]) ~dtype:Ir.Dtype.Float32
+  in
+  expect
+    (Kernel_ir.Scan.create ~name:"invalid" ~axis:1
+       ~iterations:
+         [ { Kernel_ir.Scan.index = 0;
+             member_node_ids = [ 0 ];
+             state_input = scan_initial;
+             state_output = invalid_scan_output;
+             body_inputs = [] } ]
+       ~sequence_inputs:[] ~stacked_outputs:[]
+     |> Result.is_error)
+    "typed Scan rejects carried-state metadata changes";
   let fused_ffn = Passes.fuse_swiglu_ffn ffn |> expect_ok in
   expect
     (Ir.Graph.nodes fused_ffn

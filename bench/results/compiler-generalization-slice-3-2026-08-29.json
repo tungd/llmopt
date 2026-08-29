@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-29T23:44:20+07:00",
+  "git_base_commit": "a3e61b2",
+  "slice": "typed-scan-recovery",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "change": {
+    "representation": "Kernel_ir.Scan carries axis, consecutive iterations, typed carried state, per-step body inputs, sequence inputs, stacked outputs, and member node IDs",
+    "recovery": "maximal Update_slice chains are recognized by producer identity, advancing index, and invariant state metadata",
+    "qwen": {
+      "fx_nodes": 14219,
+      "ir_commands": 19176,
+      "scan_regions": 18,
+      "trip_count_each": 63,
+      "axis_each": 3,
+      "state_shape_each": [1, 16, 1, 64, 64],
+      "architecture_id_use": "none"
+    },
+    "execution_effect": "Scan is an analysis region in this slice; executable graph and dispatch count are unchanged"
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 10,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-scan-recovery",
+        "dispatches": 9193,
+        "median_ms": 143.818021,
+        "min_ms": 138.617992,
+        "max_ms": 154.947042,
+        "output_vs_pre_scan_package": "byte exact"
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.996312,
+        "mean_ms": 9.279029,
+        "samples_ns": [9840625, 8696000, 7842666, 12940792, 14324542, 7795209, 7608708, 7987541, 8005083, 7749125]
+      },
+      "llmopt_over_llama_cpp_median": 17.985544
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-perf-attention-specialized",
+        "dispatches": 1637,
+        "median_ms": 64.836025,
+        "min_ms": 48.763037,
+        "max_ms": 72.991133
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 20.507958,
+        "mean_ms": 21.087966,
+        "samples_ns": [20479000, 20536916, 23534084, 24417792, 22975208, 18319667, 28505166, 17440583, 17525125, 17146125]
+      },
+      "llmopt_over_llama_cpp_median": 3.161506
+    }
+  ],
+  "validation": {
+    "synthetic_three_step_scan": "recovered",
+    "invalid_state_metadata": "rejected",
+    "qwen_package": "valid, 107 kernels, 19176 commands, 0 opaque",
+    "qwen_scan_inventory": "18 of 18 have trip count 63"
+  }
+}

@@ -103,3 +103,4 @@
 * [Captured-shape SIMD attention specialization](exp-0102-captured-attention-specialization-2026-08-29.md) - graph-driven h256/h512 kernels cut Gemma and Qwen full-forward latency while preserving baseline argmax IDs.
 * [Quantization-neutral Linear region discovery](exp-0103-semantic-linear-regions-2026-08-29.md) - semantic Linear fusion recovery across mixed GGUF layouts with fresh Qwen/Gemma llama.cpp context.
 * [Tensor-layout quantization and Linear storage classification](exp-0104-tensor-layout-capabilities-2026-08-29.md) - one physical-layout authority and closed Linear storage representation across archive, IR, pass, and planner seams.
+* [Typed Scan regions and Qwen recurrence recovery](exp-0105-typed-scan-recovery-2026-08-29.md) - graph-structural recovery of all 18 Qwen 63-step carried-state regions without architecture identifiers.
