@@ -75,6 +75,32 @@ let run ~warmup_count ~repeat_count root input_name input_path output_name
     (List.fold_left Float.max Float.neg_infinity measurements);
   Ok ()
 
+let run_all root input_name input_path output_directory =
+  let* package =
+    Serving_package.of_file (Filename.concat root "package.llmopt")
+  in
+  let* runtime = Metal_runtime.load_package ~root package in
+  let* input_bytes = read_file input_path in
+  let* input = Metal_runtime.Buffer.of_bytes ~runtime input_bytes in
+  let started_at = Unix.gettimeofday () in
+  let* execution = Metal_runtime.execute runtime ~inputs:[ input_name, input ] in
+  let elapsed_ms = (Unix.gettimeofday () -. started_at) *. 1000.0 in
+  let outputs = Metal_runtime.Execution.outputs execution in
+  let* () =
+    List.fold_left
+      (fun result (name, output) ->
+        let* () = result in
+        let* contents = Metal_runtime.Buffer.contents output in
+        write_file (Filename.concat output_directory (name ^ ".bin")) contents)
+      (Ok ()) outputs
+  in
+  Printf.printf
+    "device=%s dispatch_count=%d outputs=%d elapsed_ms=%.6f\n"
+    (Metal_runtime.device_name runtime)
+    (List.length (Metal_runtime.Execution.kernels execution))
+    (List.length outputs) elapsed_ms;
+  Ok ()
+
 let count ~name ~minimum raw =
   let value = int_of_string raw in
   if value < minimum then
@@ -84,26 +110,26 @@ let count ~name ~minimum raw =
 let usage () =
   prerr_endline
     "usage: llmopt-package-run --warmup <count> --repeat <count> \
-     <package-directory> <input-name> <input.bin> <output-name> <output.bin>";
+     <package-directory> <input-name> <input.bin> <output-name> <output.bin>\n\
+     or: llmopt-package-run --all-outputs <package-directory> <input-name> \
+     <input.bin> <output-directory>";
   exit 64
 
 let () =
   try
-    let raw_warmup, raw_repeat, root, input_name, input_path, output_name,
-        output_path =
+    let result =
       match Array.to_list Sys.argv with
+      | [ _; "--all-outputs"; root; input_name; input_path; output_directory ] ->
+          run_all root input_name input_path output_directory
       | [ _; "--warmup"; raw_warmup; "--repeat"; raw_repeat; root;
           input_name; input_path; output_name; output_path ] ->
-          (raw_warmup, raw_repeat, root, input_name, input_path, output_name,
-           output_path)
+          let warmup_count = count ~name:"warmup" ~minimum:0 raw_warmup in
+          let repeat_count = count ~name:"repeat" ~minimum:1 raw_repeat in
+          run ~warmup_count ~repeat_count root input_name input_path output_name
+            output_path
       | _ -> usage ()
     in
-    let warmup_count = count ~name:"warmup" ~minimum:0 raw_warmup in
-    let repeat_count = count ~name:"repeat" ~minimum:1 raw_repeat in
-    match
-      run ~warmup_count ~repeat_count root input_name input_path output_name
-        output_path
-    with
+    match result with
     | Ok () -> ()
     | Error message ->
         prerr_endline message;

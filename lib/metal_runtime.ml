@@ -411,23 +411,32 @@ let tensor runtime ~name =
                 tensor )))
 
 let kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype =
-  Serving_package.kernels runtime.package
-  |> List.find_opt (fun entry ->
-         Kernel_abi.Entry.operation entry = operation
-         && Kernel_abi.Entry.input_dtype entry = input_dtype
-         && Kernel_abi.Entry.output_dtype entry = output_dtype
-         &&
-         match name with
-         | None -> true
-         | Some expected -> Kernel_abi.Entry.name entry = expected)
-  |> function
-  | Some entry -> Ok entry
-  | None ->
+  let matches =
+    Serving_package.kernels runtime.package
+    |> List.filter (fun entry ->
+           Kernel_abi.Entry.operation entry = operation
+           && Kernel_abi.Entry.input_dtype entry = input_dtype
+           && Kernel_abi.Entry.output_dtype entry = output_dtype
+           &&
+           match name with
+           | None -> true
+           | Some expected -> Kernel_abi.Entry.name entry = expected)
+  in
+  match matches with
+  | [ entry ] -> Ok entry
+  | [] ->
       Error
         (Printf.sprintf "serving package has no %s%s kernel for %s -> %s"
            (Kernel_abi.Operation.to_string operation)
            (match name with None -> "" | Some value -> " " ^ value)
            (Ir.Dtype.to_string input_dtype) (Ir.Dtype.to_string output_dtype))
+  | entries ->
+      Error
+        (Printf.sprintf
+           "serving package has ambiguous %s kernel selection for %s -> %s: %s"
+           (Kernel_abi.Operation.to_string operation)
+           (Ir.Dtype.to_string input_dtype) (Ir.Dtype.to_string output_dtype)
+           (entries |> List.map Kernel_abi.Entry.name |> String.concat ", "))
 
 let dispatch ?batch runtime entry ~buffers ~parameters ~grid =
   let name = Kernel_abi.Entry.name entry in
@@ -2326,6 +2335,35 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               (dispatch_output ~name runtime state output
                  ~operation:Kernel_abi.Operation.Movement ~input_dtype
                  ~buffers:[ input_buffer ] ~parameters ~grid:(count, 1, 1))
+        | ( Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence config),
+            [ input ],
+            Some output ) ->
+            let dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape input)
+            in
+            let reversed = List.rev dimensions in
+            let width = List.hd reversed in
+            let rows = List.nth reversed 1 in
+            if width > 64 || rows <> width then
+              Error "unsupported Metal triangular recurrence shape"
+            else
+              let outer =
+                Tensor_shape.numel (Ir.Value.logical_shape input)
+                / (width * width)
+              in
+              let* input_buffer = find_value state input in
+              let* parameters =
+                Parameters.u32s
+                  [ outer; width;
+                    Ir.Triangular_recurrence.start config;
+                    Ir.Triangular_recurrence.stop config ]
+              in
+              dispatched
+                (dispatch_output ~name:"llmopt_triangular_recurrence_f32"
+                   runtime state output
+                   ~operation:Kernel_abi.Operation.Triangular_recurrence
+                   ~input_dtype:Ir.Dtype.Float32 ~buffers:[ input_buffer ]
+                   ~parameters ~grid:(outer * 64, 1, 1))
         | Ir.Op.Primitive (Ir.Primitive.Reduce reduction), [ input ], Some output ->
             let* name, axis = reduction_kernel reduction input output in
             let* outer, width, inner =
@@ -2882,8 +2920,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let count = rows * cols in
             let* parameters = Parameters.u32s [ count; rows; cols ] in
             dispatched
-              (dispatch_output ~name:"llmopt_eye_f32" runtime state output
-                 ~operation:Kernel_abi.Operation.Fill
+              (dispatch_output runtime state output
+                 ~operation:Kernel_abi.Operation.Eye
                  ~input_dtype:Ir.Dtype.Float32 ~buffers:[] ~parameters
                  ~grid:(count, 1, 1))
         | ( Ir.Op.Primitive Ir.Primitive.Batched_matmul,
@@ -2897,8 +2935,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~output_shape:(Ir.Value.logical_shape output)
             in
             dispatched
-              (dispatch_output ~name:"llmopt_batched_matmul_f32" runtime state
-                 output ~operation:Kernel_abi.Operation.Matmul
+              (dispatch_output runtime state output
+                 ~operation:Kernel_abi.Operation.Batched_matmul
                  ~input_dtype:Ir.Dtype.Float32 ~buffers ~parameters
                  ~grid:(count, 1, 1))
         | ( Ir.Op.Primitive (Ir.Primitive.Short_conv config),

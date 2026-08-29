@@ -414,6 +414,36 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d reduction metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence config),
+            [ input ],
+            Some output ) ->
+            let dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape input)
+            in
+            let rank = List.length dimensions in
+            let axis = Ir.Triangular_recurrence.axis config in
+            let start = Ir.Triangular_recurrence.start config in
+            let stop = Ir.Triangular_recurrence.stop config in
+            let shape_matches =
+              match List.rev dimensions with
+              | width :: rows :: _ ->
+                  axis = rank - 2 && rows = width && start >= 1
+                  && stop <= width
+              | _ -> false
+            in
+            if
+              shape_matches
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape input)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Dtype.Float32
+              && Ir.Value.dtype output = Ir.Dtype.Float32
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d triangular recurrence metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive (Ir.Primitive.Short_conv config),
             [ input; weight ],
             Some output ) ->
@@ -881,7 +911,8 @@ let validate_command seen_values command =
             else Error "batched-matmul metadata is inconsistent"
         | ( Ir.Op.Primitive
               (Ir.Primitive.Arange _ | Ir.Primitive.Diff _
-              | Ir.Primitive.Cumsum _ | Ir.Primitive.Fill _
+              | Ir.Primitive.Cumsum _ | Ir.Primitive.Triangular_recurrence _
+              | Ir.Primitive.Fill _
               | Ir.Primitive.Gather2 | Ir.Primitive.Update_slice _
               | Ir.Primitive.Pad_right_zero _ | Ir.Primitive.Triangular _
               | Ir.Primitive.Masked_fill _ | Ir.Primitive.Eye
@@ -1199,7 +1230,9 @@ module Sequence = struct
         Tensor_shape.diff (Ir.Value.logical_shape source)
           (Ir.Value.logical_shape prepend) ~axis:(Ir.Diff.axis config)
         |> shape_error
-    | Ir.Primitive.Cumsum _, [ input ] -> Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.Cumsum _, [ input ]
+    | Ir.Primitive.Triangular_recurrence _, [ input ] ->
+        Ok (Ir.Value.logical_shape input)
     | Ir.Primitive.Fill _, [] -> map_shape substitutions original
     | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
         Tensor_shape.gather2 (Ir.Value.logical_shape source)
@@ -2449,6 +2482,11 @@ let write_primitive writer = function
   | Ir.Primitive.Cumsum config ->
       Binary.Writer.u8 writer 9;
       Binary.Writer.u16 writer (Ir.Cumsum.axis config)
+  | Ir.Primitive.Triangular_recurrence config ->
+      Binary.Writer.u8 writer 20;
+      Binary.Writer.u16 writer (Ir.Triangular_recurrence.axis config);
+      Binary.Writer.u16 writer (Ir.Triangular_recurrence.start config);
+      Binary.Writer.u16 writer (Ir.Triangular_recurrence.stop config)
   | Ir.Primitive.Fill scalar ->
       Binary.Writer.u8 writer 10;
       write_scalar writer scalar
@@ -2582,6 +2620,12 @@ let read_primitive values reader =
       |> Result.map (fun scalar -> Ir.Primitive.Masked_fill scalar)
   | 18 -> Ok Ir.Primitive.Eye
   | 19 -> Ok Ir.Primitive.Batched_matmul
+  | 20 ->
+      let* axis = Binary.Reader.u16 reader in
+      let* start = Binary.Reader.u16 reader in
+      let* stop = Binary.Reader.u16 reader in
+      Ir.Triangular_recurrence.create ~axis ~start ~stop
+      |> Result.map (fun config -> Ir.Primitive.Triangular_recurrence config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -2845,7 +2889,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 19;
+  Binary.Writer.u16 writer 20;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2865,7 +2909,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 19 then
+    if version <> 20 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

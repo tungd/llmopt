@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T01:41:08+07:00",
+  "git_base_commit": "e1612f0",
+  "slice": "captured-triangular-recurrence-fusion",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "change": {
+    "selection": "structural carried-state topology, normalized selectors, captured shape and dtype, plus target threadgroup and SRAM capacity",
+    "architecture_id_use": "none",
+    "qwen_regions": 18,
+    "iterations_per_region": 63,
+    "materialized_operations_per_iteration": 7,
+    "debug_artifact": "plan.sexp generated from deriving-based typed IR records",
+    "kernel_abi": "Eye and Batched_matmul have distinct semantic operation IDs; ambiguous registry matches are rejected"
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 10,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-scan-final",
+        "kernels": 104,
+        "commands": 4470,
+        "previous_commands": 19176,
+        "command_reduction": 14706,
+        "dispatches": 2407,
+        "previous_dispatches": 9193,
+        "dispatch_reduction": 6786,
+        "median_ms": 49.862504,
+        "min_ms": 47.013998,
+        "max_ms": 53.712130,
+        "previous_median_ms": 120.692492,
+        "delta_ms": -70.829988,
+        "latency_reduction_percent": 58.686325,
+        "output_sha256": "1c5e20e73540b10019d7d3efe27f51df4fa6d794cd61b3f2f9ff08c310cc598d",
+        "output_vs_unfused_corrected_runtime": "byte exact",
+        "corrected_torch_reference_mean_abs": 0.6476551,
+        "previous_output_corrected_torch_reference_mean_abs": 1.3154972,
+        "argmax_rows": [760, 16],
+        "corrected_torch_reference_argmax_rows": [198, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.922604,
+        "mean_ms": 7.921833,
+        "samples_ns": [8091875, 8009625, 8159958, 7979583, 7973208, 7794000, 7872000, 7842750, 7734791, 7760541]
+      },
+      "llmopt_over_llama_cpp_median": 6.293701
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-triangular",
+        "matched_triangular_recurrences": 0,
+        "kernels": 94,
+        "commands": 3999,
+        "dispatches": 1637,
+        "median_ms": 46.065092,
+        "min_ms": 38.863182,
+        "max_ms": 49.121857,
+        "previous_median_ms": 44.693470,
+        "delta_ms": 1.371622,
+        "latency_change_percent": 3.068954,
+        "output_sha256": "499a76f0b4b00b1d49fa1efc058571e27a6c740a47642289475356bbb7cc3ea7",
+        "output_vs_previous_package": "byte exact"
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.4860205,
+        "mean_ms": 17.629408,
+        "samples_ns": [17116208, 18712375, 17519625, 17514250, 17336250, 17227375, 17213125, 18682833, 17462416, 17509625]
+      },
+      "llmopt_over_llama_cpp_median": 2.634395
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "453 dispatches; narrow and 64-wide triangular recurrence byte exact to materialized GPU chains on two executions",
+    "metal_compilation": "pass for both full-model packages",
+    "qwen_package": "valid, 104 kernels, 4470 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3999 commands, 0 opaque",
+    "qwen_numerical_scope": "fused recurrence is exact to corrected-runtime unfused execution; full Torch parity remains absent",
+    "gemma_output": "byte exact to slice-4 output"
+  }
+}

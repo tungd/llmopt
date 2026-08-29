@@ -55,12 +55,28 @@ module Optimization = struct
 end
 
 let optimize ?(target = Target_hardware.default) graph =
-  let _ = target in
   let semantic_graph = Pass.Pipeline.run default_pipeline graph in
   let* plan = Compute_plan.of_graph semantic_graph in
   let* fusion_regions = Pass_fuse_swiglu_ffn.discover semantic_graph in
   let scan_regions = Kernel_ir.Scan.recover semantic_graph in
-  let* fused_graph = Pass_fuse_swiglu_ffn.run semantic_graph in
+  let max_scan_width =
+    let capacity = target.memory.sram_capacity_bytes / 4 in
+    let rec fit width =
+      let next = width + 1 in
+      if
+        next <= 64
+        && next <= target.execution.max_threads_per_threadgroup
+        && (next * next) + next <= capacity
+      then fit next
+      else width
+    in
+    fit 0
+  in
+  let scan_lowered_graph =
+    Kernel_ir.Scan.fuse_triangular_recurrences ~max_width:max_scan_width
+      semantic_graph
+  in
+  let* fused_graph = Pass_fuse_swiglu_ffn.run scan_lowered_graph in
   let qkv_fused_graph = Pass_fuse_linear_bias.fuse_w4a16_qkv fused_graph in
   let gqa_elim_graph =
     Pass_fuse_linear_bias.eliminate_gqa_expansion qkv_fused_graph

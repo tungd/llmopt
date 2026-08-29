@@ -104,6 +104,11 @@ module Scan : sig
 
   (** Recover maximal, consecutively indexed carried-update chains. *)
   val recover : Ir.Graph.t -> t list
+
+  (** Fuse structurally matched FP32 triangular recurrences whose square state
+      fits the selected kernel family's width. *)
+  val fuse_triangular_recurrences :
+    max_width:int -> Ir.Graph.t -> Ir.Graph.t
 end
 
 module Resource : sig

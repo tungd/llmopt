@@ -445,6 +445,105 @@ let graph () =
     [ update_destination; update_source ] [ 2; 4 ] Ir.Dtype.Float16
   |> output graph "update_slice_f16";
 
+  let triangular_input =
+    input graph "triangular_input" [ 1; 1; 4; 4 ] Ir.Dtype.Float32
+  in
+  let full length =
+    Tensor_shape.Index.Slice { start = 0; step = 1; length }
+  in
+  let rec triangular_reference ~prefix ~width state iteration =
+    if iteration = width then state
+    else
+      let row_index =
+        index
+          (List.map full prefix
+          @ [ Tensor_shape.Index.At iteration; full iteration ])
+      in
+      let square_index =
+        index (List.map full prefix @ [ full iteration; full iteration ])
+      in
+      let row =
+        primitive graph
+          (Ir.Primitive.Movement (Ir.Movement.Index row_index))
+          [ state ] (prefix @ [ iteration ]) Ir.Dtype.Float32
+      in
+      let square =
+        primitive graph
+          (Ir.Primitive.Movement (Ir.Movement.Index square_index))
+          [ state ] (prefix @ [ iteration; iteration ]) Ir.Dtype.Float32
+      in
+      let expanded =
+        primitive graph
+          (Ir.Primitive.Movement
+             (Ir.Movement.Unsqueeze (List.length prefix + 1)))
+          [ row ] (prefix @ [ iteration; 1 ]) Ir.Dtype.Float32
+      in
+      let product =
+        primitive graph
+          (Ir.Primitive.Pointwise
+             (Ir.Pointwise.Binary
+                ( Ir.Pointwise.Mul,
+                  Ir.Pointwise.Tensor expanded,
+                  Ir.Pointwise.Tensor square )))
+          [ expanded; square ] (prefix @ [ iteration; iteration ])
+          Ir.Dtype.Float32
+      in
+      let sum =
+        primitive graph
+          (Ir.Primitive.Reduce
+             { Ir.Reduction.operator = Ir.Reduction.Sum;
+               axes = [ List.length prefix ];
+               keepdim = false })
+          [ product ] (prefix @ [ iteration ]) Ir.Dtype.Float32
+      in
+      let updated_row =
+        primitive graph
+          (Ir.Primitive.Pointwise
+             (Ir.Pointwise.Binary
+                ( Ir.Pointwise.Add,
+                  Ir.Pointwise.Tensor row,
+                  Ir.Pointwise.Tensor sum )))
+          [ row; sum ] (prefix @ [ iteration ]) Ir.Dtype.Float32
+      in
+      let updated_state =
+        primitive graph (Ir.Primitive.Update_slice row_index)
+          [ state; updated_row ] (prefix @ [ width; width ]) Ir.Dtype.Float32
+      in
+      triangular_reference ~prefix ~width updated_state (iteration + 1)
+  in
+  triangular_reference ~prefix:[ 1; 1 ] ~width:4 triangular_input 1
+  |> output graph "triangular_recurrence_reference";
+  let triangular_recurrence =
+    Ir.Triangular_recurrence.create ~axis:2 ~start:1 ~stop:4 |> expect_ok
+  in
+  primitive graph (Ir.Primitive.Triangular_recurrence triangular_recurrence)
+    [ triangular_input ] [ 1; 1; 4; 4 ] Ir.Dtype.Float32
+  |> output graph "triangular_recurrence";
+
+  let triangular_wide_input =
+    input graph "triangular_wide_input" [ 1; 16; 1; 64; 64 ] Ir.Dtype.Float32
+  in
+  triangular_reference ~prefix:[ 1; 16; 1 ] ~width:64 triangular_wide_input 1
+  |> output graph "triangular_wide_reference";
+  let triangular_wide_recurrence =
+    Ir.Triangular_recurrence.create ~axis:3 ~start:1 ~stop:64 |> expect_ok
+  in
+  primitive graph
+    (Ir.Primitive.Triangular_recurrence triangular_wide_recurrence)
+    [ triangular_wide_input ] [ 1; 16; 1; 64; 64 ] Ir.Dtype.Float32
+  |> output graph "triangular_wide";
+
+  let zero_matmul_lhs =
+    input graph "zero_matmul_lhs" [ 1; 16; 64; 128 ] Ir.Dtype.Float32
+  in
+  let zero_matmul_rhs =
+    primitive graph (Ir.Primitive.Fill (Ir.Scalar.Float 0.0)) []
+      [ 1; 16; 128; 128 ] Ir.Dtype.Float32
+  in
+  primitive graph Ir.Primitive.Batched_matmul
+    [ zero_matmul_lhs; zero_matmul_rhs ] [ 1; 16; 64; 128 ] Ir.Dtype.Float32
+  |> output graph "zero_batched_matmul";
+
   let linear_f16_input =
     input graph "linear_f16_input" [ 2; 4 ] Ir.Dtype.Float16
   in

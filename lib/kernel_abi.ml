@@ -19,12 +19,15 @@ module Operation = struct
     | Diff
     | Cumsum
     | Fill
+    | Eye
     | Gather2
     | Cast
     | Pointwise
     | Movement
     | Reduction
     | Update_slice
+    | Batched_matmul
+    | Triangular_recurrence
     | Cache
 
   let to_string = function
@@ -47,12 +50,15 @@ module Operation = struct
     | Diff -> "diff"
     | Cumsum -> "cumsum"
     | Fill -> "fill"
+    | Eye -> "eye"
     | Gather2 -> "gather2"
     | Cast -> "cast"
     | Pointwise -> "pointwise"
     | Movement -> "movement"
     | Reduction -> "reduction"
     | Update_slice -> "update-slice"
+    | Batched_matmul -> "batched-matmul"
+    | Triangular_recurrence -> "triangular-recurrence"
     | Cache -> "cache"
 
   let of_string = function
@@ -75,12 +81,15 @@ module Operation = struct
     | "diff" -> Ok Diff
     | "cumsum" -> Ok Cumsum
     | "fill" -> Ok Fill
+    | "eye" -> Ok Eye
     | "gather2" -> Ok Gather2
     | "cast" -> Ok Cast
     | "pointwise" -> Ok Pointwise
     | "movement" -> Ok Movement
     | "reduction" -> Ok Reduction
     | "update-slice" -> Ok Update_slice
+    | "batched-matmul" -> Ok Batched_matmul
+    | "triangular-recurrence" -> Ok Triangular_recurrence
     | "cache" -> Ok Cache
     | value -> Error ("unsupported kernel operation: " ^ value)
 end

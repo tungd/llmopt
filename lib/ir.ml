@@ -481,6 +481,25 @@ module Cumsum = struct
   let to_string config = Printf.sprintf "cumsum(axis=%d)" config.axis
 end
 
+module Triangular_recurrence = struct
+  type t = { axis : int; start : int; stop : int }
+
+  let create ~axis ~start ~stop =
+    if axis < 0 then Error "triangular recurrence axis must be normalized"
+    else if start < 1 then Error "triangular recurrence start must be positive"
+    else if stop <= start then
+      Error "triangular recurrence stop must be greater than start"
+    else Ok { axis; start; stop }
+
+  let axis config = config.axis
+  let start config = config.start
+  let stop config = config.stop
+
+  let to_string config =
+    Printf.sprintf "triangular-recurrence(axis=%d,start=%d,stop=%d)"
+      config.axis config.start config.stop
+end
+
 module Primitive = struct
   type t =
     | Pointwise of Pointwise.t
@@ -494,6 +513,7 @@ module Primitive = struct
     | Arange of Arange.t
     | Diff of Diff.t
     | Cumsum of Cumsum.t
+    | Triangular_recurrence of Triangular_recurrence.t
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t
@@ -506,8 +526,9 @@ module Primitive = struct
   let values = function
     | Pointwise operation -> Pointwise.values operation
     | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _
-    | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _ | Fill _
-    | Gather2 | Update_slice _ | Pad_right_zero _ | Triangular _
+    | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _
+    | Triangular_recurrence _ | Fill _ | Gather2 | Update_slice _
+    | Pad_right_zero _ | Triangular _
     | Masked_fill _ | Eye | Batched_matmul -> []
 
   let to_string = function
@@ -522,6 +543,7 @@ module Primitive = struct
     | Arange config -> Arange.to_string config
     | Diff config -> Diff.to_string config
     | Cumsum config -> Cumsum.to_string config
+    | Triangular_recurrence config -> Triangular_recurrence.to_string config
     | Fill scalar -> "fill(" ^ Scalar.to_string scalar ^ ")"
     | Gather2 -> "gather2"
     | Update_slice index -> "update-" ^ Tensor_shape.Index.to_string index
@@ -756,4 +778,81 @@ module Graph = struct
         | Some value -> Format.fprintf formatter " -> %a" pp_value value);
         Format.fprintf formatter "@.")
       (nodes graph)
+end
+
+module Debug = struct
+  open Sexplib0.Sexp_conv
+
+  type value = {
+    value_id : int;
+    logical_shape : int list;
+    dtype : string;
+  }
+  [@@deriving sexp]
+
+  type node = {
+    node_id : int;
+    operation : string;
+    inputs : int list;
+    embedded_inputs : int list;
+    outputs : int list;
+  }
+  [@@deriving sexp]
+
+  type named_output = { name : string; value_id : int } [@@deriving sexp]
+
+  type snapshot = {
+    values : value list;
+    nodes : node list;
+    named_outputs : named_output list;
+  }
+  [@@deriving sexp]
+
+  let value_id value = Value.id value |> Value_id.to_int
+
+  let embedded_inputs op =
+    match op with
+    | Op.Opaque { arguments; keyword_arguments; _ } ->
+        arguments @ List.map snd keyword_arguments
+        |> List.concat_map Argument.values
+    | Op.Primitive (Primitive.Pointwise operation) ->
+        Pointwise.values operation
+    | _ -> []
+
+  let value value =
+    { value_id = value_id value;
+      logical_shape = Tensor_shape.dimensions (Value.logical_shape value);
+      dtype = Dtype.to_string (Value.dtype value) }
+
+  let node node =
+    let op = node_op node in
+    { node_id = node_id node;
+      operation = Op.to_string op;
+      inputs = List.map value_id (node_inputs node);
+      embedded_inputs = List.map value_id (embedded_inputs op);
+      outputs =
+        List.map value_id
+          (Option.to_list (node_output node) @ Op.additional_outputs op) }
+
+  let snapshot graph =
+    let graph_nodes = Graph.nodes graph in
+    let all_values =
+      graph_nodes
+      |> List.concat_map (fun node ->
+             let op = node_op node in
+             node_inputs node @ embedded_inputs op
+             @ Option.to_list (node_output node)
+             @ Op.additional_outputs op)
+      |> List.sort_uniq (fun left right ->
+             Value_id.compare (Value.id left) (Value.id right))
+      |> List.map value
+    in
+    { values = all_values;
+      nodes = List.map node graph_nodes;
+      named_outputs =
+        Graph.outputs graph
+        |> List.map (fun (name, value) -> { name; value_id = value_id value }) }
+
+  let to_sexp_string graph =
+    graph |> snapshot |> sexp_of_snapshot |> Sexplib0.Sexp.to_string_hum
 end

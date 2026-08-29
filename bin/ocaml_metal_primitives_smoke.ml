@@ -111,10 +111,8 @@ let () =
     Serving_package.of_file (Filename.concat root "package.llmopt") |> expect_ok
   in
   let runtime = Metal_runtime.load_package ~root package |> expect_ok in
-  let execution =
-    Metal_runtime.execute runtime
-      ~inputs:
-        [ input runtime "embedding_indices" (bytes_of_i64 [ 2; 0 ]);
+  let inputs =
+    [ input runtime "embedding_indices" (bytes_of_i64 [ 2; 0 ]);
           input runtime "embedding_weight"
             (bytes_of_u16 [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4500; 0x4600 ]);
           input runtime "diff_source" (bytes_of_i64 [ 0; 0; 2 ]);
@@ -223,6 +221,18 @@ let () =
                  0x4800 ]);
           input runtime "update_source"
             (bytes_of_u16 [ 0x4900; 0x4980; 0x4a00; 0x4a80 ]);
+          input runtime "triangular_input"
+            (bytes_of_f32
+               [ 0.1; -0.2; 0.3; -0.4; 0.5; -0.6; 0.7; -0.8; 0.9;
+                 -1.0; 1.1; -1.2; 1.3; -1.4; 1.5; -1.6 ]);
+          input runtime "triangular_wide_input"
+            (bytes_of_f32
+               (List.init (16 * 64 * 64) (fun index ->
+                    Float.of_int ((index mod 17) - 8) /. 64.0)));
+          input runtime "zero_matmul_lhs"
+            (bytes_of_f32
+               (List.init (16 * 64 * 128) (fun index ->
+                    Float.of_int ((index mod 17) - 8) /. 1024.0)));
           input runtime "linear_f16_input"
             (bytes_of_u16
                [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4000; 0x3c00; 0x0000;
@@ -232,9 +242,10 @@ let () =
                [ 0x3c00; 0x0000; 0x4000; 0xbc00; 0x0000; 0x3c00; 0xbc00;
                  0x4000; 0x4000; 0xc000; 0x0000; 0x3c00 ]);
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
-          input runtime "matmul_rhs" (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
-    |> expect_ok
+          input runtime "matmul_rhs"
+            (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
   in
+  let execution = Metal_runtime.execute runtime ~inputs |> expect_ok in
   expect_bytes execution "embedding"
     (bytes_of_u16 [ 0x4500; 0x4600; 0x3c00; 0x4000 ]);
   expect_bytes execution "arange" (bytes_of_i64 [ 5; 3; 1 ]);
@@ -315,6 +326,31 @@ let () =
   expect_bytes execution "update_slice_f16"
     (bytes_of_u16
        [ 0x3c00; 0x4900; 0x4980; 0x4400; 0x4500; 0x4a00; 0x4a80; 0x4800 ]);
+  let triangular_reference =
+    output execution "triangular_recurrence_reference"
+  in
+  let triangular_fused = output execution "triangular_recurrence" in
+  if not (Bytes.equal triangular_fused triangular_reference) then
+    fail
+      (Printf.sprintf
+         "triangular recurrence differs byte-for-byte: reference=%s fused=%s"
+         (hex triangular_reference) (hex triangular_fused));
+  let triangular_wide_reference =
+    output execution "triangular_wide_reference"
+  in
+  let triangular_wide = output execution "triangular_wide" in
+  if not (Bytes.equal triangular_wide triangular_wide_reference) then
+    fail "wide triangular recurrence differs byte-for-byte from its GPU chain";
+  let repeated = Metal_runtime.execute runtime ~inputs |> expect_ok in
+  let repeated_reference = output repeated "triangular_wide_reference" in
+  let repeated_fused = output repeated "triangular_wide" in
+  if not (Bytes.equal repeated_fused repeated_reference) then
+    fail
+      "repeated wide triangular recurrence differs byte-for-byte from its GPU chain";
+  expect_bytes execution "zero_batched_matmul"
+    (Bytes.make (16 * 64 * 128 * 4) '\000');
+  expect_bytes repeated "zero_batched_matmul"
+    (Bytes.make (16 * 64 * 128 * 4) '\000');
   expect_bytes execution "linear_f16"
     (bytes_of_u16 [ 0x4200; 0x4700; 0x4000; 0x3c00; 0x4200; 0x4200 ]);
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);

@@ -105,3 +105,4 @@
 * [Tensor-layout quantization and Linear storage classification](exp-0104-tensor-layout-capabilities-2026-08-29.md) - one physical-layout authority and closed Linear storage representation across archive, IR, pass, and planner seams.
 * [Typed Scan regions and Qwen recurrence recovery](exp-0105-typed-scan-recovery-2026-08-29.md) - graph-structural recovery of all 18 Qwen 63-step carried-state regions without architecture identifiers.
 * [Registered Metal tactics and paired-row Q4_K Linear](exp-0106-registered-metal-tactics-2026-08-29.md) - compiler-selected Metal implementations and paired-row Q4_K execution without model identifiers.
+* [Captured triangular recurrence fusion](exp-0107-triangular-recurrence-fusion-2026-08-30.md) - structural carried-state lowering and semantic kernel dispatch with fresh Qwen/Gemma llama.cpp context.

@@ -752,6 +752,46 @@ let gather2 state source_value first_index_value second_index_value output_value
       (Tensor.get_linear source ((row * cols) + col))
   done
 
+let triangular_recurrence state config input_value output_value output =
+  let input = find state input_value in
+  let dimensions =
+    Tensor_shape.dimensions (Ir.Value.logical_shape output_value)
+  in
+  let reversed = List.rev dimensions in
+  let width = List.hd reversed in
+  let rows = List.nth reversed 1 in
+  if rows <> width then failf "CPU triangular recurrence state must be square";
+  let outer =
+    Tensor_shape.numel (Ir.Value.logical_shape output_value) / (width * width)
+  in
+  let round_f32 value = Int32.float_of_bits (Int32.bits_of_float value) in
+  copy_into input output;
+  for group = 0 to outer - 1 do
+    let base = group * width * width in
+    for row = Ir.Triangular_recurrence.start config
+      to Ir.Triangular_recurrence.stop config - 1
+    do
+      let source =
+        Array.init row (fun column ->
+            Tensor.get_linear output (base + (row * width) + column))
+      in
+      for column = 0 to row - 1 do
+        let accumulator = ref 0.0 in
+        for inner = 0 to row - 1 do
+          let product =
+            round_f32
+              (source.(inner)
+              *. Tensor.get_linear output
+                   (base + (inner * width) + column))
+          in
+          accumulator := round_f32 (!accumulator +. product)
+        done;
+        Tensor.set_linear output (base + (row * width) + column)
+          (round_f32 (source.(column) +. !accumulator))
+      done
+    done
+  done
+
 let primitive state operation inputs output_value output =
   match operation, inputs with
   | Ir.Primitive.Pointwise operation, _ ->
@@ -776,6 +816,8 @@ let primitive state operation inputs output_value output =
       diff state config source prepend output_value output
   | Ir.Primitive.Cumsum config, [ input ] ->
       cumsum state config input output_value output
+  | Ir.Primitive.Triangular_recurrence config, [ input ] ->
+      triangular_recurrence state config input output_value output
   | Ir.Primitive.Fill scalar, [] -> fill scalar output_value output
   | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
       gather2 state source first_index second_index output_value output

@@ -245,6 +245,16 @@ module Cumsum : sig
   val to_string : t -> string
 end
 
+module Triangular_recurrence : sig
+  type t
+
+  val create : axis:int -> start:int -> stop:int -> (t, string) result
+  val axis : t -> int
+  val start : t -> int
+  val stop : t -> int
+  val to_string : t -> string
+end
+
 module Primitive : sig
   type t =
     | Pointwise of Pointwise.t
@@ -258,6 +268,7 @@ module Primitive : sig
     | Arange of Arange.t
     | Diff of Diff.t
     | Cumsum of Cumsum.t
+    | Triangular_recurrence of Triangular_recurrence.t
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t
@@ -386,4 +397,8 @@ module Graph : sig
   val with_nodes : t -> node list -> t
   val with_nodes_and_outputs : t -> node list -> (string * Value.t) list -> t
   val pp : Format.formatter -> t -> unit
+end
+
+module Debug : sig
+  val to_sexp_string : Graph.t -> string
 end

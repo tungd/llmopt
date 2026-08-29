@@ -793,6 +793,143 @@ let () =
         && Ir.Value.equal (Kernel_ir.Scan.final_state scan) scan_final
     | _ -> false)
     "typed Scan recovery finds a consecutive carried-state update chain";
+
+  let triangular_graph = Ir.Graph.create () in
+  let triangular_initial =
+    tensor_input triangular_graph ~name:"triangular_initial"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 1; 4; 4 ]
+      ~dtype:Ir.Dtype.Float32
+  in
+  let triangular_fresh shape =
+    Ir.Graph.fresh_tensor_value triangular_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float32
+  in
+  let triangular_append op inputs shape =
+    let output = triangular_fresh shape in
+    Ir.Graph.append triangular_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let full length =
+    Tensor_shape.Index.Slice { start = 0; step = 1; length }
+  in
+  let rec append_triangular state index =
+    if index = 4 then state
+    else
+      let row_index =
+        Tensor_shape.Index.of_selectors
+          [ full 1; full 1; Tensor_shape.Index.At index; full index ]
+        |> expect_ok
+      in
+      let square_index =
+        Tensor_shape.Index.of_selectors
+          [ full 1; full 1; full index; full index ]
+        |> expect_ok
+      in
+      let row =
+        triangular_append
+          (Ir.Op.Primitive
+             (Ir.Primitive.Movement (Ir.Movement.Index row_index)))
+          [ state ] [ 1; 1; index ]
+      in
+      let square =
+        triangular_append
+          (Ir.Op.Primitive
+             (Ir.Primitive.Movement (Ir.Movement.Index square_index)))
+          [ state ] [ 1; 1; index; index ]
+      in
+      let expanded_row =
+        triangular_append
+          (Ir.Op.Primitive
+             (Ir.Primitive.Movement (Ir.Movement.Unsqueeze 3)))
+          [ row ] [ 1; 1; index; 1 ]
+      in
+      let product =
+        triangular_append
+          (Ir.Op.Primitive
+             (Ir.Primitive.Pointwise
+                (Ir.Pointwise.Binary
+                   ( Ir.Pointwise.Mul,
+                     Ir.Pointwise.Tensor expanded_row,
+                     Ir.Pointwise.Tensor square ))))
+          [ expanded_row; square ] [ 1; 1; index; index ]
+      in
+      let sum =
+        triangular_append
+          (Ir.Op.Primitive
+             (Ir.Primitive.Reduce
+                { operator = Ir.Reduction.Sum;
+                  axes = [ 2 ];
+                  keepdim = false }))
+          [ product ] [ 1; 1; index ]
+      in
+      let updated_row =
+        triangular_append
+          (Ir.Op.Primitive
+             (Ir.Primitive.Pointwise
+                (Ir.Pointwise.Binary
+                   ( Ir.Pointwise.Add,
+                     Ir.Pointwise.Tensor row,
+                     Ir.Pointwise.Tensor sum ))))
+          [ row; sum ] [ 1; 1; index ]
+      in
+      let updated_state =
+        triangular_append
+          (Ir.Op.Primitive (Ir.Primitive.Update_slice row_index))
+          [ state; updated_row ] [ 1; 1; 4; 4 ]
+      in
+      append_triangular updated_state (index + 1)
+  in
+  let triangular_final = append_triangular triangular_initial 1 in
+  Ir.Graph.add_output triangular_graph ~name:"triangular_final"
+    triangular_final;
+  let triangular_scans = Passes.recover_scans triangular_graph in
+  expect
+    (match triangular_scans with
+    | [ scan ] ->
+        Kernel_ir.Scan.trip_count scan = 3
+        && List.length (Kernel_ir.Scan.member_node_ids scan) = 21
+        && List.for_all
+             (fun iteration -> iteration.Kernel_ir.Scan.body_inputs = [])
+             (Kernel_ir.Scan.iterations scan)
+    | _ -> false)
+    "typed Scan recovery includes each state-dependent iteration body";
+  let triangular_fused =
+    Kernel_ir.Scan.fuse_triangular_recurrences ~max_width:64
+      triangular_graph
+  in
+  expect
+    (Ir.Graph.nodes triangular_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | ( Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence config),
+               [ input ],
+               Some output ) ->
+               Ir.Triangular_recurrence.axis config = 2
+               && Ir.Triangular_recurrence.start config = 1
+               && Ir.Triangular_recurrence.stop config = 4
+               && Ir.Value.equal input triangular_initial
+               && Ir.Value.equal output triangular_final
+           | _ -> false))
+    "structural Scan lowering fuses a triangular recurrence without a model ID";
+  expect
+    (Ir.Graph.nodes triangular_fused |> List.length = 3)
+    "triangular Scan lowering removes all matched iteration intermediates";
+  let triangular_schedule =
+    triangular_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands triangular_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence _) -> true
+           | _ -> false))
+    "triangular recurrence survives schedule serialization";
+  let triangular_program = Metal.lower triangular_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source triangular_program)
+       "kernel void llmopt_triangular_recurrence_f32")
+    "Metal lowering emits the triangular recurrence kernel";
   let invalid_scan_output =
     Ir.Value.make_tensor ~id:50004
       ~shape:(Tensor_shape.of_ints_exn [ 1; 3; 5 ]) ~dtype:Ir.Dtype.Float32

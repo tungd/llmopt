@@ -196,6 +196,8 @@ let () =
                   if graph_input <> graph_destination then
                     write_file graph_destination graph_contents;
                   write_file (Filename.concat output_directory "plan.txt") plan;
+                  write_file (Filename.concat output_directory "plan.sexp")
+                    (Ir.Debug.to_sexp_string planned);
                   write_file (Filename.concat output_directory "kernel.metal")
                     (Metal.Program.source metal_program);
                   write_file (Filename.concat output_directory "kernel.ll")

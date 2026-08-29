@@ -1,5 +1,5 @@
 ocaml_flags = -O3 -g -bin-annot -I _build/ocaml
-ocaml_packages = -package yojson,unix,uutf,uucp,threads,webs,bytesrw,iomux
+ocaml_packages = -package yojson,unix,uutf,uucp,threads,webs,bytesrw,iomux,ppx_sexp_conv
 
 rule ocaml_interface
   command = mkdir -p _build/ocaml && ocamlfind ocamlopt $ocaml_packages $ocaml_flags -c $in -o $out
@@ -8,6 +8,10 @@ rule ocaml_interface
 rule ocaml_module
   command = mkdir -p _build/ocaml && ocamlfind ocamlopt $ocaml_packages $ocaml_flags -c $in -o $out
   description = ocaml module $in
+
+rule ocaml_module_sexp
+  command = mkdir -p _build/ocaml && ocamlfind ocamlopt $ocaml_packages -ppx "$$(ocamlfind query ppx_deriving)/ppx_deriving package:ppx_sexp_conv" $ocaml_flags -c $in -o $out
+  description = ocaml module with sexp derivation $in
 
 rule ocaml_link
   command = mkdir -p _build/bin && ocamlfind ocamlopt $ocaml_packages -linkpkg $in -o $out
@@ -182,7 +186,7 @@ build _build/ocaml/tensor_shape.cmi: ocaml_interface lib/tensor_shape.mli | _bui
 build _build/ocaml/tensor_shape.cmx: ocaml_module lib/tensor_shape.ml | _build/ocaml/tensor_shape.cmi _build/ocaml/shape.cmx
 
 build _build/ocaml/ir.cmi: ocaml_interface lib/ir.mli | _build/ocaml/shape.cmi _build/ocaml/tensor_shape.cmi
-build _build/ocaml/ir.cmx: ocaml_module lib/ir.ml | _build/ocaml/ir.cmi _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx
+build _build/ocaml/ir.cmx: ocaml_module_sexp lib/ir.ml | _build/ocaml/ir.cmi _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx
 
 build _build/ocaml/kernel_ir.cmi: ocaml_interface lib/kernel_ir.mli | _build/ocaml/ir.cmi _build/ocaml/tensor_shape.cmi
 build _build/ocaml/kernel_ir.cmx: ocaml_module lib/kernel_ir.ml | _build/ocaml/kernel_ir.cmi _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx
@@ -394,7 +398,7 @@ build _build/ocaml/llmopt_bench_quant.cmx: ocaml_module bin/llmopt_bench_quant.m
 build _build/bin/llmopt-bench-quant: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/gguf.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/metal.cmx _build/ocaml/llmopt_bench_quant.cmx _build/native/ocaml_metal_stubs.o
 
 build _build/fx-inputs/linear.graph.llmopt: fx_graph python/examples/linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
-build _build/fx-example/graph.llmopt _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest _build/fx-inputs/linear.graph.llmopt | _build/bin/llmopt-fx
+build _build/fx-example/graph.llmopt _build/fx-example/plan.txt _build/fx-example/plan.sexp _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest _build/fx-inputs/linear.graph.llmopt | _build/bin/llmopt-fx
 build _build/fx-example/kernel.ll.o: llvm_check _build/fx-example/kernel.ll
 build _build/fx-example/kernel.air: metal_check _build/fx-example/kernel.metal
 build _build/fx-example/kernel.metallib: metal_lib _build/fx-example/kernel.air
@@ -403,14 +407,14 @@ build _build/fx-example/package.ok: package_check _build/fx-example/package.llmo
   directory = _build/fx-example
 
 build _build/fx-inputs/w4a16-linear.graph.llmopt: fx_graph python/examples/w4a16_linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
-build _build/w4a16-fx-example/graph.llmopt _build/w4a16-fx-example/plan.txt _build/w4a16-fx-example/kernel.metal _build/w4a16-fx-example/kernel.ll _build/w4a16-fx-example/package.llmopt: w4a16_fx_manifest _build/fx-inputs/w4a16-linear.graph.llmopt | _build/bin/llmopt-fx
+build _build/w4a16-fx-example/graph.llmopt _build/w4a16-fx-example/plan.txt _build/w4a16-fx-example/plan.sexp _build/w4a16-fx-example/kernel.metal _build/w4a16-fx-example/kernel.ll _build/w4a16-fx-example/package.llmopt: w4a16_fx_manifest _build/fx-inputs/w4a16-linear.graph.llmopt | _build/bin/llmopt-fx
 build _build/w4a16-fx-example/kernel.air: metal_check _build/w4a16-fx-example/kernel.metal
 build _build/w4a16-fx-example/kernel.metallib: metal_lib _build/w4a16-fx-example/kernel.air
 build _build/w4a16-fx-example/package.ok: package_check _build/w4a16-fx-example/package.llmopt _build/w4a16-fx-example/kernel.metallib | _build/bin/llmopt-package-check
   checker = _build/bin/llmopt-package-check
   directory = _build/w4a16-fx-example
 build _build/w4a16-serving-example/weights.llmopt: w4a16_tensor_store python/examples/write_w4a16_weight_fixture.py
-build _build/w4a16-serving-example/graph.llmopt _build/w4a16-serving-example/plan.txt _build/w4a16-serving-example/kernel.metal _build/w4a16-serving-example/kernel.ll _build/w4a16-serving-example/package.llmopt: w4a16_serving_manifest _build/fx-inputs/w4a16-linear.graph.llmopt | _build/bin/llmopt-fx _build/w4a16-serving-example/weights.llmopt
+build _build/w4a16-serving-example/graph.llmopt _build/w4a16-serving-example/plan.txt _build/w4a16-serving-example/plan.sexp _build/w4a16-serving-example/kernel.metal _build/w4a16-serving-example/kernel.ll _build/w4a16-serving-example/package.llmopt: w4a16_serving_manifest _build/fx-inputs/w4a16-linear.graph.llmopt | _build/bin/llmopt-fx _build/w4a16-serving-example/weights.llmopt
 build _build/w4a16-serving-example/kernel.air: metal_check _build/w4a16-serving-example/kernel.metal
 build _build/w4a16-serving-example/kernel.metallib: metal_lib _build/w4a16-serving-example/kernel.air
 build _build/w4a16-serving-example/package.ok: package_check _build/w4a16-serving-example/package.llmopt _build/w4a16-serving-example/kernel.metallib _build/w4a16-serving-example/weights.llmopt | _build/bin/llmopt-package-check

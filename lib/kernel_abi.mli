@@ -19,12 +19,15 @@ module Operation : sig
     | Diff
     | Cumsum
     | Fill
+    | Eye
     | Gather2
     | Cast
     | Pointwise
     | Movement
     | Reduction
     | Update_slice
+    | Batched_matmul
+    | Triangular_recurrence
     | Cache
 
   val to_string : t -> string

@@ -4251,9 +4251,9 @@ let tensor_primitive_entries =
       Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_masked_fill_f32" Kernel_abi.Operation.Pointwise
       Ir.Dtype.Float32 Ir.Dtype.Float32;
-    entry "llmopt_eye_f32" Kernel_abi.Operation.Fill Ir.Dtype.Float32
+    entry "llmopt_eye_f32" Kernel_abi.Operation.Eye Ir.Dtype.Float32
       Ir.Dtype.Float32;
-    entry "llmopt_batched_matmul_f32" Kernel_abi.Operation.Matmul
+    entry "llmopt_batched_matmul_f32" Kernel_abi.Operation.Batched_matmul
       Ir.Dtype.Float32 Ir.Dtype.Float32 ]
 
 let fill_source =
@@ -4848,6 +4848,50 @@ let update_slice_entries =
       ~operation:Kernel_abi.Operation.Update_slice
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
+let triangular_recurrence_source =
+  "\nstruct TriangularRecurrenceParams {\n"
+  ^ "  uint outer; uint width; uint start; uint stop;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_triangular_recurrence_f32(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant TriangularRecurrenceParams& params [[buffer(2)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint group [[threadgroup_position_in_grid]]) {\n"
+  ^ "  if (group >= params.outer || params.width > 64) return;\n"
+  ^ "  threadgroup float state[64 * 64];\n"
+  ^ "  threadgroup float row_values[64];\n"
+  ^ "  const uint elements = params.width * params.width;\n"
+  ^ "  const uint base = group * elements;\n"
+  ^ "  for (uint offset = tid; offset < elements; offset += 64) {\n"
+  ^ "    state[offset] = input[base + offset];\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint row = params.start; row < params.stop; ++row) {\n"
+  ^ "    if (tid < row) row_values[tid] = state[row * params.width + tid];\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "    if (tid < row) {\n"
+  ^ "      float accumulator = 0.0f;\n"
+  ^ "      for (uint inner = 0; inner < row; ++inner) {\n"
+  ^ "        volatile float product = row_values[inner]\n"
+  ^ "            * state[inner * params.width + tid];\n"
+  ^ "        accumulator = accumulator + product;\n"
+  ^ "      }\n"
+  ^ "      state[row * params.width + tid] = row_values[tid] + accumulator;\n"
+  ^ "    }\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  }\n"
+  ^ "  for (uint offset = tid; offset < elements; offset += 64) {\n"
+  ^ "    output[base + offset] = state[offset];\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let triangular_recurrence_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_triangular_recurrence_f32"
+      ~operation:Kernel_abi.Operation.Triangular_recurrence
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -5241,6 +5285,11 @@ let lower ?(target = Target_hardware.default) graph =
   let update_slice =
     has_primitive graph (function Ir.Primitive.Update_slice _ -> true | _ -> false)
   in
+  let triangular_recurrence =
+    has_primitive graph (function
+      | Ir.Primitive.Triangular_recurrence _ -> true
+      | _ -> false)
+  in
   let attention_tactics = attention_tactics ~target graph in
   let attention_head_dimensions =
     attention_simd_head_dimensions attention_tactics
@@ -5301,6 +5350,9 @@ let lower ?(target = Target_hardware.default) graph =
       ( has_primitive graph (function Ir.Primitive.Cumsum _ -> true | _ -> false),
         cumsum_source,
         cumsum_entries );
+      ( triangular_recurrence,
+        triangular_recurrence_source,
+        triangular_recurrence_entries );
       (has_tensor_primitive graph, tensor_primitive_source, tensor_primitive_entries);
       ( has_primitive graph (function Ir.Primitive.Fill _ -> true | _ -> false),
         fill_source,
