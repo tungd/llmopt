@@ -27,6 +27,9 @@ sources:
   - id: lfm-performance
     resource: /.okf/experiments/exp-0100-model-program-v2-llama-cpp-comparison-2026-08-29.md
     title: Current LFM Model Program comparison with llama.cpp
+  - id: full-model-comparison
+    resource: /.okf/experiments/exp-0101-gguf-full-model-comparison-2026-08-29.md
+    title: Captured full-model GGUF comparison
 ---
 
 # Boundary
@@ -46,9 +49,9 @@ Ninja `all` target excludes model-specific diagnostic executables.
 | Probe | Measured or captured coverage | Current boundary |
 |---|---|---|
 | `LiquidAI/LFM2.5-350M` | Complete W4A16/Q8-KV prefill, decode, cache, tokenizer, Model Program ABI v2 serving, and a four-repeat same-text comparison with llama.cpp Q4_0 | Only end-to-end serving probe. The comparison is not GGUF/UD weight parity and remains owned by `Lfm25_probe`, probe-only diagnostics, and LFM receipts. |
-| `HuggingFaceTB/SmolLM2-135M-Instruct` | One real Q5_0 GGUF Linear executed 576/576 exact; full CPU FX capture returned 274 placeholders and mapped 273/273 state entries | No complete native package, generation run, or llama.cpp performance receipt. The earlier unsupported full-model/performance claim is deprecated. |
-| `unsloth/Qwen3.5-0.8B` | One real UD Q4_K GGUF Linear executed 3581/3584 exact with max abs `0.000030517578125`; full meta capture contained 14,219 nodes | 303/321 static entries map through the generic name table; derived buffers, `ssm_dt` naming, and IQ4_XS execution remain outside the recorded package. |
-| `unsloth/gemma-4-E2B-it` | One real UD Q4_K GGUF Linear executed 2048/2048 exact; full meta capture contained 4,399 nodes and mapped 541/541 state entries | No complete native package or generation run; the GGUF carries additional PLE tensors and IQ4_XS tensors not executed by the recorded probe. |
+| `HuggingFaceTB/SmolLM2-135M-Instruct` | Q4_K_M GGUF: 2,131-node capture, 273 statics, 2,461-command zero-opaque native full forward; both token argmax IDs match the same-GGUF Transformers reference | Two-token no-cache median is `10.454059 ms` versus llama.cpp `3.7798125 ms` (`2.7658x`). No LLMOpt cached decode, Model Program, or HTTP serving run. |
+| `unsloth/Qwen3.5-0.8B` | UD-Q4_K_XL GGUF: 14,219-node capture, all 321 statics resolved, and a 26,151-command package inventory | No native full-forward sample: 2,984 commands remain opaque and ten mapped weights are `IQ4_XS`. llama.cpp two-token median is `7.4071875 ms`. |
+| `unsloth/gemma-4-E2B-it` | UD-Q4_K_XL GGUF: 4,399-node capture, 544 statics, 7,048-command zero-opaque native full forward; both token argmax IDs match the same-GGUF Transformers reference | Two-token no-cache median is `485.463500 ms` versus llama.cpp `17.8397915 ms` (`27.2124x`). No LLMOpt cached decode, Model Program, or HTTP serving run. |
 
 # Adding a probe
 

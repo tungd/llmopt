@@ -68,6 +68,7 @@ cached tokens for llama.cpp versus 192 and 74 for LLMOpt. `llama-server` does
 not expose LLMOpt token IDs. The measured latency and ERS differences therefore
 include weight format, tokenization, and cache-work differences.
 
-The GGUF/UD parity path remains separately evidenced at the representative
-Linear boundary for SmolLM, Qwen, and Gemma in exp-0099; none of those three
-models has a complete serving performance receipt in this repository.
+The GGUF/UD path is separately evidenced at the representative Linear boundary
+in exp-0099 and at complete no-cache full-forward scope for SmolLM and Gemma in
+exp-0101. Those full forwards do not include the cached decode and HTTP serving
+contract measured here.

@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-29T15:00:03+07:00",
+  "git_base_commit": "62540fb941c05f438a3066ccdb74cd9cbb34b498",
+  "host": {
+    "device": "Apple M4 Pro",
+    "os": "Darwin 25.6.0",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "contract": {
+    "llmopt_path": [
+      "torch.compile(fullgraph=True,dynamic=False)",
+      "FX capture",
+      "captured-static-to-GGUF binding",
+      "OCaml IR and schedule lowering",
+      "Metal compilation",
+      "native mmap GGUF execution"
+    ],
+    "topology_authority": "captured FX graph",
+    "gguf_architecture_id_use": "import provenance and tensor-name translation only; never compiler or runtime topology dispatch",
+    "full_forward": {
+      "input_ids": [[1, 2]],
+      "use_cache": false,
+      "warmup": 3,
+      "repeats": 10,
+      "timing_scope": "one complete two-token forward returning all logits"
+    },
+    "llama_bench": {
+      "prompt_tokens": 2,
+      "generated_tokens": 0,
+      "repetitions": 10,
+      "timing_scope": "llama-bench prompt processing for two tokens"
+    },
+    "http": {
+      "trace": "bench/traces/lfm25-mps-smoke.json",
+      "warmup_trace": "bench/traces/lfm25-mps-warmup.json",
+      "workers": 1,
+      "repeats": 3,
+      "note": "llama.cpp serving context only; no LLMOpt serving package exists for these three captures"
+    }
+  },
+  "models": [
+    {
+      "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "gguf": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+      "full_capture": {
+        "fx_nodes": 2131,
+        "static_tensors": 273,
+        "gguf_mappings": 272,
+        "derived_tensors": 1,
+        "ir_commands": 2461,
+        "opaque_commands": 0,
+        "declared_kernels": 73,
+        "native_dispatches": 1121
+      },
+      "llmopt_full_forward_ms": {
+        "median": 10.454059,
+        "min": 9.775877,
+        "max": 11.544943
+      },
+      "llama_cpp_full_forward_ms": {
+        "median": 3.7798125,
+        "mean": 3.925591,
+        "samples": [
+          4.84325,
+          4.481125,
+          3.880875,
+          5.046375,
+          3.67875,
+          3.583208,
+          3.479041,
+          3.305917,
+          3.0485,
+          3.908875
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 2.7657612646129937,
+      "logit_comparison": {
+        "reference": "Transformers model loaded from the same GGUF",
+        "elements": 98304,
+        "finite_elements": 98304,
+        "exact_elements": 15455,
+        "max_abs": 4.9296875,
+        "mean_abs": 0.36043033,
+        "token_argmax_actual": [198, 198],
+        "token_argmax_reference": [198, 198]
+      },
+      "llama_cpp_http": {
+        "successful_requests": 4,
+        "requests": 4,
+        "median_ttft_ms": 6.475186994066462,
+        "median_tpot_ms": 2.5649931679557385,
+        "ers": 0.8375875694950634,
+        "prompt_tokens": 200,
+        "cached_prompt_tokens": 145
+      }
+    },
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+      "full_capture": {
+        "fx_nodes": 14219,
+        "static_tensors": 321,
+        "gguf_mappings": 320,
+        "derived_tensors": 1,
+        "ir_commands": 26151,
+        "opaque_commands": 2984,
+        "opaque_histogram": {
+          "call_method clone": 2268,
+          "aten.matmul.default": 145,
+          "exp": 108,
+          "pad": 90,
+          "type_as": 61,
+          "getitem": 54,
+          "tril": 36,
+          "triu": 36,
+          "ones": 36,
+          "sigmoid_method": 18,
+          "masked_fill": 18,
+          "cumsum": 18,
+          "split": 18,
+          "zeros": 18,
+          "eye": 18,
+          "conv1d": 18,
+          "softplus": 18,
+          "torch_sigmoid": 6
+        },
+        "unsupported_gguf_weight_tensors": {
+          "quant_type": "IQ4_XS",
+          "count": 10
+        },
+        "native_execution": "not reached"
+      },
+      "llama_cpp_full_forward_ms": {
+        "median": 7.4071875,
+        "mean": 7.510562,
+        "samples": [
+          7.449458,
+          7.388708,
+          8.016375,
+          7.403333,
+          7.414084,
+          7.396,
+          7.406916,
+          7.401333,
+          7.407459,
+          7.821958
+        ]
+      },
+      "llama_cpp_http": {
+        "successful_requests": 4,
+        "requests": 4,
+        "median_ttft_ms": 38.98491650761571,
+        "median_tpot_ms": 6.506062495949058,
+        "ers": 0.5120294884574619,
+        "prompt_tokens": 187,
+        "cached_prompt_tokens": 82
+      }
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+      "full_capture": {
+        "fx_nodes": 4399,
+        "static_tensors": 544,
+        "gguf_mappings": 505,
+        "derived_tensors": 39,
+        "ir_commands": 7048,
+        "opaque_commands": 0,
+        "declared_kernels": 81,
+        "native_dispatches": 3226
+      },
+      "llmopt_full_forward_ms": {
+        "median": 485.4635,
+        "min": 484.48801,
+        "max": 501.17898
+      },
+      "llama_cpp_full_forward_ms": {
+        "median": 17.8397915,
+        "mean": 17.628941,
+        "samples": [
+          17.975,
+          17.1705,
+          17.259709,
+          17.872417,
+          17.807166,
+          17.95,
+          17.29375,
+          17.127667,
+          17.929083,
+          17.904125
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 27.212397633683107,
+      "logit_comparison": {
+        "reference": "Transformers model loaded from the same GGUF",
+        "elements": 524288,
+        "finite_elements": 524288,
+        "exact_elements": 119746,
+        "max_abs": 0.109619140625,
+        "mean_abs": 0.01376807689666748,
+        "token_argmax_actual": [84904, 148465],
+        "token_argmax_reference": [84904, 148465]
+      },
+      "llama_cpp_http": {
+        "successful_requests": 4,
+        "requests": 4,
+        "median_ttft_ms": 127.38672900013626,
+        "median_tpot_ms": 0.0,
+        "ers": 0.749108531065989,
+        "prompt_tokens": 188,
+        "cached_prompt_tokens": 104,
+        "tpot_note": "llama-server emitted four reasoning tokens in one SSE reasoning_content delta"
+      }
+    }
+  ]
+}
