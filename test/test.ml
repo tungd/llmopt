@@ -1336,6 +1336,18 @@ let () =
   expect (compile_msl_string q8_0_src) "q8_0 MSL compiles cleanly with xcrun metal";
   expect (compile_msl_string q5_0_src) "q5_0 MSL compiles cleanly with xcrun metal";
 
+  (* Superblock-256 K-Quant Metal Dequantization & Shader Tests *)
+  let q4_k_src = Metal.emit_dequant_q4_k () in
+  expect (String.length q4_k_src > 0) "q4_k MSL shader emitted";
+  let q5_k_src = Metal.emit_dequant_q5_k () in
+  expect (String.length q5_k_src > 0) "q5_k MSL shader emitted";
+  let q6_k_src = Metal.emit_dequant_q6_k () in
+  expect (String.length q6_k_src > 0) "q6_k MSL shader emitted";
+
+  expect (compile_msl_string q4_k_src) "q4_k MSL compiles cleanly with xcrun metal";
+  expect (compile_msl_string q5_k_src) "q5_k MSL compiles cleanly with xcrun metal";
+  expect (compile_msl_string q6_k_src) "q6_k MSL compiles cleanly with xcrun metal";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 

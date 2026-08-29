@@ -1860,6 +1860,10 @@ struct QuantBlock32Params {
     uint total_blocks;
 };
 
+struct QuantBlock256Params {
+    uint total_superblocks;
+};
+
 struct QuantLinearParams {
     uint m;
     uint n;
@@ -2008,6 +2012,353 @@ let metal_header =
 
 let emit_dequant_q8_0 () = metal_header ^ quant_common_source ^ q8_0_source
 let emit_dequant_q5_0 () = metal_header ^ quant_common_source ^ q5_0_source
+
+let q4_k_source = {|
+struct block_q4_K {
+    half d;
+    half dmin;
+    uint8_t scales[12];
+    uint8_t qs[128];
+};
+
+kernel void llmopt_dequant_q4_k(
+    device const block_q4_K* blocks [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant QuantBlock256Params& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint sb_idx = gid >> 5;
+  if (sb_idx >= params.total_superblocks) return;
+  device const block_q4_K& b = blocks[sb_idx];
+  const float d = float(b.d);
+  const float dmin = float(b.dmin);
+  float dl[8];
+  float ml[8];
+  for (int j = 0; j < 4; ++j) {
+    const uint8_t sc0 = b.scales[j] & 63;
+    const uint8_t m0 = b.scales[j + 4] & 63;
+    const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
+    const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+    dl[j] = d * float(sc0);
+    ml[j] = dmin * float(m0);
+    dl[j + 4] = d * float(sc1);
+    ml[j + 4] = dmin * float(m1);
+  }
+  const uint8_t q0 = b.qs[lane];
+  const uint8_t q1 = b.qs[32 + lane];
+  const uint8_t q2 = b.qs[64 + lane];
+  const uint8_t q3 = b.qs[96 + lane];
+  output[sb_idx * 256 + 0 + lane]   = half(dl[0] * float(q0 & 0x0Fu) - ml[0]);
+  output[sb_idx * 256 + 32 + lane]  = half(dl[1] * float(q0 >> 4)    - ml[1]);
+  output[sb_idx * 256 + 64 + lane]  = half(dl[2] * float(q1 & 0x0Fu) - ml[2]);
+  output[sb_idx * 256 + 96 + lane]  = half(dl[3] * float(q1 >> 4)    - ml[3]);
+  output[sb_idx * 256 + 128 + lane] = half(dl[4] * float(q2 & 0x0Fu) - ml[4]);
+  output[sb_idx * 256 + 160 + lane] = half(dl[5] * float(q2 >> 4)    - ml[5]);
+  output[sb_idx * 256 + 192 + lane] = half(dl[6] * float(q3 & 0x0Fu) - ml[6]);
+  output[sb_idx * 256 + 224 + lane] = half(dl[7] * float(q3 >> 4)    - ml[7]);
+}
+
+kernel void llmopt_q4_k_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q4_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q4_K* row_blocks = weight + col * num_superblocks;
+  device const half* in_ptr = input + row * params.k;
+  float acc = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q4_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8];
+    float ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = b.scales[j] & 63;
+      const uint8_t m0 = b.scales[j + 4] & 63;
+      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
+      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(q0 & 0x0Fu) - ml[0]);
+    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float(q0 >> 4)    - ml[1]);
+    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float(q1 & 0x0Fu) - ml[2]);
+    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float(q1 >> 4)    - ml[3]);
+    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float(q2 & 0x0Fu) - ml[4]);
+    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float(q2 >> 4)    - ml[5]);
+    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float(q3 & 0x0Fu) - ml[6]);
+    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float(q3 >> 4)    - ml[7]);
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    if (params.has_bias != 0u) acc += float(bias[col]);
+    output[row * params.n + col] = half(acc);
+  }
+}
+|}
+
+let q5_k_source = {|
+struct block_q5_K {
+    half d;
+    half dmin;
+    uint8_t scales[12];
+    uint8_t qh[32];
+    uint8_t qs[128];
+};
+
+kernel void llmopt_dequant_q5_k(
+    device const block_q5_K* blocks [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant QuantBlock256Params& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint sb_idx = gid >> 5;
+  if (sb_idx >= params.total_superblocks) return;
+  device const block_q5_K& b = blocks[sb_idx];
+  const float d = float(b.d);
+  const float dmin = float(b.dmin);
+  float dl[8];
+  float ml[8];
+  for (int j = 0; j < 4; ++j) {
+    const uint8_t sc0 = b.scales[j] & 63;
+    const uint8_t m0 = b.scales[j + 4] & 63;
+    const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
+    const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+    dl[j] = d * float(sc0);
+    ml[j] = dmin * float(m0);
+    dl[j + 4] = d * float(sc1);
+    ml[j + 4] = dmin * float(m1);
+  }
+  const uint8_t qh = b.qh[lane];
+  const uint8_t h0 = (qh >> 0) & 1u;
+  const uint8_t h1 = (qh >> 1) & 1u;
+  const uint8_t h2 = (qh >> 2) & 1u;
+  const uint8_t h3 = (qh >> 3) & 1u;
+  const uint8_t h4 = (qh >> 4) & 1u;
+  const uint8_t h5 = (qh >> 5) & 1u;
+  const uint8_t h6 = (qh >> 6) & 1u;
+  const uint8_t h7 = (qh >> 7) & 1u;
+  const uint8_t q0 = b.qs[lane];
+  const uint8_t q1 = b.qs[32 + lane];
+  const uint8_t q2 = b.qs[64 + lane];
+  const uint8_t q3 = b.qs[96 + lane];
+  output[sb_idx * 256 + 0 + lane]   = half(dl[0] * float((q0 & 0x0Fu) | (h0 << 4)) - ml[0]);
+  output[sb_idx * 256 + 32 + lane]  = half(dl[1] * float((q0 >> 4)    | (h1 << 4)) - ml[1]);
+  output[sb_idx * 256 + 64 + lane]  = half(dl[2] * float((q1 & 0x0Fu) | (h2 << 4)) - ml[2]);
+  output[sb_idx * 256 + 96 + lane]  = half(dl[3] * float((q1 >> 4)    | (h3 << 4)) - ml[3]);
+  output[sb_idx * 256 + 128 + lane] = half(dl[4] * float((q2 & 0x0Fu) | (h4 << 4)) - ml[4]);
+  output[sb_idx * 256 + 160 + lane] = half(dl[5] * float((q2 >> 4)    | (h5 << 4)) - ml[5]);
+  output[sb_idx * 256 + 192 + lane] = half(dl[6] * float((q3 & 0x0Fu) | (h6 << 4)) - ml[6]);
+  output[sb_idx * 256 + 224 + lane] = half(dl[7] * float((q3 >> 4)    | (h7 << 4)) - ml[7]);
+}
+
+kernel void llmopt_q5_k_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q5_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q5_K* row_blocks = weight + col * num_superblocks;
+  device const half* in_ptr = input + row * params.k;
+  float acc = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q5_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8];
+    float ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = b.scales[j] & 63;
+      const uint8_t m0 = b.scales[j + 4] & 63;
+      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
+      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t qh = b.qh[lane];
+    const uint8_t h0 = (qh >> 0) & 1u;
+    const uint8_t h1 = (qh >> 1) & 1u;
+    const uint8_t h2 = (qh >> 2) & 1u;
+    const uint8_t h3 = (qh >> 3) & 1u;
+    const uint8_t h4 = (qh >> 4) & 1u;
+    const uint8_t h5 = (qh >> 5) & 1u;
+    const uint8_t h6 = (qh >> 6) & 1u;
+    const uint8_t h7 = (qh >> 7) & 1u;
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float((q0 & 0x0Fu) | (h0 << 4)) - ml[0]);
+    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float((q0 >> 4)    | (h1 << 4)) - ml[1]);
+    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float((q1 & 0x0Fu) | (h2 << 4)) - ml[2]);
+    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float((q1 >> 4)    | (h3 << 4)) - ml[3]);
+    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float((q2 & 0x0Fu) | (h4 << 4)) - ml[4]);
+    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float((q2 >> 4)    | (h5 << 4)) - ml[5]);
+    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float((q3 & 0x0Fu) | (h6 << 4)) - ml[6]);
+    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float((q3 >> 4)    | (h7 << 4)) - ml[7]);
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    if (params.has_bias != 0u) acc += float(bias[col]);
+    output[row * params.n + col] = half(acc);
+  }
+}
+|}
+
+let q6_k_source = {|
+struct block_q6_K {
+    uint8_t ql[128];
+    uint8_t qh[64];
+    int8_t scales[16];
+    half d;
+};
+
+kernel void llmopt_dequant_q6_k(
+    device const block_q6_K* blocks [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant QuantBlock256Params& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint sb_idx = gid >> 5;
+  if (sb_idx >= params.total_superblocks) return;
+  device const block_q6_K& b = blocks[sb_idx];
+  const float d = float(b.d);
+  device const uint8_t* ql = b.ql;
+  device const uint8_t* qh = b.qh;
+  device const int8_t* sc = b.scales;
+  const int is = lane / 16;
+  const int q1 = int((ql[lane] & 0x0Fu) | (((qh[lane] >> 0) & 3u) << 4)) - 32;
+  const int q2 = int((ql[32 + lane] & 0x0Fu) | (((qh[lane] >> 2) & 3u) << 4)) - 32;
+  const int q3 = int((ql[lane] >> 4) | (((qh[lane] >> 4) & 3u) << 4)) - 32;
+  const int q4 = int((ql[32 + lane] >> 4) | (((qh[lane] >> 6) & 3u) << 4)) - 32;
+  output[sb_idx * 256 + 0 + lane]  = half(d * float(sc[is + 0]) * float(q1));
+  output[sb_idx * 256 + 32 + lane] = half(d * float(sc[is + 2]) * float(q2));
+  output[sb_idx * 256 + 64 + lane] = half(d * float(sc[is + 4]) * float(q3));
+  output[sb_idx * 256 + 96 + lane] = half(d * float(sc[is + 6]) * float(q4));
+
+  const int q5 = int((ql[64 + lane] & 0x0Fu) | (((qh[32 + lane] >> 0) & 3u) << 4)) - 32;
+  const int q6 = int((ql[96 + lane] & 0x0Fu) | (((qh[32 + lane] >> 2) & 3u) << 4)) - 32;
+  const int q7 = int((ql[64 + lane] >> 4) | (((qh[32 + lane] >> 4) & 3u) << 4)) - 32;
+  const int q8 = int((ql[96 + lane] >> 4) | (((qh[32 + lane] >> 6) & 3u) << 4)) - 32;
+  output[sb_idx * 256 + 128 + lane] = half(d * float(sc[8 + is + 0]) * float(q5));
+  output[sb_idx * 256 + 160 + lane] = half(d * float(sc[8 + is + 2]) * float(q6));
+  output[sb_idx * 256 + 192 + lane] = half(d * float(sc[8 + is + 4]) * float(q7));
+  output[sb_idx * 256 + 224 + lane] = half(d * float(sc[8 + is + 6]) * float(q8));
+}
+
+kernel void llmopt_q6_k_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q6_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q6_K* row_blocks = weight + col * num_superblocks;
+  device const half* in_ptr = input + row * params.k;
+  float acc = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q6_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    device const uint8_t* ql = b.ql;
+    device const uint8_t* qh = b.qh;
+    device const int8_t* sc = b.scales;
+    const int is = lane / 16;
+    const int q1 = int((ql[lane] & 0x0Fu) | (((qh[lane] >> 0) & 3u) << 4)) - 32;
+    const int q2 = int((ql[32 + lane] & 0x0Fu) | (((qh[lane] >> 2) & 3u) << 4)) - 32;
+    const int q3 = int((ql[lane] >> 4) | (((qh[lane] >> 4) & 3u) << 4)) - 32;
+    const int q4 = int((ql[32 + lane] >> 4) | (((qh[lane] >> 6) & 3u) << 4)) - 32;
+    const uint base_idx = sb * 256 + lane;
+    acc += float(in_ptr[base_idx + 0])  * (d * float(sc[is + 0]) * float(q1));
+    acc += float(in_ptr[base_idx + 32]) * (d * float(sc[is + 2]) * float(q2));
+    acc += float(in_ptr[base_idx + 64]) * (d * float(sc[is + 4]) * float(q3));
+    acc += float(in_ptr[base_idx + 96]) * (d * float(sc[is + 6]) * float(q4));
+
+    const int q5 = int((ql[64 + lane] & 0x0Fu) | (((qh[32 + lane] >> 0) & 3u) << 4)) - 32;
+    const int q6 = int((ql[96 + lane] & 0x0Fu) | (((qh[32 + lane] >> 2) & 3u) << 4)) - 32;
+    const int q7 = int((ql[64 + lane] >> 4) | (((qh[32 + lane] >> 4) & 3u) << 4)) - 32;
+    const int q8 = int((ql[96 + lane] >> 4) | (((qh[32 + lane] >> 6) & 3u) << 4)) - 32;
+    acc += float(in_ptr[base_idx + 128]) * (d * float(sc[8 + is + 0]) * float(q5));
+    acc += float(in_ptr[base_idx + 160]) * (d * float(sc[8 + is + 2]) * float(q6));
+    acc += float(in_ptr[base_idx + 192]) * (d * float(sc[8 + is + 4]) * float(q7));
+    acc += float(in_ptr[base_idx + 224]) * (d * float(sc[8 + is + 6]) * float(q8));
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    if (params.has_bias != 0u) acc += float(bias[col]);
+    output[row * params.n + col] = half(acc);
+  }
+}
+|}
+
+let kquant_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_dequant_q4_k"
+      ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_dequant_q5_k"
+      ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_dequant_q6_k"
+      ~operation:Kernel_abi.Operation.Cast
+      ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_k_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q5_k_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q6_k_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16 ]
+
+let add_kquant_kernels program =
+  Program.make
+    ~source:
+      (Program.source program ^ quant_common_source ^ q4_k_source ^ q5_k_source ^ q6_k_source)
+    ~kernels:(Program.kernels program @ kquant_entries)
+
+let emit_dequant_q4_k () = metal_header ^ quant_common_source ^ q4_k_source
+let emit_dequant_q5_k () = metal_header ^ quant_common_source ^ q5_k_source
+let emit_dequant_q6_k () = metal_header ^ quant_common_source ^ q6_k_source
 
 let linear_f16_source =
   "\nconstant uint LINEAR_SIMD_WIDTH = 32;\n"
