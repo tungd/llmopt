@@ -378,6 +378,9 @@ build _build/bin/llmopt-native-schedule-fixture: ocaml_link _build/ocaml/shape.c
 build _build/ocaml/ocaml_metal_primitives_smoke.cmx: ocaml_module bin/ocaml_metal_primitives_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/weight_archive.cmx
 build _build/bin/llmopt-ocaml-metal-primitives-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_primitives_smoke.cmx _build/native/ocaml_metal_stubs.o
 
+build _build/ocaml/llmopt_inspect_gguf.cmx: ocaml_module bin/llmopt_inspect_gguf.ml | _build/ocaml/gguf.cmx _build/ocaml/weight_archive.cmx
+build _build/bin/llmopt-inspect-gguf: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/binary.cmx _build/ocaml/weight_archive.cmx _build/ocaml/gguf.cmx _build/ocaml/llmopt_inspect_gguf.cmx
+
 build _build/fx-inputs/linear.graph.llmopt: fx_graph python/examples/linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
 build _build/fx-example/graph.llmopt _build/fx-example/plan.txt _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest _build/fx-inputs/linear.graph.llmopt | _build/bin/llmopt-fx
 build _build/fx-example/kernel.ll.o: llvm_check _build/fx-example/kernel.ll

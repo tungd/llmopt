@@ -49,6 +49,8 @@ let quant_block_bytes = function
   | Ir.Dtype.Q5_K -> 256, 176
   | Ir.Dtype.Q6_K -> 256, 210
   | Ir.Dtype.Q5_0 -> 32, 22
+  | Ir.Dtype.Q4_0 -> 32, 18
+  | Ir.Dtype.IQ4_XS -> 256, 136
 
 let value_bytes value =
   let shape = Ir.Value.logical_shape value in

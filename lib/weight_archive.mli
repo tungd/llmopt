@@ -5,6 +5,8 @@ module Dtype : sig
     | Q5_K
     | Q6_K
     | Q5_0
+    | Q4_0
+    | IQ4_XS
 
   type t =
     | F32

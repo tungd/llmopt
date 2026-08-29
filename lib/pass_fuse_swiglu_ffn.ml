@@ -139,6 +139,8 @@ let quant_block_bytes = function
   | Ir.Dtype.Q5_K -> 256, 176L
   | Ir.Dtype.Q6_K -> 256, 210L
   | Ir.Dtype.Q5_0 -> 32, 22L
+  | Ir.Dtype.Q4_0 -> 32, 18L
+  | Ir.Dtype.IQ4_XS -> 256, 136L
 
 let bytes_for_value value =
   let elements = numel value in

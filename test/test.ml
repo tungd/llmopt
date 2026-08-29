@@ -1436,6 +1436,24 @@ let () =
   done;
   expect (Bytes.length q6_k_raw = 210) "Q6_K raw block size is 210 bytes";
 
+  (* 6. Real GGUF Model Files Verification Across Wider Family *)
+  let check_gguf_if_exists path expected_arch min_tensors =
+    if Sys.file_exists path then (
+      match Gguf.of_file path with
+      | Error err -> failwith (Printf.sprintf "failed to parse %s: %s" path err)
+      | Ok model ->
+          expect (Gguf.architecture model = Some expected_arch) (Printf.sprintf "%s architecture is %s" path expected_arch);
+          expect (List.length model.tensors >= min_tensors) (Printf.sprintf "%s has at least %d tensors" path min_tensors))
+  in
+  let qwen_path = "/Users/tung/.cache/huggingface/hub/models--unsloth--Qwen3.5-0.8B-GGUF/snapshots/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-UD-Q4_K_XL.gguf" in
+  let llama_path = "/Users/tung/.cache/huggingface/hub/models--unsloth--Llama-3.2-1B-Instruct-GGUF/snapshots/b69aef112e9f895e6f98d7ae0949f72ff09aa401/Llama-3.2-1B-Instruct-Q4_K_M.gguf" in
+  let smol_path = "/Users/tung/.cache/huggingface/hub/models--unsloth--SmolLM2-135M-Instruct-GGUF/snapshots/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q4_K_M.gguf" in
+  let lfm_path = "/Users/tung/.cache/huggingface/hub/models--LiquidAI--LFM2.5-350M-GGUF/snapshots/9969000761ce34de907bf20017cbfc3d52d6eaf9/LFM2.5-350M-Q8_0.gguf" in
+  check_gguf_if_exists qwen_path "qwen35" 300;
+  check_gguf_if_exists llama_path "llama" 100;
+  check_gguf_if_exists smol_path "llama" 200;
+  check_gguf_if_exists lfm_path "lfm2" 100;
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 

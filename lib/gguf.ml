@@ -83,12 +83,14 @@ type t = {
 let dtype_of_ggml_type = function
   | 0 -> Ok Weight_archive.Dtype.F32
   | 1 -> Ok Weight_archive.Dtype.F16
+  | 2 -> Ok (Weight_archive.Dtype.Quant Q4_0)
   | 6 -> Ok (Weight_archive.Dtype.Quant Q5_0)
   | 8 -> Ok (Weight_archive.Dtype.Quant Q8_0)
   | 12 -> Ok (Weight_archive.Dtype.Quant Q4_K)
   | 13 -> Ok (Weight_archive.Dtype.Quant Q5_K)
   | 14 -> Ok (Weight_archive.Dtype.Quant Q6_K)
-  | 28 -> Ok Weight_archive.Dtype.BF16
+  | 23 -> Ok (Weight_archive.Dtype.Quant IQ4_XS)
+  | 28 | 30 -> Ok Weight_archive.Dtype.BF16
   | tag -> Error (Printf.sprintf "unsupported GGML quant type tag: %d" tag)
 
 let checked_product dimensions =
@@ -247,7 +249,14 @@ let of_file path =
           (* Read the header + metadata (first 64MB or entire file) *)
           let initial_read = Int64.to_int (Int64.min file_size 67_108_864L) in
           let buffer = Bytes.create initial_read in
-          let read_bytes = Unix.read fd buffer 0 initial_read in
+          let rec really_read offset remaining =
+            if remaining = 0 then offset
+            else
+              let n = Unix.read fd buffer offset remaining in
+              if n = 0 then offset
+              else really_read (offset + n) (remaining - n)
+          in
+          let read_bytes = really_read 0 initial_read in
           let slice =
             if read_bytes = initial_read then buffer
             else Bytes.sub buffer 0 read_bytes

@@ -12,6 +12,8 @@ module Dtype = struct
     | Q5_K
     | Q6_K
     | Q5_0
+    | Q4_0
+    | IQ4_XS
 
   type t =
     | F32
@@ -30,6 +32,8 @@ module Dtype = struct
     | Q5_K -> "Q5_K"
     | Q6_K -> "Q6_K"
     | Q5_0 -> "Q5_0"
+    | Q4_0 -> "Q4_0"
+    | IQ4_XS -> "IQ4_XS"
 
   let quant_of_string = function
     | "Q8_0" | "q8_0" -> Some Q8_0
@@ -37,6 +41,8 @@ module Dtype = struct
     | "Q5_K" | "q5_k" -> Some Q5_K
     | "Q6_K" | "q6_k" -> Some Q6_K
     | "Q5_0" | "q5_0" -> Some Q5_0
+    | "Q4_0" | "q4_0" -> Some Q4_0
+    | "IQ4_XS" | "iq4_xs" -> Some IQ4_XS
     | _ -> None
 
   let block_size = function
@@ -45,6 +51,8 @@ module Dtype = struct
     | Q5_K -> 256
     | Q6_K -> 256
     | Q5_0 -> 32
+    | Q4_0 -> 32
+    | IQ4_XS -> 256
 
   let bytes_per_block = function
     | Q8_0 -> 34
@@ -52,6 +60,8 @@ module Dtype = struct
     | Q5_K -> 176
     | Q6_K -> 210
     | Q5_0 -> 22
+    | Q4_0 -> 18
+    | IQ4_XS -> 136
 
   let to_string = function
     | F32 -> "F32"

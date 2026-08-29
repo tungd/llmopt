@@ -5,6 +5,8 @@ module Dtype = struct
     | Q5_K
     | Q6_K
     | Q5_0
+    | Q4_0
+    | IQ4_XS
 
   type t =
     | Float32
@@ -23,6 +25,8 @@ module Dtype = struct
     | Q5_K -> "Q5_K"
     | Q6_K -> "Q6_K"
     | Q5_0 -> "Q5_0"
+    | Q4_0 -> "Q4_0"
+    | IQ4_XS -> "IQ4_XS"
 
   let quant_of_string = function
     | "Q8_0" | "q8_0" -> Some Q8_0
@@ -30,6 +34,8 @@ module Dtype = struct
     | "Q5_K" | "q5_k" -> Some Q5_K
     | "Q6_K" | "q6_k" -> Some Q6_K
     | "Q5_0" | "q5_0" -> Some Q5_0
+    | "Q4_0" | "q4_0" -> Some Q4_0
+    | "IQ4_XS" | "iq4_xs" -> Some IQ4_XS
     | _ -> None
 
   let to_string = function
