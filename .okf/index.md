@@ -49,7 +49,9 @@ configuration.
 * [llama.cpp comparison benchmark](benchmarks/llama-cpp.md) - native llama-bench, llama-server ERS, and optional llmopt side replay.
 * [MPS ERS benchsuite](benchmarks/bench-suite.md) - retained PyTorch reference trace scoring, warmup artifacts, and needle validation.
 * [Semantic 5x3 result](experiments/exp-0004-lfm25-semantic-5x3.md) - isolated long-context comparison and raw latency evidence.
-* [Cross-model generalization: SmolLM2-135M](experiments/exp-0096-cross-model-smollm2-validation.md) - generic AOT FX compilation, 30-layer Llama-family megakernel lowering, exact PyTorch parity, and llama.cpp performance parity.
+* [Superseded SmolLM2 cross-model claim](experiments/exp-0096-cross-model-smollm2-validation.md) - retracts unsupported full-model and performance claims and points to reproducible replacement evidence.
+* [Architecture-neutral GGUF FX native Linear parity](experiments/exp-0099-gguf-fx-native-linear-parity-2026-08-29.md) - bounded SmolLM, Qwen, and Gemma GGUF-backed Linear execution plus full-capture inventories.
+* [Current LFM Model Program comparison with llama.cpp](experiments/exp-0100-model-program-v2-llama-cpp-comparison-2026-08-29.md) - four paired same-text runs for the current ABI-v2 LFM serving engine and llama.cpp Q4_0.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.

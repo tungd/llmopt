@@ -98,3 +98,4 @@
 * [Hardware-derived prefill cost model](exp-0097-hardware-derived-prefill-cost-model.md) - records the target-hardware and cost-model work retained by the current compiler.
 * [Parameterized sampling engine](exp-0098-parameterized-sampling-engine.md) - records the generic generation sampling implementation.
 * [Architecture-neutral GGUF FX native linear parity](exp-0099-gguf-fx-native-linear-parity-2026-08-29.md) - one real SmolLM, Qwen, and Gemma GGUF tensor captured through torch.compile and executed by the native Metal runtime with exact measured deltas.
+* [Current LFM Model Program comparison with llama.cpp](exp-0100-model-program-v2-llama-cpp-comparison-2026-08-29.md) - four paired same-text runs comparing the current ABI-v2 LFM serving engine with llama.cpp Q4_0 while retaining the quantization and tokenization differences.

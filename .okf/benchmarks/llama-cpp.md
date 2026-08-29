@@ -4,7 +4,7 @@ title: 'LFM2.5-350M llama.cpp comparison and ERS side benchmark'
 description: 'Run native llama-bench throughput, llama-server ERS traces, and an optional same-trace comparison against the llmopt serving endpoint at a recorded quantization.'
 tags: [benchmark, llama.cpp, llama-bench, llama-server, lfm2.5, q4, q8, ERS, metal]
 status: draft
-generated: { by: codex/gpt-5.6, at: '2026-08-26T20:17:55Z' }
+generated: { by: codex/gpt-5, at: '2026-08-29T13:54:08+07:00' }
 sources:
   - id: native-runner
     resource: /bench/llama_cpp_bench.py
@@ -30,6 +30,9 @@ sources:
   - id: build-target
     resource: /ninja.build
     title: reproducible Ninja benchmark targets
+  - id: current-receipt
+    resource: /bench/results/lfm25-350m-model-program-v2-vs-llama-cpp-q4-2026-08-29.json
+    title: four-repeat Model Program ABI v2 side-comparison receipt
 ---
 
 # Target
@@ -102,3 +105,24 @@ cross-endpoint timing rather than claiming equal weight precision.
 The existing MPS benchsuite and protocol remain the PyTorch reference path.
 Their traces, eager-Q8 parity records, and native llmopt token-ID observations
 remain separate so the llama.cpp target does not erase historical comparisons.
+
+# Current Model Program receipt
+
+The 2026-08-29 repeated same-text receipt is
+`bench/results/lfm25-350m-model-program-v2-vs-llama-cpp-q4-2026-08-29.json`.
+It uses four paired scored repetitions, one worker, fresh HTTP connections, the
+shared warmup/scored traces, llama.cpp build 10531, and Model Program ABI v2.
+
+Across the four run-level medians, llama.cpp Q4_0 recorded `14.1197085 ms`
+TTFT, `2.0152672 ms` TPOT, and `0.8803172` ERS. LLMOpt recorded
+`18.5560207 ms`, `2.7007327 ms`, and `0.7985781`. The medians of the paired
+ratios are `1.3142` for LLMOpt/llama.cpp TTFT and `1.3495` for
+LLMOpt/llama.cpp TPOT; the median paired ERS difference is `+0.0839` for
+llama.cpp minus LLMOpt.
+
+This receipt compares endpoint behavior, not identical quantized execution:
+llama.cpp maps the official Q4_0 GGUF while the complete LLMOpt engine maps its
+preserved W4A16/Q8-KV archive. The final scored reports also count 194 prompt
+tokens for llama.cpp and 192 for LLMOpt, with 55 versus 74 cached tokens.
+Therefore the receipt does not claim GGUF/UD weight parity, tokenizer parity,
+token-ID parity, or identical cache work.
