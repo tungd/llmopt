@@ -233,6 +233,8 @@ let () =
             (bytes_of_f32
                (List.init (16 * 64 * 128) (fun index ->
                     Float.of_int ((index mod 17) - 8) /. 1024.0)));
+          input runtime "small_batched_lhs" (bytes_of_f32 [ 2.; 3. ]);
+          input runtime "small_batched_rhs" (bytes_of_f32 [ 4.; 5. ]);
           input runtime "linear_f16_input"
             (bytes_of_u16
                [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4000; 0x3c00; 0x0000;
@@ -351,10 +353,16 @@ let () =
     (Bytes.make (16 * 64 * 128 * 4) '\000');
   expect_bytes repeated "zero_batched_matmul"
     (Bytes.make (16 * 64 * 128 * 4) '\000');
+  expect_bytes execution "small_batched_matmul"
+    (bytes_of_f32 [ 8.; 10.; 12.; 15. ]);
   expect_bytes execution "linear_f16"
     (bytes_of_u16 [ 0x4200; 0x4700; 0x4000; 0x3c00; 0x4200; 0x4200 ]);
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
+  if not (List.mem "llmopt_batched_matmul_f32_simd8" kernels) then
+    fail "aligned batched matmul did not select the SIMD8 tactic";
+  if not (List.mem "llmopt_batched_matmul_f32_tiled" kernels) then
+    fail "unaligned batched matmul did not select the tiled fallback";
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
   Printf.printf
     "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: canonical primitive set exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\nwide-attention: exact\nwide-attention-kernel: llmopt_attention_f16_simd_h256\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\n"

@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T04:16:26+07:00",
+  "git_base_commit": "d353b88",
+  "slice": "simdgroup-batched-matmul-tactic",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "diagnosis": {
+    "method": "controlled generated-package kernel-family no-op differential",
+    "qwen_intact_median_ms": 49.884439,
+    "qwen_noop_medians_ms": {
+      "all_linear": 40.516496,
+      "batched_matmul": 37.662983,
+      "all_fine_primitives": 21.782517,
+      "movement": 41.793108,
+      "elementwise": 43.432474,
+      "construction": 42.273998,
+      "cast": 45.843482,
+      "attention": 45.118451,
+      "rms_norm": 44.937015,
+      "short_conv": 45.297980,
+      "triangular_recurrence": 42.759061
+    },
+    "qwen_batched_matmul_dispatches": 145,
+    "qwen_batched_matmul_noop_delta_ms": 12.221456,
+    "note": "family no-op deltas are diagnostic and non-additive"
+  },
+  "change": {
+    "selection": "semantic Batched_matmul, captured m/n/k alignment, broadcast batch geometry, and SIMD32 Metal target",
+    "architecture_id_use": "none",
+    "aligned_tactic": "8x8 simdgroup matrix multiply with one SIMD group per output tile",
+    "fallback_tactic": "16x16 threadgroup-tiled scalar multiply for unaligned shapes",
+    "qwen_simd8_sites": 144,
+    "qwen_fallback_sites": 1,
+    "gemma_sites": 0
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 10,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-simd-bmm",
+        "kernels": 105,
+        "commands": 4470,
+        "dispatches": 2407,
+        "median_ms": 43.148398,
+        "min_ms": 39.994001,
+        "max_ms": 47.859907,
+        "previous_median_ms": 49.884439,
+        "delta_ms": -6.736041,
+        "latency_reduction_percent": 13.503291,
+        "output_sha256": "49b2cbbd80df49796a0fe42e30161036490c963264bfb2fad63e10d84f9c4c9c",
+        "output_vs_previous_package": "byte exact"
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.903979,
+        "mean_ms": 8.3238001,
+        "samples_ns": [11274042, 7793333, 7951792, 7894833, 7874250, 7841209, 7913125, 8404834, 8491125, 7799458]
+      },
+      "llmopt_over_llama_cpp_median": 5.459073
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-tiled-bmm",
+        "matched_batched_matmul_sites": 0,
+        "kernels": 94,
+        "commands": 3999,
+        "dispatches": 1637,
+        "median_ms": 39.534926,
+        "min_ms": 32.413960,
+        "max_ms": 54.574013,
+        "previous_median_ms": 42.235494,
+        "observed_delta_ms": -2.700568,
+        "output_sha256": "ca6c330fb9c069d9921a4c934176dbe5c971325f355f20a39cabe2c46dbbcad9",
+        "output_vs_previous_package": "byte exact",
+        "attribution": "none; graph contains no Batched_matmul site"
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.2000205,
+        "mean_ms": 17.6406747,
+        "samples_ns": [19008792, 17160958, 17140875, 17204125, 16700625, 18796916, 17416916, 18601916, 17179708, 17195916]
+      },
+      "llmopt_over_llama_cpp_median": 2.298539
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "pass, aligned SIMD8 and unaligned tiled fallback both selected and exact",
+    "metal_compilation": "pass",
+    "qwen_package": "valid, 105 kernels, 4470 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3999 commands, 0 opaque",
+    "numerical_scope": "Qwen and Gemma outputs are byte exact to slice 6"
+  }
+}

@@ -4509,16 +4509,16 @@ struct BatchedMatmulParams {
   uint batch_shape[3]; uint lhs_batch_shape[3]; uint rhs_batch_shape[3];
 };
 
-kernel void llmopt_batched_matmul_f32(
+kernel void llmopt_batched_matmul_f32_tiled(
     device const float* lhs [[buffer(0)]],
     device const float* rhs [[buffer(1)]],
     device float* output [[buffer(2)]],
     constant BatchedMatmulParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]) {
-  if (gid >= params.count) return;
-  const uint col = gid % params.n;
-  const uint row = (gid / params.n) % params.m;
-  uint batch_index = gid / (params.m * params.n);
+    uint3 gid [[thread_position_in_grid]],
+    uint3 tid [[thread_position_in_threadgroup]]) {
+  const uint col = gid.x;
+  const uint row = gid.y;
+  uint batch_index = gid.z;
   uint coordinates[3] = {};
   for (int axis = int(params.rank) - 1; axis >= 0; --axis) {
     coordinates[axis] = batch_index % params.batch_shape[axis];
@@ -4532,12 +4532,103 @@ kernel void llmopt_batched_matmul_f32(
     rhs_batch = rhs_batch * params.rhs_batch_shape[axis]
         + (params.rhs_batch_shape[axis] == 1 ? 0 : coordinates[axis]);
   }
+  threadgroup float lhs_tile[16][16];
+  threadgroup float rhs_tile[16][16];
   float accumulator = 0.0f;
-  const uint lhs_base = (lhs_batch * params.m + row) * params.k;
-  const uint rhs_base = (rhs_batch * params.k) * params.n + col;
-  for (uint inner = 0; inner < params.k; ++inner)
-    accumulator += lhs[lhs_base + inner] * rhs[rhs_base + inner * params.n];
-  output[gid] = accumulator;
+  for (uint base = 0; base < params.k; base += 16) {
+    const uint lhs_inner = base + tid.x;
+    const uint rhs_inner = base + tid.y;
+    lhs_tile[tid.y][tid.x] = row < params.m && lhs_inner < params.k
+        ? lhs[(lhs_batch * params.m + row) * params.k + lhs_inner]
+        : 0.0f;
+    rhs_tile[tid.y][tid.x] = rhs_inner < params.k && col < params.n
+        ? rhs[(rhs_batch * params.k + rhs_inner) * params.n + col]
+        : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint inner = 0; inner < 16 && base + inner < params.k; ++inner)
+      accumulator += lhs_tile[tid.y][inner] * rhs_tile[inner][tid.x];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (row < params.m && col < params.n)
+    output[(gid.z * params.m + row) * params.n + col] = accumulator;
+}
+
+kernel void llmopt_batched_matmul_f32_simd8(
+    device const float* lhs [[buffer(0)]],
+    device const float* rhs [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant BatchedMatmulParams& params [[buffer(3)]],
+    uint3 group_position [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row_base = group_position.y * 8;
+  const uint col_base = group_position.x * 8;
+  uint batch_index = group_position.z;
+  uint coordinates[3] = {};
+  for (int axis = int(params.rank) - 1; axis >= 0; --axis) {
+    coordinates[axis] = batch_index % params.batch_shape[axis];
+    batch_index /= params.batch_shape[axis];
+  }
+  uint lhs_batch = 0;
+  uint rhs_batch = 0;
+  for (uint axis = 0; axis < params.rank; ++axis) {
+    lhs_batch = lhs_batch * params.lhs_batch_shape[axis]
+        + (params.lhs_batch_shape[axis] == 1 ? 0 : coordinates[axis]);
+    rhs_batch = rhs_batch * params.rhs_batch_shape[axis]
+        + (params.rhs_batch_shape[axis] == 1 ? 0 : coordinates[axis]);
+  }
+  threadgroup float lhs_tile[8][8];
+  threadgroup float rhs_tile[8][8];
+  simdgroup_float8x8 accumulator =
+      make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+  const uint element0 = lane * 2;
+  const uint element1 = element0 + 1;
+  const uint row0 = element0 / 8;
+  const uint col0 = element0 % 8;
+  const uint row1 = element1 / 8;
+  const uint col1 = element1 % 8;
+  for (uint inner_base = 0; inner_base < params.k; inner_base += 8) {
+    const uint lhs_row0 = row_base + row0;
+    const uint lhs_inner0 = inner_base + col0;
+    lhs_tile[row0][col0] = lhs_row0 < params.m && lhs_inner0 < params.k
+        ? lhs[(lhs_batch * params.m + lhs_row0) * params.k + lhs_inner0]
+        : 0.0f;
+    const uint lhs_row1 = row_base + row1;
+    const uint lhs_inner1 = inner_base + col1;
+    lhs_tile[row1][col1] = lhs_row1 < params.m && lhs_inner1 < params.k
+        ? lhs[(lhs_batch * params.m + lhs_row1) * params.k + lhs_inner1]
+        : 0.0f;
+    const uint rhs_inner0 = inner_base + row0;
+    const uint rhs_col0 = col_base + col0;
+    rhs_tile[row0][col0] = rhs_inner0 < params.k && rhs_col0 < params.n
+        ? rhs[(rhs_batch * params.k + rhs_inner0) * params.n + rhs_col0]
+        : 0.0f;
+    const uint rhs_inner1 = inner_base + row1;
+    const uint rhs_col1 = col_base + col1;
+    rhs_tile[row1][col1] = rhs_inner1 < params.k && rhs_col1 < params.n
+        ? rhs[(rhs_batch * params.k + rhs_inner1) * params.n + rhs_col1]
+        : 0.0f;
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_float8x8 lhs_matrix;
+    simdgroup_float8x8 rhs_matrix;
+    simdgroup_load(lhs_matrix, &lhs_tile[0][0], 8);
+    simdgroup_load(rhs_matrix, &rhs_tile[0][0], 8);
+    simdgroup_multiply_accumulate(
+        accumulator, lhs_matrix, rhs_matrix, accumulator);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  threadgroup float output_tile[8][8];
+  simdgroup_store(accumulator, &output_tile[0][0], 8);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
+  const uint output_row0 = row_base + row0;
+  const uint output_col0 = col_base + col0;
+  if (output_row0 < params.m && output_col0 < params.n)
+    output[(group_position.z * params.m + output_row0) * params.n + output_col0]
+        = output_tile[row0][col0];
+  const uint output_row1 = row_base + row1;
+  const uint output_col1 = col_base + col1;
+  if (output_row1 < params.m && output_col1 < params.n)
+    output[(group_position.z * params.m + output_row1) * params.n + output_col1]
+        = output_tile[row1][col1];
 }
 |}
 
@@ -4556,8 +4647,14 @@ let tensor_primitive_entries =
       Ir.Dtype.Float32 Ir.Dtype.Float32;
     entry "llmopt_eye_f32" Kernel_abi.Operation.Eye Ir.Dtype.Float32
       Ir.Dtype.Float32;
-    entry "llmopt_batched_matmul_f32" Kernel_abi.Operation.Batched_matmul
-      Ir.Dtype.Float32 Ir.Dtype.Float32 ]
+    kernel_entry_with_threadgroup ~threadgroup:(16, 16, 1)
+      ~name:"llmopt_batched_matmul_f32_tiled"
+      ~operation:Kernel_abi.Operation.Batched_matmul
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_batched_matmul_f32_simd8"
+      ~operation:Kernel_abi.Operation.Batched_matmul
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
 let fill_source =
   "\nstruct FillBoolParams { uint count; uint value; };\n\n"

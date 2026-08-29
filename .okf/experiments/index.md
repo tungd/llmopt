@@ -107,3 +107,4 @@
 * [Registered Metal tactics and paired-row Q4_K Linear](exp-0106-registered-metal-tactics-2026-08-29.md) - compiler-selected Metal implementations and paired-row Q4_K execution without model identifiers.
 * [Captured triangular recurrence fusion](exp-0107-triangular-recurrence-fusion-2026-08-30.md) - structural carried-state lowering and semantic kernel dispatch with fresh Qwen/Gemma llama.cpp context.
 * [Paired-row mixed-quant Linear tactics](exp-0108-paired-row-mixed-quant-linear-2026-08-30.md) - shape/layout/dtype-selected paired execution across all supported GGUF quant layouts.
+* [SIMD-group batched matmul tactic](exp-0109-simdgroup-batched-matmul-2026-08-30.md) - aligned SIMD matrix execution plus a tiled fallback selected from captured shape.

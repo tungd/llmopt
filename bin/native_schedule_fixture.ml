@@ -543,6 +543,15 @@ let graph () =
   primitive graph Ir.Primitive.Batched_matmul
     [ zero_matmul_lhs; zero_matmul_rhs ] [ 1; 16; 64; 128 ] Ir.Dtype.Float32
   |> output graph "zero_batched_matmul";
+  let small_batched_lhs =
+    input graph "small_batched_lhs" [ 1; 2; 1 ] Ir.Dtype.Float32
+  in
+  let small_batched_rhs =
+    input graph "small_batched_rhs" [ 1; 1; 2 ] Ir.Dtype.Float32
+  in
+  primitive graph Ir.Primitive.Batched_matmul
+    [ small_batched_lhs; small_batched_rhs ] [ 1; 2; 2 ] Ir.Dtype.Float32
+  |> output graph "small_batched_matmul";
 
   let linear_f16_input =
     input graph "linear_f16_input" [ 2; 4 ] Ir.Dtype.Float16

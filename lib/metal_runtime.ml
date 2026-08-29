@@ -2928,7 +2928,18 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                  ~grid:(count, 1, 1))
         | ( Ir.Op.Primitive Ir.Primitive.Batched_matmul,
             [ lhs; rhs ], Some output ) ->
-            let count = Tensor_shape.numel (Ir.Value.logical_shape output) in
+            let output_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape output)
+            in
+            let* batch_count, m, n =
+              match List.rev output_dimensions with
+              | n :: m :: reversed_batch ->
+                  Ok
+                    ( List.fold_left ( * ) 1 reversed_batch,
+                      m,
+                      n )
+              | _ -> Error "batched matmul output must have rank at least two"
+            in
             let* buffers = find_values state [ lhs; rhs ] in
             let* parameters =
               Parameters.batched_matmul
@@ -2936,11 +2947,36 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~rhs_shape:(Ir.Value.logical_shape rhs)
                 ~output_shape:(Ir.Value.logical_shape output)
             in
+            let* grid_x = round_up n 16 in
+            let* grid_y = round_up m 16 in
+            let lhs_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape lhs)
+            in
+            let rhs_dimensions =
+              Tensor_shape.dimensions (Ir.Value.logical_shape rhs)
+            in
+            let* k =
+              match List.rev lhs_dimensions, List.rev rhs_dimensions with
+              | k :: _ :: _, _n :: rhs_k :: _ when k = rhs_k -> Ok k
+              | _ -> Error "batched matmul input dimensions are inconsistent"
+            in
+            let simd8 = m mod 8 = 0 && n mod 8 = 0 && k mod 8 = 0 in
+            let name =
+              if simd8 then "llmopt_batched_matmul_f32_simd8"
+              else "llmopt_batched_matmul_f32_tiled"
+            in
+            let* grid =
+              if simd8 then
+                let* columns = round_up n 8 in
+                let* rows = round_up m 8 in
+                Ok ((columns / 8) * 32, rows / 8, batch_count)
+              else Ok (grid_x, grid_y, batch_count)
+            in
             dispatched
-              (dispatch_output runtime state output
+              (dispatch_output ~name runtime state output
                  ~operation:Kernel_abi.Operation.Batched_matmul
                  ~input_dtype:Ir.Dtype.Float32 ~buffers ~parameters
-                 ~grid:(count, 1, 1))
+                 ~grid)
         | ( Ir.Op.Primitive (Ir.Primitive.Short_conv config),
             [ input; weight ],
             Some output ) ->
