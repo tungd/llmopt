@@ -329,7 +329,6 @@ let plan fx_graph =
   let env = Hashtbl.create (List.length (Fx.nodes fx_graph)) in
   let deferred_chunks = Hashtbl.create 16 in
   let empty_tensors = Hashtbl.create 16 in
-  let typed_manifest = Fx.version fx_graph >= 2 in
   let lower () =
     let lower_node node =
       let name = Fx.Node.name node in
@@ -1097,8 +1096,7 @@ let plan fx_graph =
       | "call_function" | "call_method" ->
           let target = String.lowercase_ascii (Fx.Node.target node) in
           if
-            typed_manifest
-            && target = "torch._c._log_api_usage_once"
+            target = "torch._c._log_api_usage_once"
             &&
             (match Fx.Node.arguments node with
             | [ Fx.Argument.String _ ] -> true
@@ -1107,17 +1105,14 @@ let plan fx_graph =
             && Fx.Node.shape node = None
           then Ok ()
           else if
-            typed_manifest
-            && target_is target [ "chunk"; "torch.chunk"; "aten.chunk.default" ]
+            target_is target [ "chunk"; "torch.chunk"; "aten.chunk.default" ]
           then lower_chunk ()
           else if
-            typed_manifest
-            && target_is target
+            target_is target
                  [ "_operator.getitem"; "operator.getitem"; "getitem" ]
           then lower_getitem ()
           else if
-            typed_manifest
-            && target_is target
+            target_is target
                  [ "torch._variablefunctionsclass.tensor";
                    "torch.tensor"; "aten.tensor.default" ]
           then
@@ -1128,8 +1123,7 @@ let plan fx_graph =
                 | Error message -> Error message
                 | Ok inputs -> lower_opaque inputs))
           else if
-            typed_manifest
-            && target_is target
+            target_is target
                  [ "torch._variablefunctionsclass.cat"; "torch.cat";
                    "aten.cat.default"; "aten.cat" ]
           then
@@ -1204,155 +1198,124 @@ let plan fx_graph =
                     lower_w4a16 input weight scale (Some bias)
                 | _ -> lower_opaque inputs)
               else if
-                typed_manifest
-                &&
                 target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]
                 && add_alpha_is_supported node
               then
                 lower_pointwise_binary Ir.Pointwise.Add inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "mul"; "mul.tensor"; "aten.mul.tensor" ] then
+              else if target_is target [ "mul"; "mul.tensor"; "aten.mul.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Mul inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "sub"; "sub.tensor"; "aten.sub.tensor" ] then
+              else if target_is target [ "sub"; "sub.tensor"; "aten.sub.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Sub inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "_operator.and_"; "and"; "aten.bitwise_and.tensor" ] then
+              else if target_is target [ "_operator.and_"; "and"; "aten.bitwise_and.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Logical_and inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "_operator.eq"; "eq"; "aten.eq.tensor" ] then
+              else if target_is target [ "_operator.eq"; "eq"; "aten.eq.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Equal inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "_operator.ne"; "ne"; "aten.ne.tensor" ] then
+              else if target_is target [ "_operator.ne"; "ne"; "aten.ne.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Not_equal inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "_operator.le"; "le"; "aten.le.tensor" ] then
+              else if target_is target [ "_operator.le"; "le"; "aten.le.tensor" ] then
                 lower_pointwise_binary Ir.Pointwise.Less_equal inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "_operator.neg"; "neg"; "aten.neg.default" ] then
+              else if target_is target [ "_operator.neg"; "neg"; "aten.neg.default" ] then
                 lower_pointwise_unary Ir.Pointwise.Neg inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "rsqrt"; "aten.rsqrt.default"; "torch._variablefunctionsclass.rsqrt" ] then
+              else if target_is target [ "rsqrt"; "aten.rsqrt.default"; "torch._variablefunctionsclass.rsqrt" ] then
                 lower_pointwise_unary Ir.Pointwise.Rsqrt inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "silu"; "torch.nn.functional.silu"; "aten.silu.default" ] then
+              else if target_is target [ "silu"; "torch.nn.functional.silu"; "aten.silu.default" ] then
                 lower_pointwise_unary Ir.Pointwise.Silu inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "cos"; "aten.cos.default" ] then
+              else if target_is target [ "cos"; "aten.cos.default" ] then
                 lower_pointwise_unary Ir.Pointwise.Cos inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "sin"; "aten.sin.default" ] then
+              else if target_is target [ "sin"; "aten.sin.default" ] then
                 lower_pointwise_unary Ir.Pointwise.Sin inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "pow"; "aten.pow.tensor_scalar" ] then
+              else if target_is target [ "pow"; "aten.pow.tensor_scalar" ] then
                 lower_pow inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "mean"; "aten.mean.dim" ] then
+              else if target_is target [ "mean"; "aten.mean.dim" ] then
                 lower_reduction Ir.Reduction.Mean inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "sum"; "torch._variablefunctionsclass.sum";
                        "aten.sum.dim_intlist" ]
               then
                 lower_reduction Ir.Reduction.Sum inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "to"; "_to_copy"; "aten._to_copy.default" ] then
+              else if target_is target [ "to"; "_to_copy"; "aten._to_copy.default" ] then
                 lower_cast (Fx.Node.dtype node) inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "float" ] then
+              else if target_is target [ "float" ] then
                 lower_cast Ir.Dtype.Float32 inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "view"; "aten.view.default" ] then
+              else if target_is target [ "view"; "aten.view.default" ] then
                 lower_reshape Ir.Movement.View inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "reshape"; "aten.reshape.default" ] then
+              else if target_is target [ "reshape"; "aten.reshape.default" ] then
                 lower_reshape Ir.Movement.Reshape inputs
                 |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "transpose"; "aten.transpose.int" ] then
+              else if target_is target [ "transpose"; "aten.transpose.int" ] then
                 lower_transpose inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "unsqueeze"; "aten.unsqueeze.default" ] then
+              else if target_is target [ "unsqueeze"; "aten.unsqueeze.default" ] then
                 lower_unsqueeze inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "expand"; "aten.expand.default" ] then
+              else if target_is target [ "expand"; "aten.expand.default" ] then
                 lower_expand inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "roll"; "aten.roll.default" ] then
+              else if target_is target [ "roll"; "aten.roll.default" ] then
                 lower_roll inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target [ "torch._c._nn.pad"; "aten.pad.default" ]
+                target_is target [ "torch._c._nn.pad"; "aten.pad.default" ]
               then lower_crop_pad inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "zeros_like"; "torch._variablefunctionsclass.zeros_like";
                        "aten.zeros_like.default" ]
               then lower_zeros_like inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "_operator.setitem"; "operator.setitem"; "setitem" ]
               then lower_setitem inputs |> lower_or_opaque inputs
-              else if
-                typed_manifest && target_is target [ "copy_"; "aten.copy_.default" ]
+              else if target_is target [ "copy_"; "aten.copy_.default" ]
               then
                 (match lower_copy inputs with
                 | Ok () -> Ok ()
                 | Error _ -> lower_opaque inputs)
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "torch._variablefunctionsclass.arange";
                        "aten.arange.default"; "aten.arange.start" ]
               then lower_arange inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "torch._variablefunctionsclass.diff";
                        "aten.diff.default" ]
               then lower_diff inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "cumsum"; "aten.cumsum.default" ] then
+              else if target_is target [ "cumsum"; "aten.cumsum.default" ] then
                 lower_cumsum inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "new_ones"; "aten.new_ones.default" ] then
+              else if target_is target [ "new_ones"; "aten.new_ones.default" ] then
                 lower_new_ones inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "torch._variablefunctionsclass.conv1d";
                        "aten.conv1d.default" ]
               then lower_short_conv inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "torch._c._nn.scaled_dot_product_attention";
                        "torch.nn.functional.scaled_dot_product_attention";
                        "aten.scaled_dot_product_attention.default" ]
               then lower_attention inputs |> lower_or_opaque inputs
               else if
-                typed_manifest
-                && target_is target
+                target_is target
                      [ "torch.nn.functional.embedding";
                        "aten.embedding.default" ]
               then lower_embedding inputs |> lower_or_opaque inputs
-              else if typed_manifest && target_is target [ "contiguous"; "aten.contiguous.default" ] then
+              else if target_is target [ "contiguous"; "aten.contiguous.default" ] then
                 (match inputs with
                 | [ input ] ->
                     lower_movement Ir.Movement.Contiguous
                       (Ir.Value.logical_shape input) inputs
                     |> lower_or_opaque inputs
-                | _ -> lower_opaque inputs)
-              else if
-                (not typed_manifest)
-                && target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]
-              then
-                (match inputs with
-                | [ lhs; rhs ] ->
-                    (match Shape.add (Ir.Value.shape lhs) (Ir.Value.shape rhs) with
-                    | Error _ -> lower_opaque inputs
-                    | Ok (inferred_shape, broadcast) ->
-                        let logical_shape, shape =
-                          declared_or_matrix node inferred_shape
-                        in
-                        let value =
-                          Tile_effect.add
-                            { lhs; rhs; shape; logical_shape; broadcast }
-                        in
-                        Hashtbl.replace env name value;
-                        Ok ())
                 | _ -> lower_opaque inputs)
               else if contains target "linear" then
                 let lower_linear input weight bias =

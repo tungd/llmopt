@@ -37,10 +37,8 @@ end
 
 type t
 val binary_magic : string
-val version : t -> int
 val nodes : t -> Node.t list
 val outputs : t -> string list
-val of_json : Yojson.Basic.t -> (t, string) result
 val of_binary : bytes -> (t, string) result
 val of_bytes : bytes -> (t, string) result
 val of_file : string -> (t, string) result

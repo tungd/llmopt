@@ -131,12 +131,10 @@ legacy bare package pairs rather than assigning them an implicit model.
 # Compatibility
 
 Model Program ABI v2 records the explicit chat format/token contract and
-recurrent-window width. The reader accepts stateless v1 programs without
-inventing chat metadata; generation reports the missing chat contract. A v1
-program with recurrent state is rejected because its recurrent window was not
-declared. New programs always carry both fields explicitly. The implemented
-W4A16/group-64-KVQ8 path is unchanged by this decision; GGUF/UD is the target
-weight-distribution path.
+recurrent-window width. Writers emit v2 and readers accept v2 only; the
+development ABI does not retain compatibility branches for v1. Every program
+carries both fields explicitly. GGUF/UD is the target weight-distribution path;
+the earlier W4A16/group-64 path is experimental history rather than a default.
 
 No performance condition is introduced. Timing and memory measurements remain
 informational comparisons.

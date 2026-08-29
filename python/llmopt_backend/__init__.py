@@ -12,6 +12,7 @@ import itertools
 import math
 import operator
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -39,6 +40,68 @@ class CapturedFx:
 class SessionCapture:
     captured: CapturedFx
     tensor_archive: ArchiveSummary | None
+
+
+@dataclass(frozen=True)
+class ExternalTensor:
+    """One explicit captured-tensor binding into an external weight store."""
+
+    key: str
+    dtype: str
+    shape: tuple[int, ...]
+
+
+def bind_external_tensors(
+    captured: CapturedFx, bindings: Mapping[str, ExternalTensor]
+) -> CapturedFx:
+    """Replace every captured static tensor with a validated external binding."""
+
+    captured_keys = set(captured.tensors)
+    supplied_keys = set(bindings)
+    if captured_keys != supplied_keys:
+        missing = sorted(captured_keys - supplied_keys)
+        unexpected = sorted(supplied_keys - captured_keys)
+        raise ValueError(
+            f"external tensor map mismatch: missing={missing}, unexpected={unexpected}"
+        )
+    target_keys = [binding.key for binding in bindings.values()]
+    if len(target_keys) != len(set(target_keys)):
+        raise ValueError("external tensor map contains duplicate target keys")
+
+    nodes: list[dict[str, Any]] = []
+    rebound: set[str] = set()
+    for node in captured.manifest["nodes"]:
+        source = node.get("binding")
+        if not isinstance(source, Mapping) or source.get("kind") != "tensor-store":
+            nodes.append(node)
+            continue
+        source_key = str(source["key"])
+        binding = bindings.get(source_key)
+        if binding is None:
+            raise ValueError(f"captured tensor {source_key} has no external binding")
+        captured_shape = tuple(int(value) for value in node.get("shape") or ())
+        if captured_shape != binding.shape:
+            raise ValueError(
+                f"external tensor {binding.key} shape {binding.shape} differs from "
+                f"captured shape {captured_shape}"
+            )
+        if not binding.key.strip() or not binding.dtype.strip():
+            raise ValueError("external tensor key and dtype cannot be empty")
+        nodes.append(
+            {
+                **node,
+                "dtype": binding.dtype,
+                "binding": {"kind": "tensor-store", "key": binding.key},
+            }
+        )
+        rebound.add(source_key)
+    if rebound != captured_keys:
+        missing_nodes = sorted(captured_keys - rebound)
+        raise ValueError(f"captured static tensors have no FX nodes: {missing_nodes}")
+    return CapturedFx(
+        manifest={**captured.manifest, "nodes": nodes},
+        tensors={},
+    )
 
 
 class CaptureSession:
@@ -343,8 +406,42 @@ def _is_static_placeholder(node: Any) -> bool:
     )
 
 
+_MODULE_SOURCE = re.compile(r"\._modules\['([^']+)'\]")
+_STATE_SOURCE = re.compile(r"\._(?:parameters|buffers)\['([^']+)'\]$")
+_STATE_TARGET = re.compile(r"_(?:parameters|buffers)_(.+)_$")
+
+
+def _static_tensor_key(node: Any) -> str:
+    if node.op == "get_attr":
+        return str(node.target)
+    graph_argument = getattr(node, "meta", {}).get("grapharg")
+    source = getattr(graph_argument, "source", None)
+    source_name = getattr(source, "name", None)
+    if isinstance(source_name, str):
+        modules = _MODULE_SOURCE.findall(source_name)
+        state = _STATE_SOURCE.search(source_name)
+        if state is not None:
+            return ".".join([*modules, state.group(1)])
+    module_stack = getattr(node, "meta", {}).get("nn_module_stack")
+    state = _STATE_TARGET.search(str(node.target))
+    if isinstance(module_stack, Mapping) and module_stack and state is not None:
+        scope = str(next(reversed(module_stack.values()))[0])
+        _, separator, module_path = scope.partition("].")
+        if not separator and scope.endswith("]"):
+            module_path = ""
+        return ".".join(part for part in (module_path, state.group(1)) if part)
+    return str(node.name)
+
+
 def _tensor_identity(tensor: Any) -> tuple[Any, ...]:
     try:
+        if bool(getattr(tensor, "is_meta", False)):
+            return (
+                "meta",
+                id(tensor),
+                tuple(int(dimension) for dimension in tensor.shape),
+                str(tensor.dtype),
+            )
         return (
             str(tensor.device),
             int(tensor.data_ptr()),
@@ -383,7 +480,7 @@ def capture_from_fx(gm: Any, example_inputs: Sequence[Any]) -> CapturedFx:
         identity = _tensor_identity(tensor)
         key = canonical_by_identity.get(identity)
         if key is None:
-            key = str(node.name)
+            key = _static_tensor_key(node)
             canonical_by_identity[identity] = key
             tensors[key] = tensor
         tensor_key_by_node[str(node.name)] = key
@@ -525,7 +622,6 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
             json.dumps(captured.manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    quantization = "w4a16-q8kv"
     metal_library: Path | None = None
     try:
         compiler_command = [str(compiler)]
@@ -544,8 +640,7 @@ def compile_fx(gm: Any, example_inputs: Sequence[Any]):
                     {
                         "target": "pytorch-mps",
                         "mode": "fx-graphmodule",
-                        "optimization": f"fx-direct-execution+{quantization}",
-                        "quantization": quantization,
+                        "optimization": "fx-direct-execution",
                         "runtime": (
                             metal_runtime.runtime_kind()
                             if metal_library is not None
@@ -601,8 +696,10 @@ __all__ = [
     "CaptureSession",
     "CapturedFx",
     "DirectMpsExecutable",
+    "ExternalTensor",
     "NaiveMpsExecutable",
     "SessionCapture",
+    "bind_external_tensors",
     "capture_from_fx",
     "compile_fx",
     "llmopt",

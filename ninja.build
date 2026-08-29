@@ -384,6 +384,9 @@ build _build/bin/llmopt-native-schedule-fixture: ocaml_link _build/ocaml/shape.c
 build _build/ocaml/ocaml_metal_primitives_smoke.cmx: ocaml_module bin/ocaml_metal_primitives_smoke.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/weight_archive.cmx
 build _build/bin/llmopt-ocaml-metal-primitives-smoke: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/gguf.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/ocaml_metal_primitives_smoke.cmx _build/native/ocaml_metal_stubs.o
 
+build _build/ocaml/package_run.cmx: ocaml_module bin/package_run.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/serving_package.cmx
+build _build/bin/llmopt-package-run: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/gguf.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/package_run.cmx _build/native/ocaml_metal_stubs.o
+
 build _build/ocaml/llmopt_inspect_gguf.cmx: ocaml_module bin/llmopt_inspect_gguf.ml | _build/ocaml/gguf.cmx _build/ocaml/weight_archive.cmx
 build _build/bin/llmopt-inspect-gguf: ocaml_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/binary.cmx _build/ocaml/weight_archive.cmx _build/ocaml/gguf.cmx _build/ocaml/llmopt_inspect_gguf.cmx
 
@@ -437,7 +440,7 @@ build probe-lfm25-metal-runtime-model-smoke: phony _artifacts/phase1-350m-mps/re
 build _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json: lfm25_prefill_decode_capture _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-lfm-serving-check _build/native/metal-runtime.stamp bench/lfm25_capture_decode.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py python/llmopt_backend/tensor_archive.py
 build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json
 
-build all: phony _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-pipeline _build/bin/llmopt-package-check _build/bin/llmopt-model-check _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-tokenize _build/bin/llmopt-generate _build/bin/llmopt-serve
+build all: phony _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-pipeline _build/bin/llmopt-package-check _build/bin/llmopt-model-check _build/bin/llmopt-package-run _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-tokenize _build/bin/llmopt-generate _build/bin/llmopt-serve
 build probe-lfm25: phony _build/bin/llmopt-demo _build/bin/llmopt-lfm-serving-check _build/bin/llmopt-lfm-serving-smoke
 build ocaml-test: run_test _build/bin/llmopt-test
 build python-test: python_test

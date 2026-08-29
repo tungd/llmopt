@@ -978,6 +978,13 @@ let () =
   (* Round-trip serialization *)
   let program_bytes = Model_program.to_bytes program in
   let restored = expect_ok (Model_program.of_bytes program_bytes) in
+  let obsolete_program = Bytes.copy program_bytes in
+  let version_offset = String.length "LLMOPT-MODEL\000" in
+  Bytes.set obsolete_program version_offset '\001';
+  Bytes.set obsolete_program (version_offset + 1) '\000';
+  expect
+    (Result.is_error (Model_program.of_bytes obsolete_program))
+    "rejects obsolete model-program ABI versions";
   expect
     (Model_program.Identity.model (Model_program.identity restored)
     = "test-model")
@@ -1052,6 +1059,15 @@ let () =
   expect
     (Result.is_error (Model_program.Identity.create ~model:"" ()))
     "rejects empty model identifier";
+  let processor_without_chat =
+    Model_program.Processor.create ~tokenizer:tok_art ()
+  in
+  expect
+    (Result.is_error
+       (Model_program.create ~identity ~processor:processor_without_chat
+          ~prefill:prefill_entry ~decode:decode_entry ~generation ~state
+          ~specialization))
+    "rejects a model program without an explicit chat contract";
   expect
     (Result.is_error (Model_program.Entrypoint.Head.create ()))
     "rejects entrypoint head with no outputs";
@@ -1327,13 +1343,27 @@ let () =
   in
   expect (t1.shape = [ 256; 512 ]) "t1 shape is [256; 512] row-major";
   expect (t1.dtype = Weight_archive.Dtype.Quant Q4_K) "t1 dtype is Quant Q4_K";
+  expect (t1.offset = 0L) "t1 offset is relative to the GGUF data section";
   expect (t1.byte_length = 73728) "t1 byte_length is 73728";
   let t2 =
     Gguf.find_tensor parsed_gguf "model.layers.0.mlp.down.weight" |> Option.get
   in
   expect (t2.shape = [ 512; 256 ]) "t2 shape is [512; 256] row-major";
   expect (t2.dtype = Weight_archive.Dtype.Quant Q6_K) "t2 dtype is Quant Q6_K";
+  expect (t2.offset = 73728L) "t2 offset is relative to the GGUF data section";
   expect (t2.byte_length = 107520) "t2 byte_length is 107520";
+
+  let parsed_archive =
+    Gguf.to_weight_archive parsed_gguf ~path:"fixture.gguf" |> Result.get_ok
+  in
+  let archived_t1 =
+    Weight_archive.find parsed_archive "model.layers.0.mlp.gate.weight"
+    |> Option.get
+  in
+  expect
+    (Weight_archive.Tensor.offset archived_t1
+    = Int64.to_int parsed_gguf.data_offset)
+    "GGUF archive adds the data-section offset exactly once";
 
   (* Block-32 Metal Dequantization & Shader Tests *)
   let q8_0_src = Metal.emit_dequant_q8_0 () in

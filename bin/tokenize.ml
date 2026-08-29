@@ -60,8 +60,8 @@ let messages arguments =
   let rec parse output = function
     | [] -> Ok (List.rev output)
     | role_name :: content :: rest ->
-        Result.bind (role role_name) (fun role ->
-            parse (Chat_template.Message.create ~role ~content :: output) rest)
+        let* role = role role_name in
+        parse (Chat_template.Message.create ~role ~content :: output) rest
     | [ _ ] -> Error "chat messages require role/content pairs"
   in
   parse [] arguments

@@ -2,7 +2,10 @@
 
 ## Goal
 
-Enable `llmopt` to directly ingest standard **GGUF** model binaries containing **Unsloth Dynamic (UD)** mixed-precision quantization (`UD-Q8_K_XL` and `UD-Q4_K_XL`). Leverage `llmopt`'s Ahead-Of-Time (AOT) compiler architecture to **bake dequantization parameters, sub-block layouts, and tile unrolling directly into specialized Metal MSL megakernels**, achieving zero runtime dispatch overhead and eliminating hardcoded group-64 assumptions.
+Run graph-captured PyTorch programs against standard **GGUF** model binaries,
+including **Unsloth Dynamic (UD)** mixed-precision quantization. FX supplies
+topology; explicit tensor bindings supply GGUF names and quant descriptors;
+`general.architecture` remains provenance rather than a dispatch key.
 
 ---
 
@@ -47,8 +50,9 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
 2. `Weight_archive.Dtype` and `Kernel_ir` support structured quantization descriptors: `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `Q5_0`, `F16`, `BF16`, and `F32`.
 3. Specialized Metal MSL shaders generate bank-conflict-free SIMD dequantization for Legacy Block-32 and Superblock-256 families.
 4. Offline CPU transcoder converts `IQ4_XS` tensors to `Q5_K` with zero runtime codebook kernel overhead.
-5. Dequantization produces byte-for-byte bit-exact output matching `llama.cpp`'s reference dequantizer across real model tensors.
-6. `ninja -f ninja.build test all` runs 100% green and multi-run paired benchmark confirms serving stability.
+5. Native execution receipts report exact element-wise deltas against a GGUF
+   dequantization reference for the model/tensor cases actually run.
+6. `ninja -f ninja.build test all` passes for the implemented slice.
 
 ---
 
@@ -117,7 +121,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: `Q4_K`, `Q5_K`, and `Q6_K` shaders compile and accurately dequantize test superblocks matching CPU references.
   - `ESCALATE IF`: SIMD register pressure spills to device memory; profile threadgroup occupancy and adjust unroll factors.
 
-- [x] **ITEM-05: Implement Build-Time Transcoder for Non-Uniform Quant Types (IQ4_XS -> Q5_K)** [COMMITTED: `8634ce2`]
+- [ ] **ITEM-05: Integrate the IQ4_XS -> Q5_K transcoder into package assembly** [PARTIAL: the CPU transcoder and unit fixture exist; package assembly does not invoke it]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Offline compilation/packaging pipeline in `lib/gguf.ml` / `bin/lfm_pipeline.ml`.
   - `IMPORTANT FILES`:
@@ -132,7 +136,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: Test `IQ4_XS` tensors are transcoded to `Q5_K` during package creation, load cleanly, and produce valid outputs.
   - `ESCALATE IF`: Transcoded tensor exceeds size budget; log exact tensor size delta in pipeline output.
 
-- [x] **ITEM-06: Integrate AOT Fused Megakernels with Quantization Specialization** [COMMITTED: `1a34b17`]
+- [ ] **ITEM-06: Integrate AOT Fused Megakernels with Quantization Specialization** [NOT IMPLEMENTED: current GGUF execution is a typed Linear dispatch]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Fused megakernel compiler passes in `lib/pass_fuse_swiglu_ffn.ml`, `lib/pass_fuse_linear_bias.ml`, and `lib/pass_fuse_lm_head_argmax.ml`.
   - `IMPORTANT FILES`:
@@ -149,7 +153,7 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: Fused megakernels execute mixed-precision subgraphs (e.g. Q4_K gate/up with Q6_K down) in a single fused dispatch.
   - `ESCALATE IF`: Megakernel register usage exceeds hardware limit for maximum concurrency; split into co-scheduled sub-megakernels.
 
-- [x] **ITEM-07: Implement Bit-Exact Verification Suite vs llama.cpp Reference** [COMMITTED: `1a34b17`]
+- [ ] **ITEM-07: Expand real-tensor native parity across the supported quant descriptors** [PARTIAL: SmolLM Q5_0 and Qwen/Gemma Q4_K representative linears are recorded]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
   - `WHERE`: Automated verification harness in `test/test.ml` and `python/tests/test_quantization.py`.
   - `IMPORTANT FILES`:
@@ -164,27 +168,36 @@ Enable `llmopt` to directly ingest standard **GGUF** model binaries containing *
   - `DONE WHEN`: All 5 quant types pass bit-exact validation against reference dequantized data with zero mismatches.
   - `ESCALATE IF`: GGML reference implementation uses target-specific rounding differences; document and align rounding mode.
 
-- [x] **ITEM-08: End-to-End Ingestion, Multi-Run Paired Benchmark & Cumulative Review** [VERIFIED]
+- [ ] **ITEM-08: Complete-model graph/GGUF package assembly and execution** [PARTIAL: full topology capture plus representative native Linear parity]
   - `REPO`: `/Users/tung/Projects/std23/llmopt`
-  - `WHERE`: End-to-end CLI, serving validation, and benchmark receipts.
+  - `WHERE`: Generic capture session, internal/external static tensor binding,
+    remaining quant descriptors, state linking, and native model execution.
   - `IMPORTANT FILES`:
-    - `bin/lfm_pipeline.ml`: Ingest GGUF file directly (`--gguf path/to/model.gguf`) and build serving bundle.
-    - `bench/llama_cpp_server_bench.py`: Execute multi-run paired benchmark (`--repeats 5`) on `UD-Q8_K_XL` and `UD-Q4_K_XL`.
-    - `LOOP-gguf-unsloth-dynamic-quantization.md`: Record all item commits, paired benchmark ratios, and evidence.
-    - `.okf/decisions/gguf-unsloth-dynamic-quantization.md`: Update status to `stable` upon successful verification.
+    - `python/llmopt_backend/__init__.py`: Bind captured static tensors to
+      external GGUF entries while retaining derived constants internally.
+    - `bench/gguf_fx_parity.py`: Representative cross-model native receipt.
+    - `.okf/experiments/exp-0099-gguf-fx-native-linear-parity-2026-08-29.md`:
+      Exact evidence and current scope boundary.
   - `IMPORTANT SYMBOLS`: `N/A - cumulative review and benchmark item`.
-  - `WHY`: Verify that end-to-end GGUF serving works reliably on Apple Silicon, and measure progress toward the $\pm 5\%$ performance gate.
-  - `FIX`: Ingest `UD-Q8_K_XL` and `UD-Q4_K_XL` GGUF models, compile engine bundles, launch `llmopt-serve`, and run paired trace benchmarks against `llama-server`. Record paired ratios ($\text{TPOT}_{\text{ratio}}$, $\text{TTFT}_{\text{ratio}}$).
-  - `QUALITY`: Ensure 100% request success rate, zero memory leaks, and deterministic token generation matching reference chat responses.
-  - `DO NOT`: Do not accept regressions in existing model formats during review.
+  - `WHY`: Move from bounded operator proof to the complete captured model
+    without introducing architecture-ID dispatch.
+  - `FIX`: Preserve derived FX buffers as package-owned constants, complete the
+    explicit state-dict to GGUF binding map, transcode unsupported IQ tensors
+    offline, link state/processor metadata, and execute the native model program.
+  - `QUALITY`: Record exact package inventory, output deltas, and timing for each
+    model actually run without treating measurements as a new decision gate.
+  - `DO NOT`: Do not infer topology or runtime behavior from
+    `general.architecture`.
   - `VERIFY`: From `/Users/tung/Projects/std23/llmopt`, run:
     ```sh
     ninja -f ninja.build test all
-    _build/bin/llmopt-model-check _build/model-program-lfm-smoke
+    python3.13 bench/gguf_fx_parity.py --replace-artifacts
     git diff --check
     ```
-  - `DONE WHEN`: GGUF pipeline compiles and serves models, unit tests pass, and multi-run paired benchmark ratios are stamped into receipts and README.
-  - `ESCALATE IF`: Performance fails to improve or shows unexpected bottlenecks; profile Metal GPU counters using Metal System Trace.
+  - `DONE WHEN`: A complete captured model program executes natively from its
+    GGUF weights and its exact receipt is linked here.
+  - `ESCALATE IF`: The required next action is irreversible, materially expands
+    scope, or contradicts the graph-authority decision.
 
 ---
 

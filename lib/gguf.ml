@@ -227,13 +227,15 @@ let of_bytes bytes =
       let* raw_tensors = read_tensors [] tensor_count in
       let current_offset = Int64.of_int (Binary.Reader.offset reader) in
       let data_offset = align_offset current_offset alignment in
-      let tensors =
-        List.map
-          (fun (t : Tensor_info.t) ->
-            { t with offset = Int64.add data_offset t.offset })
-          raw_tensors
-      in
-      Ok { version; alignment; metadata; tensors; data_offset; file_size }
+      Ok
+        {
+          version;
+          alignment;
+          metadata;
+          tensors = raw_tensors;
+          data_offset;
+          file_size;
+        }
 
 let of_file path =
   try

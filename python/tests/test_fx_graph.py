@@ -105,6 +105,19 @@ class FxGraphBinaryTest(unittest.TestCase):
                         ],
                     },
                 },
+                {
+                    "name": "quantized_weight",
+                    "op": "placeholder",
+                    "target": "quantized_weight",
+                    "inputs": [],
+                    "shape": [3, 256],
+                    "dtype": "Q4_K",
+                    "binding": {
+                        "kind": "tensor-store",
+                        "key": "blk.0.ffn_gate.weight",
+                    },
+                    "arguments": {"args": [], "kwargs": []},
+                },
             ],
             "outputs": ["mixed"],
         }

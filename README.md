@@ -121,6 +121,26 @@ _build/bin/llmopt-model-program-check /path/to/engine/model.llmopt
 _build/bin/llmopt-serve /path/to/engine --port 8000
 ```
 
+## GGUF graph-capture probe
+
+`bench/gguf_fx_parity.py` tests the architecture-neutral weight path: a
+`torch.compile` capture supplies the graph, an explicit binder assigns a real
+GGUF tensor and quant descriptor, and the native OCaml/Metal runtime executes
+the resulting package. `general.architecture` is recorded as provenance only.
+
+The 2026-08-29 representative-linear run observed:
+
+| Model asset | GGUF tensor | Native kernel | Float16 comparison |
+|---|---|---|---|
+| SmolLM2-135M-Instruct Q4_K_M | `blk.0.attn_q.weight` (`Q5_0`, 576x576) | `llmopt_q5_0_linear_f16` | 576/576 exact; max abs 0 |
+| Qwen3.5-0.8B UD-Q4_K_XL | `blk.0.ffn_gate.weight` (`Q4_K`, 3584x1024) | `llmopt_q4_k_linear_f16` | 3581/3584 exact; max abs 0.000030517578125 |
+| Gemma-4-E2B-it UD-Q4_K_XL | `blk.0.attn_q.weight` (`Q4_K`, 2048x1536) | `llmopt_q4_k_linear_f16` | 2048/2048 exact; max abs 0 |
+
+This receipt covers one captured linear from each model, not complete-model
+native execution. Full-model FX acquisition has also been observed for Qwen
+and Gemma; package assembly still has to distinguish GGUF-backed parameters
+from captured derived buffers and supply the remaining quant formats.
+
 ```sh
 curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \

@@ -1,4 +1,4 @@
-"""The fixed W4A16 weight boundary for the MPS target.
+"""Experimental static W4A16 probe utilities for the MPS target.
 
 Weights are stored as symmetric signed int4 values in two's-complement
 nibbles.  The low nibble represents the lower K index, and each output row is
@@ -122,7 +122,7 @@ def unpack_int4_weight(
 
 
 def quantize_weight(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Quantize a floating 2-D weight using the fixed W4A16 contract."""
+    """Quantize a floating 2-D weight using this probe's W4A16 contract."""
 
     return pack_int4_weight(weight)
 
@@ -185,7 +185,7 @@ def _ensure_w4_operator() -> None:
 
 
 class W4A16Linear(nn.Module):
-    """A fixed group-64 W4A16 linear module."""
+    """An explicit group-64 W4A16 probe module."""
 
     def __init__(
         self,

@@ -1508,6 +1508,16 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
+let quant_linear_kernel_name = function
+  | Ir.Dtype.Q8_0 -> Ok "llmopt_q8_0_linear_f16"
+  | Ir.Dtype.Q4_K -> Ok "llmopt_q4_k_linear_f16"
+  | Ir.Dtype.Q5_K -> Ok "llmopt_q5_k_linear_f16"
+  | Ir.Dtype.Q6_K -> Ok "llmopt_q6_k_linear_f16"
+  | Ir.Dtype.Q5_0 -> Ok "llmopt_q5_0_linear_f16"
+  | Ir.Dtype.Q4_0 -> Ok "llmopt_q4_0_linear_f16"
+  | Ir.Dtype.IQ4_XS ->
+      Error "IQ4_XS must be transcoded before Metal linear execution"
+
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
   && Tensor_shape.equal
@@ -2317,6 +2327,35 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                      ~operation:Kernel_abi.Operation.Linear
                      ~input_dtype:(Ir.Value.dtype input) ~buffers
                      ~parameters ~grid:(grid_x, grid_y, 1))
+            | ( Ir.Dtype.Float16,
+                Ir.Dtype.Quant quant,
+                Ir.Dtype.Float16,
+                bias_value ) ->
+                let* () =
+                  match bias_value with
+                  | None -> Ok ()
+                  | Some bias
+                    when Ir.Value.dtype bias = Ir.Dtype.Float16 ->
+                      Ok ()
+                  | Some _ -> Error "quantized Metal linear bias must be float16"
+                in
+                let* name = quant_linear_kernel_name quant in
+                let* input_buffer, weight_buffer, bias_buffer =
+                  match buffers with
+                  | [ input; weight ] -> Ok (input, weight, weight)
+                  | [ input; weight; bias ] -> Ok (input, weight, bias)
+                  | _ -> Error "quantized Metal linear buffer binding is inconsistent"
+                in
+                let* parameters =
+                  Parameters.u32s [ m; n; k; if Option.is_some bias_value then 1 else 0 ]
+                in
+                let* grid_x = linear_f16_grid (m * n) in
+                dispatched
+                  (dispatch_output ~name runtime state output
+                     ~operation:Kernel_abi.Operation.Linear
+                     ~input_dtype:(Ir.Dtype.Quant quant)
+                     ~buffers:[ input_buffer; weight_buffer; bias_buffer ]
+                     ~parameters ~grid:(grid_x, 1, 1))
             | input_dtype, weight_dtype, output_dtype, _ ->
                 Error
                   (Printf.sprintf "unsupported Metal linear kernel: %s + %s -> %s"

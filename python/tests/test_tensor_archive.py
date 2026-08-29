@@ -7,11 +7,67 @@ from pathlib import Path
 
 import torch
 
-from llmopt_backend import capture_from_fx
+from llmopt_backend import (
+    CapturedFx,
+    ExternalTensor,
+    bind_external_tensors,
+    capture_from_fx,
+)
 from llmopt_backend.tensor_archive import ALIGNMENT, MAGIC, VERSION, write_archive
 
 
 class TensorArchiveTests(unittest.TestCase):
+    def test_meta_tensors_with_equal_shapes_remain_distinct(self) -> None:
+        first = torch.empty((4, 4), device="meta")
+        second = torch.empty((4, 4), device="meta")
+        self.assertNotEqual(
+            __import__("llmopt_backend")._tensor_identity(first),
+            __import__("llmopt_backend")._tensor_identity(second),
+        )
+
+    def test_external_tensor_binding_is_explicit_and_shape_checked(self) -> None:
+        tensor = torch.zeros((3, 256), dtype=torch.float16)
+        captured = CapturedFx(
+            manifest={
+                "version": 2,
+                "nodes": [
+                    {
+                        "name": "weight",
+                        "op": "placeholder",
+                        "target": "weight",
+                        "inputs": [],
+                        "shape": [3, 256],
+                        "dtype": "float16",
+                        "binding": {"kind": "tensor-store", "key": "weight"},
+                        "arguments": {"args": [], "kwargs": []},
+                    }
+                ],
+                "outputs": [],
+            },
+            tensors={"weight": tensor},
+        )
+        rebound = bind_external_tensors(
+            captured,
+            {
+                "weight": ExternalTensor(
+                    key="blk.0.ffn_gate.weight", dtype="Q4_K", shape=(3, 256)
+                )
+            },
+        )
+        node = rebound.manifest["nodes"][0]
+        self.assertEqual(node["dtype"], "Q4_K")
+        self.assertEqual(node["binding"]["key"], "blk.0.ffn_gate.weight")
+        self.assertEqual(rebound.tensors, {})
+        with self.assertRaisesRegex(ValueError, "shape"):
+            bind_external_tensors(
+                captured,
+                {
+                    "weight": ExternalTensor(
+                        key="blk.0.ffn_gate.weight", dtype="Q4_K", shape=(3, 128)
+                    )
+                },
+            )
+
     def test_streaming_archive_has_binary_index_and_exact_payloads(self) -> None:
         tensors = {
             "weight_w4": torch.arange(64, dtype=torch.uint8).reshape(2, 32),
@@ -99,6 +155,10 @@ class TensorArchiveTests(unittest.TestCase):
         self.assertEqual(
             {node["binding"]["key"] for node in tensor_bound},
             set(capture.tensors),
+        )
+        self.assertEqual(
+            set(capture.tensors),
+            {"0.weight", "0.bias", "1.weight", "1.bias"},
         )
 
 

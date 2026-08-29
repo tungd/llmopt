@@ -3986,6 +3986,20 @@ let has_f16_linear graph =
              && Ir.Value.dtype output = Ir.Dtype.Float16
          | _ -> false)
 
+let has_quant_linear graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | ( Ir.Op.Linear _,
+             _input :: weight :: _,
+             Some output ) ->
+             (match Ir.Value.dtype weight with
+             | Ir.Dtype.Quant
+                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0) ->
+                 Ir.Value.dtype output = Ir.Dtype.Float16
+             | Ir.Dtype.Quant IQ4_XS | _ -> false)
+         | _ -> false)
+
 let lower_primary graph =
   let kernel =
     Ir.Graph.nodes graph
@@ -4171,6 +4185,10 @@ let lower graph =
       ( has_w4a16_lm_head_argmax graph,
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
+      ( has_quant_linear graph,
+        quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source
+        ^ q4_k_source ^ q5_k_source ^ q6_k_source,
+        block32_entries @ kquant_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;

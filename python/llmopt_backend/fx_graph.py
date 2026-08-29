@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 
 MAGIC = b"LLMOPTFX"
-VERSION = 1
+VERSION = 2
 MANIFEST_VERSION = 2
 _HEADER = struct.Struct("<8sHHII")
 _U8 = struct.Struct("<B")
@@ -33,6 +33,13 @@ _DTYPE_TO_TAG = {
     "int8": 5,
     "bool": 6,
     "uint8": 7,
+    "Q8_0": 8,
+    "Q4_K": 9,
+    "Q5_K": 10,
+    "Q6_K": 11,
+    "Q5_0": 12,
+    "Q4_0": 13,
+    "IQ4_XS": 14,
 }
 _TAG_TO_DTYPE = {tag: dtype for dtype, tag in _DTYPE_TO_TAG.items()}
 

@@ -94,3 +94,7 @@
 * [Restored W4 SIMD execution and corrective rerun](exp-0093-restored-w4-simd-rerun-2026-08-27.md) - ports the retained SIMD/vector execution strategy into canonical W4 kernels and records the cleanup failure and corrected Q4 comparison.
 * [W4A16 RMSNorm/SwiGLU cast absorption](exp-0094-w4a16-rms-cast-absorption-2026-08-27.md) - removes the 33 single-use f16-to-f32 widening casts from each preserved graph and records the static package delta.
 * [W4A16 decode RoPE table elision](exp-0095-w4a16-rope-table-elision-2026-08-27.md) - precomputes all position rows, binds canonical runtime cosine/sine inputs, prunes the scalar branch, and records the native dispatch/timing comparison.
+* [Superseded SmolLM2 cross-model validation claim](exp-0096-cross-model-smollm2-validation.md) - retracts unsupported full-model and benchmark numbers and points to the reproducible replacement.
+* [Hardware-derived prefill cost model](exp-0097-hardware-derived-prefill-cost-model.md) - records the target-hardware and cost-model work retained by the current compiler.
+* [Parameterized sampling engine](exp-0098-parameterized-sampling-engine.md) - records the generic generation sampling implementation.
+* [Architecture-neutral GGUF FX native linear parity](exp-0099-gguf-fx-native-linear-parity-2026-08-29.md) - one real SmolLM, Qwen, and Gemma GGUF tensor captured through torch.compile and executed by the native Metal runtime with exact measured deltas.

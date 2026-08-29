@@ -148,12 +148,12 @@ the graph IR, with optional pure passes available for later slices, and emits
 optional Metal source plus textual LLVM IR.[^local-python-backend]
 [^local-ocaml-planner]
 
-Binary transport ABI v1 carries manifest schema v2 with recursively tagged
+Binary transport ABI v2 carries manifest schema v2 with recursively tagged
 arguments, explicit bindings, fixed-width numeric fields, and length-prefixed
 UTF-8 strings. The OCaml importer detects the `LLMOPTFX` magic and rejects
-unknown versions, malformed tags, truncation, and trailing bytes. Legacy JSON
-input remains readable, while `LLMOPT_FX_DIAGNOSTICS=1` explicitly emits JSON
-diagnostics; neither format is read by serving.
+unknown versions, malformed tags, truncation, and trailing bytes. JSON is an
+optional diagnostic emitted by `LLMOPT_FX_DIAGNOSTICS=1`, not a compiler input
+or serving format.
 
 # Ownership
 

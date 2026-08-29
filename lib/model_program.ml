@@ -405,7 +405,6 @@ module Specialization = struct
 end
 
 type t = {
-  abi_version : int;
   identity : Identity.t;
   processor : Processor.t;
   prefill : Entrypoint.t;
@@ -422,9 +421,8 @@ let validate program =
     Error "model-program prefill entrypoint must have kind Prefill"
   else if program.decode.Entrypoint.kind <> Entrypoint.Decode then
     Error "model-program decode entrypoint must have kind Decode"
-  else if
-    program.abi_version >= 2 && Option.is_none (Processor.chat program.processor)
-  then Error "model-program ABI v2 requires an explicit chat contract"
+  else if Option.is_none (Processor.chat program.processor) then
+    Error "model-program requires an explicit chat contract"
   else
     match Processor.chat program.processor with
     | Some chat
@@ -437,11 +435,9 @@ let validate program =
         Error "model-program chat token id exceeds vocabulary"
     | Some _ | None -> Ok ()
 
-let make ~abi_version ~identity ~processor ~prefill ~decode ~generation ~state
-    ~specialization =
+let make ~identity ~processor ~prefill ~decode ~generation ~state ~specialization =
   let program =
     {
-      abi_version;
       identity;
       processor;
       prefill;
@@ -456,10 +452,9 @@ let make ~abi_version ~identity ~processor ~prefill ~decode ~generation ~state
 
 let create ~identity ~processor ~prefill ~decode ~generation ~state
     ~specialization =
-  make ~abi_version:current_abi_version ~identity ~processor ~prefill ~decode
-    ~generation ~state ~specialization
+  make ~identity ~processor ~prefill ~decode ~generation ~state ~specialization
 
-let abi_version program = program.abi_version
+let abi_version _program = current_abi_version
 let identity program = program.identity
 let processor program = program.processor
 let prefill program = program.prefill
@@ -507,7 +502,7 @@ let read_entrypoint reader kind =
 let to_bytes program =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer program.abi_version;
+  Binary.Writer.u16 writer current_abi_version;
 
   (* Identity *)
   Binary.Writer.string writer (Identity.model program.identity);
@@ -582,7 +577,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid model-program magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 1 && version <> current_abi_version then
+    if version <> current_abi_version then
       Error (Printf.sprintf "unsupported model-program version: %d" version)
     else
       let* model = Binary.Reader.string reader in
@@ -592,24 +587,20 @@ let of_bytes bytes =
 
       let* tokenizer = read_artifact reader in
       let* chat =
-        if version = 1 then
-          let* _legacy_chat_template = read_option reader read_artifact in
-          Ok None
-        else
-          read_option reader (fun reader ->
-              let* format_tag = Binary.Reader.u8 reader in
-              let* format =
-                match format_tag with
-                | 1 -> Ok Processor.Chat.Chatml
-                | tag ->
-                    Error
-                      (Printf.sprintf "unsupported chat template format: %d" tag)
-              in
-              let* bos_token_id = Binary.Reader.u32 reader in
-              let* message_start_token_id = Binary.Reader.u32 reader in
-              let* message_end_token_id = Binary.Reader.u32 reader in
-              Processor.Chat.create ~format ~bos_token_id
-                ~message_start_token_id ~message_end_token_id)
+        read_option reader (fun reader ->
+            let* format_tag = Binary.Reader.u8 reader in
+            let* format =
+              match format_tag with
+              | 1 -> Ok Processor.Chat.Chatml
+              | tag ->
+                  Error
+                    (Printf.sprintf "unsupported chat template format: %d" tag)
+            in
+            let* bos_token_id = Binary.Reader.u32 reader in
+            let* message_start_token_id = Binary.Reader.u32 reader in
+            let* message_end_token_id = Binary.Reader.u32 reader in
+            Processor.Chat.create ~format ~bos_token_id ~message_start_token_id
+              ~message_end_token_id)
       in
       let processor = Processor.create ~tokenizer ?chat () in
 
@@ -627,13 +618,7 @@ let of_bytes bytes =
       let* head_dim = Binary.Reader.u16 reader in
       let* recurrent_layers = Binary.Reader.u16 reader in
       let* recurrent_dim = Binary.Reader.u16 reader in
-      let* recurrent_window =
-        if version >= 2 then Binary.Reader.u16 reader
-        else if recurrent_layers = 0 then Ok 0
-        else
-          Error
-            "model-program v1 recurrent state has no declared window; recompile the program"
-      in
+      let* recurrent_window = Binary.Reader.u16 reader in
       let* layout =
         State.Cache_layout.create ~attention_layers ~kv_heads ~head_dim
           ~recurrent_layers ~recurrent_dim ~recurrent_window
@@ -673,8 +658,8 @@ let of_bytes bytes =
       let* specialization = Specialization.create ~min_prefill_tokens ?rope_cosine_input ?rope_sine_input ?paged_slots_input () in
 
       let* () = Binary.Reader.finish reader in
-      make ~abi_version:version ~identity ~processor ~prefill ~decode ~generation
-        ~state ~specialization
+      make ~identity ~processor ~prefill ~decode ~generation ~state
+        ~specialization
 
 let write_file path program =
   try
