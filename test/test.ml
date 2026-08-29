@@ -596,6 +596,88 @@ let () =
        | { Kernel_ir.value; _ } :: _ -> Ir.Value.equal value activation
        | _ -> false)
     "SwiGLU rule absorbs a preceding f16-to-f32 activation cast";
+
+  let gguf_ffn = Ir.Graph.create () in
+  let gguf_activation =
+    tensor_input gguf_ffn ~name:"gguf_activation"
+      ~source:Ir.Input_source.Runtime ~shape:[ 2; 64 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let gguf_norm_weight =
+    tensor_input gguf_ffn ~name:"gguf_norm.weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "gguf_norm.weight" })
+      ~shape:[ 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let gguf_weight name shape quant =
+    tensor_input gguf_ffn ~name
+      ~source:(Ir.Input_source.Tensor_store { key = name }) ~shape
+      ~dtype:(Ir.Dtype.Quant quant)
+  in
+  let gguf_gate_weight = gguf_weight "gguf_gate.weight" [ 128; 64 ] Ir.Dtype.Q4_K in
+  let gguf_up_weight = gguf_weight "gguf_up.weight" [ 128; 64 ] Ir.Dtype.Q5_K in
+  let gguf_down_weight = gguf_weight "gguf_down.weight" [ 64; 128 ] Ir.Dtype.Q6_K in
+  let gguf_fresh shape =
+    Ir.Graph.fresh_tensor_value gguf_ffn
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let gguf_append op inputs shape =
+    let output = gguf_fresh shape in
+    Ir.Graph.append gguf_ffn ~op ~inputs ~output:(Some output);
+    output
+  in
+  let gguf_norm =
+    gguf_append (Ir.Op.Rms_norm { epsilon = 1e-5 })
+      [ gguf_activation; gguf_norm_weight ] [ 2; 64 ]
+  in
+  let gguf_gate_linear =
+    gguf_append (Ir.Op.Linear { m = 2; n = 128; k = 64; bias = false })
+      [ gguf_norm; gguf_gate_weight ] [ 2; 128 ]
+  in
+  let gguf_gate =
+    gguf_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, gguf_gate_linear))))
+      [ gguf_gate_linear ] [ 2; 128 ]
+  in
+  let gguf_up =
+    gguf_append (Ir.Op.Linear { m = 2; n = 128; k = 64; bias = false })
+      [ gguf_norm; gguf_up_weight ] [ 2; 128 ]
+  in
+  let gguf_product =
+    gguf_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor gguf_gate,
+                 Ir.Pointwise.Tensor gguf_up ))))
+      [ gguf_gate; gguf_up ] [ 2; 128 ]
+  in
+  let gguf_down =
+    gguf_append (Ir.Op.Linear { m = 2; n = 64; k = 128; bias = false })
+      [ gguf_product; gguf_down_weight ] [ 2; 64 ]
+  in
+  let gguf_output =
+    gguf_append (Ir.Op.Add { broadcast = Shape.Same })
+      [ gguf_activation; gguf_down ] [ 2; 64 ]
+  in
+  Ir.Graph.add_output gguf_ffn ~name:"hidden" gguf_output;
+  let gguf_regions = Passes.discover_swiglu_ffn gguf_ffn |> expect_ok in
+  expect (List.length gguf_regions = 1)
+    "SwiGLU discovery is independent of Linear weight format";
+  let gguf_region = List.hd gguf_regions in
+  expect
+    (Kernel_ir.name gguf_region = "swiglu_ffn"
+     && List.length (Kernel_ir.inputs gguf_region) = 6
+     && (Kernel_ir.bindings gguf_region
+         |> List.filter (fun binding ->
+                match Kernel_ir.binding_primitive binding with
+                | Kernel_ir.Primitive.Linear _ -> true
+                | _ -> false)
+         |> List.length)
+        = 3)
+    "Kernel IR represents mixed GGUF projections as semantic Linear bindings";
   let fused_ffn = Passes.fuse_swiglu_ffn ffn |> expect_ok in
   expect
     (Ir.Graph.nodes fused_ffn

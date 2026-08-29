@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-29T23:30:54+07:00",
+  "git_base_commit": "259202d",
+  "slice": "semantic-linear-region-fusion",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "change": {
+    "fusion_query": "Linear matches semantic Ir.Op.Linear and legacy W4A16 Linear topology",
+    "kernel_ir": "Linear bindings carry m/n/k/bias semantics while bound tensor metadata describes storage",
+    "regression": "one mixed Q4_K/Q5_K/Q6_K SwiGLU region is recovered without model or architecture identifiers",
+    "execution_effect": "discovery only; generic executable lowering is intentionally unchanged in this slice"
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 10,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-perf-attention-specialized",
+        "dispatches": 9193,
+        "median_ms": 125.931382,
+        "min_ms": 120.806932,
+        "max_ms": 131.474018
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 8.007375,
+        "mean_ms": 8.075145,
+        "samples_ns": [7896583, 8042459, 8085166, 7972291, 7935708, 8042834, 8050042, 7944958, 7348000, 9433417]
+      },
+      "llmopt_over_llama_cpp_median": 15.726923
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-perf-attention-specialized",
+        "dispatches": 1637,
+        "median_ms": 61.298013,
+        "min_ms": 48.801899,
+        "max_ms": 66.861868
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.4105,
+        "mean_ms": 18.254791,
+        "samples_ns": [17395208, 17402708, 17580500, 23974500, 17663667, 17313875, 17396625, 17418292, 17391167, 19011375]
+      },
+      "llmopt_over_llama_cpp_median": 3.520746
+    }
+  ],
+  "validation": {
+    "native_test_binary": "pass",
+    "legacy_w4_executable_regression": "pass",
+    "mixed_gguf_region_regression": "pass"
+  }
+}

@@ -20,6 +20,7 @@ end
 
 type operation =
   | Any_operation
+  | Linear
   | W4a16_linear
   | Rms_norm
   | Cast
@@ -53,6 +54,7 @@ and node_pattern = {
 
 and input_pattern =
   | Any_input
+  | Remaining_inputs
   | Capture_input of Capture.t
   | Produced_by of pattern
   | Or_input of input_pattern list
@@ -101,6 +103,7 @@ module Rule : sig
       the matched region. *)
   val rewrite :
     t ->
+    ?select:(Match.t -> Kernel_ir.t -> bool) ->
     lower:(Match.t -> Kernel_ir.t -> (Ir.Op.t * Ir.Value.t list, string) result) ->
     Ir.Graph.t ->
     (Ir.Graph.t, string) result

@@ -1,4 +1,4 @@
-(** Discover a complete SwiGLU FFN from its decomposed W4A16 graph.
+(** Discover a complete SwiGLU FFN from decomposed Linear operations.
 
     The rule is intentionally written as a tree-shaped query.  Matching still
     walks the producer DAG, so the normalized activation and every shared
@@ -16,7 +16,7 @@ let swiglu_query =
     (tensor $residual)
     (produced-by
      (node
-      (op w4a16-linear)
+      (op linear)
       (capture $down_node)
       (in
        (produced-by
@@ -29,7 +29,7 @@ let swiglu_query =
             (in
              (produced-by
             (node
-             (op w4a16-linear)
+             (op linear)
              (capture $gate_node)
              (in
                 (produced-by
@@ -55,33 +55,25 @@ let swiglu_query =
                          (dtype $activation f16)
                          (dtype $norm f16)
                          (uses $norm exactly 2))))
-                (tensor $weight_gate)
-                (tensor $scale_gate))
+                (rest))
                (out (tensor $gate_linear))
-               (where (dtype $weight_gate u8)
-                      (dtype $scale_gate f16)
-                      (dtype $gate_linear f16)
+               (where (dtype $gate_linear f16)
                       (uses $gate_linear exactly 1)))) )
             (out (tensor $gate))
             (where (dtype $gate f16) (uses $gate exactly 1))))
           (produced-by
            (node
-            (op w4a16-linear)
+            (op linear)
             (capture $up_node)
-            (in (tensor $norm) (tensor $weight_up) (tensor $scale_up))
+            (in (tensor $norm) (rest))
             (out (tensor $up))
-            (where (dtype $weight_up u8)
-                   (dtype $scale_up f16)
-                   (dtype $up f16)
+            (where (dtype $up f16)
                    (uses $up exactly 1)))))
          (out (tensor $product))
          (where (dtype $product f16) (uses $product exactly 1))))
-       (tensor $weight_down)
-       (tensor $scale_down))
+       (rest))
       (out (tensor $down))
-      (where (dtype $weight_down u8)
-             (dtype $scale_down f16)
-             (dtype $down f16)
+      (where (dtype $down f16)
              (uses $down exactly 1))))
     )
    (out (tensor $output))
@@ -183,15 +175,25 @@ let resource_for ~m ~n ~k ~activation ~gate ~product ~inputs ~temporaries
   | Ok resource -> resource
   | Error _ -> Kernel_ir.Resource.zero
 
+type projection = {
+  m : int;
+  n : int;
+  k : int;
+  bias : bool;
+  input : Ir.Value.t;
+  parameters : Ir.Value.t list;
+}
+
+let projection node =
+  match Ir.node_op node, Ir.node_inputs node with
+  | Ir.Op.Linear { m; n; k; bias }, input :: parameters
+  | Ir.Op.W4a16_linear { m; n; k; bias }, input :: parameters ->
+      Ok { m; n; k; bias; input; parameters }
+  | _ -> Error "SwiGLU projection capture is not a Linear node"
+
 let region_of_match match_ =
   let* activation = tensor match_ "activation" in
   let* residual = tensor match_ "residual" in
-  let* weight_gate = tensor match_ "weight_gate" in
-  let* scale_gate = tensor match_ "scale_gate" in
-  let* weight_up = tensor match_ "weight_up" in
-  let* scale_up = tensor match_ "scale_up" in
-  let* weight_down = tensor match_ "weight_down" in
-  let* scale_down = tensor match_ "scale_down" in
   let* norm_weight = tensor match_ "norm_weight" in
   let* norm = tensor match_ "norm" in
   let* gate_linear = tensor match_ "gate_linear" in
@@ -204,6 +206,9 @@ let region_of_match match_ =
   let* gate_node = node match_ "gate_node" in
   let* up_node = node match_ "up_node" in
   let* down_node = node match_ "down_node" in
+  let* gate_projection = projection gate_node in
+  let* up_projection = projection up_node in
+  let* down_projection = projection down_node in
   let* epsilon =
     match Ir.node_op rms_node with
     | Ir.Op.Rms_norm { epsilon } -> Ok epsilon
@@ -212,54 +217,69 @@ let region_of_match match_ =
   let* m, k = matrix_size activation in
   let* n = last_dimension gate in
   let* down_k = last_dimension down in
-  let w4_matches node ~m ~n ~k =
-    match Ir.node_op node with
-    | Ir.Op.W4a16_linear
-        { m = actual_m; n = actual_n; k = actual_k; bias = false } ->
-        actual_m = m && actual_n = n && actual_k = k
-    | _ -> false
+  let same_projection projection ~m ~n ~k =
+    projection.m = m && projection.n = n && projection.k = k
   in
   if not (Float.is_finite epsilon && epsilon > 0.0) then
     Error "SwiGLU RMSNorm epsilon must be finite and positive"
   else if
     not
-      (w4_matches gate_node ~m ~n ~k
-      && w4_matches up_node ~m ~n ~k
-      && w4_matches down_node ~m ~n:k ~k:n)
-  then Error "SwiGLU W4A16 payload disagrees with captured tensor metadata"
+      (same_projection gate_projection ~m ~n ~k
+       && same_projection up_projection ~m ~n ~k
+       && same_projection down_projection ~m ~n:k ~k:n)
+  then Error "SwiGLU Linear payload disagrees with captured tensor metadata"
+  else if
+    not
+      (Ir.Value.equal gate_projection.input norm
+       && Ir.Value.equal up_projection.input norm
+       && Ir.Value.equal down_projection.input product)
+  then Error "SwiGLU Linear inputs disagree with the captured producer DAG"
   else if down_k <> k then Error "SwiGLU down projection width does not match activation"
   else if numel gate <> m * n || numel up <> m * n then
     Error "SwiGLU gate and up projections have inconsistent shapes"
   else if numel output <> m * k then
     Error "SwiGLU output shape does not match residual width"
   else
+    let external_values =
+      activation :: residual
+      :: (gate_projection.parameters @ up_projection.parameters
+         @ down_projection.parameters @ [ norm_weight ])
+    in
+    let inputs =
+      List.mapi
+        (fun index value ->
+          { Kernel_ir.slot = Kernel_ir.Slot.of_int_exn index; value })
+        external_values
+    in
     let activation_slot = Kernel_ir.Slot.of_int_exn 0 in
     let residual_slot = Kernel_ir.Slot.of_int_exn 1 in
-    let weight_gate_slot = Kernel_ir.Slot.of_int_exn 2 in
-    let scale_gate_slot = Kernel_ir.Slot.of_int_exn 3 in
-    let weight_up_slot = Kernel_ir.Slot.of_int_exn 4 in
-    let scale_up_slot = Kernel_ir.Slot.of_int_exn 5 in
-    let weight_down_slot = Kernel_ir.Slot.of_int_exn 6 in
-    let scale_down_slot = Kernel_ir.Slot.of_int_exn 7 in
-    let norm_weight_slot = Kernel_ir.Slot.of_int_exn 8 in
-    let norm_slot = Kernel_ir.Slot.of_int_exn 9 in
-    let gate_linear_slot = Kernel_ir.Slot.of_int_exn 10 in
-    let gate_slot = Kernel_ir.Slot.of_int_exn 11 in
-    let up_slot = Kernel_ir.Slot.of_int_exn 12 in
-    let product_slot = Kernel_ir.Slot.of_int_exn 13 in
-    let down_slot = Kernel_ir.Slot.of_int_exn 14 in
-    let output_slot = Kernel_ir.Slot.of_int_exn 15 in
-    let inputs =
-      [ { Kernel_ir.slot = activation_slot; value = activation };
-        { Kernel_ir.slot = residual_slot; value = residual };
-        { Kernel_ir.slot = weight_gate_slot; value = weight_gate };
-        { Kernel_ir.slot = scale_gate_slot; value = scale_gate };
-        { Kernel_ir.slot = weight_up_slot; value = weight_up };
-        { Kernel_ir.slot = scale_up_slot; value = scale_up };
-        { Kernel_ir.slot = weight_down_slot; value = weight_down };
-        { Kernel_ir.slot = scale_down_slot; value = scale_down };
-        { Kernel_ir.slot = norm_weight_slot; value = norm_weight } ]
+    let gate_parameter_slots =
+      List.mapi (fun index _ -> Kernel_ir.Slot.of_int_exn (index + 2))
+        gate_projection.parameters
     in
+    let up_offset = 2 + List.length gate_projection.parameters in
+    let up_parameter_slots =
+      List.mapi (fun index _ -> Kernel_ir.Slot.of_int_exn (index + up_offset))
+        up_projection.parameters
+    in
+    let down_offset = up_offset + List.length up_projection.parameters in
+    let down_parameter_slots =
+      List.mapi (fun index _ -> Kernel_ir.Slot.of_int_exn (index + down_offset))
+        down_projection.parameters
+    in
+    let norm_weight_slot =
+      Kernel_ir.Slot.of_int_exn
+        (down_offset + List.length down_projection.parameters)
+    in
+    let temporary_base = List.length inputs in
+    let temporary_slot offset = Kernel_ir.Slot.of_int_exn (temporary_base + offset) in
+    let norm_slot = temporary_slot 0 in
+    let gate_linear_slot = temporary_slot 1 in
+    let gate_slot = temporary_slot 2 in
+    let up_slot = temporary_slot 3 in
+    let product_slot = temporary_slot 4 in
+    let down_slot = temporary_slot 5 in
+    let output_slot = temporary_slot 6 in
     let* norm_binding =
       make_binding ~slot:norm_slot ~value:norm
         ~primitive:(Kernel_ir.Primitive.rms_norm ~epsilon)
@@ -268,8 +288,8 @@ let region_of_match match_ =
     let* gate_linear_binding =
       make_binding ~slot:gate_linear_slot ~value:gate_linear
         ~primitive:
-          (Kernel_ir.Primitive.w4a16_linear ~m ~n ~k ~bias:false)
-        ~inputs:[ norm_slot; weight_gate_slot; scale_gate_slot ]
+          (Kernel_ir.Primitive.linear ~m ~n ~k ~bias:gate_projection.bias)
+        ~inputs:(norm_slot :: gate_parameter_slots)
     in
     let* gate_binding =
       make_binding ~slot:gate_slot ~value:gate
@@ -279,8 +299,8 @@ let region_of_match match_ =
     let* up_binding =
       make_binding ~slot:up_slot ~value:up
         ~primitive:
-          (Kernel_ir.Primitive.w4a16_linear ~m ~n ~k ~bias:false)
-        ~inputs:[ norm_slot; weight_up_slot; scale_up_slot ]
+          (Kernel_ir.Primitive.linear ~m ~n ~k ~bias:up_projection.bias)
+        ~inputs:(norm_slot :: up_parameter_slots)
     in
     let* product_binding =
       make_binding ~slot:product_slot ~value:product
@@ -290,8 +310,9 @@ let region_of_match match_ =
     let* down_binding =
       make_binding ~slot:down_slot ~value:down
         ~primitive:
-          (Kernel_ir.Primitive.w4a16_linear ~m ~n:k ~k:n ~bias:false)
-        ~inputs:[ product_slot; weight_down_slot; scale_down_slot ]
+          (Kernel_ir.Primitive.linear ~m ~n:k ~k:n
+             ~bias:down_projection.bias)
+        ~inputs:(product_slot :: down_parameter_slots)
     in
     let* output_binding =
       make_binding ~slot:output_slot ~value:output
@@ -304,13 +325,11 @@ let region_of_match match_ =
     in
     let accesses =
       List.map
-        (fun slot ->
+        (fun ({ Kernel_ir.slot; _ } : Kernel_ir.input) ->
           { Kernel_ir.Effect.slot;
             mode = Kernel_ir.Effect.Read;
             alias = Kernel_ir.Effect.Distinct })
-        [ activation_slot; residual_slot; weight_gate_slot; scale_gate_slot;
-          weight_up_slot; scale_up_slot; weight_down_slot; scale_down_slot;
-          norm_weight_slot ]
+        inputs
       @ [ { Kernel_ir.Effect.slot = output_slot;
             mode = Kernel_ir.Effect.Write;
             alias = Kernel_ir.Effect.Distinct } ]
@@ -324,7 +343,7 @@ let region_of_match match_ =
         ~temporaries ~output
     in
     Kernel_ir.create
-      ~name:"w4a16_g64_swiglu_ffn"
+      ~name:"swiglu_ffn"
       ~member_node_ids:(List.sort_uniq Int.compare (Fusion_query.Match.member_node_ids match_))
       ~inputs ~bindings
       ~results:[ { Kernel_ir.slot = output_slot; value = output; storage = Kernel_ir.Fresh } ]
@@ -353,4 +372,10 @@ let lower match_ region =
   in
   Ok (Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon }, inputs)
 
-let run graph = Fusion_query.Rule.rewrite rule ~lower graph
+let select_legacy match_ _region =
+  match node match_ "gate_node" with
+  | Ok gate_node -> (
+      match Ir.node_op gate_node with Ir.Op.W4a16_linear _ -> true | _ -> false)
+  | Error _ -> false
+
+let run graph = Fusion_query.Rule.rewrite rule ~select:select_legacy ~lower graph

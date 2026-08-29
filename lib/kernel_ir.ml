@@ -15,25 +15,25 @@ end
 module Primitive = struct
   type unary = Silu
   type binary = Mul | Add
-  type w4a16_linear = { m : int; n : int; k : int; bias : bool }
+  type linear = { m : int; n : int; k : int; bias : bool }
 
   type t =
     | Rms_norm of { epsilon : float }
-    | W4a16_linear of w4a16_linear
+    | Linear of linear
     | Unary of unary
     | Binary of binary
 
   let rms_norm ~epsilon = Rms_norm { epsilon }
-  let w4a16_linear ~m ~n ~k ~bias = W4a16_linear { m; n; k; bias }
+  let linear ~m ~n ~k ~bias = Linear { m; n; k; bias }
   let unary operation = Unary operation
   let binary operation = Binary operation
 
   let to_string = function
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
-    | W4a16_linear { m; n; k; bias = false } ->
-        Printf.sprintf "w4a16-linear-g64[%dx%dx%d]" m n k
-    | W4a16_linear { m; n; k; bias = true } ->
-        Printf.sprintf "w4a16-linear-g64+bias[%dx%dx%d]" m n k
+    | Linear { m; n; k; bias = false } ->
+        Printf.sprintf "linear[%dx%dx%d]" m n k
+    | Linear { m; n; k; bias = true } ->
+        Printf.sprintf "linear+bias[%dx%dx%d]" m n k
     | Unary Silu -> "silu"
     | Binary Mul -> "mul"
     | Binary Add -> "add"
@@ -279,68 +279,66 @@ let validate_primitive map binding =
                   && is_float output.dtype
                 then Ok ()
                 else invalid "RMSNorm metadata is inconsistent"))
-  | Primitive.W4a16_linear { m; n; k; bias } -> (
+  | Primitive.Linear { m; n; k; bias } -> (
       if m <= 0 || n <= 0 || k <= 0 then
-        invalid "W4A16 dimensions must be positive"
-      else if k mod 64 <> 0 then
-        invalid
-          "W4A16 input dimension must be divisible by the fixed group size 64"
+        invalid "linear dimensions must be positive"
       else
         match one_output binding, binding.inputs with
         | Error error, _ -> Error error
-        | Ok _, _ when List.length binding.inputs <> (if bias then 4 else 3) ->
-            invalid
-              (Printf.sprintf
-                 "W4A16 linear expects activation, packed weight, scale%s"
-                 (if bias then ", and bias" else ""))
-        | Ok output, activation :: weight :: scale :: rest -> (
-            match
-              input_metadata map activation,
-              input_metadata map weight,
-              input_metadata map scale
-            with
-            | Error error, _, _ | _, Error error, _ | _, _, Error error ->
-                Error error
+        | Ok output, activation :: weight :: parameters -> (
+            match input_metadata map activation, input_metadata map weight with
+            | Error error, _ | _, Error error -> Error error
             | Ok (activation_shape, activation_dtype),
-              Ok (weight_shape, weight_dtype),
-              Ok (scale_shape, scale_dtype) ->
-                let packed_k = (k + 1) / 2 in
-                let groups = (k + 63) / 64 in
+              Ok (weight_shape, weight_dtype) ->
                 let activation_ok =
-                  activation_dtype = Ir.Dtype.Float16
+                  is_float activation_dtype
                   && numel activation_shape = m * k
                   && (match List.rev (dims activation_shape) with
                      | last :: _ -> last = k
                      | [] -> false)
                 in
+                let weight_ok, bias_slots =
+                  match weight_dtype, parameters with
+                  | Ir.Dtype.UInt8, scale :: bias_slots -> (
+                      match input_metadata map scale with
+                      | Ok (scale_shape, scale_dtype) ->
+                          ( k mod 64 = 0
+                            && expected_matrix_shape weight_shape ~rows:n
+                                 ~columns:((k + 1) / 2)
+                            && scale_dtype = Ir.Dtype.Float16
+                            && dims scale_shape = [ n; (k + 63) / 64 ],
+                            bias_slots )
+                      | Error _ -> false, bias_slots)
+                  | Ir.Dtype.Quant _, bias_slots ->
+                      (expected_matrix_shape weight_shape ~rows:n ~columns:k,
+                       bias_slots)
+                  | dtype, bias_slots when is_float dtype ->
+                      (expected_matrix_shape weight_shape ~rows:n ~columns:k,
+                       bias_slots)
+                  | _ -> false, parameters
+                in
                 let bias_ok =
-                  match rest with
+                  match bias_slots with
                   | [] -> not bias
                   | [ bias_slot ] when bias -> (
                       match input_metadata map bias_slot with
                       | Ok (bias_shape, bias_dtype) ->
-                          bias_dtype = Ir.Dtype.Float16
-                          &&
-                          (dims bias_shape = [ n ]
-                          || dims bias_shape = [ 1; n ])
+                          is_float bias_dtype
+                          && (dims bias_shape = [ n ]
+                             || dims bias_shape = [ 1; n ])
                       | Error _ -> false)
                   | _ -> false
                 in
                 if
-                  activation_ok
-                  && weight_dtype = Ir.Dtype.UInt8
-                  && expected_matrix_shape weight_shape ~rows:n ~columns:packed_k
-                  && scale_dtype = Ir.Dtype.Float16
-                  && dims scale_shape = [ n; groups ]
-                  && bias_ok
+                  activation_ok && weight_ok && bias_ok
                   && numel output.shape = m * n
                   && (match List.rev (dims output.shape) with
                      | last :: _ -> last = n
                      | [] -> false)
-                  && output.dtype = Ir.Dtype.Float16
+                  && is_float output.dtype
                 then Ok ()
-                else invalid "W4A16 metadata is inconsistent")
-        | Ok _, _ -> invalid "W4A16 linear expects activation, packed weight, and scale")
+                else invalid "linear metadata is inconsistent")
+        | Ok _, _ -> invalid "linear expects activation and weight inputs")
   | Primitive.Unary Primitive.Silu -> (
       match one_output binding, one binding.inputs with
       | Error error, _ | _, Error error -> Error error

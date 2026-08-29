@@ -1,9 +1,8 @@
-(** Target-independent structured tensor SSA for quantized model paths.
+(** Target-independent structured tensor SSA for model paths.
 
-    The quantized linear primitive is deliberately concrete: it means
-    symmetric packed W4 weights with FP16 activations and FP16 scales in
-    groups of 64.  Storage spaces, launch geometry, SIMD instructions, and
-    generated source belong to a later lowering. *)
+    Linear is semantic here: packed-weight layout, scale representation,
+    storage spaces, launch geometry, SIMD instructions, and generated source
+    belong to later lowering interfaces. *)
 
 module Slot : sig
   type t
@@ -19,10 +18,8 @@ module Primitive : sig
   type unary = Silu
   type binary = Mul | Add
 
-  (** [m] rows of activation, [n] output columns, [k] input columns.
-      Weight input order is activation, packed W4 weight, FP16 group scales.
-      The group size is fixed at 64 by this closed primitive. *)
-  type w4a16_linear = {
+  (** [m] rows of activation, [n] output columns, [k] input columns. *)
+  type linear = {
     m : int;
     n : int;
     k : int;
@@ -31,12 +28,12 @@ module Primitive : sig
 
   type t =
     | Rms_norm of { epsilon : float }
-    | W4a16_linear of w4a16_linear
+    | Linear of linear
     | Unary of unary
     | Binary of binary
 
   val rms_norm : epsilon:float -> t
-  val w4a16_linear : m:int -> n:int -> k:int -> bias:bool -> t
+  val linear : m:int -> n:int -> k:int -> bias:bool -> t
   val unary : unary -> t
   val binary : binary -> t
   val to_string : t -> string

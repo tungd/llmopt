@@ -20,7 +20,15 @@ module Shape = struct
   type t = Any_shape | Rank of int | Dims of dim list
 end
 
-type operation = Any_operation | W4a16_linear | Rms_norm | Cast | Silu | Mul | Add
+type operation =
+  | Any_operation
+  | Linear
+  | W4a16_linear
+  | Rms_norm
+  | Cast
+  | Silu
+  | Mul
+  | Add
 type effect_kind = Pure | Stateful | Synchronizing | Opaque | Any_effect
 type use_count = Exactly of int | At_most of int | At_least of int
 
@@ -46,6 +54,7 @@ and node_pattern = {
 
 and input_pattern =
   | Any_input
+  | Remaining_inputs
   | Capture_input of Capture.t
   | Produced_by of pattern
   | Or_input of input_pattern list
@@ -125,6 +134,7 @@ module Parser = struct
 
   let operation = function
     | "any" | "*" -> Ok Any_operation
+    | "linear" -> Ok Linear
     | "w4a16-linear" | "w4a16_linear" | "w4a16-linear-g64" -> Ok W4a16_linear
     | "rms-norm" | "rms_norm" -> Ok Rms_norm
     | "cast" -> Ok Cast
@@ -198,6 +208,7 @@ module Parser = struct
     | Atom value when String.length value > 0 && value.[0] = '$' ->
         capture (Atom value) |> Result.map (fun value -> Capture_input value)
     | List [ Atom "any" ] -> Ok Any_input
+    | List [ Atom "rest" ] -> Ok Remaining_inputs
     | List [ Atom "tensor"; value ] ->
         capture value |> Result.map (fun value -> Capture_input value)
     | List [ Atom "ref"; value ] ->
@@ -318,6 +329,7 @@ let contains text needle =
 
 let operation_of_node node =
   match Ir.node_op node with
+  | Ir.Op.Linear _ -> Linear
   | Ir.Op.Rms_norm _ -> Rms_norm
   | Ir.Op.Primitive (Ir.Primitive.Cast _) -> Cast
   | Ir.Op.Add _ -> Add
@@ -333,7 +345,10 @@ let operation_of_node node =
       if contains operation "w4a16" then W4a16_linear else Any_operation
 
 let matches_operation expected actual =
-  match expected with Any_operation -> true | expected -> expected = actual
+  match expected, actual with
+  | Any_operation, _ -> true
+  | Linear, (Linear | W4a16_linear) -> true
+  | expected, actual -> expected = actual
 
 let effect_of_node node =
   match Ir.node_op node with
@@ -501,6 +516,7 @@ and match_node graph nodes specification node state =
       let rec loop states patterns inputs =
         match patterns, inputs with
         | [], [] -> states
+        | [ Remaining_inputs ], _ -> states
         | pattern :: patterns, input :: inputs ->
             let states =
               List.concat_map
@@ -540,6 +556,7 @@ and match_node graph nodes specification node state =
 and match_input graph nodes pattern value state =
   match pattern with
   | Any_input -> [ state ]
+  | Remaining_inputs -> []
   | Capture_input capture ->
       Option.to_list (bind_capture capture (Match.Tensor value) state)
   | Produced_by pattern -> (
@@ -645,8 +662,11 @@ module Rule = struct
                (Ir.Value.id value |> Ir.Value_id.to_int))
       | None -> Ok (Int_set.union occupied member_ids)
 
-  let rewrite rule ~lower graph =
+  let rewrite rule ?(select = fun _ _ -> true) ~lower graph =
     let* applications = applications rule graph in
+    let applications =
+      List.filter (fun (match_, region) -> select match_ region) applications
+    in
     let* _ =
       List.fold_left
         (fun occupied application ->
