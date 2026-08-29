@@ -365,16 +365,24 @@ let () =
           "kernel void llmopt_attention_f16_simd_h512("))
     "Metal lowering does not emit uncaptured attention widths";
 
-  let q4_m2_tactic =
-    Metal.Tactic.select_linear ~target:Target_hardware.default ~m:2 ~n:64
-      ~k:256 ~input_dtype:Ir.Dtype.Float16
-      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
-      ~output_dtype:Ir.Dtype.Float16
-    |> Option.get
-  in
-  expect
-    (Metal.Tactic.name q4_m2_tactic = "llmopt_q4_k_linear_f16_m2")
-    "Metal tactics select paired-row Q4_K Linear from shape, layout, dtype, and target";
+  [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2", 32;
+    Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2", 256;
+    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2", 256;
+    Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_m2", 256;
+    Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16_m2", 32;
+    Ir.Dtype.Q4_0, "llmopt_q4_0_linear_f16_m2", 32;
+    Ir.Dtype.IQ4_XS, "llmopt_iq4_xs_linear_f16_m2", 256 ]
+  |> List.iter (fun (quant, expected_name, k) ->
+         let tactic =
+           Metal.Tactic.select_linear ~target:Target_hardware.default ~m:2
+             ~n:64 ~k ~input_dtype:Ir.Dtype.Float16
+             ~storage:(Ir.Linear_storage.Block_quantized quant)
+             ~output_dtype:Ir.Dtype.Float16
+           |> Option.get
+         in
+         expect
+           (Metal.Tactic.name tactic = expected_name)
+           "Metal tactics select paired-row quantized Linear from shape, layout, dtype, and target");
   let q4_m1_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:64
       ~k:256 ~input_dtype:Ir.Dtype.Float16

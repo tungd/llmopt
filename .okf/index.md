@@ -59,6 +59,7 @@ configuration.
 * [Typed Scan regions and Qwen recurrence recovery](experiments/exp-0105-typed-scan-recovery-2026-08-29.md) - typed carried state plus structural recovery of the 18 unrolled Qwen recurrences.
 * [Registered Metal tactics and paired-row Q4_K Linear](experiments/exp-0106-registered-metal-tactics-2026-08-29.md) - shape/layout/dtype/target-selected Metal implementations plus fresh Qwen/Gemma comparison timing.
 * [Captured triangular recurrence fusion](experiments/exp-0107-triangular-recurrence-fusion-2026-08-30.md) - graph-topology-selected recurrence lowering, semantic kernel ABI repair, typed S-expression dumps, and fresh Qwen/Gemma comparison timing.
+* [Paired-row mixed-quant Linear tactics](experiments/exp-0108-paired-row-mixed-quant-linear-2026-08-30.md) - paired weight-decode reuse across every supported GGUF quant layout with fresh Qwen/Gemma comparison timing.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.

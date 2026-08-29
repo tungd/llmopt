@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T04:03:47+07:00",
+  "git_base_commit": "f6a94ed",
+  "slice": "paired-row-mixed-quant-linear-tactics",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "selection": "captured m=2 shape, semantic Linear operation, activation/output dtype, GGUF block layout, and target SIMD/threadgroup support",
+    "architecture_id_use": "none",
+    "paired_layouts": ["Q8_0", "Q4_K", "Q5_K", "Q6_K", "Q5_0", "Q4_0", "IQ4_XS"],
+    "qwen_newly_paired_linear_sites": 103,
+    "gemma_newly_paired_linear_sites": 67
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 10,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-paired-quant",
+        "kernels": 104,
+        "commands": 4470,
+        "dispatches": 2407,
+        "median_ms": 49.884439,
+        "min_ms": 45.109987,
+        "max_ms": 62.809944,
+        "previous_median_ms": 49.862504,
+        "delta_ms": 0.021935,
+        "latency_change_percent": 0.043991,
+        "output_sha256": "49b2cbbd80df49796a0fe42e30161036490c963264bfb2fad63e10d84f9c4c9c",
+        "previous_output_exact_elements": 38267,
+        "output_elements": 496640,
+        "previous_output_mean_abs": 0.0045750914,
+        "previous_output_max_abs": 0.02734375,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.9059375,
+        "mean_ms": 9.2738166,
+        "samples_ns": [9544167, 14149917, 8476875, 7915541, 13439958, 7850542, 7881083, 7896334, 7845166, 7738583]
+      },
+      "llmopt_over_llama_cpp_median": 6.309744
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-paired-quant",
+        "kernels": 94,
+        "commands": 3999,
+        "dispatches": 1637,
+        "median_ms": 42.235494,
+        "min_ms": 31.891823,
+        "max_ms": 51.969051,
+        "previous_median_ms": 46.065092,
+        "delta_ms": -3.829598,
+        "latency_reduction_percent": 8.313449,
+        "output_sha256": "ca6c330fb9c069d9921a4c934176dbe5c971325f355f20a39cabe2c46dbbcad9",
+        "previous_output_exact_elements": 163744,
+        "output_elements": 524288,
+        "previous_output_mean_abs": 0.0092911124,
+        "previous_output_max_abs": 0.0703125,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.9571045,
+        "mean_ms": 19.9348126,
+        "samples_ns": [17141792, 24524167, 18422042, 22928791, 23186125, 16882541, 24313125, 17492167, 17310834, 17146542]
+      },
+      "llmopt_over_llama_cpp_median": 2.352021
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "pass, 453 dispatches",
+    "metal_compilation": "pass for both full-model packages",
+    "qwen_package": "valid, 104 kernels, 4470 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3999 commands, 0 opaque",
+    "numerical_scope": "both probes preserve both row argmax IDs; paired accumulation changes rounded Float16 intermediates and is not byte exact to the preceding packages"
+  }
+}

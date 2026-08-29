@@ -1577,16 +1577,18 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
-let quant_linear_kernel_names ~m = function
-  | Ir.Dtype.Q8_0 -> [ "llmopt_q8_0_linear_f16" ]
-  | Ir.Dtype.Q4_K when m = 2 ->
-      [ "llmopt_q4_k_linear_f16_m2"; "llmopt_q4_k_linear_f16" ]
-  | Ir.Dtype.Q4_K -> [ "llmopt_q4_k_linear_f16" ]
-  | Ir.Dtype.Q5_K -> [ "llmopt_q5_k_linear_f16" ]
-  | Ir.Dtype.Q6_K -> [ "llmopt_q6_k_linear_f16" ]
-  | Ir.Dtype.Q5_0 -> [ "llmopt_q5_0_linear_f16" ]
-  | Ir.Dtype.Q4_0 -> [ "llmopt_q4_0_linear_f16" ]
-  | Ir.Dtype.IQ4_XS -> [ "llmopt_iq4_xs_linear_f16" ]
+let quant_linear_kernel_name = function
+  | Ir.Dtype.Q8_0 -> "llmopt_q8_0_linear_f16"
+  | Ir.Dtype.Q4_K -> "llmopt_q4_k_linear_f16"
+  | Ir.Dtype.Q5_K -> "llmopt_q5_k_linear_f16"
+  | Ir.Dtype.Q6_K -> "llmopt_q6_k_linear_f16"
+  | Ir.Dtype.Q5_0 -> "llmopt_q5_0_linear_f16"
+  | Ir.Dtype.Q4_0 -> "llmopt_q4_0_linear_f16"
+  | Ir.Dtype.IQ4_XS -> "llmopt_iq4_xs_linear_f16"
+
+let quant_linear_kernel_names ~m quant =
+  let generic = quant_linear_kernel_name quant in
+  if m = 2 then [ generic ^ "_m2"; generic ] else [ generic ]
 
 let select_quant_linear_kernel runtime ~m quant =
   let input_dtype = Ir.Dtype.Quant quant in
@@ -2569,7 +2571,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Parameters.u32s [ m; n; k; if Option.is_some bias_value then 1 else 0 ]
                 in
                 let columns =
-                  if name = "llmopt_q4_k_linear_f16_m2" then n else m * n
+                  if String.ends_with ~suffix:"_m2" name then n else m * n
                 in
                 let* grid_x = linear_f16_grid columns in
                 dispatched
