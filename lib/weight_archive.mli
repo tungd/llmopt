@@ -30,6 +30,14 @@ end
 module Tensor : sig
   type t
 
+  val create :
+    name:string ->
+    dtype:Dtype.t ->
+    shape:int list ->
+    offset:int ->
+    byte_length:int ->
+    t
+
   val name : t -> string
   val dtype : t -> Dtype.t
   val shape : t -> int list
@@ -38,6 +46,13 @@ module Tensor : sig
 end
 
 type t
+
+val create :
+  path:string ->
+  file_size:int ->
+  index_bytes:int ->
+  tensors:Tensor.t list ->
+  t
 
 val of_file : string -> (t, string) result
 val path : t -> string

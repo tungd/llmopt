@@ -264,7 +264,12 @@ let prepare_package (root, package) =
               tensor_store |> Serving_package.Tensor_store.file
               |> Serving_package.Artifact.path |> Filename.concat root
             in
-            Weight_archive.of_file path |> Result.map Option.some
+            (match Weight_archive.of_file path with
+            | Ok archive -> Ok (Some archive)
+            | Error _ -> (
+                match Gguf.of_file_as_archive path with
+                | Ok archive -> Ok (Some archive)
+                | Error err -> Error ("cannot load weight store: " ^ err)))
       in
       let* archive = archive in
       let* () = Serving_validation.validate ~package ~archive in

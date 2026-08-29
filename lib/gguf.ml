@@ -452,3 +452,29 @@ module Transcode = struct
       done;
       Ok dst
 end
+
+let to_weight_archive (gguf : t) ~path : (Weight_archive.t, string) result =
+  let* file_size =
+    if gguf.file_size < 0L || gguf.file_size > Int64.of_int max_int then
+      Error "gguf file size exceeds host integer range"
+    else Ok (Int64.to_int gguf.file_size)
+  in
+  let* index_bytes =
+    if gguf.data_offset < 0L || gguf.data_offset > Int64.of_int max_int then
+      Error "gguf data offset exceeds host integer range"
+    else Ok (Int64.to_int gguf.data_offset)
+  in
+  let tensors =
+    List.map
+      (fun (info : Tensor_info.t) ->
+        let abs_offset = Int64.add gguf.data_offset info.offset in
+        let offset = Int64.to_int abs_offset in
+        Weight_archive.Tensor.create ~name:info.name ~dtype:info.dtype
+          ~shape:info.shape ~offset ~byte_length:info.byte_length)
+      gguf.tensors
+  in
+  Ok (Weight_archive.create ~path ~file_size ~index_bytes ~tensors)
+
+let of_file_as_archive path : (Weight_archive.t, string) result =
+  let* gguf = of_file path in
+  to_weight_archive gguf ~path

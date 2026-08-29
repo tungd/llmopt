@@ -107,6 +107,9 @@ module Tensor = struct
     byte_length : int;
   }
 
+  let create ~name ~dtype ~shape ~offset ~byte_length =
+    { name; dtype; shape; offset; byte_length }
+
   let name tensor = tensor.name
   let dtype tensor = tensor.dtype
   let shape tensor = tensor.shape
@@ -123,6 +126,14 @@ type t = {
   tensors : Tensor.t list;
   index : Tensor.t Tensor_map.t;
 }
+
+let create ~path ~file_size ~index_bytes ~tensors =
+  let index =
+    List.fold_left
+      (fun index tensor -> Tensor_map.add (Tensor.name tensor) tensor index)
+      Tensor_map.empty tensors
+  in
+  { path; file_size; index_bytes; tensors; index }
 
 let path archive = archive.path
 let file_size archive = archive.file_size

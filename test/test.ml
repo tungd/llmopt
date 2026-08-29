@@ -1454,6 +1454,19 @@ let () =
   check_gguf_if_exists smol_path "llama" 200;
   check_gguf_if_exists lfm_path "lfm2" 100;
 
+  (* 7. Direct GGUF as Weight Archive Verification *)
+  if Sys.file_exists smol_path then (
+    match Gguf.of_file_as_archive smol_path with
+    | Error err -> failwith ("failed to load smol GGUF as weight archive: " ^ err)
+    | Ok archive ->
+        expect (Weight_archive.file_size archive > 0) "smol archive file_size > 0";
+        expect (List.length (Weight_archive.tensors archive) = 272) "smol archive has 272 tensors";
+        match Weight_archive.find archive "token_embd.weight" with
+        | None -> failwith "token_embd.weight not found in GGUF weight archive"
+        | Some t ->
+            expect (Weight_archive.Tensor.shape t = [49152; 576]) "token_embd shape is [49152; 576]";
+            expect (Weight_archive.Tensor.byte_length t > 0) "token_embd byte_length > 0");
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 

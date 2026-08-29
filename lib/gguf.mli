@@ -67,3 +67,6 @@ val chat_template : t -> string option
 module Transcode : sig
   val iq4_xs_to_q5_k : bytes -> (bytes, string) result
 end
+
+val to_weight_archive : t -> path:string -> (Weight_archive.t, string) result
+val of_file_as_archive : string -> (Weight_archive.t, string) result

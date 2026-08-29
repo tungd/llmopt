@@ -26,9 +26,12 @@ let () =
                 in
                 (match Weight_archive.of_file path with
                 | Ok archive -> Some archive
-                | Error message ->
-                    prerr_endline message;
-                    exit 4)
+                | Error _ -> (
+                    match Gguf.of_file_as_archive path with
+                    | Ok archive -> Some archive
+                    | Error message ->
+                        prerr_endline message;
+                        exit 4))
           in
           (match Serving_validation.validate ~package ~archive with
           | Error message ->
