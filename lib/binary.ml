@@ -37,13 +37,24 @@ module Writer = struct
     encoded 8 (fun bytes -> Bytes.set_int64_le bytes 0 (Int64.of_int value))
     |> raw_bytes writer
 
+  let u64_int64 writer value =
+    encoded 8 (fun bytes -> Bytes.set_int64_le bytes 0 value)
+    |> raw_bytes writer
+
   let i64 writer value =
     encoded 8 (fun bytes -> Bytes.set_int64_le bytes 0 (Int64.of_int value))
     |> raw_bytes writer
 
+  let i64_int64 = u64_int64
+
   let float64 writer value =
     encoded 8 (fun bytes ->
         Bytes.set_int64_le bytes 0 (Int64.bits_of_float value))
+    |> raw_bytes writer
+
+  let float32 writer value =
+    encoded 4 (fun bytes ->
+        Bytes.set_int32_le bytes 0 (Int32.bits_of_float value))
     |> raw_bytes writer
 
   let bool writer value = u8 writer (if value then 1 else 0)
@@ -97,6 +108,14 @@ module Reader = struct
         reader.offset <- reader.offset + 1;
         Ok value
 
+  let i8 reader =
+    match require reader 1 with
+    | Error _ as error -> error
+    | Ok () ->
+        let value = Bytes.get_int8 reader.bytes reader.offset in
+        reader.offset <- reader.offset + 1;
+        Ok value
+
   let fixed reader length decode =
     match require reader length with
     | Error _ as error -> error
@@ -106,6 +125,7 @@ module Reader = struct
         Ok value
 
   let u16 reader = fixed reader 2 Bytes.get_uint16_le
+  let i16 reader = fixed reader 2 Bytes.get_int16_le
 
   let u32 reader =
     let* value = fixed reader 4 Bytes.get_int32_le in
@@ -113,6 +133,8 @@ module Reader = struct
     if value > Int64.of_int max_int then
       Error "binary u32 value exceeds the host integer range"
     else Ok (Int64.to_int value)
+
+  let i32_raw reader = fixed reader 4 Bytes.get_int32_le
 
   let int64_to_int label value =
     if value < Int64.of_int min_int || value > Int64.of_int max_int then
@@ -124,9 +146,16 @@ module Reader = struct
     if value < 0L then Error "binary u64 value exceeds signed host range"
     else int64_to_int "u64" value
 
+  let u64_int64 reader = fixed reader 8 Bytes.get_int64_le
+
   let i64 reader =
     let* value = fixed reader 8 Bytes.get_int64_le in
     int64_to_int "i64" value
+
+  let i64_int64 reader = fixed reader 8 Bytes.get_int64_le
+
+  let float32 reader =
+    fixed reader 4 Bytes.get_int32_le |> Result.map Int32.float_of_bits
 
   let float64 reader =
     fixed reader 8 Bytes.get_int64_le |> Result.map Int64.float_of_bits

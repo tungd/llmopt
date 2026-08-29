@@ -8,8 +8,11 @@ module Writer : sig
   val u16 : t -> int -> unit
   val u32 : t -> int -> unit
   val u64 : t -> int -> unit
+  val u64_int64 : t -> int64 -> unit
   val i64 : t -> int -> unit
+  val i64_int64 : t -> int64 -> unit
   val float64 : t -> float -> unit
+  val float32 : t -> float -> unit
   val bool : t -> bool -> unit
   val string : t -> string -> unit
   val bytes : t -> bytes -> unit
@@ -25,10 +28,16 @@ module Reader : sig
   val raw_string : t -> length:int -> (string, string) result
   val raw_bytes : t -> length:int -> (bytes, string) result
   val u8 : t -> (int, string) result
+  val i8 : t -> (int, string) result
   val u16 : t -> (int, string) result
+  val i16 : t -> (int, string) result
   val u32 : t -> (int, string) result
+  val i32_raw : t -> (int32, string) result
   val u64 : t -> (int, string) result
+  val u64_int64 : t -> (int64, string) result
   val i64 : t -> (int, string) result
+  val i64_int64 : t -> (int64, string) result
+  val float32 : t -> (float, string) result
   val float64 : t -> (float, string) result
   val bool : t -> (bool, string) result
   val string : t -> (string, string) result

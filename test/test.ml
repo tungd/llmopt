@@ -1248,6 +1248,70 @@ let () =
   in
   expect (Result.is_error unaligned_err) "physical_bytes rejects unaligned element counts";
 
+  (* GGUF Parser & Ingestion Tests *)
+  let gguf_buf = Binary.Writer.create () in
+  Binary.Writer.raw_string gguf_buf "GGUF";
+  Binary.Writer.u32 gguf_buf 3;
+  Binary.Writer.u64 gguf_buf 2;
+  Binary.Writer.u64 gguf_buf 4;
+
+  let write_str_kv w k s =
+    Binary.Writer.u64 w (String.length k);
+    Binary.Writer.raw_string w k;
+    Binary.Writer.u32 w 8;
+    Binary.Writer.u64 w (String.length s);
+    Binary.Writer.raw_string w s
+  in
+  let write_u32_kv w k v =
+    Binary.Writer.u64 w (String.length k);
+    Binary.Writer.raw_string w k;
+    Binary.Writer.u32 w 4;
+    Binary.Writer.u32 w v
+  in
+  write_str_kv gguf_buf "general.architecture" "qwen3";
+  write_u32_kv gguf_buf "qwen3.context_length" 4096;
+  write_u32_kv gguf_buf "qwen3.block_count" 36;
+  write_str_kv gguf_buf "tokenizer.chat_template"
+    "{% for message in messages %}{{ message.content }}{% endfor %}";
+
+  let write_tensor_info w name dims qtype offset =
+    Binary.Writer.u64 w (String.length name);
+    Binary.Writer.raw_string w name;
+    Binary.Writer.u32 w (List.length dims);
+    List.iter (fun d -> Binary.Writer.u64 w d) dims;
+    Binary.Writer.u32 w qtype;
+    Binary.Writer.u64_int64 w offset
+  in
+  write_tensor_info gguf_buf "model.layers.0.mlp.gate.weight" [ 512; 256 ] 12 0L;
+  write_tensor_info gguf_buf "model.layers.0.mlp.down.weight" [ 256; 512 ] 14
+    73728L;
+
+  let gguf_bytes = Binary.Writer.contents gguf_buf in
+  let parsed_gguf = Gguf.of_bytes gguf_bytes |> Result.get_ok in
+  expect (parsed_gguf.version = 3) "GGUF version is 3";
+  expect (Gguf.architecture parsed_gguf = Some "qwen3")
+    "GGUF architecture is qwen3";
+  expect (Gguf.context_length parsed_gguf = Some 4096)
+    "GGUF context_length is 4096";
+  expect (Gguf.block_count parsed_gguf = Some 36) "GGUF block_count is 36";
+  expect
+    (Gguf.chat_template parsed_gguf
+    = Some "{% for message in messages %}{{ message.content }}{% endfor %}")
+    "GGUF chat template parsed";
+  expect (List.length parsed_gguf.tensors = 2) "GGUF has 2 tensors";
+  let t1 =
+    Gguf.find_tensor parsed_gguf "model.layers.0.mlp.gate.weight" |> Option.get
+  in
+  expect (t1.shape = [ 256; 512 ]) "t1 shape is [256; 512] row-major";
+  expect (t1.dtype = Weight_archive.Dtype.Quant Q4_K) "t1 dtype is Quant Q4_K";
+  expect (t1.byte_length = 73728) "t1 byte_length is 73728";
+  let t2 =
+    Gguf.find_tensor parsed_gguf "model.layers.0.mlp.down.weight" |> Option.get
+  in
+  expect (t2.shape = [ 512; 256 ]) "t2 shape is [512; 256] row-major";
+  expect (t2.dtype = Weight_archive.Dtype.Quant Q6_K) "t2 dtype is Quant Q6_K";
+  expect (t2.byte_length = 107520) "t2 byte_length is 107520";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
 
 
