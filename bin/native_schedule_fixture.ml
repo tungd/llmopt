@@ -226,6 +226,18 @@ let graph () =
     [ 1; 1; 2; 2 ] Ir.Dtype.Float16
   |> output graph "attention";
 
+  let wide_attention_input name dtype =
+    input graph name [ 1; 1; 2; 256 ] dtype
+  in
+  let wide_query = wide_attention_input "wide_attention_query" Ir.Dtype.Float16 in
+  let wide_key = wide_attention_input "wide_attention_key" Ir.Dtype.Float16 in
+  let wide_value = wide_attention_input "wide_attention_value" Ir.Dtype.Float16 in
+  let wide_mask = input graph "wide_attention_mask" [ 1; 1; 2; 2 ] Ir.Dtype.Bool in
+  primitive graph (Ir.Primitive.Attention attention)
+    [ wide_query; wide_key; wide_value; wide_mask ]
+    [ 1; 1; 2; 256 ] Ir.Dtype.Float16
+  |> output graph "wide_attention";
+
   let paged_query =
     input graph "paged_query" [ 1; 1; 1; 64 ] Ir.Dtype.Float16
   in

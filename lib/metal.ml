@@ -3283,6 +3283,11 @@ let replace_first ~needle ~replacement source =
       String.sub source 0 offset ^ replacement
       ^ String.sub source (offset + needle_length) (source_length - offset - needle_length)
 
+let rec replace_all ~needle ~replacement source =
+  let replaced = replace_first ~needle ~replacement source in
+  if String.equal replaced source then source
+  else replace_all ~needle ~replacement replaced
+
 let short_conv_step_fused_source =
   replace_first ~needle:"llmopt_short_conv_step_f16"
     ~replacement:"llmopt_short_conv_step_fused_f16" short_conv_step_source
@@ -3518,6 +3523,93 @@ let attention_source =
   ^ "  output[output_base + lane + ATTENTION_SIMD_WIDTH] = half(denominator == 0.0f\n"
   ^ "      ? 0.0f : result_high / denominator);\n"
   ^ "}\n"
+
+let attention_simd_template = {|
+kernel void __ATTENTION_KERNEL__(
+    device const half* query [[buffer(0)]],
+    device const half* key [[buffer(1)]],
+    device const half* value [[buffer(2)]],
+    device const uchar* mask [[buffer(3)]],
+    device half* output [[buffer(4)]],
+    constant AttentionParams& params [[buffer(5)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x * ATTENTION_ROWS_PER_THREADGROUP
+      + simdgroup;
+  const uint count = params.batches * params.heads * params.query_length;
+  if (row >= count) return;
+  const uint query_position = row % params.query_length;
+  const uint head = (row / params.query_length) % params.heads;
+  const uint batch = row / (params.query_length * params.heads);
+  const uint effective_kv_heads = params.kv_heads > 0 ? params.kv_heads : params.heads;
+  const uint kv_head = effective_kv_heads < params.heads
+      ? head / (params.heads / effective_kv_heads) : head;
+  const uint query_base = (((batch * params.heads + head)
+      * params.query_length + query_position) * params.head_dimension);
+  const uint kv_head_base =
+      (batch * effective_kv_heads + kv_head) * params.key_length;
+  float query_values[__ATTENTION_SIMD_CHUNKS__];
+  float results[__ATTENTION_SIMD_CHUNKS__];
+  for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+    query_values[chunk] =
+        float(query[query_base + chunk * ATTENTION_SIMD_WIDTH + lane]);
+    results[chunk] = 0.0f;
+  }
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+  for (uint key_position = 0; key_position < params.key_length; ++key_position) {
+    if (!llmopt_attention_allowed(mask, params, batch, head,
+        query_position, key_position)) continue;
+    const uint key_base =
+        (kv_head_base + key_position) * __ATTENTION_HEAD_DIMENSION__;
+    float partial_score = 0.0f;
+    for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+      const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
+      partial_score += query_values[chunk] * float(key[key_base + dimension]);
+    }
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_maximum = max(maximum, score);
+    const float previous_scale = denominator == 0.0f ? 0.0f
+        : exp(maximum - next_maximum);
+    const float current_scale = exp(score - next_maximum);
+    for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+      const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
+      results[chunk] = results[chunk] * previous_scale
+          + current_scale * float(value[key_base + dimension]);
+    }
+    denominator = denominator * previous_scale + current_scale;
+    maximum = next_maximum;
+  }
+  const uint output_base = params.token_first_output != 0
+      ? (((batch * params.query_length + query_position) * params.heads + head)
+          * __ATTENTION_HEAD_DIMENSION__)
+      : (row * __ATTENTION_HEAD_DIMENSION__);
+  for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+    const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
+    output[output_base + dimension] = half(denominator == 0.0f
+        ? 0.0f : results[chunk] / denominator);
+  }
+}
+|}
+
+let attention_simd_kernel_name head_dimension =
+  Printf.sprintf "llmopt_attention_f16_simd_h%d" head_dimension
+
+let attention_simd_source head_dimension =
+  attention_simd_template
+  |> replace_all ~needle:"__ATTENTION_KERNEL__"
+       ~replacement:(attention_simd_kernel_name head_dimension)
+  |> replace_all ~needle:"__ATTENTION_HEAD_DIMENSION__"
+       ~replacement:(string_of_int head_dimension)
+  |> replace_all ~needle:"__ATTENTION_SIMD_CHUNKS__"
+       ~replacement:(string_of_int (head_dimension / 32))
+
+let attention_simd_entry head_dimension =
+  kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+    ~name:(attention_simd_kernel_name head_dimension)
+    ~operation:Kernel_abi.Operation.Attention ~input_dtype:Ir.Dtype.Float16
+    ~output_dtype:Ir.Dtype.Float16
 
 let attention_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -4615,6 +4707,22 @@ let has_attention graph =
          | Ir.Op.Primitive (Ir.Primitive.Attention _) -> true
          | _ -> false)
 
+let attention_simd_head_dimensions graph =
+  Ir.Graph.nodes graph
+  |> List.filter_map (fun node ->
+         match Ir.node_op node, Ir.node_inputs node with
+         | Ir.Op.Primitive (Ir.Primitive.Attention _), query :: _
+           when Ir.Value.dtype query = Ir.Dtype.Float16 -> (
+             match
+               Tensor_shape.dimensions (Ir.Value.logical_shape query) |> List.rev
+             with
+             | head_dimension :: _
+               when head_dimension <> 64 && head_dimension mod 32 = 0 ->
+                 Some head_dimension
+             | _ -> None)
+         | _ -> None)
+  |> List.sort_uniq Int.compare
+
 let has_embedding graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -4898,6 +5006,14 @@ let lower graph =
   let update_slice =
     has_primitive graph (function Ir.Primitive.Update_slice _ -> true | _ -> false)
   in
+  let attention_head_dimensions = attention_simd_head_dimensions graph in
+  let attention_specialized_source =
+    attention_head_dimensions |> List.map attention_simd_source
+    |> String.concat "\n"
+  in
+  let attention_specialized_entries =
+    List.map attention_simd_entry attention_head_dimensions
+  in
   let components =
     [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
       ( has_w4a16_qkv_linear graph,
@@ -4934,7 +5050,9 @@ let lower graph =
       ( has_short_conv_prefill graph,
         short_conv_prefill_init_source,
         short_conv_prefill_init_entries );
-      has_attention graph, attention_source, attention_entries;
+      ( has_attention graph,
+        attention_source ^ attention_specialized_source,
+        attention_entries @ attention_specialized_entries );
       has_embedding graph, embedding_source, embedding_entries;
       ( has_primitive graph (function Ir.Primitive.Arange _ -> true | _ -> false),
         arange_source,

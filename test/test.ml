@@ -319,6 +319,52 @@ let () =
        "kernel void llmopt_rms_norm_f16_wf32_simd")
     "Metal lowering preserves GGUF float32 RMSNorm weights";
 
+  let wide_attention_graph = Ir.Graph.create () in
+  let wide_attention_input name shape dtype =
+    tensor_input wide_attention_graph ~name ~source:Ir.Input_source.Runtime
+      ~shape ~dtype
+  in
+  let wide_query =
+    wide_attention_input "wide_query" [ 1; 8; 2; 256 ] Ir.Dtype.Float16
+  in
+  let wide_key =
+    wide_attention_input "wide_key" [ 1; 8; 2; 256 ] Ir.Dtype.Float16
+  in
+  let wide_value =
+    wide_attention_input "wide_value" [ 1; 8; 2; 256 ] Ir.Dtype.Float16
+  in
+  let wide_mask =
+    wide_attention_input "wide_mask" [ 1; 1; 2; 2 ] Ir.Dtype.Bool
+  in
+  let wide_attention =
+    Ir.Attention.create ~scale:1.0 ~causal:false |> expect_ok
+  in
+  let wide_output =
+    Ir.Graph.fresh_tensor_value wide_attention_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 8; 2; 256 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append wide_attention_graph
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Attention wide_attention))
+    ~inputs:[ wide_query; wide_key; wide_value; wide_mask ]
+    ~output:(Some wide_output);
+  Ir.Graph.add_output wide_attention_graph ~name:"wide_attention" wide_output;
+  let wide_attention_program = Metal.lower wide_attention_graph |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source wide_attention_program)
+       "kernel void llmopt_attention_f16_simd_h256(")
+    "Metal lowering specializes SIMD attention for the captured width";
+  expect
+    (Metal.Program.kernels wide_attention_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_attention_f16_simd_h256"))
+    "captured-width SIMD attention is declared in the package ABI";
+  expect
+    (not
+       (contains_substring (Metal.Program.source wide_attention_program)
+          "kernel void llmopt_attention_f16_simd_h512("))
+    "Metal lowering does not emit uncaptured attention widths";
+
   let mixed_graph = Ir.Graph.create () in
   let mixed_input =
     tensor_input mixed_graph ~name:"mixed_input" ~source:Ir.Input_source.Runtime

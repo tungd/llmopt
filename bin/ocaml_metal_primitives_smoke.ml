@@ -162,6 +162,14 @@ let () =
             (bytes_of_u16 [ 0x4900; 0x0000; 0x0000; 0x4d00 ]);
           input runtime "attention_mask"
             (bytes_of_bool [ true; false; false; true ]);
+          input runtime "wide_attention_query"
+            (bytes_of_u16 (List.init 512 (Fun.const 0)));
+          input runtime "wide_attention_key"
+            (bytes_of_u16 (List.init 512 (Fun.const 0)));
+          input runtime "wide_attention_value"
+            (bytes_of_u16 (List.init 512 (Fun.const 0x4200)));
+          input runtime "wide_attention_mask"
+            (bytes_of_bool [ true; true; true; true ]);
           input runtime "paged_query" (bytes_of_u16 (List.init 64 (Fun.const 0)));
           input runtime "paged_current_key"
             (bytes_of_u16 (List.init 64 (Fun.const 0)));
@@ -264,6 +272,8 @@ let () =
     (bytes_of_u16 (List.init 6 (Fun.const 0x3c00)));
   expect_bytes execution "attention"
     (bytes_of_u16 [ 0x4900; 0; 0; 0x4d00 ]);
+  expect_bytes execution "wide_attention"
+    (bytes_of_u16 (List.init 512 (Fun.const 0x4200)));
   expect_bytes execution "paged_attention"
     (bytes_of_u16 (List.init 64 (Fun.const 0x4200)));
   expect_bytes execution "cast_f16_f32" (bytes_of_f32 [ 1.; -2.; 0.5 ]);
@@ -311,7 +321,7 @@ let () =
   let kernels = Metal_runtime.Execution.kernels execution in
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: canonical primitive set exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: canonical primitive set exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\nwide-attention: exact\nwide-attention-kernel: llmopt_attention_f16_simd_h256\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

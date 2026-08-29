@@ -1530,10 +1530,12 @@ let select_rms_norm_kernel runtime input_dtype weight_dtype output_dtype =
           |> Result.map (fun entry -> entry, false))
 
 let select_attention_kernel runtime input_dtype output_dtype head_dimension =
+  let specialized =
+    Printf.sprintf "llmopt_attention_f16_simd_h%d" head_dimension
+  in
   let candidates =
-    if head_dimension = 64 then
-      [ "llmopt_attention_f16_simd_h64", true;
-        "llmopt_attention_f16", false ]
+    if head_dimension mod 32 = 0 then
+      [ specialized, true; "llmopt_attention_f16", false ]
     else [ "llmopt_attention_f16", false ]
   in
   let rec select = function

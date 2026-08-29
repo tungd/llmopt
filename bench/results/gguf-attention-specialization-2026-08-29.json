@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-29T19:10:17+07:00",
+  "git_base_commit": "44d42f6179000fb48b8fcc3c400573f210f413c6",
+  "host": {
+    "device": "Apple M4 Pro",
+    "os": "Darwin 25.6.0",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "contract": {
+    "topology_authority": "captured FX graph",
+    "specialization_key": "attention query logical-shape final dimension",
+    "architecture_id_use": "none",
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "warmup": 3,
+    "repeats": 10,
+    "timing_scope": "one complete two-token forward returning all logits",
+    "comparison_order": "baseline package followed immediately by specialized package for each model",
+    "llama_cpp_note": "llama.cpp medians are reused from the same-day full-model receipt and were not rerun in this tuning pair"
+  },
+  "diagnosis": {
+    "attention_ir_boundary": "Ir.Primitive.Attention already represents the fused operation",
+    "previous_backend_behavior": "only head dimension 64 selected SIMD online-softmax; captured dimensions 256 and 512 selected the scalar kernel",
+    "gemma_noop_differential_ms": {
+      "baseline": 527.723074,
+      "attention_noop": 68.799019,
+      "attention_delta": 458.924055,
+      "all_linear_noop": 474.267960,
+      "all_linear_delta": 53.455114
+    },
+    "differential_note": "no-op deltas isolate dispatch families but are not additive because kernel interactions and device state remain"
+  },
+  "compiler_change": {
+    "lowering": "Metal.lower scans captured attention query shapes, sorts unique SIMD-compatible widths, and emits one fixed-width kernel and ABI entry per observed width",
+    "runtime": "the schedule-derived head dimension forms the exact generated kernel name; absence falls back to the scalar kernel",
+    "generated_specializations": {
+      "gemma": [256, 512],
+      "qwen": [256]
+    }
+  },
+  "models": [
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+      "package": {
+        "commands": 3999,
+        "dispatches": 1637,
+        "opaque_commands": 0,
+        "declared_kernels": 100
+      },
+      "baseline_ms": {
+        "median": 483.045578,
+        "min": 476.782799,
+        "max": 529.252052
+      },
+      "specialized_ms": {
+        "median": 56.972980,
+        "min": 47.958136,
+        "max": 64.363956
+      },
+      "speedup": 8.478502932442712,
+      "median_reduction_ms": 426.072598,
+      "median_reduction_percent": 88.2054649509699,
+      "llama_cpp_ms": 17.8397915,
+      "baseline_over_llama_cpp": 27.076862305257322,
+      "specialized_over_llama_cpp": 3.1935900147711926,
+      "baseline_to_specialized_logits": {
+        "elements": 524288,
+        "finite_baseline": 524288,
+        "finite_specialized": 524288,
+        "exact_elements": 341613,
+        "max_abs": 0.0732421875,
+        "mean_abs": 0.005039939656853676,
+        "baseline_argmax": [84904, 148465],
+        "specialized_argmax": [84904, 148465]
+      }
+    },
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+      "package": {
+        "commands": 19176,
+        "dispatches": 9193,
+        "opaque_commands": 0,
+        "declared_kernels": 107
+      },
+      "baseline_ms": {
+        "median": 177.618027,
+        "min": 171.475887,
+        "max": 181.498051
+      },
+      "specialized_ms": {
+        "median": 129.416585,
+        "min": 122.417212,
+        "max": 136.421919
+      },
+      "speedup": 1.3724518151981835,
+      "median_reduction_ms": 48.201442,
+      "median_reduction_percent": 27.137697008648797,
+      "llama_cpp_ms": 7.4071875,
+      "baseline_over_llama_cpp": 23.9791455258828,
+      "specialized_over_llama_cpp": 17.47175766780576,
+      "baseline_to_specialized_logits": {
+        "elements": 496640,
+        "finite_baseline": 496640,
+        "finite_specialized": 496640,
+        "exact_elements": 264492,
+        "max_abs": 0.029296875,
+        "mean_abs": 0.0030081961303949356,
+        "baseline_argmax": [1, 458],
+        "specialized_argmax": [1, 458]
+      }
+    }
+  ],
+  "validation": {
+    "ocaml_and_python_tests": "pass",
+    "native_wide_attention": {
+      "head_dimension": 256,
+      "kernel": "llmopt_attention_f16_simd_h256",
+      "result": "exact"
+    },
+    "metal_compilation": "pass for Gemma h256/h512 and Qwen h256 packages",
+    "package_validation": "pass"
+  }
+}
