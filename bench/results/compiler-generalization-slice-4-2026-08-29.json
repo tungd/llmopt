@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-29T23:54:48+07:00",
+  "git_base_commit": "b018a47",
+  "slice": "registered-metal-tactics",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "change": {
+    "selection": "registered Linear and attention tactic families selected from captured shape, input/output dtype, tensor storage layout, and target hardware",
+    "q4_k_m2": "one SIMD group computes both captured rows while decoding each Q4_K weight block once",
+    "architecture_id_use": "none",
+    "selected_q4_k_m2_nodes": {
+      "qwen": 48,
+      "gemma": 139
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 10,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-tactics",
+        "kernels": 103,
+        "commands": 19176,
+        "dispatches": 9193,
+        "median_ms": 120.692492,
+        "min_ms": 117.434978,
+        "max_ms": 124.716997,
+        "previous_median_ms": 143.818021,
+        "delta_ms": -23.125529,
+        "latency_reduction_percent": 16.079716,
+        "output_vs_previous_package": "byte exact"
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.9044795,
+        "mean_ms": 8.1143,
+        "samples_ns": [8204500, 7889250, 7869125, 7788125, 7854583, 7891209, 8974833, 7917750, 7994709, 8758917]
+      },
+      "llmopt_over_llama_cpp_median": 15.268873
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-tactics",
+        "kernels": 94,
+        "commands": 3999,
+        "dispatches": 1637,
+        "median_ms": 44.69347,
+        "min_ms": 38.385153,
+        "max_ms": 46.947002,
+        "previous_median_ms": 64.836025,
+        "delta_ms": -20.142555,
+        "latency_reduction_percent": 31.066918,
+        "output_vs_previous_package": "byte exact"
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.5654795,
+        "mean_ms": 17.69832,
+        "samples_ns": [17545417, 17999208, 18373084, 17355500, 17397667, 17275792, 18015208, 18149458, 17585542, 17286333]
+      },
+      "llmopt_over_llama_cpp_median": 2.544392
+    }
+  ],
+  "validation": {
+    "ocaml_and_python_tests": "pass",
+    "ninja_all": "pass",
+    "metal_compilation": "pass for both full-model packages",
+    "qwen_package": "valid, 103 kernels, 19176 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3999 commands, 0 opaque",
+    "qwen_output": "byte exact to package-scan-recovery",
+    "gemma_output": "byte exact to package-perf-attention-specialized"
+  }
+}

@@ -11,6 +11,122 @@ module Program = struct
   let kernels program = program.kernels
 end
 
+module Tactic = struct
+  type t = { name : string; threadgroup : int * int * int }
+
+  type linear_problem = {
+    target : Target_hardware.t;
+    m : int;
+    n : int;
+    k : int;
+    input_dtype : Ir.Dtype.t;
+    storage : Ir.Linear_storage.layout;
+    output_dtype : Ir.Dtype.t;
+  }
+
+  type linear_registration = {
+    build : linear_problem -> t;
+    accepts : linear_problem -> bool;
+  }
+
+  type attention_problem = {
+    target : Target_hardware.t;
+    head_dimension : int;
+    input_dtype : Ir.Dtype.t;
+    output_dtype : Ir.Dtype.t;
+  }
+
+  type attention_registration = {
+    build : attention_problem -> t;
+    accepts : attention_problem -> bool;
+  }
+
+  let name tactic = tactic.name
+  let threadgroup tactic = tactic.threadgroup
+
+  let supports_simd target ~threads =
+    target.Target_hardware.memory.simd_lanes = 32
+    && target.execution.max_threads_per_threadgroup >= threads
+
+  let f16_io input_dtype output_dtype =
+    input_dtype = Ir.Dtype.Float16 && output_dtype = Ir.Dtype.Float16
+
+  let block_quantized problem quant =
+    problem.storage = Ir.Linear_storage.Block_quantized quant
+
+  let quant_kernel_name = function
+    | Ir.Dtype.Q8_0 -> "llmopt_q8_0_linear_f16"
+    | Ir.Dtype.Q4_K -> "llmopt_q4_k_linear_f16"
+    | Ir.Dtype.Q5_K -> "llmopt_q5_k_linear_f16"
+    | Ir.Dtype.Q6_K -> "llmopt_q6_k_linear_f16"
+    | Ir.Dtype.Q5_0 -> "llmopt_q5_0_linear_f16"
+    | Ir.Dtype.Q4_0 -> "llmopt_q4_0_linear_f16"
+    | Ir.Dtype.IQ4_XS -> "llmopt_iq4_xs_linear_f16"
+
+  let block_elements = Ir.Tensor_layout.block_elements
+
+  let quant_registration quant : linear_registration =
+    { build = (fun _ -> { name = quant_kernel_name quant; threadgroup = (256, 1, 1) });
+      accepts =
+        (fun (problem : linear_problem) ->
+          problem.m > 0 && problem.n > 0 && problem.k > 0
+          && problem.k mod block_elements quant = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem quant
+          && supports_simd problem.target ~threads:256) }
+
+  let linear_registry : linear_registration list =
+    [ ({ build =
+          (fun _ ->
+            { name = "llmopt_q4_k_linear_f16_m2"; threadgroup = (256, 1, 1) });
+        accepts =
+          (fun (problem : linear_problem) ->
+            problem.m = 2 && problem.n > 0 && problem.k > 0
+            && problem.k mod 256 = 0
+            && f16_io problem.input_dtype problem.output_dtype
+            && block_quantized problem Ir.Dtype.Q4_K
+            && supports_simd problem.target ~threads:256) }
+        : linear_registration) ]
+    @ List.map quant_registration
+        [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
+          Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
+
+  let select_linear ~target ~m ~n ~k ~input_dtype ~storage ~output_dtype =
+    let problem = { target; m; n; k; input_dtype; storage; output_dtype } in
+    linear_registry
+    |> List.find_map (fun (registration : linear_registration) ->
+           if registration.accepts problem then Some (registration.build problem)
+           else None)
+
+  let attention_registry : attention_registration list =
+    [ { build =
+          (fun (problem : attention_problem) ->
+            { name =
+                Printf.sprintf "llmopt_attention_f16_simd_h%d"
+                  problem.head_dimension;
+              threadgroup = (256, 1, 1) });
+        accepts =
+          (fun (problem : attention_problem) ->
+            problem.head_dimension > 0 && problem.head_dimension mod 32 = 0
+            && f16_io problem.input_dtype problem.output_dtype
+            && supports_simd problem.target ~threads:256) };
+      { build =
+          (fun _ ->
+            { name = "llmopt_attention_f16"; threadgroup = (64, 1, 1) });
+        accepts =
+          (fun (problem : attention_problem) ->
+            problem.head_dimension > 0
+            && f16_io problem.input_dtype problem.output_dtype
+            && problem.target.execution.max_threads_per_threadgroup >= 64) } ]
+
+  let select_attention ~target ~head_dimension ~input_dtype ~output_dtype =
+    let problem = { target; head_dimension; input_dtype; output_dtype } in
+    attention_registry
+    |> List.find_map (fun (registration : attention_registration) ->
+           if registration.accepts problem then Some (registration.build problem)
+           else None)
+end
+
 let kernel_entry_with_threadgroup ~threadgroup ~name ~operation ~input_dtype
     ~output_dtype =
   match
@@ -2331,6 +2447,77 @@ kernel void llmopt_q4_k_linear_f16(
   }
 }
 
+kernel void llmopt_q4_k_linear_f16_m2(
+    device const half* input [[buffer(0)]],
+    device const block_q4_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint col = gid >> 5;
+  if (col >= params.n) return;
+  const uint num_superblocks = params.k >> 8;
+  device const block_q4_K* row_blocks = weight + col * num_superblocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint sb = 0; sb < num_superblocks; ++sb) {
+    device const block_q4_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8];
+    float ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = b.scales[j] & 63;
+      const uint8_t m0 = b.scales[j + 4] & 63;
+      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
+      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    const float w0 = dl[0] * float(q0 & 0x0Fu) - ml[0];
+    const float w1 = dl[1] * float(q0 >> 4) - ml[1];
+    const float w2 = dl[2] * float(q1 & 0x0Fu) - ml[2];
+    const float w3 = dl[3] * float(q1 >> 4) - ml[3];
+    const float w4 = dl[4] * float(q2 & 0x0Fu) - ml[4];
+    const float w5 = dl[5] * float(q2 >> 4) - ml[5];
+    const float w6 = dl[6] * float(q3 & 0x0Fu) - ml[6];
+    const float w7 = dl[7] * float(q3 >> 4) - ml[7];
+    acc0 += float(in0[base_idx + 0]) * w0;
+    acc0 += float(in0[base_idx + 32]) * w1;
+    acc0 += float(in0[base_idx + 64]) * w2;
+    acc0 += float(in0[base_idx + 96]) * w3;
+    acc0 += float(in0[base_idx + 128]) * w4;
+    acc0 += float(in0[base_idx + 160]) * w5;
+    acc0 += float(in0[base_idx + 192]) * w6;
+    acc0 += float(in0[base_idx + 224]) * w7;
+    acc1 += float(in1[base_idx + 0]) * w0;
+    acc1 += float(in1[base_idx + 32]) * w1;
+    acc1 += float(in1[base_idx + 64]) * w2;
+    acc1 += float(in1[base_idx + 96]) * w3;
+    acc1 += float(in1[base_idx + 128]) * w4;
+    acc1 += float(in1[base_idx + 160]) * w5;
+    acc1 += float(in1[base_idx + 192]) * w6;
+    acc1 += float(in1[base_idx + 224]) * w7;
+  }
+  acc0 = simd_sum(acc0);
+  acc1 = simd_sum(acc1);
+  if (lane == 0) {
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(acc0 + bias_value);
+    output[params.n + col] = half(acc1 + bias_value);
+  }
+}
+
 kernel void llmopt_q4_k_dual_swiglu_f16(
     device const half* normalized [[buffer(0)]],
     device const block_q4_K* gate_weight [[buffer(1)]],
@@ -2756,6 +2943,10 @@ let kquant_entries =
       ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_k_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_k_linear_f16_m2"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -4707,21 +4898,43 @@ let has_attention graph =
          | Ir.Op.Primitive (Ir.Primitive.Attention _) -> true
          | _ -> false)
 
-let attention_simd_head_dimensions graph =
+let attention_tactics ~target graph =
   Ir.Graph.nodes graph
   |> List.filter_map (fun node ->
-         match Ir.node_op node, Ir.node_inputs node with
-         | Ir.Op.Primitive (Ir.Primitive.Attention _), query :: _
-           when Ir.Value.dtype query = Ir.Dtype.Float16 -> (
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | Ir.Op.Primitive (Ir.Primitive.Attention _), query :: _, Some output -> (
              match
                Tensor_shape.dimensions (Ir.Value.logical_shape query) |> List.rev
              with
-             | head_dimension :: _
-               when head_dimension <> 64 && head_dimension mod 32 = 0 ->
-                 Some head_dimension
+             | head_dimension :: _ ->
+                 Tactic.select_attention ~target ~head_dimension
+                   ~input_dtype:(Ir.Value.dtype query)
+                   ~output_dtype:(Ir.Value.dtype output)
+                 |> Option.map (fun tactic -> head_dimension, tactic)
              | _ -> None)
          | _ -> None)
-  |> List.sort_uniq Int.compare
+  |> List.sort_uniq (fun (_, left) (_, right) ->
+         String.compare (Tactic.name left) (Tactic.name right))
+
+let attention_simd_head_dimensions tactics =
+  tactics
+  |> List.filter_map (fun (head_dimension, tactic) ->
+         if
+           head_dimension <> 64
+           && Tactic.name tactic = attention_simd_kernel_name head_dimension
+         then Some head_dimension
+         else None)
+
+let attention_tactic_entries tactics =
+  tactics
+  |> List.map (fun (head_dimension, tactic) ->
+         match
+           attention_entries
+           |> List.find_opt (fun entry ->
+                  Kernel_abi.Entry.name entry = Tactic.name tactic)
+         with
+         | Some entry -> entry
+         | None -> attention_simd_entry head_dimension)
 
 let has_embedding graph =
   Ir.Graph.nodes graph
@@ -4831,6 +5044,28 @@ let has_quant_linear graph =
                  Ir.Value.dtype output = Ir.Dtype.Float16
              | _ -> false)
          | _ -> false)
+
+let quant_linear_tactics ~target graph =
+  Ir.Graph.nodes graph
+  |> List.filter_map (fun node ->
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | Ir.Op.Linear { m; n; k; bias }, input :: weight :: parameters, Some output -> (
+             match Ir.Linear_storage.classify ~has_bias:bias ~weight ~parameters with
+             | Error _ -> None
+             | Ok storage ->
+                 Tactic.select_linear ~target ~m ~n ~k
+                   ~input_dtype:(Ir.Value.dtype input) ~storage:storage.layout
+                   ~output_dtype:(Ir.Value.dtype output))
+         | _ -> None)
+  |> List.sort_uniq (fun left right ->
+         String.compare (Tactic.name left) (Tactic.name right))
+
+let quant_tactic_entries tactics =
+  let selected_names = List.map Tactic.name tactics in
+  block32_entries @ kquant_entries
+  |> List.filter (fun entry ->
+         Kernel_abi.Entry.operation entry <> Kernel_abi.Operation.Linear
+         || List.mem (Kernel_abi.Entry.name entry) selected_names)
 
 let lower_primary graph =
   let kernel =
@@ -5001,19 +5236,22 @@ let lower_primary graph =
                  ~output_dtype:Ir.Dtype.Float32 ])
   | Some (Linear _) -> Error "primary Metal linear supports float32 only"
 
-let lower graph =
+let lower ?(target = Target_hardware.default) graph =
   let materialized_movement = has_materialized_movement graph in
   let update_slice =
     has_primitive graph (function Ir.Primitive.Update_slice _ -> true | _ -> false)
   in
-  let attention_head_dimensions = attention_simd_head_dimensions graph in
+  let attention_tactics = attention_tactics ~target graph in
+  let attention_head_dimensions =
+    attention_simd_head_dimensions attention_tactics
+  in
   let attention_specialized_source =
     attention_head_dimensions |> List.map attention_simd_source
     |> String.concat "\n"
   in
-  let attention_specialized_entries =
-    List.map attention_simd_entry attention_head_dimensions
-  in
+  let selected_attention_entries = attention_tactic_entries attention_tactics in
+  let quant_tactics = quant_linear_tactics ~target graph in
+  let selected_quant_entries = quant_tactic_entries quant_tactics in
   let components =
     [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
       ( has_w4a16_qkv_linear graph,
@@ -5028,7 +5266,7 @@ let lower graph =
       ( has_quant_linear graph,
         quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source
         ^ q4_k_source ^ q5_k_source ^ q6_k_source ^ iq4_xs_source,
-        block32_entries @ kquant_entries );
+        selected_quant_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       ( has_f16_bf16_linear graph,
         linear_f16_bf16_source,
@@ -5052,7 +5290,7 @@ let lower graph =
         short_conv_prefill_init_entries );
       ( has_attention graph,
         attention_source ^ attention_specialized_source,
-        attention_entries @ attention_specialized_entries );
+        selected_attention_entries );
       has_embedding graph, embedding_source, embedding_entries;
       ( has_primitive graph (function Ir.Primitive.Arange _ -> true | _ -> false),
         arange_source,
@@ -5108,4 +5346,4 @@ let lower graph =
            ~kernels:auxiliary_entries)
   | Error message -> Error message
 
-let emit graph = Result.map Program.source (lower graph)
+let emit ?target graph = Result.map Program.source (lower ?target graph)

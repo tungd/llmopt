@@ -5,11 +5,35 @@ module Program : sig
   val kernels : t -> Kernel_abi.Entry.t list
 end
 
-val lower : Ir.Graph.t -> (Program.t, string) result
+module Tactic : sig
+  type t
+
+  val select_linear :
+    target:Target_hardware.t ->
+    m:int ->
+    n:int ->
+    k:int ->
+    input_dtype:Ir.Dtype.t ->
+    storage:Ir.Linear_storage.layout ->
+    output_dtype:Ir.Dtype.t ->
+    t option
+
+  val select_attention :
+    target:Target_hardware.t ->
+    head_dimension:int ->
+    input_dtype:Ir.Dtype.t ->
+    output_dtype:Ir.Dtype.t ->
+    t option
+
+  val name : t -> string
+  val threadgroup : t -> int * int * int
+end
+
+val lower : ?target:Target_hardware.t -> Ir.Graph.t -> (Program.t, string) result
 val add_cache_kernels : Program.t -> Program.t
 val add_block32_kernels : Program.t -> Program.t
 val add_kquant_kernels : Program.t -> Program.t
-val emit : Ir.Graph.t -> (string, string) result
+val emit : ?target:Target_hardware.t -> Ir.Graph.t -> (string, string) result
 val emit_dequant_q8_0 : unit -> string
 val emit_dequant_q5_0 : unit -> string
 val emit_dequant_q4_0 : unit -> string

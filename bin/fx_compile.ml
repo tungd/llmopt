@@ -149,7 +149,7 @@ let () =
               prerr_endline ("schedule creation failed: " ^ message);
               exit 4
           | Ok schedule ->
-          match Metal.lower planned with
+          match Metal.lower ~target planned with
           | Error message ->
               prerr_endline ("Metal emission failed: " ^ message);
               exit 5

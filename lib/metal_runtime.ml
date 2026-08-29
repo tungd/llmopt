@@ -1568,14 +1568,33 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
-let quant_linear_kernel_name = function
-  | Ir.Dtype.Q8_0 -> Ok "llmopt_q8_0_linear_f16"
-  | Ir.Dtype.Q4_K -> Ok "llmopt_q4_k_linear_f16"
-  | Ir.Dtype.Q5_K -> Ok "llmopt_q5_k_linear_f16"
-  | Ir.Dtype.Q6_K -> Ok "llmopt_q6_k_linear_f16"
-  | Ir.Dtype.Q5_0 -> Ok "llmopt_q5_0_linear_f16"
-  | Ir.Dtype.Q4_0 -> Ok "llmopt_q4_0_linear_f16"
-  | Ir.Dtype.IQ4_XS -> Ok "llmopt_iq4_xs_linear_f16"
+let quant_linear_kernel_names ~m = function
+  | Ir.Dtype.Q8_0 -> [ "llmopt_q8_0_linear_f16" ]
+  | Ir.Dtype.Q4_K when m = 2 ->
+      [ "llmopt_q4_k_linear_f16_m2"; "llmopt_q4_k_linear_f16" ]
+  | Ir.Dtype.Q4_K -> [ "llmopt_q4_k_linear_f16" ]
+  | Ir.Dtype.Q5_K -> [ "llmopt_q5_k_linear_f16" ]
+  | Ir.Dtype.Q6_K -> [ "llmopt_q6_k_linear_f16" ]
+  | Ir.Dtype.Q5_0 -> [ "llmopt_q5_0_linear_f16" ]
+  | Ir.Dtype.Q4_0 -> [ "llmopt_q4_0_linear_f16" ]
+  | Ir.Dtype.IQ4_XS -> [ "llmopt_iq4_xs_linear_f16" ]
+
+let select_quant_linear_kernel runtime ~m quant =
+  let input_dtype = Ir.Dtype.Quant quant in
+  let rec select = function
+    | [] ->
+        Error
+          (Printf.sprintf "serving package has no quantized Linear kernel for %s"
+             (Ir.Dtype.to_string input_dtype))
+    | name :: rest -> (
+        match
+          kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Linear
+            ~input_dtype ~output_dtype:Ir.Dtype.Float16
+        with
+        | Ok entry -> Ok entry
+        | Error _ -> select rest)
+  in
+  select (quant_linear_kernel_names ~m quant)
 
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
@@ -2500,7 +2519,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                       Ok ()
                   | Some _ -> Error "quantized Metal linear bias must be float16"
                 in
-                let* name = quant_linear_kernel_name quant in
+                let* entry = select_quant_linear_kernel runtime ~m quant in
+                let name = Kernel_abi.Entry.name entry in
                 let* input_buffer, weight_buffer, bias_buffer =
                   match buffers with
                   | [ input; weight ] -> Ok (input, weight, weight)
@@ -2510,7 +2530,10 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 let* parameters =
                   Parameters.u32s [ m; n; k; if Option.is_some bias_value then 1 else 0 ]
                 in
-                let* grid_x = linear_f16_grid (m * n) in
+                let columns =
+                  if name = "llmopt_q4_k_linear_f16_m2" then n else m * n
+                in
+                let* grid_x = linear_f16_grid columns in
                 dispatched
                   (dispatch_output ~name runtime state output
                      ~operation:Kernel_abi.Operation.Linear

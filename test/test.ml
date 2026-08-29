@@ -365,6 +365,77 @@ let () =
           "kernel void llmopt_attention_f16_simd_h512("))
     "Metal lowering does not emit uncaptured attention widths";
 
+  let q4_m2_tactic =
+    Metal.Tactic.select_linear ~target:Target_hardware.default ~m:2 ~n:64
+      ~k:256 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+      ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Metal.Tactic.name q4_m2_tactic = "llmopt_q4_k_linear_f16_m2")
+    "Metal tactics select paired-row Q4_K Linear from shape, layout, dtype, and target";
+  let q4_m1_tactic =
+    Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:64
+      ~k:256 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+      ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Metal.Tactic.name q4_m1_tactic = "llmopt_q4_k_linear_f16")
+    "Metal tactics retain the generic Q4_K Linear outside the paired-row shape";
+  let simd16_target =
+    let default = Target_hardware.default in
+    { default with
+      memory = { default.memory with simd_lanes = 16 } }
+  in
+  expect
+    (Metal.Tactic.select_linear ~target:simd16_target ~m:2 ~n:64 ~k:256
+       ~input_dtype:Ir.Dtype.Float16
+       ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+       ~output_dtype:Ir.Dtype.Float16
+    = None)
+    "Metal tactics reject SIMD32 Linear kernels on an incompatible target";
+  let portable_attention_tactic =
+    Metal.Tactic.select_attention ~target:simd16_target ~head_dimension:256
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Metal.Tactic.name portable_attention_tactic = "llmopt_attention_f16")
+    "Metal tactics fall back to generic attention when the target lacks SIMD32";
+
+  let q4_m2_graph = Ir.Graph.create () in
+  let q4_m2_input =
+    tensor_input q4_m2_graph ~name:"q4_m2_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 2; 256 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q4_m2_weight =
+    tensor_input q4_m2_graph ~name:"q4_m2_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_m2_weight" })
+      ~shape:[ 64; 256 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_K)
+  in
+  let q4_m2_output =
+    Ir.Graph.fresh_tensor_value q4_m2_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q4_m2_graph
+    ~op:(Ir.Op.Linear { m = 2; n = 64; k = 256; bias = false })
+    ~inputs:[ q4_m2_input; q4_m2_weight ] ~output:(Some q4_m2_output);
+  Ir.Graph.add_output q4_m2_graph ~name:"q4_m2_output" q4_m2_output;
+  let q4_m2_program = Metal.lower q4_m2_graph |> expect_ok in
+  let q4_m2_kernel_names =
+    Metal.Program.kernels q4_m2_program |> List.map Kernel_abi.Entry.name
+  in
+  expect
+    (List.mem "llmopt_q4_k_linear_f16_m2" q4_m2_kernel_names)
+    "Metal lowering declares the selected paired-row tactic";
+  expect
+    (not (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names))
+    "Metal lowering omits the unselected generic Q4_K Linear tactic";
+
   let mixed_graph = Ir.Graph.create () in
   let mixed_input =
     tensor_input mixed_graph ~name:"mixed_input" ~source:Ir.Input_source.Runtime
