@@ -37,6 +37,11 @@ configuration.
 * [Macro-Operator Fusions](decisions/macro-operator-fusions.md) - high-impact fusions for SwiGLU, RMSNorm-RoPE, QKV, ShortConv, and on-GPU Argmax.
 * [AOT Decode Solidification & Zero-JIT Serving](decisions/aot-decode-solidification-zero-jit-serving.md) - zero-overhead serving with prebaked Indirect Command Buffers (ICB).
 
+## Prior art
+
+* [TensorRT-LLM](prior-art/tensorrt-llm.md) - the same AOT-engine bet, industrialized: build-time measured autotuning, AOT shape profiles, and hand-written per-architecture hot kernels.
+* [Modular MAX and Mojo](prior-art/modular-max-mojo.md) - the same portability goal solved in the language: parametric kernel bodies specialized at compile time across CUDA, ROCm, and Metal.
+
 ## Experiments and benchmarks
 
 * [FX linear smoke](experiments/exp-0001-fx-linear.md) - first cross-language probe.
