@@ -28,6 +28,7 @@ module Operation = struct
     | Update_slice
     | Batched_matmul
     | Triangular_recurrence
+    | Gated_delta
     | Cache
 
   let to_string = function
@@ -59,6 +60,7 @@ module Operation = struct
     | Update_slice -> "update-slice"
     | Batched_matmul -> "batched-matmul"
     | Triangular_recurrence -> "triangular-recurrence"
+    | Gated_delta -> "gated-delta"
     | Cache -> "cache"
 
   let of_string = function
@@ -90,6 +92,7 @@ module Operation = struct
     | "update-slice" -> Ok Update_slice
     | "batched-matmul" -> Ok Batched_matmul
     | "triangular-recurrence" -> Ok Triangular_recurrence
+    | "gated-delta" -> Ok Gated_delta
     | "cache" -> Ok Cache
     | value -> Error ("unsupported kernel operation: " ^ value)
 end

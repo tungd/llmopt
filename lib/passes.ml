@@ -3,6 +3,7 @@ module Rms_norm = Pass_fuse_rms_norm
 module Rms_rope = Pass_fuse_rms_rope
 module Short_conv = Pass_fuse_short_conv
 module Short_conv_step_fused = Pass_fuse_short_conv_step
+module Gated_delta = Pass_fuse_gated_delta
 module Lm_head_argmax = Pass_fuse_lm_head_argmax
 module Co_schedule = Pass_co_schedule
 
@@ -16,6 +17,7 @@ let discover_swiglu_ffn = Pass_fuse_swiglu_ffn.discover
 let recover_scans = Kernel_ir.Scan.recover
 let fuse_swiglu_ffn = Pass_fuse_swiglu_ffn.run
 let fuse_short_conv_step = Pass_fuse_short_conv_step.run
+let fuse_gated_delta = Pass_fuse_gated_delta.run
 let fuse_lm_head_argmax = Pass_fuse_lm_head_argmax.run
 let co_schedule = Pass_co_schedule.run
 let co_schedule_plan = Pass_co_schedule.run_plan
@@ -76,7 +78,8 @@ let optimize ?(target = Target_hardware.default) graph =
     Kernel_ir.Scan.fuse_triangular_recurrences ~max_width:max_scan_width
       semantic_graph
   in
-  let* fused_graph = Pass_fuse_swiglu_ffn.run scan_lowered_graph in
+  let gated_delta_graph = Pass_fuse_gated_delta.run scan_lowered_graph in
+  let* fused_graph = Pass_fuse_swiglu_ffn.run gated_delta_graph in
   let qkv_fused_graph = Pass_fuse_linear_bias.fuse_w4a16_qkv fused_graph in
   let gqa_elim_graph =
     Pass_fuse_linear_bias.eliminate_gqa_expansion qkv_fused_graph

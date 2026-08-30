@@ -28,6 +28,7 @@ module Operation : sig
     | Update_slice
     | Batched_matmul
     | Triangular_recurrence
+    | Gated_delta
     | Cache
 
   val to_string : t -> string

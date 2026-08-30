@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T10:56:48+07:00",
+  "git_base_commit": "bcfa461",
+  "slice": "graph-recovered-zero-state-gated-delta",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "selection": "captured padded five-input recurrence topology, source and result shapes, dtypes, and SIMD-aligned state width",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "recovered_sites": {
+      "qwen": 18,
+      "gemma": 0
+    },
+    "operation": "zero-state gated-delta recurrence",
+    "kernel": "one SIMD group per state row with captured-width specialization",
+    "liveness": "graph-output reachability removes dead captured expansion branches before replacement",
+    "abi": {
+      "serving_package": 19,
+      "serving_schedule": 21
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 20,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-gated-delta-anchored",
+        "kernels": 105,
+        "commands": 2723,
+        "dispatches": 1272,
+        "median_ms": 14.506459,
+        "min_ms": 13.028860,
+        "max_ms": 17.976046,
+        "previous_median_ms": 39.842010,
+        "delta_ms": -25.335551,
+        "latency_reduction_percent": 63.590042,
+        "output_sha256": "dd6c9a23c32f2633744a0f47fcce44b615e4038c002937469a98308891887450",
+        "previous_output_mean_abs": 0.0021786743,
+        "previous_output_max_abs": 0.017578125,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.937812,
+        "mean_ms": 8.115275,
+        "samples_ns": [
+          8167959,
+          7922708,
+          7915917,
+          7905375,
+          7766459,
+          7952916,
+          9451708,
+          8102333,
+          7827459,
+          8139917
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.827514
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-gated-delta-live",
+        "kernels": 94,
+        "commands": 3997,
+        "dispatches": 1635,
+        "median_ms": 30.664444,
+        "min_ms": 28.882980,
+        "max_ms": 41.816950,
+        "previous_median_ms": 30.259609,
+        "delta_ms": 0.404835,
+        "latency_reduction_percent": -1.337873,
+        "output_sha256": "83c52646af30845dbaf26b1737af807b13dc153c7bb187a60a7de022df279f99",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.2634165,
+        "mean_ms": 17.539096,
+        "samples_ns": [
+          17164417,
+          17281708,
+          17224792,
+          17589459,
+          17865167,
+          18151375,
+          17208875,
+          17245125,
+          17117667,
+          18542375
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.776267
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "pass, 454 dispatches and exact outputs",
+    "metal_compilation": "pass for native fixture and both full-model packages",
+    "qwen_package": "valid, 105 kernels, 2723 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3997 commands, 0 opaque",
+    "numerical_scope": "Qwen preserves both previous row argmax IDs with changed Float16 logits; Gemma is byte exact"
+  }
+}

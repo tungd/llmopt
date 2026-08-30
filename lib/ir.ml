@@ -514,6 +514,7 @@ module Primitive = struct
     | Diff of Diff.t
     | Cumsum of Cumsum.t
     | Triangular_recurrence of Triangular_recurrence.t
+    | Gated_delta
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t
@@ -527,7 +528,7 @@ module Primitive = struct
     | Pointwise operation -> Pointwise.values operation
     | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _
     | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _
-    | Triangular_recurrence _ | Fill _ | Gather2 | Update_slice _
+    | Triangular_recurrence _ | Gated_delta | Fill _ | Gather2 | Update_slice _
     | Pad_right_zero _ | Triangular _
     | Masked_fill _ | Eye | Batched_matmul -> []
 
@@ -544,6 +545,7 @@ module Primitive = struct
     | Diff config -> Diff.to_string config
     | Cumsum config -> Cumsum.to_string config
     | Triangular_recurrence config -> Triangular_recurrence.to_string config
+    | Gated_delta -> "gated-delta"
     | Fill scalar -> "fill(" ^ Scalar.to_string scalar ^ ")"
     | Gather2 -> "gather2"
     | Update_slice index -> "update-" ^ Tensor_shape.Index.to_string index

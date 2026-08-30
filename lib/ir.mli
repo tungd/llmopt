@@ -269,6 +269,7 @@ module Primitive : sig
     | Diff of Diff.t
     | Cumsum of Cumsum.t
     | Triangular_recurrence of Triangular_recurrence.t
+    | Gated_delta
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t

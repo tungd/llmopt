@@ -938,6 +938,150 @@ let () =
     (contains_substring (Metal.Program.source triangular_program)
        "kernel void llmopt_triangular_recurrence_f32")
     "Metal lowering emits the triangular recurrence kernel";
+  let gated_graph = Ir.Graph.create () in
+  let gated_input name shape =
+    tensor_input gated_graph ~name ~source:Ir.Input_source.Runtime ~shape
+      ~dtype:Ir.Dtype.Float32
+  in
+  let query = gated_input "query" [ 1; 2; 2; 32 ] in
+  let key = gated_input "key" [ 1; 2; 2; 32 ] in
+  let value = gated_input "value" [ 1; 2; 2; 32 ] in
+  let gate = gated_input "gate" [ 1; 2; 2 ] in
+  let beta = gated_input "beta" [ 1; 2; 2 ] in
+  let gated_append dtype op inputs shape =
+    let output =
+      Ir.Graph.fresh_tensor_value gated_graph
+        ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+    in
+    Ir.Graph.append gated_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let pad input shape =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive (Ir.Primitive.Pad_right_zero { axis = 2 }))
+      [ input ] shape
+  in
+  let query_padded = pad query [ 1; 2; 4; 32 ] in
+  let key_padded = pad key [ 1; 2; 4; 32 ] in
+  let value_padded = pad value [ 1; 2; 4; 32 ] in
+  let gate_padded = pad gate [ 1; 2; 4 ] in
+  let beta_padded = pad beta [ 1; 2; 4 ] in
+  let scaled_query =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor query_padded,
+                 Ir.Pointwise.Scalar (Ir.Scalar.Float 0.176776695) ))))
+      [ query_padded ] [ 1; 2; 4; 32 ]
+  in
+  let reshaped_key =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape))
+      [ key_padded ] [ 1; 2; 1; 4; 32 ]
+  in
+  let transposed_key =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 4; axis1 = 3 })))
+      [ reshaped_key ] [ 1; 2; 1; 32; 4 ]
+  in
+  let expanded_beta =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.Unsqueeze 3)))
+      [ beta_padded ] [ 1; 2; 4; 1 ]
+  in
+  let gated_bmm left right =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive Ir.Primitive.Batched_matmul)
+      [ left; right ] [ 1; 2; 2; 32 ]
+  in
+  let recurrence_input =
+    gated_bmm scaled_query transposed_key
+    |> fun product -> gated_bmm product value_padded
+    |> fun product -> gated_bmm product gate_padded
+    |> fun product -> gated_bmm product expanded_beta
+  in
+  let recurrence =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive
+         (Ir.Primitive.Triangular_recurrence
+            (Ir.Triangular_recurrence.create ~axis:2 ~start:1 ~stop:2
+            |> expect_ok)))
+      [ recurrence_input ] [ 1; 2; 2; 32 ]
+  in
+  let result_index =
+    Tensor_shape.Index.of_selectors [ full 1; full 2; full 2; full 32 ]
+    |> expect_ok
+  in
+  let updated =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive (Ir.Primitive.Update_slice result_index))
+      [ recurrence; recurrence_input ] [ 1; 2; 2; 32 ]
+  in
+  let reshaped =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape))
+      [ updated ] [ 1; 2; 2; 32 ]
+  in
+  let indexed =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index result_index)))
+      [ reshaped ] [ 1; 2; 2; 32 ]
+  in
+  let transposed =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+      [ indexed ] [ 1; 2; 2; 32 ]
+  in
+  let expanded_output =
+    gated_append Ir.Dtype.Float32
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous))
+      [ transposed ] [ 1; 2; 2; 32 ]
+  in
+  let gated_output =
+    gated_append Ir.Dtype.Float16
+      (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float16))
+      [ expanded_output ] [ 1; 2; 2; 32 ]
+  in
+  Ir.Graph.add_output gated_graph ~name:"gated" gated_output;
+  let gated_fused = Passes.fuse_gated_delta gated_graph in
+  expect
+    (Ir.Graph.nodes gated_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | Ir.Op.Primitive Ir.Primitive.Gated_delta,
+             [ actual_query; actual_key; actual_value; actual_gate; actual_beta ],
+             Some output ->
+               List.for_all2 Ir.Value.equal
+                 [ actual_query; actual_key; actual_value; actual_gate; actual_beta ]
+                 [ query; key; value; gate; beta ]
+               && Ir.Value.equal output gated_output
+           | _ -> false))
+    "captured padded topology recovers semantic gated-delta inputs";
+  expect
+    (Ir.Graph.nodes gated_fused |> List.length = 7)
+    "gated-delta fusion prunes the expanded topology and dead branches";
+  let gated_schedule =
+    gated_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands gated_schedule
+    |> List.exists (fun command ->
+           Serving_schedule.Command.op command
+           = Ir.Op.Primitive Ir.Primitive.Gated_delta))
+    "gated-delta survives schedule serialization";
+  let gated_program = Metal.lower gated_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source gated_program)
+       "kernel void llmopt_gated_delta_f32_d32")
+    "Metal lowering specializes gated-delta from captured head width";
   let invalid_scan_output =
     Ir.Value.make_tensor ~id:50004
       ~shape:(Tensor_shape.of_ints_exn [ 1; 3; 5 ]) ~dtype:Ir.Dtype.Float32

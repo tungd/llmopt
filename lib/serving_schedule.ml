@@ -444,6 +444,40 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d triangular recurrence metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive Ir.Primitive.Gated_delta,
+            [ query; key; value; gate; beta ],
+            Some output ) ->
+            let vector_shape = Tensor_shape.dimensions (Ir.Value.logical_shape query) in
+            let shape_matches =
+              match vector_shape with
+              | [ batch; heads; tokens; width ] ->
+                  width > 0 && width mod 32 = 0
+                  && List.for_all
+                       (fun input ->
+                         Tensor_shape.dimensions (Ir.Value.logical_shape input)
+                         = vector_shape
+                         && Ir.Value.dtype input = Ir.Dtype.Float32)
+                       [ key; value ]
+                  && List.for_all
+                       (fun input ->
+                         Tensor_shape.dimensions (Ir.Value.logical_shape input)
+                         = [ batch; heads; tokens ]
+                         && Ir.Value.dtype input = Ir.Dtype.Float32)
+                       [ gate; beta ]
+                  && Tensor_shape.dimensions (Ir.Value.logical_shape output)
+                     = [ batch; tokens; heads; width ]
+              | _ -> false
+            in
+            if
+              shape_matches
+              && Ir.Value.dtype query = Ir.Dtype.Float32
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d gated-delta metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive (Ir.Primitive.Short_conv config),
             [ input; weight ],
             Some output ) ->
@@ -917,6 +951,7 @@ let validate_command seen_values command =
               | Ir.Primitive.Pad_right_zero _ | Ir.Primitive.Triangular _
               | Ir.Primitive.Masked_fill _ | Ir.Primitive.Eye
               | Ir.Primitive.Batched_matmul
+              | Ir.Primitive.Gated_delta
               | Ir.Primitive.Paged_attention_q8 _),
             _,
             _ ) ->
@@ -1233,6 +1268,8 @@ module Sequence = struct
     | Ir.Primitive.Cumsum _, [ input ]
     | Ir.Primitive.Triangular_recurrence _, [ input ] ->
         Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.Gated_delta, [ _; _; _; _; _ ] ->
+        map_shape substitutions original
     | Ir.Primitive.Fill _, [] -> map_shape substitutions original
     | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
         Tensor_shape.gather2 (Ir.Value.logical_shape source)
@@ -2506,6 +2543,7 @@ let write_primitive writer = function
       write_scalar writer scalar
   | Ir.Primitive.Eye -> Binary.Writer.u8 writer 18
   | Ir.Primitive.Batched_matmul -> Binary.Writer.u8 writer 19
+  | Ir.Primitive.Gated_delta -> Binary.Writer.u8 writer 21
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2626,6 +2664,7 @@ let read_primitive values reader =
       let* stop = Binary.Reader.u16 reader in
       Ir.Triangular_recurrence.create ~axis ~start ~stop
       |> Result.map (fun config -> Ir.Primitive.Triangular_recurrence config)
+  | 21 -> Ok Ir.Primitive.Gated_delta
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -2889,7 +2928,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 20;
+  Binary.Writer.u16 writer 21;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2909,7 +2948,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 20 then
+    if version <> 21 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

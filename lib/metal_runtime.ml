@@ -1509,6 +1509,14 @@ let short_row_quant_grid column_groups =
     Error "Metal short-row quantized Linear grid dimension overflows"
   else Ok (rounded_groups * simd_width)
 
+let gated_delta_grid state_rows =
+  let simdgroups_per_threadgroup = 4 in
+  let simd_width = 32 in
+  let* rounded_rows = round_up state_rows simdgroups_per_threadgroup in
+  if rounded_rows > max_int / simd_width then
+    Error "Metal gated-delta grid dimension overflows"
+  else Ok (rounded_rows * simd_width)
+
 let simd_rows_grid rows = linear_f16_grid rows
 
 let rms_norm_kernel_name input_dtype weight_dtype =
@@ -2375,6 +2383,30 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                    ~operation:Kernel_abi.Operation.Triangular_recurrence
                    ~input_dtype:Ir.Dtype.Float32 ~buffers:[ input_buffer ]
                    ~parameters ~grid:(outer * 64, 1, 1))
+        | ( Ir.Op.Primitive Ir.Primitive.Gated_delta,
+            [ query; key; value; gate; beta ],
+            Some output ) ->
+            let* batch_size, heads, tokens, width =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
+              | [ batch_size; heads; tokens; width ]
+                when width > 0 && width mod 32 = 0 ->
+                  Ok (batch_size, heads, tokens, width)
+              | _ ->
+                  Error
+                    "Metal gated-delta query must have shape [batch,heads,tokens,width] with SIMD-aligned width"
+            in
+            let* buffers = find_values state [ query; key; value; gate; beta ] in
+            let* parameters =
+              Parameters.u32s [ batch_size; heads; tokens; width ]
+            in
+            let* grid_x = gated_delta_grid (batch_size * heads * width) in
+            dispatched
+              (dispatch_output
+                 ~name:(Printf.sprintf "llmopt_gated_delta_f32_d%d" width)
+                 runtime state output
+                 ~operation:Kernel_abi.Operation.Gated_delta
+                 ~input_dtype:Ir.Dtype.Float32 ~buffers ~parameters
+                 ~grid:(grid_x, 1, 1))
         | Ir.Op.Primitive (Ir.Primitive.Reduce reduction), [ input ], Some output ->
             let* name, axis = reduction_kernel reduction input output in
             let* outer, width, inner =

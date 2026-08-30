@@ -792,6 +792,63 @@ let triangular_recurrence state config input_value output_value output =
     done
   done
 
+let gated_delta state query_value key_value value_value gate_value beta_value
+    output_value output =
+  let query = find state query_value in
+  let key = find state key_value in
+  let value = find state value_value in
+  let gate = find state gate_value in
+  let beta = find state beta_value in
+  let batch, heads, tokens, width =
+    match Tensor_shape.dimensions (Ir.Value.logical_shape query_value) with
+    | [ batch; heads; tokens; width ] -> batch, heads, tokens, width
+    | _ -> failf "CPU gated-delta query must have shape [batch,heads,tokens,width]"
+  in
+  if
+    Tensor_shape.dimensions (Ir.Value.logical_shape output_value)
+    <> [ batch; tokens; heads; width ]
+  then failf "CPU gated-delta output shape is inconsistent";
+  let scale = 1.0 /. sqrt (Float.of_int width) in
+  for batch_index = 0 to batch - 1 do
+    for head = 0 to heads - 1 do
+      let matrix = Array.make_matrix width width 0.0 in
+      for token = 0 to tokens - 1 do
+        let vector_base = (((batch_index * heads) + head) * tokens + token) * width in
+        let scalar_index = ((batch_index * heads) + head) * tokens + token in
+        let decay = exp (Tensor.get_linear gate scalar_index) in
+        let beta_value = Tensor.get_linear beta scalar_index in
+        for row = 0 to width - 1 do
+          let state_dot_key = ref 0.0 in
+          for column = 0 to width - 1 do
+            matrix.(row).(column) <- matrix.(row).(column) *. decay;
+            state_dot_key :=
+              !state_dot_key
+              +. (matrix.(row).(column)
+                 *. Tensor.get_linear key (vector_base + column))
+          done;
+          let delta =
+            (Tensor.get_linear value (vector_base + row) -. !state_dot_key)
+            *. beta_value
+          in
+          let state_dot_query = ref 0.0 in
+          for column = 0 to width - 1 do
+            matrix.(row).(column) <-
+              matrix.(row).(column)
+              +. (Tensor.get_linear key (vector_base + column) *. delta);
+            state_dot_query :=
+              !state_dot_query
+              +. (matrix.(row).(column)
+                 *. Tensor.get_linear query (vector_base + column))
+          done;
+          let output_index =
+            (((batch_index * tokens) + token) * heads + head) * width + row
+          in
+          Tensor.set_linear output output_index (!state_dot_query *. scale)
+        done
+      done
+    done
+  done
+
 let primitive state operation inputs output_value output =
   match operation, inputs with
   | Ir.Primitive.Pointwise operation, _ ->
@@ -818,6 +875,8 @@ let primitive state operation inputs output_value output =
       cumsum state config input output_value output
   | Ir.Primitive.Triangular_recurrence config, [ input ] ->
       triangular_recurrence state config input output_value output
+  | Ir.Primitive.Gated_delta, [ query; key; value; gate; beta ] ->
+      gated_delta state query key value gate beta output_value output
   | Ir.Primitive.Fill scalar, [] -> fill scalar output_value output
   | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
       gather2 state source first_index second_index output_value output

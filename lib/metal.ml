@@ -5550,6 +5550,88 @@ let triangular_recurrence_entries =
       ~operation:Kernel_abi.Operation.Triangular_recurrence
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
+let gated_delta_kernel_name width =
+  Printf.sprintf "llmopt_gated_delta_f32_d%d" width
+
+let gated_delta_source width =
+  let segments = width / 32 in
+  Printf.sprintf
+    {|
+struct GatedDeltaParams {
+  uint batch; uint heads; uint tokens; uint width;
+};
+
+kernel void %s(
+    device const float* query [[buffer(0)]],
+    device const float* key [[buffer(1)]],
+    device const float* value [[buffer(2)]],
+    device const float* gate [[buffer(3)]],
+    device const float* beta [[buffer(4)]],
+    device half* output [[buffer(5)]],
+    constant GatedDeltaParams& params [[buffer(6)]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
+  const uint state_row = group * 4 + simdgroup;
+  const uint state_rows = params.batch * params.heads * params.width;
+  if (state_row >= state_rows || params.width != %d) return;
+  const uint row = state_row %% params.width;
+  const uint head_batch = state_row / params.width;
+  const uint head = head_batch %% params.heads;
+  const uint batch = head_batch / params.heads;
+  float state[%d];
+  for (uint segment = 0; segment < %d; ++segment) state[segment] = 0.0f;
+  const float scale = rsqrt(float(params.width));
+  for (uint token = 0; token < params.tokens; ++token) {
+    const uint vector_base = ((batch * params.heads + head) * params.tokens + token)
+        * params.width;
+    const uint scalar_index = (batch * params.heads + head) * params.tokens + token;
+    const float decay = exp(gate[scalar_index]);
+    float state_dot_key = 0.0f;
+    for (uint segment = 0; segment < %d; ++segment) {
+      const uint column = segment * 32 + lane;
+      state[segment] *= decay;
+      state_dot_key += state[segment] * key[vector_base + column];
+    }
+    state_dot_key = simd_sum(state_dot_key);
+    const float delta = (value[vector_base + row] - state_dot_key)
+        * beta[scalar_index];
+    float state_dot_query = 0.0f;
+    for (uint segment = 0; segment < %d; ++segment) {
+      const uint column = segment * 32 + lane;
+      state[segment] += key[vector_base + column] * delta;
+      state_dot_query += state[segment] * query[vector_base + column];
+    }
+    state_dot_query = simd_sum(state_dot_query);
+    if (lane == 0) {
+      const uint output_index = ((batch * params.tokens + token) * params.heads + head)
+          * params.width + row;
+      output[output_index] = half(state_dot_query * scale);
+    }
+  }
+}
+|}
+    (gated_delta_kernel_name width) width segments segments segments segments
+
+let gated_delta_entry width =
+  kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
+    ~name:(gated_delta_kernel_name width)
+    ~operation:Kernel_abi.Operation.Gated_delta
+    ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16
+
+let gated_delta_widths graph =
+  Ir.Graph.nodes graph
+  |> List.filter_map (fun node ->
+         match Ir.node_op node, Ir.node_inputs node with
+         | Ir.Op.Primitive Ir.Primitive.Gated_delta, query :: _ ->
+             (match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
+             | [ _batch; _heads; _tokens; width ]
+               when width > 0 && width mod 32 = 0 ->
+                 Some width
+             | _ -> None)
+         | _ -> None)
+  |> List.sort_uniq Int.compare
+
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -5959,6 +6041,11 @@ let lower ?(target = Target_hardware.default) graph =
   let selected_attention_entries = attention_tactic_entries attention_tactics in
   let quant_tactics = quant_linear_tactics ~target graph in
   let selected_quant_entries = quant_tactic_entries quant_tactics in
+  let gated_delta_widths = gated_delta_widths graph in
+  let gated_delta_source =
+    gated_delta_widths |> List.map gated_delta_source |> String.concat "\n"
+  in
+  let gated_delta_entries = List.map gated_delta_entry gated_delta_widths in
   let components =
     [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
       ( has_w4a16_qkv_linear graph,
@@ -6011,6 +6098,7 @@ let lower ?(target = Target_hardware.default) graph =
       ( triangular_recurrence,
         triangular_recurrence_source,
         triangular_recurrence_entries );
+      (gated_delta_widths <> [], gated_delta_source, gated_delta_entries);
       (has_tensor_primitive graph, tensor_primitive_source, tensor_primitive_entries);
       ( has_primitive graph (function Ir.Primitive.Fill _ -> true | _ -> false),
         fill_source,
