@@ -558,8 +558,9 @@ module Parameters = struct
 
   let attention ~batches ~heads ~query_length ~key_length ~head_dimension
       ~mask_batches ~mask_heads ~causal ~scale ?(kv_heads = heads)
-      ?(token_first_output = 0) ?(past_length = 0) () =
-    let bytes = Bytes.make 48 '\000' in
+      ?(token_first_output = 0) ?(past_length = 0)
+      ?(token_first_value = 0) () =
+    let bytes = Bytes.make 52 '\000' in
     let values =
       [ batches; heads; query_length; key_length; head_dimension; mask_batches;
         mask_heads; (if causal then 1 else 0) ]
@@ -575,6 +576,7 @@ module Parameters = struct
     let* () = set_u32 bytes 36 kv_heads in
     let* () = set_u32 bytes 40 token_first_output in
     let* () = set_u32 bytes 44 past_length in
+    let* () = set_u32 bytes 48 token_first_value in
     Ok bytes
 
   let paged_attention_q8 ~batches ~query_heads ~kv_heads ~past_length
@@ -3437,6 +3439,20 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Ok (kv_heads, key_length)
               | _ -> Error "attention key must have rank four"
             in
+            let* token_first_value =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
+              | [ b; h; k; d ]
+                when b = batches && h = kv_heads && k = key_length
+                     && d = head_dimension ->
+                  Ok 0
+              | [ b; k; h; d ]
+                when b = batches && h = kv_heads && k = key_length
+                     && d = head_dimension ->
+                  Ok 1
+              | _ ->
+                  Error
+                    "attention value must match key in head-major or token-major layout"
+            in
             let* mask_batches, mask_heads =
               match Tensor_shape.dimensions (Ir.Value.logical_shape mask) with
               | [ mask_batches; mask_heads; _query_length; _key_length ] ->
@@ -3460,7 +3476,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~head_dimension ~mask_batches ~mask_heads
                 ~causal:(Ir.Attention.causal config)
                 ~scale:(Ir.Attention.scale config)
-                ~kv_heads ~token_first_output ~past_length ()
+                ~kv_heads ~token_first_output ~past_length ~token_first_value ()
             in
             let rows = batches * heads * query_length in
             let input_dtype = Ir.Value.dtype query in

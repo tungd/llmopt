@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T22:41:00+07:00",
+  "git_base_commit": "7f44204",
+  "slice": "token-major-attention-value",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "selection": "exclusive transpose(1,2) value producer whose token-major source dimensions transpose to the captured Attention key dimensions",
+    "shape_relations": "value [batch,tokens,kv_heads,width], key [batch,kv_heads,tokens,width], Float16 operands, and unequal token/KV-head dimensions",
+    "lowering": "Attention receives the token-major source directly and selects its value address relation through a typed runtime parameter",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "regression_shape": {
+      "batches": 2,
+      "query_heads": 6,
+      "kv_heads": 2,
+      "tokens": 3,
+      "width": 32
+    },
+    "sites": {
+      "smollm2": 30,
+      "qwen": 0,
+      "gemma": 25
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/smollm/package-slice30-token-major-value",
+        "kernels": 100,
+        "commands": 1174,
+        "previous_commands": 1204,
+        "dispatches": 400,
+        "previous_dispatches": 430,
+        "campaign_medians_ms": [3.956676, 3.543377, 3.542542],
+        "median_of_campaign_medians_ms": 3.543377,
+        "min_ms": 3.365040,
+        "max_ms": 6.253004,
+        "output_sha256": "2d0bfafce55ae643f91e330c67b712d25df321aa4bc32377b7f1748756c701eb",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [198, 198]
+      },
+      "llama_cpp": {
+        "gguf": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+        "campaign_medians_ms": [2.849354, 2.9186455, 2.8817705],
+        "median_of_campaign_medians_ms": 2.8817705,
+        "campaign_samples_ns": [
+          [6048084, 3750667, 3355583, 2843500, 2812625, 2849208, 2800500, 2849500, 2881667, 2821417],
+          [3154666, 3130792, 3200875, 3209375, 2891209, 2891500, 2945791, 2851250, 2818000, 2881333],
+          [3186250, 3238083, 2870208, 3344459, 2893333, 2841625, 2810417, 2949167, 2860167, 2864625]
+        ]
+      },
+      "llmopt_over_llama_cpp_median_of_campaign_medians": 1.229583341
+    },
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice30-token-major-value",
+        "commands": 1751,
+        "previous_commands": 1751,
+        "dispatches": 750,
+        "previous_dispatches": 750,
+        "selected_sites": 0
+      },
+      "llama_cpp": {
+        "fresh_run": false,
+        "reason": "the pass selected zero sites and produced the same command count"
+      }
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice30-token-major-value",
+        "kernels": 109,
+        "commands": 2414,
+        "previous_commands": 2439,
+        "dispatches": 786,
+        "previous_dispatches": 799,
+        "campaign_medians_ms": [19.249439, 18.940449, 19.260049],
+        "median_of_campaign_medians_ms": 19.249439,
+        "min_ms": 17.792940,
+        "max_ms": 22.155046,
+        "output_sha256": "896aa2a62df23b6890548055b5f8f94e7537c2c82dcb2c02905cc1e844a4811a",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "campaign_medians_ms": [17.2089375, 17.1485, 17.1486045],
+        "median_of_campaign_medians_ms": 17.1486045,
+        "campaign_samples_ns": [
+          [18004709, 17144042, 17608417, 16867250, 17016333, 17119375, 18422916, 17273833, 18269458, 17027958],
+          [16852166, 16721250, 17148917, 17130834, 18472541, 17185209, 18406792, 17122958, 17171541, 17148083],
+          [16810375, 18184458, 17246875, 18160250, 17152084, 17125584, 17089208, 17131958, 18567709, 17145125]
+        ]
+      },
+      "llmopt_over_llama_cpp_median_of_campaign_medians": 1.122507607
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_ninja_tests": "49 pass",
+    "metal_compilation": "pass for SmolLM2, Gemma, and the non-model regression",
+    "package": "SmolLM2 valid with 100 kernels, 1174 commands, 0 opaque; Gemma valid with 109 kernels, 2414 commands, 0 opaque",
+    "runtime_histogram": "SmolLM2 removes 30 value transpose dispatches; Gemma matches 25 transpose nodes and removes 13 materialized dispatches; Qwen selects zero sites",
+    "numerical_scope": "SmolLM2 is byte exact with slice 29 and Gemma is byte exact with slice 27"
+  }
+}

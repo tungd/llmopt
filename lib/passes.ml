@@ -84,8 +84,11 @@ let optimize ?(target = Target_hardware.default) graph =
   let gqa_elim_graph =
     Pass_fuse_linear_bias.eliminate_gqa_expansion qkv_fused_graph
   in
+  let value_layout_graph =
+    Pass_fuse_linear_bias.eliminate_value_transpose gqa_elim_graph
+  in
   let no_trans_graph =
-    Pass_fuse_linear_bias.eliminate_attention_transpose gqa_elim_graph
+    Pass_fuse_linear_bias.eliminate_attention_transpose value_layout_graph
     |> Pass_fuse_linear_bias.eliminate_kv_transpose
   in
   let linear_add_graph =

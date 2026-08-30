@@ -97,6 +97,24 @@ let q8_output_matches ~rows ~columns ~dtype value =
       && Ir.Value.dtype value = dtype
   | [] -> false
 
+let attention_value_shape ~key value =
+  match
+    Tensor_shape.dimensions key,
+    Tensor_shape.dimensions value
+  with
+  | ( [ batches; heads; tokens; width ],
+      [ value_batches; value_heads; value_tokens; value_width ] )
+    when value_batches = batches && value_heads = heads
+         && value_tokens = tokens && value_width = width ->
+      Ok value
+  | ( [ batches; heads; tokens; width ],
+      [ value_batches; value_tokens; value_heads; value_width ] )
+    when value_batches = batches && value_heads = heads
+         && value_tokens = tokens && value_width = width ->
+      Tensor_shape.create [ batches; heads; tokens; width ]
+      |> Result.map_error Tensor_shape.error_to_string
+  | _ -> Error "attention value shape must match key in head-major or token-major layout"
+
 let q8_activation_dtype = function
   | Ir.Dtype.Float16 | Ir.Dtype.Float32 -> true
   | _ -> false
@@ -739,11 +757,15 @@ let validate_command seen_values command =
         | ( Ir.Op.Primitive (Ir.Primitive.Attention _),
             [ query; key; value; mask ],
             Some output ) ->
+            let* value_shape =
+              attention_value_shape ~key:(Ir.Value.logical_shape key)
+                (Ir.Value.logical_shape value)
+            in
             let* inferred =
               Tensor_shape.scaled_dot_product_attention
                 (Ir.Value.logical_shape query)
                 (Ir.Value.logical_shape key)
-                (Ir.Value.logical_shape value)
+                value_shape
                 (Ir.Value.logical_shape mask)
               |> Result.map_error Tensor_shape.error_to_string
             in
@@ -1495,9 +1517,13 @@ module Sequence = struct
     | Ir.Primitive.Short_conv_silu _, [ input; _weight ] ->
         Ok (Ir.Value.logical_shape input)
     | Ir.Primitive.Attention _, [ query; key; value; mask ] ->
+        let* value_shape =
+          attention_value_shape ~key:(Ir.Value.logical_shape key)
+            (Ir.Value.logical_shape value)
+        in
         Tensor_shape.scaled_dot_product_attention
           (Ir.Value.logical_shape query) (Ir.Value.logical_shape key)
-          (Ir.Value.logical_shape value) (Ir.Value.logical_shape mask)
+          value_shape (Ir.Value.logical_shape mask)
         |> shape_error
     | Ir.Primitive.Paged_attention_q8 _, query :: _ ->
         Ok (Ir.Value.logical_shape query)

@@ -728,6 +728,80 @@ let () =
   |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
   |> ignore;
 
+  let token_value_graph = Ir.Graph.create () in
+  let token_value_input name shape dtype =
+    tensor_input token_value_graph ~name ~source:Ir.Input_source.Runtime ~shape
+      ~dtype
+  in
+  let token_value_query =
+    token_value_input "token_value_query"
+      [ batches; heads; tokens; head_dimension ] Ir.Dtype.Float16
+  in
+  let token_value_key =
+    token_value_input "token_value_key"
+      [ batches; kv_heads; tokens; head_dimension ] Ir.Dtype.Float16
+  in
+  let token_major_value =
+    token_value_input "token_major_value"
+      [ batches; tokens; kv_heads; head_dimension ] Ir.Dtype.Float16
+  in
+  let token_value_mask =
+    token_value_input "token_value_mask" [ batches; 1; tokens; tokens ]
+      Ir.Dtype.Bool
+  in
+  let head_major_value =
+    Ir.Graph.fresh_tensor_value token_value_graph
+      ~shape:
+        (Tensor_shape.of_ints_exn
+           [ batches; kv_heads; tokens; head_dimension ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append token_value_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+    ~inputs:[ token_major_value ] ~output:(Some head_major_value);
+  let token_value_output =
+    Ir.Graph.fresh_tensor_value token_value_graph
+      ~shape:
+        (Tensor_shape.of_ints_exn [ batches; heads; tokens; head_dimension ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append token_value_graph
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Attention generalized_attention))
+    ~inputs:
+      [ token_value_query; token_value_key; head_major_value; token_value_mask ]
+    ~output:(Some token_value_output);
+  Ir.Graph.add_output token_value_graph ~name:"token_value_output"
+    token_value_output;
+  let token_value_graph =
+    Pass_fuse_linear_bias.eliminate_value_transpose token_value_graph
+  in
+  expect
+    (Ir.Graph.nodes token_value_graph
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Primitive (Ir.Primitive.Attention _),
+               [ query; key; value; mask ] ) ->
+               Ir.Value.equal query token_value_query
+               && Ir.Value.equal key token_value_key
+               && Ir.Value.equal value token_major_value
+               && Ir.Value.equal mask token_value_mask
+           | _ -> false))
+    "attention value layout fusion follows typed key/value dimensions";
+  expect
+    (Ir.Graph.nodes token_value_graph
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.Movement _) -> false
+           | _ -> true))
+    "attention value layout fusion removes the sole-consumer transpose";
+  token_value_graph |> Serving_schedule.of_graph |> expect_ok
+  |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  |> ignore;
+  token_value_graph |> Metal.lower |> expect_ok |> ignore;
+
   let short_conv_layout_graph = Ir.Graph.create () in
   let short_conv_input =
     tensor_input short_conv_layout_graph ~name:"short_conv_input"

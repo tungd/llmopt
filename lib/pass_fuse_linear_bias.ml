@@ -458,6 +458,79 @@ let eliminate_kv_transpose graph =
     in
     Ir.Graph.with_nodes graph rewritten_nodes
 
+let eliminate_value_transpose graph =
+  let nodes = Ir.Graph.nodes graph in
+  let rewrites =
+    List.filter_map
+      (fun attention_node ->
+        match Ir.node_op attention_node, Ir.node_inputs attention_node with
+        | Ir.Op.Primitive (Ir.Primitive.Attention config),
+          [ query; key; value; mask ] ->
+            (match producer nodes value with
+            | Some transpose_node ->
+                (match
+                   Ir.node_op transpose_node,
+                   Ir.node_inputs transpose_node,
+                   Ir.node_output transpose_node
+                 with
+                | ( Ir.Op.Primitive
+                      (Ir.Primitive.Movement
+                        (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })),
+                    [ token_major ],
+                    Some transposed )
+                  when value_is value transposed
+                       && only_consumer nodes transposed attention_node ->
+                    let dimensions value =
+                      Tensor_shape.dimensions (Ir.Value.logical_shape value)
+                    in
+                    (match dimensions key, dimensions token_major with
+                    | ( [ batches; kv_heads; key_length; width ],
+                        [ value_batches; value_length; value_heads;
+                          value_width ] )
+                      when batches = value_batches && kv_heads = value_heads
+                           && key_length = value_length && width = value_width
+                           && kv_heads <> key_length
+                           && Ir.Value.dtype key = Ir.Dtype.Float16
+                           && Ir.Value.dtype token_major = Ir.Dtype.Float16 ->
+                        Some
+                          ( attention_node,
+                            transpose_node,
+                            [ query; key; token_major; mask ],
+                            config )
+                    | _ -> None)
+                | _ -> None)
+            | None -> None)
+        | _ -> None)
+      nodes
+  in
+  if rewrites = [] then graph
+  else
+    let removed =
+      List.fold_left
+        (fun ids (_, transpose_node, _, _) ->
+          Node_id_set.add (Ir.node_id transpose_node) ids)
+        Node_id_set.empty rewrites
+    in
+    let replacements =
+      List.fold_left
+        (fun replacements (attention_node, _, inputs, config) ->
+          Node_id_map.add (Ir.node_id attention_node)
+            (Ir.node_replace attention_node
+               ~op:(Ir.Op.Primitive (Ir.Primitive.Attention config)) ~inputs)
+            replacements)
+        Node_id_map.empty rewrites
+    in
+    Ir.Graph.with_nodes graph
+      (List.filter_map
+         (fun node ->
+           let id = Ir.node_id node in
+           if Node_id_set.mem id removed then None
+           else
+             match Node_id_map.find_opt id replacements with
+             | Some replacement -> Some replacement
+             | None -> Some node)
+         nodes)
+
 let eliminate_gqa_expansion graph =
   let nodes = Ir.Graph.nodes graph in
   let producers =

@@ -5295,7 +5295,7 @@ let attention_source =
   ^ "  uint batches; uint heads; uint query_length; uint key_length;\n"
   ^ "  uint head_dimension; uint mask_batches; uint mask_heads; uint causal;\n"
   ^ "  float scale; uint kv_heads; uint token_first_output;\n"
-  ^ "  uint past_length;\n"
+  ^ "  uint past_length; uint token_first_value;\n"
   ^ "};\n\n"
   ^ "inline bool llmopt_attention_allowed(\n"
   ^ "    device const uchar* mask, constant AttentionParams& params,\n"
@@ -5371,9 +5371,11 @@ let attention_source =
   ^ "        if (llmopt_attention_allowed(mask, params, batch, head, query_position, key_position)) {\n"
   ^ "          const float probability = exp(llmopt_attention_score(query, key, params,\n"
   ^ "              batch, head, query_position, key_position) - maximum) / denominator;\n"
-  ^ "          const uint value_index = (((batch * effective_kv_heads + kv_head)\n"
-  ^ "              * params.key_length + key_position) * params.head_dimension)\n"
-  ^ "              + dimension;\n"
+  ^ "          const uint value_index = params.token_first_value != 0\n"
+  ^ "              ? (((batch * params.key_length + key_position)\n"
+  ^ "                  * effective_kv_heads + kv_head) * params.head_dimension) + dimension\n"
+  ^ "              : (((batch * effective_kv_heads + kv_head)\n"
+  ^ "                  * params.key_length + key_position) * params.head_dimension) + dimension;\n"
   ^ "          result += probability * float(value[value_index]);\n"
   ^ "        }\n"
   ^ "      }\n"
@@ -5416,6 +5418,9 @@ let attention_source =
   ^ "    if (!llmopt_attention_allowed(mask, params, batch, head,\n"
   ^ "        query_position, key_position)) continue;\n"
   ^ "    const uint key_base = (kv_head_base + key_position) * 64;\n"
+  ^ "    const uint value_base = params.token_first_value != 0\n"
+  ^ "        ? (((batch * params.key_length + key_position) * params.kv_heads + kv_head) * 64)\n"
+  ^ "        : key_base;\n"
   ^ "    const float partial_score = query_low * float(key[key_base + lane])\n"
   ^ "        + query_high * float(key[key_base + lane + ATTENTION_SIMD_WIDTH]);\n"
   ^ "    const float score = simd_sum(partial_score) * params.scale;\n"
@@ -5424,9 +5429,9 @@ let attention_source =
   ^ "        : exp(maximum - next_maximum);\n"
   ^ "    const float current_scale = exp(score - next_maximum);\n"
   ^ "    result_low = result_low * previous_scale\n"
-  ^ "        + current_scale * float(value[key_base + lane]);\n"
+  ^ "        + current_scale * float(value[value_base + lane]);\n"
   ^ "    result_high = result_high * previous_scale\n"
-  ^ "        + current_scale * float(value[key_base + lane + ATTENTION_SIMD_WIDTH]);\n"
+  ^ "        + current_scale * float(value[value_base + lane + ATTENTION_SIMD_WIDTH]);\n"
   ^ "    denominator = denominator * previous_scale + current_scale;\n"
   ^ "    maximum = next_maximum;\n"
   ^ "  }\n"
@@ -5478,6 +5483,10 @@ kernel void __ATTENTION_KERNEL__(
         query_position, key_position)) continue;
     const uint key_base =
         (kv_head_base + key_position) * __ATTENTION_HEAD_DIMENSION__;
+    const uint value_base = params.token_first_value != 0
+        ? (((batch * params.key_length + key_position) * effective_kv_heads
+            + kv_head) * __ATTENTION_HEAD_DIMENSION__)
+        : key_base;
     float partial_score = 0.0f;
     for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
       const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
@@ -5491,7 +5500,7 @@ kernel void __ATTENTION_KERNEL__(
     for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
       const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
       results[chunk] = results[chunk] * previous_scale
-          + current_scale * float(value[key_base + dimension]);
+          + current_scale * float(value[value_base + dimension]);
     }
     denominator = denominator * previous_scale + current_scale;
     maximum = next_maximum;
