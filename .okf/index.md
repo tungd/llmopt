@@ -77,6 +77,7 @@ configuration.
 * [Float32-weight two-token two-output Linear tactic](experiments/exp-0123-f32-weight-two-token-two-output-tactic-2026-08-30.md) - reuse both captured token rows across paired dense output columns.
 * [Q5_K paired-token weight-reuse tactic](experiments/exp-0124-q5-k-paired-token-weight-reuse-2026-08-30.md) - load each Q5_K block once while recording the corrected compiler/runtime site inventory.
 * [Shared shape-aware Linear tactic registry](experiments/exp-0125-shared-shape-aware-linear-tactic-registry-2026-08-30.md) - bind each captured Linear command through the same typed tactic policy used by compiler emission.
+* [Graph-relational GQA and attention layout fusion](experiments/exp-0126-graph-relational-attention-layout-fusion-2026-08-30.md) - eliminate grouped-head expansion and token-first movement from captured topology and dimension relations.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.

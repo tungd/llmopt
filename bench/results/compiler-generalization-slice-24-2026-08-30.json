@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T21:38:40+07:00",
+  "git_base_commit": "3af8a14079ecb3369201ef2133eb2a3fac72343c",
+  "slice": "graph-relational-gqa-and-attention-layout-fusion",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Attention",
+    "gqa_selection": "index-newaxis -> expand -> reshape topology with captured batch, KV-head, repetition-group, token, and head-width relations",
+    "output_selection": "Attention -> transpose(head,token) -> contiguous -> reshape(token,hidden) -> optional contiguous topology",
+    "lowering": "feed unexpanded K/V to the existing grouped-head attention kernel and make Attention produce the captured token-first output directly",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "regression_shape": {
+      "batches": 2,
+      "query_heads": 6,
+      "kv_heads": 2,
+      "tokens": 3,
+      "head_dimension": 32
+    },
+    "sites": {
+      "qwen_attention": 6,
+      "gemma_attention": 35
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice24-general-attention-layout",
+        "kernels": 111,
+        "commands": 1967,
+        "previous_commands": 2057,
+        "dispatches": 858,
+        "previous_dispatches": 888,
+        "removed_dispatches": {
+          "index_f16": 12,
+          "expand_f16": 12,
+          "transpose_f16": 6
+        },
+        "median_ms": 10.149598,
+        "min_ms": 9.488106,
+        "max_ms": 17.785072,
+        "previous_recorded_median_ms": 10.385990,
+        "delta_ms": -0.236392,
+        "latency_reduction_percent": 2.276066,
+        "output_sha256": "3db055cc11ec4a89fbc1672415c736bd0f272c477aa00cc022c1bc198ee7a45f",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.854417,
+        "mean_ms": 7.974975,
+        "samples_ns": [
+          8165625,
+          7860750,
+          7653375,
+          7850709,
+          7844583,
+          7755417,
+          7823834,
+          7858125,
+          8937333,
+          8000000
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.292215
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice24-general-attention-layout",
+        "kernels": 108,
+        "commands": 2439,
+        "previous_commands": 2974,
+        "dispatches": 799,
+        "previous_dispatches": 974,
+        "removed_dispatches": {
+          "index_f16": 70,
+          "expand_f16": 70,
+          "transpose_f16": 35
+        },
+        "median_ms": 20.252466,
+        "min_ms": 18.491030,
+        "max_ms": 23.288012,
+        "previous_recorded_median_ms": 20.597577,
+        "delta_ms": -0.345111,
+        "latency_reduction_percent": 1.675493,
+        "output_sha256": "896aa2a62df23b6890548055b5f8f94e7537c2c82dcb2c02905cc1e844a4811a",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.2597915,
+        "mean_ms": 17.631858,
+        "samples_ns": [
+          16965958,
+          17220375,
+          18889250,
+          18240375,
+          17428125,
+          17274083,
+          17143833,
+          17113042,
+          18798041,
+          17245500
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.173390
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_ninja_tests": "49 pass",
+    "python_pytest": "52 pass, 1 skip",
+    "metal_compilation": "pass for both full-model packages",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 111 kernels, 1967 commands, 0 opaque",
+    "gemma_package": "valid, 108 kernels, 2439 commands, 0 opaque",
+    "runtime_histogram": "Qwen removes 30 movement dispatches around 6 Attention sites; Gemma removes 175 around 35 sites",
+    "numerical_scope": "both package outputs are byte exact with slice 23 and preserve both row argmax IDs"
+  }
+}

@@ -534,6 +534,123 @@ let () =
           "kernel void llmopt_attention_f16_simd_h512("))
     "Metal lowering does not emit uncaptured attention widths";
 
+  let generalized_attention_graph = Ir.Graph.create () in
+  let generalized_input name shape dtype =
+    tensor_input generalized_attention_graph ~name
+      ~source:Ir.Input_source.Runtime ~shape ~dtype
+  in
+  let generalized_fresh shape =
+    Ir.Graph.fresh_tensor_value generalized_attention_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let generalized_append movement input shape =
+    let output = generalized_fresh shape in
+    Ir.Graph.append generalized_attention_graph
+      ~op:(Ir.Op.Primitive (Ir.Primitive.Movement movement))
+      ~inputs:[ input ] ~output:(Some output);
+    output
+  in
+  let batches = 2 in
+  let kv_heads = 2 in
+  let groups = 3 in
+  let heads = kv_heads * groups in
+  let tokens = 3 in
+  let head_dimension = 32 in
+  let generalized_query =
+    generalized_input "generalized_query"
+      [ batches; heads; tokens; head_dimension ] Ir.Dtype.Float16
+  in
+  let generalized_key =
+    generalized_input "generalized_key"
+      [ batches; kv_heads; tokens; head_dimension ] Ir.Dtype.Float16
+  in
+  let generalized_value =
+    generalized_input "generalized_value"
+      [ batches; kv_heads; tokens; head_dimension ] Ir.Dtype.Float16
+  in
+  let generalized_mask =
+    generalized_input "generalized_mask" [ batches; 1; tokens; tokens ]
+      Ir.Dtype.Bool
+  in
+  let full length =
+    Tensor_shape.Index.Slice { start = 0; step = 1; length }
+  in
+  let gqa_index =
+    Tensor_shape.Index.of_selectors
+      [ full batches; full kv_heads; Tensor_shape.Index.New_axis; full tokens;
+        full head_dimension ]
+    |> expect_ok
+  in
+  let expand_gqa input =
+    generalized_append (Ir.Movement.Index gqa_index) input
+      [ batches; kv_heads; 1; tokens; head_dimension ]
+    |> fun indexed ->
+    generalized_append Ir.Movement.Expand indexed
+      [ batches; kv_heads; groups; tokens; head_dimension ]
+    |> fun expanded ->
+    generalized_append Ir.Movement.Reshape expanded
+      [ batches; heads; tokens; head_dimension ]
+  in
+  let expanded_key = expand_gqa generalized_key in
+  let expanded_value = expand_gqa generalized_value in
+  let attention_output = generalized_fresh [ batches; heads; tokens; head_dimension ] in
+  let generalized_attention =
+    Ir.Attention.create ~scale:0.125 ~causal:false |> expect_ok
+  in
+  Ir.Graph.append generalized_attention_graph
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Attention generalized_attention))
+    ~inputs:
+      [ generalized_query; expanded_key; expanded_value; generalized_mask ]
+    ~output:(Some attention_output);
+  let transposed =
+    generalized_append
+      (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })
+      attention_output [ batches; tokens; heads; head_dimension ]
+  in
+  let contiguous =
+    generalized_append Ir.Movement.Contiguous transposed
+      [ batches; tokens; heads; head_dimension ]
+  in
+  let token_first =
+    generalized_append Ir.Movement.Reshape contiguous
+      [ batches; tokens; heads * head_dimension ]
+  in
+  let token_first_contiguous =
+    generalized_append Ir.Movement.Contiguous token_first
+      [ batches; tokens; heads * head_dimension ]
+  in
+  Ir.Graph.add_output generalized_attention_graph ~name:"token_first"
+    token_first_contiguous;
+  let generalized_attention_graph =
+    generalized_attention_graph
+    |> Pass_fuse_linear_bias.eliminate_gqa_expansion
+    |> Pass_fuse_linear_bias.eliminate_attention_transpose
+  in
+  expect
+    (Ir.Graph.nodes generalized_attention_graph
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | ( Ir.Op.Primitive (Ir.Primitive.Attention _),
+               [ query; key; value; mask ],
+               Some output ) ->
+               Ir.Value.equal query generalized_query
+               && Ir.Value.equal key generalized_key
+               && Ir.Value.equal value generalized_value
+               && Ir.Value.equal mask generalized_mask
+               && Ir.Value.equal output token_first_contiguous
+           | _ -> false))
+    "attention layout fusion follows captured batch, head, token, and width relations";
+  expect
+    (Ir.Graph.nodes generalized_attention_graph
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.Movement _) -> false
+           | _ -> true))
+    "attention layout fusion removes the materialized GQA and token-first chains";
+  generalized_attention_graph |> Serving_schedule.of_graph |> expect_ok
+  |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  |> ignore;
+
   [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2", 32;
     Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_n2_l32", 256;
     Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_n1_l32", 1024;

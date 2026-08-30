@@ -4,6 +4,8 @@ let description = "Fuse adjacent Matmul and Add into Fused_matmul_bias"
 module Node_id_map = Map.Make (Int)
 module Node_id_set = Set.Make (Int)
 
+let ( let* ) = Option.bind
+
 let value_is left right = Ir.Value.equal left right
 
 let matmul_info node =
@@ -247,59 +249,133 @@ let eliminate_attention_transpose graph =
       (fun node -> List.exists (value_is node_val) (Ir.node_inputs node))
       nodes
   in
+  let sole_consumer value =
+    match consumers value with
+    | [ node ] -> Some node
+    | _ -> None
+  in
+  let contiguous_input node expected =
+    match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+    | ( Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous),
+        [ input ],
+        Some output )
+      when value_is input expected ->
+        Some output
+    | _ -> None
+  in
+  let match_chain trans_node =
+    match Ir.node_op trans_node, Ir.node_inputs trans_node, Ir.node_output trans_node with
+    | ( Ir.Op.Primitive
+          (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })),
+        [ trans_in ],
+        Some trans_out ) ->
+        let in_dims =
+          Tensor_shape.dimensions (Ir.Value.logical_shape trans_in)
+        in
+        let out_dims =
+          Tensor_shape.dimensions (Ir.Value.logical_shape trans_out)
+        in
+        let* batches, heads, query_length, head_dimension =
+          match in_dims, out_dims with
+          | ( [ batches; heads; query_length; head_dimension ],
+              [ batches'; query_length'; heads'; head_dimension' ] )
+            when batches > 0 && heads > 0 && query_length > 0
+                 && head_dimension > 0 && batches = batches'
+                 && heads = heads' && query_length = query_length'
+                 && head_dimension = head_dimension' ->
+              Some (batches, heads, query_length, head_dimension)
+          | _ -> None
+        in
+        let* attention_node = producer nodes trans_in in
+        let* () =
+          match Ir.node_op attention_node with
+          | Ir.Op.Primitive (Ir.Primitive.Attention _)
+            when only_consumer nodes trans_in trans_node ->
+              Some ()
+          | _ -> None
+        in
+        let* cont_node = sole_consumer trans_out in
+        let* cont_out = contiguous_input cont_node trans_out in
+        let* reshape_node = sole_consumer cont_out in
+        let* r_out =
+          match
+            Ir.node_op reshape_node,
+            Ir.node_inputs reshape_node,
+            Ir.node_output reshape_node
+          with
+          | ( Ir.Op.Primitive
+                (Ir.Primitive.Movement Ir.Movement.Reshape),
+              [ r_in ],
+              Some r_out )
+            when value_is r_in cont_out
+                 && Tensor_shape.dimensions (Ir.Value.logical_shape r_out)
+                    = [ batches; query_length; heads * head_dimension ]
+                 && Ir.Value.dtype r_out = Ir.Value.dtype trans_in ->
+              Some r_out
+          | _ -> None
+        in
+        let final_output, trailing_contiguous =
+          match sole_consumer r_out with
+          | Some trailing ->
+              (match contiguous_input trailing r_out with
+              | Some trailing_out
+                when Tensor_shape.equal
+                       (Ir.Value.logical_shape trailing_out)
+                       (Ir.Value.logical_shape r_out)
+                     && Ir.Value.dtype trailing_out = Ir.Value.dtype r_out ->
+                  trailing_out, Some trailing
+              | _ -> r_out, None)
+          | None -> r_out, None
+        in
+        Some
+          ( attention_node,
+            trans_node,
+            cont_node,
+            reshape_node,
+            trailing_contiguous,
+            final_output )
+    | _ -> None
+  in
   let elim_chain =
-    List.filter_map
-      (fun trans_node ->
-        match Ir.node_op trans_node, Ir.node_inputs trans_node, Ir.node_output trans_node with
-        | ( Ir.Op.Primitive
-              (Ir.Primitive.Movement (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })),
-            [ trans_in ],
-            Some trans_out ) ->
-            let in_dims = Tensor_shape.dimensions (Ir.Value.logical_shape trans_in) in
-            (match in_dims with
-            | [ 1; 16; 1; 64 ] ->
-                (match consumers trans_out with
-                | [ cont_node ] ->
-                    (match Ir.node_op cont_node, Ir.node_inputs cont_node, Ir.node_output cont_node with
-                    | ( Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous),
-                        [ cont_in ],
-                        Some cont_out ) when value_is cont_in trans_out ->
-                        (match consumers cont_out with
-                        | [ reshape_node ] ->
-                            (match Ir.node_op reshape_node, Ir.node_inputs reshape_node, Ir.node_output reshape_node with
-                            | ( Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape),
-                                [ r_in ],
-                                Some r_out ) when value_is r_in cont_out ->
-                                let r_dims = Tensor_shape.dimensions (Ir.Value.logical_shape r_out) in
-                                if r_dims = [ 1; 1; 1024 ] then
-                                  Some (trans_node, cont_node, reshape_node, trans_in)
-                                else None
-                            | _ -> None)
-                        | _ -> None)
-                    | _ -> None)
-                | _ -> None)
-            | _ -> None)
-        | _ -> None)
-      nodes
+    List.filter_map match_chain nodes
   in
   if elim_chain = [] then graph
   else
     let elim_set =
       List.fold_left
-        (fun set (trans_node, cont_node, _reshape_node, _) ->
-          set |> Node_id_set.add (Ir.node_id trans_node)
-              |> Node_id_set.add (Ir.node_id cont_node))
+        (fun set
+             ( _attention_node,
+               trans_node,
+               cont_node,
+               reshape_node,
+               trailing_contiguous,
+               _final_output ) ->
+          let set =
+            set |> Node_id_set.add (Ir.node_id trans_node)
+            |> Node_id_set.add (Ir.node_id cont_node)
+            |> Node_id_set.add (Ir.node_id reshape_node)
+          in
+          match trailing_contiguous with
+          | Some node -> Node_id_set.add (Ir.node_id node) set
+          | None -> set)
         Node_id_set.empty elim_chain
     in
     let replacements =
       List.fold_left
-        (fun map (_trans_node, _cont_node, reshape_node, trans_in) ->
-          let new_reshape =
-            Ir.node_replace reshape_node
-              ~op:(Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape))
-              ~inputs:[ trans_in ]
+        (fun map
+             ( attention_node,
+               _trans_node,
+               _cont_node,
+               _reshape_node,
+               _trailing_contiguous,
+               final_output ) ->
+          let new_attention =
+            Ir.node_create ~id:(Ir.node_id attention_node)
+              ~op:(Ir.node_op attention_node)
+              ~inputs:(Ir.node_inputs attention_node) ~output:(Some final_output)
           in
-          Node_id_map.add (Ir.node_id reshape_node) new_reshape map)
+          Node_id_map.add (Ir.node_id attention_node) new_attention map)
         Node_id_map.empty elim_chain
     in
     let rewritten_nodes =
@@ -398,44 +474,117 @@ let eliminate_gqa_expansion graph =
       (fun node -> List.exists (value_is node_val) (Ir.node_inputs node))
       nodes
   in
+  let producer_of value =
+    Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id value)) producers
+  in
   let find_gqa_source tensor =
-    match Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id tensor)) producers with
-    | Some reshape_node -> (
-        match Ir.node_op reshape_node, Ir.node_inputs reshape_node with
-        | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape), [ expand_out ] -> (
-            match Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id expand_out)) producers with
-            | Some expand_node -> (
-                match Ir.node_op expand_node, Ir.node_inputs expand_node with
-                | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Expand), [ index_out ] -> (
-                    match Node_id_map.find_opt (Ir.Value_id.to_int (Ir.Value.id index_out)) producers with
-                    | Some index_node -> (
-                        match Ir.node_op index_node, Ir.node_inputs index_node with
-                        | Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.Index _)), [ raw_tensor ] ->
-                            let raw_dims = Tensor_shape.dimensions (Ir.Value.logical_shape raw_tensor) in
-                            let final_dims = Tensor_shape.dimensions (Ir.Value.logical_shape tensor) in
-                            (match raw_dims, final_dims with
-                            | [ 1; kv_heads; tokens; 64 ], [ 1; heads; tokens2; 64 ]
-                              when tokens = tokens2 && kv_heads = 8 && heads = 16 ->
-                                Some (raw_tensor, [ reshape_node; expand_node; index_node ])
-                            | _ -> None)
-                        | _ -> None)
-                    | None -> None)
-                | _ -> None)
-            | None -> None)
-        | _ -> None)
-    | None -> None
+    let* reshape_node = producer_of tensor in
+    let* expand_out =
+      match Ir.node_op reshape_node, Ir.node_inputs reshape_node with
+      | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape),
+        [ expand_out ] ->
+          Some expand_out
+      | _ -> None
+    in
+    let* expand_node = producer_of expand_out in
+    let* index_out =
+      match Ir.node_op expand_node, Ir.node_inputs expand_node with
+      | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Expand),
+        [ index_out ] ->
+          Some index_out
+      | _ -> None
+    in
+    let* index_node = producer_of index_out in
+    let* index, raw_tensor =
+      match Ir.node_op index_node, Ir.node_inputs index_node with
+      | ( Ir.Op.Primitive
+            (Ir.Primitive.Movement (Ir.Movement.Index index)),
+          [ raw_tensor ] ) ->
+          Some (index, raw_tensor)
+      | _ -> None
+    in
+    let raw_dims =
+      Tensor_shape.dimensions (Ir.Value.logical_shape raw_tensor)
+    in
+    let index_dims =
+      Tensor_shape.dimensions (Ir.Value.logical_shape index_out)
+    in
+    let expand_dims =
+      Tensor_shape.dimensions (Ir.Value.logical_shape expand_out)
+    in
+    let final_dims = Tensor_shape.dimensions (Ir.Value.logical_shape tensor) in
+    let full length =
+      Tensor_shape.Index.Slice { start = 0; step = 1; length }
+    in
+    match raw_dims, index_dims, expand_dims, final_dims with
+    | ( [ batches; kv_heads; tokens; head_dimension ],
+        [ batches'; kv_heads'; 1; tokens'; head_dimension' ],
+        [ batches''; kv_heads''; groups; tokens''; head_dimension'' ],
+        [ batches'''; heads; tokens'''; head_dimension''' ] )
+      when batches > 0 && kv_heads > 0 && tokens > 0 && head_dimension > 0
+           && groups > 1 && batches = batches' && batches = batches''
+           && batches = batches''' && kv_heads = kv_heads'
+           && kv_heads = kv_heads'' && tokens = tokens' && tokens = tokens''
+           && tokens = tokens''' && head_dimension = head_dimension'
+           && head_dimension = head_dimension''
+           && head_dimension = head_dimension''' && heads = kv_heads * groups
+           && Tensor_shape.Index.selectors index
+              = [ full batches; full kv_heads; Tensor_shape.Index.New_axis;
+                  full tokens; full head_dimension ] ->
+        Some
+          ( raw_tensor,
+            raw_dims,
+            final_dims,
+            [ reshape_node; expand_node; index_node ] )
+    | _ -> None
+  in
+  let match_attention attn_node =
+    match Ir.node_op attn_node, Ir.node_inputs attn_node with
+    | Ir.Op.Primitive (Ir.Primitive.Attention config),
+      [ query; key; value; mask ] ->
+        let* raw_key, key_dims, expanded_key_dims, k_nodes =
+          find_gqa_source key
+        in
+        let* raw_value, value_dims, expanded_value_dims, v_nodes =
+          find_gqa_source value
+        in
+        let* () =
+          if key_dims = value_dims && expanded_key_dims = expanded_value_dims
+          then Some ()
+          else None
+        in
+        let* () =
+          match
+            Tensor_shape.dimensions (Ir.Value.logical_shape query),
+            key_dims,
+            expanded_key_dims
+          with
+          | ( [ query_batches; query_heads; _query_tokens;
+                query_head_dimension ],
+              [ key_batches; kv_heads; _key_tokens; key_head_dimension ],
+              [ expanded_batches; expanded_heads; _expanded_tokens;
+                expanded_head_dimension ] )
+            when query_batches = key_batches
+                 && query_batches = expanded_batches
+                 && query_heads = expanded_heads
+                 && query_heads mod kv_heads = 0
+                 && query_head_dimension = key_head_dimension
+                 && query_head_dimension = expanded_head_dimension ->
+              Some ()
+          | _ -> None
+        in
+        Some
+          ( attn_node,
+            config,
+            query,
+            raw_key,
+            raw_value,
+            mask,
+            k_nodes @ v_nodes )
+    | _ -> None
   in
   let rewrites =
-    List.filter_map
-      (fun attn_node ->
-        match Ir.node_op attn_node, Ir.node_inputs attn_node with
-        | Ir.Op.Primitive (Ir.Primitive.Attention config), [ query; key; value; mask ] -> (
-            match find_gqa_source key, find_gqa_source value with
-            | Some (raw_key, k_nodes), Some (raw_value, v_nodes) ->
-                Some (attn_node, config, query, raw_key, raw_value, mask, k_nodes @ v_nodes)
-            | _ -> None)
-        | _ -> None)
-      nodes
+    List.filter_map match_attention nodes
   in
   if rewrites = [] then graph
   else
