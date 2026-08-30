@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T12:18:06+07:00",
+  "git_base_commit": "950b5cbe5f225806a6bcf1c895cfa1cd514dcc18",
+  "slice": "attention-linked-token-major-rms-rope",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "matched_topology": "RMSNorm -> split/negate/concat rotary half -> cosine and sine products -> add -> token/head transpose",
+    "selection": "producer and sole-consumer topology, captured rank-four shapes, shared alias roots, common downstream semantic Attention, weight dtype, and rotary half width",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "semantic_operations": ["Rms_rope", "Rms_rope_qk"],
+    "kernel": "one SIMD group normalizes and rotates one captured head/token row; Q/K pairs share one dispatch when their outputs reach the same Attention",
+    "captured_sites": {
+      "qwen": {"paired_qk": 0, "single_branches": 0},
+      "gemma": {"paired_qk": 15, "single_branches": 20, "total_branches": 50}
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice13-rms-rope",
+        "kernels": 104,
+        "commands": 2507,
+        "dispatches": 1128,
+        "previous_dispatches": 1128,
+        "dispatch_delta": 0,
+        "median_ms": 12.533069,
+        "min_ms": 11.651039,
+        "max_ms": 37.757158,
+        "previous_recorded_median_ms": 12.558937,
+        "delta_ms": -0.025868,
+        "latency_reduction_percent": 0.205973,
+        "output_sha256": "cf98d808027aaee68a6e13ccf4f75489ccfbff530478a5bb63361940474eb4ba",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.93825,
+        "mean_ms": 8.003716,
+        "samples_ns": [
+          7934750,
+          8208375,
+          8348458,
+          7592834,
+          8700750,
+          8007250,
+          7757333,
+          7763708,
+          7941750,
+          7781958
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.578820
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice13-rms-rope",
+        "kernels": 98,
+        "commands": 3430,
+        "previous_commands": 3997,
+        "dispatches": 1220,
+        "previous_dispatches": 1635,
+        "dispatch_delta": -415,
+        "median_ms": 26.480079,
+        "min_ms": 25.421858,
+        "max_ms": 28.642178,
+        "previous_recorded_median_ms": 28.671980,
+        "delta_ms": -2.191901,
+        "latency_reduction_percent": 7.644749,
+        "output_sha256": "04a00df740a1f93d967e320e1628f15a0d33fba5eadbef1c887d5f49336370e7",
+        "previous_output_mean_abs": 0.0061832881,
+        "previous_output_max_abs": 0.0795898438,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.2085,
+        "mean_ms": 17.537395,
+        "samples_ns": [
+          17206250,
+          17122834,
+          17186875,
+          18631000,
+          17210750,
+          18407542,
+          17158833,
+          17270791,
+          17193417,
+          17985666
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.538779
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "pass",
+    "metal_compilation": "pass for native fixture and both full-model packages",
+    "qwen_package": "valid, 104 kernels, 2507 commands, 0 opaque",
+    "gemma_package": "valid, 98 kernels, 3430 commands, 0 opaque",
+    "numerical_scope": "Qwen matches no new site and remains byte exact; Gemma preserves both previous row argmax IDs with changed Float16 logits"
+  }
+}

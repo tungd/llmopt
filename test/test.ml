@@ -1357,6 +1357,168 @@ let () =
            | _ -> false))
     "decode RoPE operations bind canonical runtime tables";
 
+  let token_rope_graph = Ir.Graph.create () in
+  let token_rope_input name shape dtype =
+    tensor_input token_rope_graph ~name ~source:Ir.Input_source.Runtime ~shape
+      ~dtype
+  in
+  let token_q =
+    token_rope_input "token_q" [ 1; 2; 4; 64 ] Ir.Dtype.Float16
+  in
+  let token_k =
+    token_rope_input "token_k" [ 1; 2; 1; 64 ] Ir.Dtype.Float16
+  in
+  let token_weight name =
+    tensor_input token_rope_graph ~name
+      ~source:(Ir.Input_source.Tensor_store { key = name }) ~shape:[ 64 ]
+      ~dtype:Ir.Dtype.Float32
+  in
+  let token_q_weight = token_weight "token_q_weight" in
+  let token_k_weight = token_weight "token_k_weight" in
+  let token_cosine =
+    token_rope_input "token_cosine" [ 1; 2; 64 ] Ir.Dtype.Float16
+  in
+  let token_sine =
+    token_rope_input "token_sine" [ 1; 2; 64 ] Ir.Dtype.Float16
+  in
+  let token_fresh shape dtype =
+    Ir.Graph.fresh_tensor_value token_rope_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+  in
+  let token_append op inputs shape dtype =
+    let output = token_fresh shape dtype in
+    Ir.Graph.append token_rope_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let token_alias input =
+    token_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Unsqueeze 2)))
+      [ input ] [ 1; 2; 1; 64 ] Ir.Dtype.Float16
+  in
+  let q_cosine = token_alias token_cosine in
+  let q_sine = token_alias token_sine in
+  let k_cosine = token_alias token_cosine in
+  let k_sine = token_alias token_sine in
+  let token_full length =
+    Tensor_shape.Index.Slice { start = 0; step = 1; length }
+  in
+  let token_half_index heads start =
+    Tensor_shape.Index.of_selectors
+      [ token_full 1; token_full 2; token_full heads;
+        Tensor_shape.Index.Slice { start; step = 1; length = 32 } ]
+    |> expect_ok
+  in
+  let token_branch input weight cosine sine heads =
+    let normalized =
+      token_append (Ir.Op.Rms_norm { epsilon = 1e-6 }) [ input; weight ]
+        [ 1; 2; heads; 64 ] Ir.Dtype.Float16
+    in
+    let half start =
+      token_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Movement
+              (Ir.Movement.Index (token_half_index heads start))))
+        [ normalized ] [ 1; 2; heads; 32 ] Ir.Dtype.Float16
+    in
+    let low = half 0 in
+    let high = half 32 in
+    let negated =
+      token_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary (Ir.Pointwise.Neg, high))))
+        [ high ] [ 1; 2; heads; 32 ] Ir.Dtype.Float16
+    in
+    let rotated =
+      token_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 3 })))
+        [ negated; low ] [ 1; 2; heads; 64 ] Ir.Dtype.Float16
+    in
+    let multiply left right =
+      token_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Mul,
+                   Ir.Pointwise.Tensor left,
+                   Ir.Pointwise.Tensor right ))))
+        [ left; right ] [ 1; 2; heads; 64 ] Ir.Dtype.Float16
+    in
+    let direct = multiply normalized cosine in
+    let turned = multiply rotated sine in
+    let summed =
+      token_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Add,
+                   Ir.Pointwise.Tensor direct,
+                   Ir.Pointwise.Tensor turned ))))
+        [ direct; turned ] [ 1; 2; heads; 64 ] Ir.Dtype.Float16
+    in
+    token_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+      [ summed ] [ 1; heads; 2; 64 ] Ir.Dtype.Float16
+  in
+  let token_q_output =
+    token_branch token_q token_q_weight q_cosine q_sine 4
+  in
+  let token_k_output =
+    token_branch token_k token_k_weight k_cosine k_sine 1
+  in
+  let expanded_k =
+    token_append
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Expand))
+      [ token_k_output ] [ 1; 4; 2; 64 ] Ir.Dtype.Float16
+  in
+  let token_value =
+    token_rope_input "token_value" [ 1; 4; 2; 64 ] Ir.Dtype.Float16
+  in
+  let token_mask =
+    token_rope_input "token_mask" [ 1; 1; 2; 2 ] Ir.Dtype.Bool
+  in
+  let token_attention =
+    token_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Attention
+            (Ir.Attention.create ~scale:0.125 ~causal:false |> expect_ok)))
+      [ token_q_output; expanded_k; token_value; token_mask ]
+      [ 1; 4; 2; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.add_output token_rope_graph ~name:"attention" token_attention;
+  let token_rope_fused = Passes.fuse_rms_rope token_rope_graph in
+  expect
+    (Ir.Graph.nodes token_rope_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Rms_rope_qk
+                 { q_heads = 4; k_heads = 1; width = 64; extra_outputs = [ _ ]; _ },
+               [ _; q_weight; _; k_weight; _; _ ] ) ->
+               Ir.Value.dtype q_weight = Ir.Dtype.Float32
+               && Ir.Value.dtype k_weight = Ir.Dtype.Float32
+           | _ -> false))
+    "token-major RoPE fusion pairs aliases through their shared attention";
+  let token_rope_schedule =
+    token_rope_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands token_rope_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Rms_rope_qk { q_heads = 4; k_heads = 1; _ } -> true
+           | _ -> false))
+    "token-major RMS-RoPE-QK survives schedule serialization";
+  let token_rope_program = Metal.lower token_rope_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source token_rope_program)
+       "kernel void llmopt_rms_rope_qk_f16_wf32_simd")
+    "Metal lowering emits Float32-weight RMS-RoPE-QK";
+
   let layout =
     Kv_cache.Layout.create ~format:Kv_cache.Format.default
       ~attention_layers:6 ~kv_heads:8 ~head_dim:64 ~recurrent_layers:10

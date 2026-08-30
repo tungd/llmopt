@@ -4,7 +4,7 @@ title: 'Compiler and runtime probe models'
 description: 'Models used to expose architecture coverage without becoming compiler or runtime defaults.'
 tags: [models, probes, compiler, runtime, portability]
 status: stable
-generated: { by: 'process:codex', at: '2026-08-30T12:05:08+07:00' }
+generated: { by: 'process:codex', at: '2026-08-30T12:18:06+07:00' }
 sources:
   - id: profile
     resource: /lib/model_profile.ml
@@ -54,6 +54,9 @@ sources:
   - id: l2-normalization
     resource: /.okf/experiments/exp-0114-topology-fused-l2-normalization-2026-08-30.md
     title: Topology-fused L2 normalization
+  - id: attention-linked-rms-rope
+    resource: /.okf/experiments/exp-0115-attention-linked-rms-rope-2026-08-30.md
+    title: Attention-linked token-major RMSNorm-RoPE fusion
 ---
 
 # Boundary
@@ -74,8 +77,8 @@ Ninja `all` target excludes model-specific diagnostic executables.
 |---|---|---|
 | `LiquidAI/LFM2.5-350M` | Complete W4A16/Q8-KV prefill, decode, cache, tokenizer, Model Program ABI v2 serving, and a four-repeat same-text comparison with llama.cpp Q4_0 | Only end-to-end serving probe. The comparison is not GGUF/UD weight parity and remains owned by `Lfm25_probe`, probe-only diagnostics, and LFM receipts. |
 | `HuggingFaceTB/SmolLM2-135M-Instruct` | Q4_K_M GGUF: 2,131-node capture, 273 statics, 2,461-command zero-opaque native full forward; both token argmax IDs match the same-GGUF Transformers reference | Two-token no-cache median is `10.454059 ms` versus llama.cpp `3.7798125 ms` (`2.7658x`). No LLMOpt cached decode, Model Program, or HTTP serving run. |
-| `unsloth/Qwen3.5-0.8B` | UD-Q4_K_XL GGUF: 14,219-node capture, all 321 statics resolved, and a 2,507-command/1,128-dispatch zero-opaque native full forward after graph-recovered gated-delta and final-axis L2-normalization fusion, including direct `IQ4_XS` Linear execution | Two-token no-cache median is `12.558937 ms` versus llama.cpp `7.931209 ms` (`1.583483x`). Graph-general Q4_K/Q5_K tactics and 36 topology-fused L2 normalizations preserve argmax rows `760,16`; full Torch parity remains absent against corrected reference `198,16`. No cached decode, Model Program, or HTTP serving run. |
-| `unsloth/gemma-4-E2B-it` | UD-Q4_K_XL GGUF: 4,399-node capture and zero-opaque native full forward; graph-general RMSNorm fusion plus output liveness produce 3,997 commands/1,635 dispatches, while full-SIMD Q4_K execution preserves both token argmax IDs | Latest two-token no-cache observation is `28.671980 ms` versus llama.cpp `17.3268545 ms` (`1.654771x`). The L2-normalization and Q5_K occupancy selections match zero sites and output remains byte exact with slice 11. No LLMOpt cached decode, Model Program, or HTTP serving run. |
+| `unsloth/Qwen3.5-0.8B` | UD-Q4_K_XL GGUF: 14,219-node capture, all 321 statics resolved, and a 2,507-command/1,128-dispatch zero-opaque native full forward after graph-recovered gated-delta and final-axis L2-normalization fusion, including direct `IQ4_XS` Linear execution | Two-token no-cache median is `12.533069 ms` versus llama.cpp `7.938250 ms` (`1.578820x`). Graph-general Q4_K/Q5_K tactics and 36 topology-fused L2 normalizations preserve argmax rows `760,16`; the token-major rotary extension matches zero sites and full Torch parity remains absent against corrected reference `198,16`. No cached decode, Model Program, or HTTP serving run. |
+| `unsloth/gemma-4-E2B-it` | UD-Q4_K_XL GGUF: 4,399-node capture and a 3,430-command/1,220-dispatch zero-opaque native full forward; graph-general RMSNorm and attention-linked rotary fusion reduce 50 captured rotary branches to 15 paired Q/K plus 20 single semantic kernels | Latest two-token no-cache observation is `26.480079 ms` versus llama.cpp `17.208500 ms` (`1.538779x`). Graph-derived rotary and Q4_K execution preserve both row argmax IDs `84904,148465`; L2 normalization and the Q5_K occupancy tactic match zero sites. No LLMOpt cached decode, Model Program, or HTTP serving run. |
 
 # Adding a probe
 

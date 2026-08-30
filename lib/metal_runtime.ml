@@ -1519,6 +1519,24 @@ let gated_delta_grid state_rows =
 
 let simd_rows_grid rows = linear_f16_grid rows
 
+let rotary_trig_dimensions value =
+  match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
+  | [ batches; 1; tokens; width ]
+  | [ batches; tokens; 1; width ] ->
+      Some (batches, tokens, width)
+  | _ -> None
+
+let rotary_trig_batches ~batches ~tokens ~width cosine sine =
+  match rotary_trig_dimensions cosine, rotary_trig_dimensions sine with
+  | ( Some (cosine_batches, cosine_tokens, cosine_width),
+      Some (sine_batches, sine_tokens, sine_width) )
+    when (cosine_batches = 1 || cosine_batches = batches)
+         && sine_batches = cosine_batches && cosine_tokens = tokens
+         && sine_tokens = tokens && cosine_width = width
+         && sine_width = width ->
+      Ok cosine_batches
+  | _ -> Error "Metal rotary trigonometric tables are inconsistent"
+
 let rms_norm_kernel_name input_dtype weight_dtype =
   match input_dtype, weight_dtype with
   | Ir.Dtype.Float32, Ir.Dtype.Float16 ->
@@ -2701,19 +2719,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | _ -> Error "Metal RMSNorm-RoPE input must have rank four"
             in
             let* trig_batches =
-              match
-                Tensor_shape.dimensions (Ir.Value.logical_shape cosine),
-                Tensor_shape.dimensions (Ir.Value.logical_shape sine)
-              with
-              | ( [ cosine_batches; 1; cosine_tokens; cosine_width ],
-                  [ sine_batches; 1; sine_tokens; sine_width ] )
-                when (cosine_batches = 1 || cosine_batches = batches)
-                     && sine_batches = cosine_batches
-                     && cosine_tokens = tokens && sine_tokens = tokens
-                     && cosine_width = width && sine_width = width ->
-                  Ok cosine_batches
-              | _ ->
-                  Error "Metal RMSNorm-RoPE trigonometric tables are inconsistent"
+              rotary_trig_batches ~batches ~tokens ~width cosine sine
             in
             let half_dimension = Ir.Rms_rope.half_dimension config in
             let output_shape =
@@ -2725,7 +2731,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               Tensor_shape.dimensions (Ir.Value.logical_shape weight) <> [ width ]
               || output_shape <> [ batches; heads; tokens; width ]
               || Ir.Value.dtype input <> Ir.Dtype.Float16
-              || Ir.Value.dtype weight <> Ir.Dtype.Float16
+              || (Ir.Value.dtype weight <> Ir.Dtype.Float16
+                 && Ir.Value.dtype weight <> Ir.Dtype.Float32)
               || Ir.Value.dtype cosine <> Ir.Dtype.Float16
               || Ir.Value.dtype sine <> Ir.Dtype.Float16
               || Ir.Value.dtype output <> Ir.Dtype.Float16
@@ -2737,8 +2744,17 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   ~half_dimension ~trig_batches
                   ~epsilon:(Ir.Rms_rope.epsilon config)
               in
+              let* kernel_name =
+                match Ir.Value.dtype weight with
+                | Ir.Dtype.Float16 -> Ok "llmopt_rms_rope_f16_simd_h64"
+                | Ir.Dtype.Float32 -> Ok "llmopt_rms_rope_f16_wf32_simd"
+                | dtype ->
+                    Error
+                      ("unsupported Metal RMSNorm-RoPE weight dtype: "
+                      ^ Ir.Dtype.to_string dtype)
+              in
               let* entry =
-                kernel_entry ~name:"llmopt_rms_rope_f16_simd_h64" runtime
+                kernel_entry ~name:kernel_name runtime
                   ~operation:Kernel_abi.Operation.Rms_rope
                   ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
               in
@@ -2769,20 +2785,30 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | _ -> Error "Metal RMSNorm-RoPE-QK Q input must have rank four"
             in
             let* trig_batches =
-              match
-                Tensor_shape.dimensions (Ir.Value.logical_shape cosine),
-                Tensor_shape.dimensions (Ir.Value.logical_shape sine)
-              with
-              | ( [ cosine_batches; 1; cosine_tokens; cosine_width ],
-                  [ sine_batches; 1; sine_tokens; sine_width ] )
-                when (cosine_batches = 1 || cosine_batches = batches)
-                     && sine_batches = cosine_batches
-                     && cosine_tokens = tokens && sine_tokens = tokens
-                     && cosine_width = width && sine_width = width ->
-                  Ok cosine_batches
-              | _ ->
-                  Error "Metal RMSNorm-RoPE-QK trigonometric tables are inconsistent"
+              rotary_trig_batches ~batches ~tokens ~width cosine sine
             in
+            if
+              Tensor_shape.dimensions (Ir.Value.logical_shape k_input)
+              <> [ batches; tokens; k_heads; width ]
+              || Tensor_shape.dimensions (Ir.Value.logical_shape q_weight)
+                 <> [ width ]
+              || Tensor_shape.dimensions (Ir.Value.logical_shape k_weight)
+                 <> [ width ]
+              || Tensor_shape.dimensions (Ir.Value.logical_shape q_output)
+                 <> [ batches; q_heads; tokens; width ]
+              || Tensor_shape.dimensions (Ir.Value.logical_shape k_output)
+                 <> [ batches; k_heads; tokens; width ]
+              || Ir.Value.dtype q_input <> Ir.Dtype.Float16
+              || Ir.Value.dtype k_input <> Ir.Dtype.Float16
+              || Ir.Value.dtype q_weight <> Ir.Value.dtype k_weight
+              || (Ir.Value.dtype q_weight <> Ir.Dtype.Float16
+                 && Ir.Value.dtype q_weight <> Ir.Dtype.Float32)
+              || Ir.Value.dtype cosine <> Ir.Dtype.Float16
+              || Ir.Value.dtype sine <> Ir.Dtype.Float16
+              || Ir.Value.dtype q_output <> Ir.Dtype.Float16
+              || Ir.Value.dtype k_output <> Ir.Dtype.Float16
+            then Error "Metal RMSNorm-RoPE-QK tensor metadata is inconsistent"
+            else
             let* buffers =
               find_values state [ q_input; q_weight; k_input; k_weight; cosine; sine ]
             in
@@ -2790,8 +2816,17 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               Parameters.rms_rope_qk ~batches ~tokens ~q_heads ~k_heads ~width
                 ~half_dimension ~trig_batches ~epsilon
             in
+            let* kernel_name =
+              match Ir.Value.dtype q_weight with
+              | Ir.Dtype.Float16 -> Ok "llmopt_rms_rope_qk_f16_simd_h64"
+              | Ir.Dtype.Float32 -> Ok "llmopt_rms_rope_qk_f16_wf32_simd"
+              | dtype ->
+                  Error
+                    ("unsupported Metal RMSNorm-RoPE-QK weight dtype: "
+                    ^ Ir.Dtype.to_string dtype)
+            in
             let* entry =
-              kernel_entry ~name:"llmopt_rms_rope_qk_f16_simd_h64" runtime
+              kernel_entry ~name:kernel_name runtime
                 ~operation:Kernel_abi.Operation.Rms_rope_qk
                 ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
             in

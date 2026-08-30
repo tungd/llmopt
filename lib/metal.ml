@@ -3888,6 +3888,26 @@ let linear_f16_f32_entries =
       ~name:"llmopt_linear_f16_f32" ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let replace_first ~needle ~replacement source =
+  let needle_length = String.length needle in
+  let source_length = String.length source in
+  let rec find offset =
+    if offset + needle_length > source_length then None
+    else if String.sub source offset needle_length = needle then Some offset
+    else find (offset + 1)
+  in
+  match find 0 with
+  | None -> source
+  | Some offset ->
+      String.sub source 0 offset ^ replacement
+      ^ String.sub source (offset + needle_length)
+          (source_length - offset - needle_length)
+
+let rec replace_all ~needle ~replacement source =
+  let replaced = replace_first ~needle ~replacement source in
+  if String.equal replaced source then source
+  else replace_all ~needle ~replacement replaced
+
 let rms_norm_source =
   "\nconstant uint RMS_NORM_SIMD_WIDTH = 32;\n"
   ^ "constant uint RMS_NORM_ROWS_PER_THREADGROUP = 8;\n\n"
@@ -4065,7 +4085,7 @@ let l2_norm_entries =
       ~operation:Kernel_abi.Operation.Rms_norm
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
-let rms_rope_source =
+let rms_rope_f16_weight_source =
   "\nconstant uint RMS_ROPE_SIMD_WIDTH = 32;\n"
   ^ "constant uint RMS_ROPE_ROWS_PER_THREADGROUP = 8;\n\n"
   ^ "struct RmsRopeParams {\n"
@@ -4116,13 +4136,33 @@ let rms_rope_source =
   ^ "  }\n"
   ^ "}\n"
 
+let rms_rope_f32_weight_source =
+  rms_rope_f16_weight_source
+  |> replace_all ~needle:"RMS_ROPE_SIMD_WIDTH"
+       ~replacement:"RMS_ROPE_WF32_SIMD_WIDTH"
+  |> replace_all ~needle:"RMS_ROPE_ROWS_PER_THREADGROUP"
+       ~replacement:"RMS_ROPE_WF32_ROWS_PER_THREADGROUP"
+  |> replace_all ~needle:"RmsRopeParams"
+       ~replacement:"RmsRopeF32WeightParams"
+  |> replace_first ~needle:"llmopt_rms_rope_f16_simd_h64"
+       ~replacement:"llmopt_rms_rope_f16_wf32_simd"
+  |> replace_first ~needle:"device const half* weight [[buffer(1)]]"
+       ~replacement:"device const float* weight [[buffer(1)]]"
+
+let rms_rope_source =
+  rms_rope_f16_weight_source ^ rms_rope_f32_weight_source
+
 let rms_rope_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_rms_rope_f16_simd_h64"
       ~operation:Kernel_abi.Operation.Rms_rope
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_rope
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
-let rms_rope_qk_source =
+let rms_rope_qk_f16_weight_source =
   "\nconstant uint RMS_ROPE_QK_SIMD_WIDTH = 32;\n"
   ^ "constant uint RMS_ROPE_QK_ROWS_PER_THREADGROUP = 8;\n\n"
   ^ "struct RmsRopeQKParams {\n"
@@ -4180,9 +4220,33 @@ let rms_rope_qk_source =
   ^ "  }\n"
   ^ "}\n"
 
+let rms_rope_qk_f32_weight_source =
+  rms_rope_qk_f16_weight_source
+  |> replace_all ~needle:"RMS_ROPE_QK_SIMD_WIDTH"
+       ~replacement:"RMS_ROPE_QK_WF32_SIMD_WIDTH"
+  |> replace_all ~needle:"RMS_ROPE_QK_ROWS_PER_THREADGROUP"
+       ~replacement:"RMS_ROPE_QK_WF32_ROWS_PER_THREADGROUP"
+  |> replace_all ~needle:"RmsRopeQKParams"
+       ~replacement:"RmsRopeQKF32WeightParams"
+  |> replace_first ~needle:"llmopt_rms_rope_qk_f16_simd_h64"
+       ~replacement:"llmopt_rms_rope_qk_f16_wf32_simd"
+  |> replace_first ~needle:"device const half* q_weight [[buffer(1)]]"
+       ~replacement:"device const float* q_weight [[buffer(1)]]"
+  |> replace_first ~needle:"device const half* k_weight [[buffer(3)]]"
+       ~replacement:"device const float* k_weight [[buffer(3)]]"
+  |> replace_first ~needle:"device const half* weight ="
+       ~replacement:"device const float* weight ="
+
+let rms_rope_qk_source =
+  rms_rope_qk_f16_weight_source ^ rms_rope_qk_f32_weight_source
+
 let rms_rope_qk_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_rms_rope_qk_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Rms_rope_qk
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_qk_f16_wf32_simd"
       ~operation:Kernel_abi.Operation.Rms_rope_qk
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
@@ -4291,25 +4355,6 @@ let short_conv_step_entries =
       ~name:"llmopt_short_conv_step_f16"
       ~operation:Kernel_abi.Operation.Short_conv_step
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
-
-let replace_first ~needle ~replacement source =
-  let needle_length = String.length needle in
-  let source_length = String.length source in
-  let rec find offset =
-    if offset + needle_length > source_length then None
-    else if String.sub source offset needle_length = needle then Some offset
-    else find (offset + 1)
-  in
-  match find 0 with
-  | None -> source
-  | Some offset ->
-      String.sub source 0 offset ^ replacement
-      ^ String.sub source (offset + needle_length) (source_length - offset - needle_length)
-
-let rec replace_all ~needle ~replacement source =
-  let replaced = replace_first ~needle ~replacement source in
-  if String.equal replaced source then source
-  else replace_all ~needle ~replacement replaced
 
 let short_conv_step_fused_source =
   replace_first ~needle:"llmopt_short_conv_step_f16"

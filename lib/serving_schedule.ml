@@ -184,6 +184,14 @@ let same_value_metadata left right =
        (Ir.Value.logical_shape left)
        (Ir.Value.logical_shape right)
 
+let rotary_trig_shape_matches ~batches ~tokens ~width value =
+  match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
+  | [ trig_batches; 1; trig_tokens; trig_width ]
+  | [ trig_batches; trig_tokens; 1; trig_width ] ->
+      (trig_batches = 1 || trig_batches = batches)
+      && trig_tokens = tokens && trig_width = width
+  | _ -> false
+
 let q8_residual_metadata_matches inputs output =
   match List.rev inputs with
   | residual :: _ -> same_value_metadata residual output
@@ -299,30 +307,48 @@ let validate_command seen_values command =
                    "schedule node %d LM-head argmax metadata is inconsistent"
                    command.Command.node_id)
         | ( Ir.Op.Rms_rope_qk
-              { q_heads; k_heads; width; half_dimension = _; epsilon; extra_outputs },
-            [ _q_input; q_weight; _k_input; k_weight; _cosine; _sine ],
+              { q_heads; k_heads; width; half_dimension; epsilon; extra_outputs },
+            [ q_input; q_weight; k_input; k_weight; cosine; sine ],
             Some q_output ) ->
             let dimensions value = Tensor_shape.dimensions (Ir.Value.logical_shape value) in
-            let q_dims = dimensions q_output in
-            let q_matches =
-              match q_dims with
-              | [ _; h; _; w ] | [ _; _; h; w ] -> h = q_heads && w = width
+            let input_matches =
+              match dimensions q_input, dimensions k_input with
+              | ( [ batches; tokens; actual_q_heads; input_width ],
+                  [ k_batches; k_tokens; actual_k_heads; k_width ] ) ->
+                  batches = k_batches && tokens = k_tokens
+                  && actual_q_heads = q_heads && actual_k_heads = k_heads
+                  && input_width = width && k_width = width
+                  && rotary_trig_shape_matches ~batches ~tokens ~width cosine
+                  && rotary_trig_shape_matches ~batches ~tokens ~width sine
               | _ -> false
             in
-            let secondary_matches =
-              match extra_outputs with
-              | [ k_output ] ->
-                  (match dimensions k_output with
-                  | [ _; h; _; w ] | [ _; _; h; w ] -> h = k_heads && w = width
-                  | _ -> false)
+            let output_matches =
+              match dimensions q_input, dimensions q_output, extra_outputs with
+              | ( [ batches; tokens; _; _ ],
+                  [ q_batches; actual_q_heads; q_tokens; q_width ],
+                  [ k_output ] ) ->
+                  q_batches = batches && q_tokens = tokens
+                  && actual_q_heads = q_heads && q_width = width
+                  && dimensions k_output = [ batches; k_heads; tokens; width ]
               | _ -> false
             in
             if
               Float.is_finite epsilon && epsilon > 0.0
+              && width = 2 * half_dimension
               && dimensions q_weight = [ width ]
               && dimensions k_weight = [ width ]
-              && q_matches
-              && secondary_matches
+              && input_matches && output_matches
+              && Ir.Value.dtype q_input = Ir.Dtype.Float16
+              && Ir.Value.dtype k_input = Ir.Dtype.Float16
+              && Ir.Value.dtype q_weight = Ir.Value.dtype k_weight
+              && (Ir.Value.dtype q_weight = Ir.Dtype.Float16
+                 || Ir.Value.dtype q_weight = Ir.Dtype.Float32)
+              && Ir.Value.dtype cosine = Ir.Dtype.Float16
+              && Ir.Value.dtype sine = Ir.Dtype.Float16
+              && Ir.Value.dtype q_output = Ir.Dtype.Float16
+              && List.for_all
+                   (fun output -> Ir.Value.dtype output = Ir.Dtype.Float16)
+                   extra_outputs
               && fresh_outputs seen_values (q_output :: extra_outputs)
             then Ok ()
             else
@@ -626,21 +652,15 @@ let validate_command seen_values command =
               match
                 Tensor_shape.dimensions (Ir.Value.logical_shape input),
                 Tensor_shape.dimensions (Ir.Value.logical_shape weight),
-                Tensor_shape.dimensions (Ir.Value.logical_shape cosine),
-                Tensor_shape.dimensions (Ir.Value.logical_shape sine),
                 Tensor_shape.dimensions (Ir.Value.logical_shape output)
               with
               | ( [ batches; tokens; heads; width ],
                   [ weight_width ],
-                  [ cosine_batches; 1; cosine_tokens; cosine_width ],
-                  [ sine_batches; 1; sine_tokens; sine_width ],
                   [ output_batches; output_heads; output_tokens; output_width ] ) ->
                   width = 2 * Ir.Rms_rope.half_dimension config
                   && weight_width = width
-                  && (cosine_batches = 1 || cosine_batches = batches)
-                  && sine_batches = cosine_batches
-                  && cosine_tokens = tokens && sine_tokens = tokens
-                  && cosine_width = width && sine_width = width
+                  && rotary_trig_shape_matches ~batches ~tokens ~width cosine
+                  && rotary_trig_shape_matches ~batches ~tokens ~width sine
                   && output_batches = batches && output_heads = heads
                   && output_tokens = tokens && output_width = width
               | _ -> false
@@ -648,7 +668,8 @@ let validate_command seen_values command =
             if
               metadata_matches
               && Ir.Value.dtype input = Ir.Dtype.Float16
-              && Ir.Value.dtype weight = Ir.Dtype.Float16
+              && (Ir.Value.dtype weight = Ir.Dtype.Float16
+                 || Ir.Value.dtype weight = Ir.Dtype.Float32)
               && Ir.Value.dtype cosine = Ir.Dtype.Float16
               && Ir.Value.dtype sine = Ir.Dtype.Float16
               && Ir.Value.dtype output = Ir.Dtype.Float16
