@@ -827,10 +827,16 @@ let gated_delta state query_value key_value value_value gate_value beta_value
   let value = find state value_value in
   let gate = find state gate_value in
   let beta = find state beta_value in
-  let batch, heads, tokens, width =
-    match Tensor_shape.dimensions (Ir.Value.logical_shape query_value) with
-    | [ batch; heads; tokens; width ] -> batch, heads, tokens, width
-    | _ -> failf "CPU gated-delta query must have shape [batch,heads,tokens,width]"
+  let batch, heads, tokens, width, token_major =
+    match
+      Ir.Value.dtype query_value,
+      Tensor_shape.dimensions (Ir.Value.logical_shape query_value)
+    with
+    | Ir.Dtype.Float32, [ batch; heads; tokens; width ] ->
+        batch, heads, tokens, width, false
+    | Ir.Dtype.Float16, [ batch; tokens; heads; width ] ->
+        batch, heads, tokens, width, true
+    | _ -> failf "CPU gated-delta query has an unsupported layout or dtype"
   in
   if
     Tensor_shape.dimensions (Ir.Value.logical_shape output_value)
@@ -841,8 +847,14 @@ let gated_delta state query_value key_value value_value gate_value beta_value
     for head = 0 to heads - 1 do
       let matrix = Array.make_matrix width width 0.0 in
       for token = 0 to tokens - 1 do
-        let vector_base = (((batch_index * heads) + head) * tokens + token) * width in
-        let scalar_index = ((batch_index * heads) + head) * tokens + token in
+        let vector_base, scalar_index =
+          if token_major then
+            ( (((batch_index * tokens) + token) * heads + head) * width,
+              ((batch_index * tokens) + token) * heads + head )
+          else
+            ( (((batch_index * heads) + head) * tokens + token) * width,
+              ((batch_index * heads) + head) * tokens + token )
+        in
         let decay = exp (Tensor.get_linear gate scalar_index) in
         let beta_value = Tensor.get_linear beta scalar_index in
         for row = 0 to width - 1 do

@@ -26,6 +26,12 @@ type matched = {
   removed : Node_id_set.t;
 }
 
+type layout_matched = {
+  gated_node : Ir.node;
+  inputs : Ir.Value.t list;
+  layout_removed : Node_id_set.t;
+}
+
 let producer_map nodes =
   List.fold_left
     (fun producers node ->
@@ -83,6 +89,118 @@ let movement_transpose_4_3 node input =
 
 let producer_of producers value =
   Value_id_map.find_opt (Ir.Value.id value) producers
+
+let sole_user_is users value expected =
+  match users_of users value with
+  | [ actual ] -> Ir.node_id actual = Ir.node_id expected
+  | _ -> false
+
+let token_major_shape = function
+  | [ batch; heads; tokens; width ] -> Some [ batch; tokens; heads; width ]
+  | [ batch; heads; tokens ] -> Some [ batch; tokens; heads ]
+  | _ -> None
+
+let strip_token_major_input producers users consumer ~source_dtype input =
+  let* cast = producer_of producers input in
+  let* contiguous_value =
+    match Ir.node_op cast, Ir.node_inputs cast with
+    | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32),
+      [ contiguous_value ]
+      when Ir.Value.dtype input = Ir.Dtype.Float32
+           && sole_user_is users input consumer ->
+        Some contiguous_value
+    | _ -> None
+  in
+  let* contiguous = producer_of producers contiguous_value in
+  let* transposed_value =
+    match Ir.node_op contiguous, Ir.node_inputs contiguous with
+    | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous),
+      [ transposed_value ]
+      when sole_user_is users contiguous_value cast ->
+        Some transposed_value
+    | _ -> None
+  in
+  let* transpose = producer_of producers transposed_value in
+  let* source =
+    match Ir.node_op transpose, Ir.node_inputs transpose with
+    | ( Ir.Op.Primitive
+          (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })),
+        [ source ] )
+      when sole_user_is users transposed_value contiguous ->
+        Some source
+    | _ -> None
+  in
+  let* expected_source_shape = token_major_shape (dimensions input) in
+  if
+    Ir.Value.dtype source <> source_dtype
+    || Ir.Value.dtype transposed_value <> source_dtype
+    || Ir.Value.dtype contiguous_value <> source_dtype
+    || dimensions source <> expected_source_shape
+    || dimensions transposed_value <> dimensions input
+    || dimensions contiguous_value <> dimensions input
+  then None
+  else
+    Some
+      ( source,
+        [ cast; contiguous; transpose ]
+        |> List.fold_left
+             (fun removed node -> Node_id_set.add (Ir.node_id node) removed)
+             Node_id_set.empty )
+
+let match_token_major_layout producers users node =
+  let* query, key, value, gate, beta, output =
+    match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+    | Ir.Op.Primitive Ir.Primitive.Gated_delta,
+      [ query; key; value; gate; beta ], Some output ->
+        Some (query, key, value, gate, beta, output)
+    | _ -> None
+  in
+  let* batch, heads, tokens, width =
+    match dimensions query, dimensions output with
+    | [ batch; heads; tokens; width ], [ output_batch; output_tokens; output_heads; output_width ]
+      when batch = output_batch && heads = output_heads
+           && tokens = output_tokens && width = output_width ->
+        Some (batch, heads, tokens, width)
+    | _ -> None
+  in
+  if
+    dimensions key <> [ batch; heads; tokens; width ]
+    || dimensions value <> [ batch; heads; tokens; width ]
+    || dimensions gate <> [ batch; heads; tokens ]
+    || dimensions beta <> [ batch; heads; tokens ]
+  then None
+  else
+    let* query, query_removed =
+      strip_token_major_input producers users node ~source_dtype:Ir.Dtype.Float16
+        query
+    in
+    let* key, key_removed =
+      strip_token_major_input producers users node ~source_dtype:Ir.Dtype.Float16
+        key
+    in
+    let* value, value_removed =
+      strip_token_major_input producers users node ~source_dtype:Ir.Dtype.Float16
+        value
+    in
+    let* gate, gate_removed =
+      strip_token_major_input producers users node ~source_dtype:Ir.Dtype.Float32
+        gate
+    in
+    let* beta, beta_removed =
+      strip_token_major_input producers users node ~source_dtype:Ir.Dtype.Float16
+        beta
+    in
+    let layout_removed =
+      [ query_removed; key_removed; value_removed; gate_removed; beta_removed ]
+      |> List.fold_left Node_id_set.union Node_id_set.empty
+    in
+    if Node_id_set.cardinal layout_removed <> 15 then None
+    else
+      Some
+        { gated_node = node;
+          inputs = [ query; key; value; gate; beta ];
+          layout_removed }
 
 let matches_output_suffix producers final_input =
   let matched =
@@ -303,6 +421,33 @@ let live_nodes graph =
   let live = visit roots output_nodes in
   List.filter (fun node -> Node_id_set.mem (Ir.node_id node) live) nodes
 
+let rewrite_token_major_layout graph =
+  let nodes = Ir.Graph.nodes graph in
+  let producers = producer_map nodes in
+  let users = user_map nodes in
+  let removed, replacements =
+    List.fold_left
+      (fun (removed, replacements) node ->
+        match match_token_major_layout producers users node with
+        | Some matched
+          when Node_id_set.disjoint removed matched.layout_removed ->
+            ( Node_id_set.union removed matched.layout_removed,
+              Node_id_map.add (Ir.node_id node) matched replacements )
+        | _ -> removed, replacements)
+      (Node_id_set.empty, Node_id_map.empty) nodes
+  in
+  nodes
+  |> List.filter_map (fun node ->
+         match Node_id_map.find_opt (Ir.node_id node) replacements with
+         | Some matched ->
+             Some
+               (Ir.node_replace matched.gated_node
+                  ~op:(Ir.Op.Primitive Ir.Primitive.Gated_delta)
+                  ~inputs:matched.inputs)
+         | None when Node_id_set.mem (Ir.node_id node) removed -> None
+         | None -> Some node)
+  |> Ir.Graph.with_nodes graph
+
 let run graph =
   let nodes = live_nodes graph in
   let producers = producer_map nodes in
@@ -330,6 +475,6 @@ let run graph =
         | None -> Some node)
       nodes
   in
-  Ir.Graph.with_nodes graph rewritten
+  Ir.Graph.with_nodes graph rewritten |> rewrite_token_major_layout
 
 let pass = Pass.create ~name ~description ~run

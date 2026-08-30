@@ -534,8 +534,8 @@ let validate_command seen_values command =
             Some output ) ->
             let vector_shape = Tensor_shape.dimensions (Ir.Value.logical_shape query) in
             let shape_matches =
-              match vector_shape with
-              | [ batch; heads; tokens; width ] ->
+              match Ir.Value.dtype query, vector_shape with
+              | Ir.Dtype.Float32, [ batch; heads; tokens; width ] ->
                   width > 0 && width mod 32 = 0
                   && List.for_all
                        (fun input ->
@@ -551,11 +551,26 @@ let validate_command seen_values command =
                        [ gate; beta ]
                   && Tensor_shape.dimensions (Ir.Value.logical_shape output)
                      = [ batch; tokens; heads; width ]
+              | Ir.Dtype.Float16, [ batch; tokens; heads; width ] ->
+                  width > 0 && width mod 32 = 0
+                  && List.for_all
+                       (fun input ->
+                         Tensor_shape.dimensions (Ir.Value.logical_shape input)
+                         = vector_shape
+                         && Ir.Value.dtype input = Ir.Dtype.Float16)
+                       [ key; value ]
+                  && Tensor_shape.dimensions (Ir.Value.logical_shape gate)
+                     = [ batch; tokens; heads ]
+                  && Ir.Value.dtype gate = Ir.Dtype.Float32
+                  && Tensor_shape.dimensions (Ir.Value.logical_shape beta)
+                     = [ batch; tokens; heads ]
+                  && Ir.Value.dtype beta = Ir.Dtype.Float16
+                  && Tensor_shape.dimensions (Ir.Value.logical_shape output)
+                     = [ batch; tokens; heads; width ]
               | _ -> false
             in
             if
               shape_matches
-              && Ir.Value.dtype query = Ir.Dtype.Float32
               && Ir.Value.dtype output = Ir.Dtype.Float16
             then Ok ()
             else

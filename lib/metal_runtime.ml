@@ -2435,14 +2435,47 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
         | ( Ir.Op.Primitive Ir.Primitive.Gated_delta,
             [ query; key; value; gate; beta ],
             Some output ) ->
-            let* batch_size, heads, tokens, width =
-              match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
-              | [ batch_size; heads; tokens; width ]
-                when width > 0 && width mod 32 = 0 ->
-                  Ok (batch_size, heads, tokens, width)
+            let shape value =
+              Tensor_shape.dimensions (Ir.Value.logical_shape value)
+            in
+            let* batch_size, heads, tokens, width, name, input_dtype =
+              match Ir.Value.dtype query, shape query, shape output with
+              | Ir.Dtype.Float32,
+                [ batch_size; heads; tokens; width ],
+                [ output_batch; output_tokens; output_heads; output_width ]
+                when width > 0 && width mod 32 = 0
+                     && output_batch = batch_size && output_tokens = tokens
+                     && output_heads = heads && output_width = width
+                     && Ir.Value.dtype key = Ir.Dtype.Float32
+                     && Ir.Value.dtype value = Ir.Dtype.Float32
+                     && Ir.Value.dtype gate = Ir.Dtype.Float32
+                     && Ir.Value.dtype beta = Ir.Dtype.Float32
+                     && shape key = shape query && shape value = shape query
+                     && shape gate = [ batch_size; heads; tokens ]
+                     && shape beta = [ batch_size; heads; tokens ] ->
+                  Ok
+                    ( batch_size, heads, tokens, width,
+                      Printf.sprintf "llmopt_gated_delta_f32_d%d" width,
+                      Ir.Dtype.Float32 )
+              | Ir.Dtype.Float16,
+                [ batch_size; tokens; heads; width ],
+                [ output_batch; output_tokens; output_heads; output_width ]
+                when width > 0 && width mod 32 = 0
+                     && output_batch = batch_size && output_tokens = tokens
+                     && output_heads = heads && output_width = width
+                     && Ir.Value.dtype key = Ir.Dtype.Float16
+                     && Ir.Value.dtype value = Ir.Dtype.Float16
+                     && Ir.Value.dtype gate = Ir.Dtype.Float32
+                     && Ir.Value.dtype beta = Ir.Dtype.Float16
+                     && shape key = shape query && shape value = shape query
+                     && shape gate = [ batch_size; tokens; heads ]
+                     && shape beta = [ batch_size; tokens; heads ] ->
+                  Ok
+                    ( batch_size, heads, tokens, width,
+                      Printf.sprintf "llmopt_gated_delta_tm_f16_d%d" width,
+                      Ir.Dtype.Float16 )
               | _ ->
-                  Error
-                    "Metal gated-delta query must have shape [batch,heads,tokens,width] with SIMD-aligned width"
+                  Error "unsupported Metal gated-delta layout or dtype contract"
             in
             let* buffers = find_values state [ query; key; value; gate; beta ] in
             let* parameters =
@@ -2451,10 +2484,10 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* grid_x = gated_delta_grid (batch_size * heads * width) in
             dispatched
               (dispatch_output
-                 ~name:(Printf.sprintf "llmopt_gated_delta_f32_d%d" width)
+                 ~name
                  runtime state output
                  ~operation:Kernel_abi.Operation.Gated_delta
-                 ~input_dtype:Ir.Dtype.Float32 ~buffers ~parameters
+                 ~input_dtype ~buffers ~parameters
                  ~grid:(grid_x, 1, 1))
         | Ir.Op.Primitive (Ir.Primitive.Reduce reduction), [ input ], Some output ->
             let* name, axis = reduction_kernel reduction input output in

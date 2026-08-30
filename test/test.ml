@@ -1380,6 +1380,81 @@ let () =
     (contains_substring (Metal.Program.source gated_program)
        "kernel void llmopt_gated_delta_f32_d32")
     "Metal lowering specializes gated-delta from captured head width";
+  let token_major_graph = Ir.Graph.create () in
+  let token_major_input name shape dtype =
+    tensor_input token_major_graph ~name ~source:Ir.Input_source.Runtime ~shape
+      ~dtype
+  in
+  let token_major_append dtype op inputs shape =
+    let output =
+      Ir.Graph.fresh_tensor_value token_major_graph
+        ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+    in
+    Ir.Graph.append token_major_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let preprocess input transposed_shape =
+    let transposed =
+      token_major_append (Ir.Value.dtype input)
+        (Ir.Op.Primitive
+           (Ir.Primitive.Movement
+              (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+        [ input ] transposed_shape
+    in
+    let contiguous =
+      token_major_append (Ir.Value.dtype input)
+        (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Contiguous))
+        [ transposed ] transposed_shape
+    in
+    token_major_append Ir.Dtype.Float32
+      (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+      [ contiguous ] transposed_shape
+  in
+  let token_query =
+    token_major_input "token_query" [ 1; 3; 2; 32 ] Ir.Dtype.Float16
+  in
+  let token_key =
+    token_major_input "token_key" [ 1; 3; 2; 32 ] Ir.Dtype.Float16
+  in
+  let token_value =
+    token_major_input "token_value" [ 1; 3; 2; 32 ] Ir.Dtype.Float16
+  in
+  let token_gate =
+    token_major_input "token_gate" [ 1; 3; 2 ] Ir.Dtype.Float32
+  in
+  let token_beta =
+    token_major_input "token_beta" [ 1; 3; 2 ] Ir.Dtype.Float16
+  in
+  let token_major_output =
+    token_major_append Ir.Dtype.Float16
+      (Ir.Op.Primitive Ir.Primitive.Gated_delta)
+      [ preprocess token_query [ 1; 2; 3; 32 ];
+        preprocess token_key [ 1; 2; 3; 32 ];
+        preprocess token_value [ 1; 2; 3; 32 ];
+        preprocess token_gate [ 1; 2; 3 ];
+        preprocess token_beta [ 1; 2; 3 ] ]
+      [ 1; 3; 2; 32 ]
+  in
+  Ir.Graph.add_output token_major_graph ~name:"token_major"
+    token_major_output;
+  let token_major_fused = Passes.fuse_gated_delta token_major_graph in
+  expect
+    (Ir.Graph.nodes token_major_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Primitive Ir.Primitive.Gated_delta, inputs ->
+               List.for_all2 Ir.Value.equal inputs
+                 [ token_query; token_key; token_value; token_gate; token_beta ]
+           | _ -> false))
+    "gated-delta absorbs exclusive token-major transpose and cast inputs";
+  expect
+    (Ir.Graph.nodes token_major_fused |> List.length = 7)
+    "gated-delta token-major absorption removes all fifteen preprocessing nodes";
+  let token_major_program = Metal.lower token_major_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source token_major_program)
+       "kernel void llmopt_gated_delta_tm_f16_d32")
+    "Metal lowering selects token-major mixed-dtype gated-delta from captured layout";
   let invalid_scan_output =
     Ir.Value.make_tensor ~id:50004
       ~shape:(Tensor_shape.of_ints_exn [ 1; 3; 5 ]) ~dtype:Ir.Dtype.Float32

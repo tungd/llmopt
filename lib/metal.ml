@@ -6278,11 +6278,35 @@ let triangular_recurrence_entries =
       ~operation:Kernel_abi.Operation.Triangular_recurrence
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
 
-let gated_delta_kernel_name width =
-  Printf.sprintf "llmopt_gated_delta_f32_d%d" width
+type gated_delta_tactic =
+  | Gated_delta_head_major_f32 of int
+  | Gated_delta_token_major_f16 of int
 
-let gated_delta_source width =
+let gated_delta_width = function
+  | Gated_delta_head_major_f32 width
+  | Gated_delta_token_major_f16 width ->
+      width
+
+let gated_delta_kernel_name = function
+  | Gated_delta_head_major_f32 width ->
+      Printf.sprintf "llmopt_gated_delta_f32_d%d" width
+  | Gated_delta_token_major_f16 width ->
+      Printf.sprintf "llmopt_gated_delta_tm_f16_d%d" width
+
+let gated_delta_source tactic =
+  let width = gated_delta_width tactic in
   let segments = width / 32 in
+  let vector_type, beta_type, vector_base, scalar_index =
+    match tactic with
+    | Gated_delta_head_major_f32 _ ->
+        ( "float", "float",
+          "((batch * params.heads + head) * params.tokens + token) * params.width",
+          "(batch * params.heads + head) * params.tokens + token" )
+    | Gated_delta_token_major_f16 _ ->
+        ( "half", "half",
+          "((batch * params.tokens + token) * params.heads + head) * params.width",
+          "(batch * params.tokens + token) * params.heads + head" )
+  in
   Printf.sprintf
     {|
 struct GatedDeltaParams {
@@ -6290,11 +6314,11 @@ struct GatedDeltaParams {
 };
 
 kernel void %s(
-    device const float* query [[buffer(0)]],
-    device const float* key [[buffer(1)]],
-    device const float* value [[buffer(2)]],
+    device const %s* query [[buffer(0)]],
+    device const %s* key [[buffer(1)]],
+    device const %s* value [[buffer(2)]],
     device const float* gate [[buffer(3)]],
-    device const float* beta [[buffer(4)]],
+    device const %s* beta [[buffer(4)]],
     device half* output [[buffer(5)]],
     constant GatedDeltaParams& params [[buffer(6)]],
     uint lane [[thread_index_in_simdgroup]],
@@ -6311,24 +6335,23 @@ kernel void %s(
   for (uint segment = 0; segment < %d; ++segment) state[segment] = 0.0f;
   const float scale = rsqrt(float(params.width));
   for (uint token = 0; token < params.tokens; ++token) {
-    const uint vector_base = ((batch * params.heads + head) * params.tokens + token)
-        * params.width;
-    const uint scalar_index = (batch * params.heads + head) * params.tokens + token;
-    const float decay = exp(gate[scalar_index]);
+    const uint vector_base = %s;
+    const uint scalar_index = %s;
+    const float decay = exp(float(gate[scalar_index]));
     float state_dot_key = 0.0f;
     for (uint segment = 0; segment < %d; ++segment) {
       const uint column = segment * 32 + lane;
       state[segment] *= decay;
-      state_dot_key += state[segment] * key[vector_base + column];
+      state_dot_key += state[segment] * float(key[vector_base + column]);
     }
     state_dot_key = simd_sum(state_dot_key);
-    const float delta = (value[vector_base + row] - state_dot_key)
-        * beta[scalar_index];
+    const float delta = (float(value[vector_base + row]) - state_dot_key)
+        * float(beta[scalar_index]);
     float state_dot_query = 0.0f;
     for (uint segment = 0; segment < %d; ++segment) {
       const uint column = segment * 32 + lane;
-      state[segment] += key[vector_base + column] * delta;
-      state_dot_query += state[segment] * query[vector_base + column];
+      state[segment] += float(key[vector_base + column]) * delta;
+      state_dot_query += state[segment] * float(query[vector_base + column]);
     }
     state_dot_query = simd_sum(state_dot_query);
     if (lane == 0) {
@@ -6339,26 +6362,60 @@ kernel void %s(
   }
 }
 |}
-    (gated_delta_kernel_name width) width segments segments segments segments
+    (gated_delta_kernel_name tactic) vector_type vector_type vector_type beta_type
+    width segments segments vector_base scalar_index segments segments
 
-let gated_delta_entry width =
+let gated_delta_entry tactic =
   kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
-    ~name:(gated_delta_kernel_name width)
+    ~name:(gated_delta_kernel_name tactic)
     ~operation:Kernel_abi.Operation.Gated_delta
-    ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16
+    ~input_dtype:
+      (match tactic with
+      | Gated_delta_head_major_f32 _ -> Ir.Dtype.Float32
+      | Gated_delta_token_major_f16 _ -> Ir.Dtype.Float16)
+    ~output_dtype:Ir.Dtype.Float16
 
-let gated_delta_widths graph =
+let gated_delta_tactics graph =
   Ir.Graph.nodes graph
   |> List.filter_map (fun node ->
-         match Ir.node_op node, Ir.node_inputs node with
-         | Ir.Op.Primitive Ir.Primitive.Gated_delta, query :: _ ->
-             (match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
-             | [ _batch; _heads; _tokens; width ]
-               when width > 0 && width mod 32 = 0 ->
-                 Some width
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | Ir.Op.Primitive Ir.Primitive.Gated_delta,
+           [ query; key; value; gate; beta ], Some output ->
+             let shape value =
+               Tensor_shape.dimensions (Ir.Value.logical_shape value)
+             in
+             (match Ir.Value.dtype query, shape query, shape output with
+             | Ir.Dtype.Float32,
+               [ batch; heads; tokens; width ],
+               [ output_batch; output_tokens; output_heads; output_width ]
+               when width > 0 && width mod 32 = 0
+                    && output_batch = batch && output_tokens = tokens
+                    && output_heads = heads && output_width = width
+                    && Ir.Value.dtype key = Ir.Dtype.Float32
+                    && Ir.Value.dtype value = Ir.Dtype.Float32
+                    && Ir.Value.dtype gate = Ir.Dtype.Float32
+                    && Ir.Value.dtype beta = Ir.Dtype.Float32
+                    && shape key = shape query && shape value = shape query
+                    && shape gate = [ batch; heads; tokens ]
+                    && shape beta = [ batch; heads; tokens ] ->
+                 Some (Gated_delta_head_major_f32 width)
+             | Ir.Dtype.Float16,
+               [ batch; tokens; heads; width ],
+               [ output_batch; output_tokens; output_heads; output_width ]
+               when width > 0 && width mod 32 = 0
+                    && output_batch = batch && output_tokens = tokens
+                    && output_heads = heads && output_width = width
+                    && Ir.Value.dtype key = Ir.Dtype.Float16
+                    && Ir.Value.dtype value = Ir.Dtype.Float16
+                    && Ir.Value.dtype gate = Ir.Dtype.Float32
+                    && Ir.Value.dtype beta = Ir.Dtype.Float16
+                    && shape key = shape query && shape value = shape query
+                    && shape gate = [ batch; tokens; heads ]
+                    && shape beta = [ batch; tokens; heads ] ->
+                 Some (Gated_delta_token_major_f16 width)
              | _ -> None)
          | _ -> None)
-  |> List.sort_uniq Int.compare
+  |> List.sort_uniq Stdlib.compare
 
 let has_rms_norm graph =
   Ir.Graph.nodes graph
@@ -6787,11 +6844,11 @@ let lower ?(target = Target_hardware.default) graph =
   let selected_attention_entries = attention_tactic_entries attention_tactics in
   let quant_tactics = quant_linear_tactics ~target graph in
   let selected_quant_entries = quant_tactic_entries quant_tactics in
-  let gated_delta_widths = gated_delta_widths graph in
+  let gated_delta_tactics = gated_delta_tactics graph in
   let gated_delta_source =
-    gated_delta_widths |> List.map gated_delta_source |> String.concat "\n"
+    gated_delta_tactics |> List.map gated_delta_source |> String.concat "\n"
   in
-  let gated_delta_entries = List.map gated_delta_entry gated_delta_widths in
+  let gated_delta_entries = List.map gated_delta_entry gated_delta_tactics in
   let components =
     [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
       ( has_w4a16_qkv_linear graph,
@@ -6845,7 +6902,7 @@ let lower ?(target = Target_hardware.default) graph =
       ( triangular_recurrence,
         triangular_recurrence_source,
         triangular_recurrence_entries );
-      (gated_delta_widths <> [], gated_delta_source, gated_delta_entries);
+      (gated_delta_tactics <> [], gated_delta_source, gated_delta_entries);
       (has_tensor_primitive graph, tensor_primitive_source, tensor_primitive_entries);
       ( has_primitive graph (function Ir.Primitive.Fill _ -> true | _ -> false),
         fill_source,
