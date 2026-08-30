@@ -651,6 +651,116 @@ let () =
   |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
   |> ignore;
 
+  let short_conv_layout_graph = Ir.Graph.create () in
+  let short_conv_input =
+    tensor_input short_conv_layout_graph ~name:"short_conv_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 2; 3; 6 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let short_conv_weight =
+    tensor_input short_conv_layout_graph ~name:"short_conv_weight"
+      ~source:Ir.Input_source.Runtime ~shape:[ 6; 1; 3 ]
+      ~dtype:Ir.Dtype.Float32
+  in
+  let short_conv_fresh shape =
+    Ir.Graph.fresh_tensor_value short_conv_layout_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let short_conv_append op inputs shape =
+    let output = short_conv_fresh shape in
+    Ir.Graph.append short_conv_layout_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let channel_major =
+    short_conv_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+      [ short_conv_input ] [ 2; 6; 3 ]
+  in
+  let convolution =
+    Ir.Short_conv.create ~stride:1 ~padding:2 ~dilation:1 ~groups:6
+    |> expect_ok
+  in
+  let convolved =
+    short_conv_append
+      (Ir.Op.Primitive (Ir.Primitive.Short_conv convolution))
+      [ channel_major; short_conv_weight ] [ 2; 6; 5 ]
+  in
+  let trim_index =
+    let slice start length =
+      Tensor_shape.Index.Slice { start; step = 1; length }
+    in
+    Tensor_shape.Index.of_selectors
+      [ slice 0 2; slice 0 6; slice 1 3 ]
+    |> expect_ok
+  in
+  let trimmed =
+    short_conv_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index trim_index)))
+      [ convolved ] [ 2; 6; 3 ]
+  in
+  let activated =
+    short_conv_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, trimmed))))
+      [ trimmed ] [ 2; 6; 3 ]
+  in
+  let token_major =
+    short_conv_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement
+            (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+      [ activated ] [ 2; 3; 6 ]
+  in
+  Ir.Graph.add_output short_conv_layout_graph ~name:"token_major" token_major;
+  let short_conv_layout_fused =
+    Passes.fuse_short_conv short_conv_layout_graph
+  in
+  expect
+    (Ir.Graph.nodes short_conv_layout_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | ( Ir.Op.Primitive (Ir.Primitive.Short_conv_silu config),
+               [ input; weight ], Some output ) ->
+               Ir.Value.equal input short_conv_input
+               && Ir.Value.equal weight short_conv_weight
+               && Ir.Value.equal output token_major
+               && Ir.Short_conv_silu.output_start config = 1
+           | _ -> false))
+    "short-conv layout fusion follows captured token/channel relations";
+  expect
+    (Ir.Graph.nodes short_conv_layout_fused
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.Short_conv _) -> false
+           | Ir.Op.Primitive
+               (Ir.Primitive.Pointwise
+                 (Ir.Pointwise.Unary (Ir.Pointwise.Silu, _))) -> false
+           | Ir.Op.Primitive (Ir.Primitive.Movement _) -> false
+           | _ -> true))
+    "short-conv layout fusion removes trim, activation, and transposes";
+  let short_conv_layout_schedule =
+    short_conv_layout_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands short_conv_layout_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.Short_conv_silu config) ->
+               Ir.Short_conv_silu.output_start config = 1
+           | _ -> false))
+    "token-major short-conv-SiLU survives schedule serialization";
+  expect
+    (short_conv_layout_fused |> Metal.lower |> expect_ok
+    |> Metal.Program.source
+    |> fun source ->
+    contains_substring source "kernel void llmopt_short_conv_silu_tm_f32")
+    "Metal lowering emits token-major short-conv-SiLU";
+
   [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2", 32;
     Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_n2_l32", 256;
     Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_n1_l32", 1024;

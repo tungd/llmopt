@@ -344,6 +344,22 @@ module Short_conv = struct
       config.stride config.padding config.dilation config.groups
 end
 
+module Short_conv_silu = struct
+  type t = { convolution : Short_conv.t; output_start : int }
+
+  let create ~convolution ~output_start =
+    if output_start < 0 then
+      Error "short-conv-SiLU output start must be non-negative"
+    else Ok { convolution; output_start }
+
+  let convolution config = config.convolution
+  let output_start config = config.output_start
+
+  let to_string config =
+    Printf.sprintf "short-conv-silu-tm(%s,output-start=%d)"
+      (Short_conv.to_string config.convolution) config.output_start
+end
+
 module Attention = struct
   type t = { scale : float; causal : bool }
 
@@ -522,6 +538,7 @@ module Primitive = struct
     | Reduce of Reduction.t
     | Movement of Movement.t
     | Short_conv of Short_conv.t
+    | Short_conv_silu of Short_conv_silu.t
     | Attention of Attention.t
     | Paged_attention_q8 of Paged_attention_q8.t
     | Embedding
@@ -542,7 +559,8 @@ module Primitive = struct
 
   let values = function
     | Pointwise operation -> Pointwise.values operation
-    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _
+    | Cast _ | Reduce _ | Movement _ | Short_conv _ | Short_conv_silu _
+    | Attention _
     | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _
     | Triangular_recurrence _ | Gated_delta | L2_norm _ | Fill _ | Gather2 | Update_slice _
     | Pad_right_zero _ | Triangular _
@@ -554,6 +572,7 @@ module Primitive = struct
     | Reduce reduction -> Reduction.to_string reduction
     | Movement movement -> Movement.to_string movement
     | Short_conv config -> Short_conv.to_string config
+    | Short_conv_silu config -> Short_conv_silu.to_string config
     | Attention config -> Attention.to_string config
     | Paged_attention_q8 config -> Paged_attention_q8.to_string config
     | Embedding -> "embedding"

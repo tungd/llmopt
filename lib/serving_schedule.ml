@@ -604,6 +604,60 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d short-conv metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Short_conv_silu config),
+            [ input; weight ],
+            Some output ) ->
+            let convolution = Ir.Short_conv_silu.convolution config in
+            let shape_matches =
+              match
+                Tensor_shape.dimensions (Ir.Value.logical_shape input),
+                Tensor_shape.dimensions (Ir.Value.logical_shape weight),
+                Tensor_shape.dimensions (Ir.Value.logical_shape output)
+              with
+              | ( [ batches; tokens; channels ],
+                  [ weight_channels; 1; _kernel_width ],
+                  [ output_batches; output_tokens; output_channels ] ) ->
+                  let convolved =
+                    match
+                      Tensor_shape.create [ batches; channels; tokens ]
+                    with
+                    | Error error -> Error error
+                    | Ok channel_major ->
+                        Tensor_shape.depthwise_conv1d channel_major
+                          (Ir.Value.logical_shape weight)
+                          ~stride:(Ir.Short_conv.stride convolution)
+                          ~padding:(Ir.Short_conv.padding convolution)
+                          ~dilation:(Ir.Short_conv.dilation convolution)
+                          ~groups:(Ir.Short_conv.groups convolution)
+                  in
+                  (match convolved with
+                  | Ok convolved ->
+                      (match Tensor_shape.dimensions convolved with
+                      | [ _; _; convolved_tokens ] ->
+                          batches > 0 && tokens > 0 && channels > 0
+                          && weight_channels = channels
+                          && Ir.Short_conv.groups convolution = channels
+                          && output_batches = batches
+                          && output_tokens = tokens
+                          && output_channels = channels
+                          && Ir.Short_conv_silu.output_start config + tokens
+                             <= convolved_tokens
+                      | _ -> false)
+                  | Error _ -> false)
+              | _ -> false
+            in
+            if
+              shape_matches
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && (Ir.Value.dtype weight = Ir.Dtype.Float16
+                 || Ir.Value.dtype weight = Ir.Dtype.Float32)
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d token-major short-conv-SiLU metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive (Ir.Primitive.Attention _),
             [ query; key; value; mask ],
             Some output ) ->
@@ -1349,6 +1403,8 @@ module Sequence = struct
           ~dilation:(Ir.Short_conv.dilation config)
           ~groups:(Ir.Short_conv.groups config)
         |> shape_error
+    | Ir.Primitive.Short_conv_silu _, [ input; _weight ] ->
+        Ok (Ir.Value.logical_shape input)
     | Ir.Primitive.Attention _, [ query; key; value; mask ] ->
         Tensor_shape.scaled_dot_product_attention
           (Ir.Value.logical_shape query) (Ir.Value.logical_shape key)
@@ -2606,6 +2662,14 @@ let write_primitive writer = function
       Binary.Writer.u32 writer (Ir.Short_conv.padding config);
       Binary.Writer.u32 writer (Ir.Short_conv.dilation config);
       Binary.Writer.u32 writer (Ir.Short_conv.groups config)
+  | Ir.Primitive.Short_conv_silu config ->
+      let convolution = Ir.Short_conv_silu.convolution config in
+      Binary.Writer.u8 writer 23;
+      Binary.Writer.u32 writer (Ir.Short_conv.stride convolution);
+      Binary.Writer.u32 writer (Ir.Short_conv.padding convolution);
+      Binary.Writer.u32 writer (Ir.Short_conv.dilation convolution);
+      Binary.Writer.u32 writer (Ir.Short_conv.groups convolution);
+      Binary.Writer.u32 writer (Ir.Short_conv_silu.output_start config)
   | Ir.Primitive.Attention config ->
       Binary.Writer.u8 writer 5;
       Binary.Writer.float64 writer (Ir.Attention.scale config);
@@ -2785,6 +2849,17 @@ let read_primitive values reader =
       if Float.is_finite epsilon && epsilon >= 0.0 then
         Ok (Ir.Primitive.L2_norm { epsilon })
       else Error "invalid L2 normalization epsilon"
+  | 23 ->
+      let* stride = Binary.Reader.u32 reader in
+      let* padding = Binary.Reader.u32 reader in
+      let* dilation = Binary.Reader.u32 reader in
+      let* groups = Binary.Reader.u32 reader in
+      let* output_start = Binary.Reader.u32 reader in
+      let* convolution =
+        Ir.Short_conv.create ~stride ~padding ~dilation ~groups
+      in
+      Ir.Short_conv_silu.create ~convolution ~output_start
+      |> Result.map (fun config -> Ir.Primitive.Short_conv_silu config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function

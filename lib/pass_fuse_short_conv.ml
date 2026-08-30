@@ -1,7 +1,7 @@
 let name = "fuse_short_conv"
 let description =
-  "Fuse composite short-convolution decode step and prefill subgraphs into \
-   Short_conv_step / Short_conv_prefill"
+  "Fuse captured short-convolution layout, activation, decode-step, and \
+   prefill subgraphs into semantic operations"
 
 let value_is left right = Ir.Value.equal left right
 
@@ -35,6 +35,24 @@ let producer_map nodes =
 
 let producer producers value =
   Value_id_map.find_opt (Ir.Value.id value) producers
+
+let user_map nodes =
+  List.fold_left
+    (fun users node ->
+      List.fold_left
+        (fun users input ->
+          let id = Ir.Value.id input in
+          let existing =
+            Value_id_map.find_opt id users |> Option.value ~default:[]
+          in
+          Value_id_map.add id (node :: existing) users)
+        users (Ir.node_inputs node))
+    Value_id_map.empty nodes
+
+let sole_user users value =
+  match Value_id_map.find_opt (Ir.Value.id value) users with
+  | Some [ node ] -> Some node
+  | _ -> None
 
 let tensor_binary expected node =
   match pointwise_binary node, Ir.node_inputs node with
@@ -104,6 +122,15 @@ let primitive_short_conv node =
       Some (config, input, weight, output)
   | _ -> None
 
+let pointwise_unary expected node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise (Ir.Pointwise.Unary (operator, input))),
+      [ declared_input ], Some output )
+    when operator = expected && value_is input declared_input ->
+      Some (input, output)
+  | _ -> None
+
 let copy_node_info node =
   match Ir.node_op node, Ir.node_inputs node with
   | Ir.Op.Copy _, [ source; destination ] -> Some (source, destination)
@@ -149,6 +176,102 @@ let check_channel_slices idx0 idx1 idx2 channels =
      || (s0 = Some (2 * channels) && s2 = Some 0))
 
 let ( let* ) = Option.bind
+
+type short_conv_silu_match = {
+  final_node : Ir.node;
+  config : Ir.Short_conv_silu.t;
+  input : Ir.Value.t;
+  weight : Ir.Value.t;
+  removed : Node_id_set.t;
+}
+
+let full_slice expected = function
+  | Tensor_shape.Index.Slice { start = 0; step = 1; length }
+    when length = expected -> true
+  | _ -> false
+
+let match_short_conv_silu users graph_outputs producers final_node =
+  let* axis0, axis1, silu_output, token_major_output =
+    movement_transpose final_node
+  in
+  if not ((axis0 = 1 && axis1 = 2) || (axis0 = 2 && axis1 = 1)) then None
+  else
+    let* silu_node = producer producers silu_output in
+    let* trimmed_output, _ = pointwise_unary Ir.Pointwise.Silu silu_node in
+    let* trim_node = producer producers trimmed_output in
+    let* trim_index, conv_output, _ = movement_index trim_node in
+    let* conv_node = producer producers conv_output in
+    let* convolution, channel_major_input, weight, _ =
+      primitive_short_conv conv_node
+    in
+    let* transpose_input_node = producer producers channel_major_input in
+    let* input_axis0, input_axis1, token_major_input, _ =
+      movement_transpose transpose_input_node
+    in
+    if
+      not
+        ((input_axis0 = 1 && input_axis1 = 2)
+        || (input_axis0 = 2 && input_axis1 = 1))
+    then None
+    else
+      match
+        Tensor_shape.dimensions (Ir.Value.logical_shape token_major_input),
+        Tensor_shape.dimensions (Ir.Value.logical_shape channel_major_input),
+        Tensor_shape.dimensions (Ir.Value.logical_shape weight),
+        Tensor_shape.dimensions (Ir.Value.logical_shape conv_output),
+        Tensor_shape.dimensions (Ir.Value.logical_shape trimmed_output),
+        Tensor_shape.dimensions (Ir.Value.logical_shape token_major_output),
+        Tensor_shape.Index.selectors trim_index
+      with
+      | ( [ batches; tokens; channels ],
+          [ input_batches; input_channels; input_tokens ],
+          [ weight_channels; 1; _kernel_width ],
+          [ conv_batches; conv_channels; conv_width ],
+          [ trim_batches; trim_channels; trim_tokens ],
+          [ output_batches; output_tokens; output_channels ],
+          [ batch_slice; channel_slice;
+            Tensor_shape.Index.Slice { start = output_start; step = 1; length } ] )
+        when batches > 0 && tokens > 0 && channels > 0
+             && input_batches = batches && input_tokens = tokens
+             && input_channels = channels && weight_channels = channels
+             && conv_batches = batches && conv_channels = channels
+             && trim_batches = batches && trim_channels = channels
+             && trim_tokens = tokens && length = tokens
+             && output_batches = batches && output_tokens = tokens
+             && output_channels = channels
+             && Ir.Short_conv.groups convolution = channels
+             && output_start >= 0 && output_start + tokens <= conv_width
+             && full_slice batches batch_slice
+             && full_slice channels channel_slice
+             && Ir.Value.dtype token_major_input = Ir.Dtype.Float16
+             && Ir.Value.dtype channel_major_input = Ir.Dtype.Float16
+             && Ir.Value.dtype conv_output = Ir.Dtype.Float16
+             && Ir.Value.dtype trimmed_output = Ir.Dtype.Float16
+             && Ir.Value.dtype token_major_output = Ir.Dtype.Float16
+             && (Ir.Value.dtype weight = Ir.Dtype.Float16
+                || Ir.Value.dtype weight = Ir.Dtype.Float32)
+             && sole_user users channel_major_input = Some conv_node
+             && sole_user users conv_output = Some trim_node
+             && sole_user users trimmed_output = Some silu_node
+             && sole_user users silu_output = Some final_node
+             && List.for_all
+                  (fun value ->
+                    not (List.exists (value_is value) graph_outputs))
+                  [ channel_major_input; conv_output; trimmed_output; silu_output ] ->
+          let* config =
+            Ir.Short_conv_silu.create ~convolution ~output_start
+            |> Result.to_option
+          in
+          Some
+            { final_node;
+              config;
+              input = token_major_input;
+              weight;
+              removed =
+                node_ids
+                  [ transpose_input_node; conv_node; trim_node; silu_node;
+                    final_node ]; }
+      | _ -> None
 
 let match_short_conv_decode nodes producers final_node =
   let* contiguous_input, _contiguous_output = movement_contiguous final_node in
@@ -354,45 +477,67 @@ let match_short_conv_prefill nodes producers final_node =
 let run graph =
   let nodes = Ir.Graph.nodes graph in
   let producers = producer_map nodes in
-  let removed, decode_replacements, prefill_replacements =
+  let users = user_map nodes in
+  let graph_outputs = Ir.Graph.outputs graph |> List.map snd in
+  let removed, silu_replacements, decode_replacements, prefill_replacements =
     List.fold_left
-      (fun (removed, dec_repl, pref_repl) node ->
-        match match_short_conv_decode nodes producers node with
+      (fun (removed, silu_repl, dec_repl, pref_repl) node ->
+        match match_short_conv_silu users graph_outputs producers node with
         | Some matched when Node_id_set.disjoint removed matched.removed ->
             ( Node_id_set.union removed matched.removed,
+              Node_id_map.add (Ir.node_id matched.final_node) matched silu_repl,
+              dec_repl, pref_repl )
+        | _ ->
+        (match match_short_conv_decode nodes producers node with
+        | Some matched when Node_id_set.disjoint removed matched.removed ->
+            ( Node_id_set.union removed matched.removed,
+              silu_repl,
               Node_id_map.add (Ir.node_id matched.final_node) matched dec_repl,
               pref_repl )
         | _ ->
             (match match_short_conv_prefill nodes producers node with
             | Some matched when Node_id_set.disjoint removed matched.removed ->
                 ( Node_id_set.union removed matched.removed,
-                  dec_repl,
+                  silu_repl, dec_repl,
                   Node_id_map.add (Ir.node_id matched.final_node) matched pref_repl )
-            | _ -> removed, dec_repl, pref_repl))
-      (Node_id_set.empty, Node_id_map.empty, Node_id_map.empty)
+            | _ -> removed, silu_repl, dec_repl, pref_repl)))
+      ( Node_id_set.empty, Node_id_map.empty, Node_id_map.empty,
+        Node_id_map.empty )
       nodes
   in
   let rewritten =
     List.filter_map
       (fun node ->
-        match Node_id_map.find_opt (Ir.node_id node) decode_replacements with
+        match Node_id_map.find_opt (Ir.node_id node) silu_replacements with
         | Some matched ->
             Some
               (Ir.node_replace node
-                 ~op:(Ir.Op.Short_conv_step matched.config)
-                 ~inputs:
-                   [ matched.in_proj; matched.conv_state; matched.conv_weight ])
+                 ~op:
+                   (Ir.Op.Primitive
+                      (Ir.Primitive.Short_conv_silu matched.config))
+                 ~inputs:[ matched.input; matched.weight ])
         | None ->
-            (match Node_id_map.find_opt (Ir.node_id node) prefill_replacements with
+            (match Node_id_map.find_opt (Ir.node_id node) decode_replacements with
             | Some matched ->
                 Some
                   (Ir.node_replace node
-                     ~op:(Ir.Op.Short_conv_prefill matched.config)
+                     ~op:(Ir.Op.Short_conv_step matched.config)
                      ~inputs:
-                       [ matched.in_proj; matched.conv_weight;
-                         matched.conv_state_out ])
-            | None when Node_id_set.mem (Ir.node_id node) removed -> None
-            | None -> Some node))
+                       [ matched.in_proj; matched.conv_state;
+                         matched.conv_weight ])
+            | None ->
+                (match
+                   Node_id_map.find_opt (Ir.node_id node) prefill_replacements
+                 with
+                | Some matched ->
+                    Some
+                      (Ir.node_replace node
+                         ~op:(Ir.Op.Short_conv_prefill matched.config)
+                         ~inputs:
+                           [ matched.in_proj; matched.conv_weight;
+                             matched.conv_state_out ])
+                | None when Node_id_set.mem (Ir.node_id node) removed -> None
+                | None -> Some node)))
       nodes
   in
   Ir.Graph.with_nodes graph rewritten

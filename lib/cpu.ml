@@ -517,6 +517,53 @@ let short_conv state config input_value weight_value output_value output =
       done
   | _ -> failf "invalid CPU short-conv tensor metadata"
 
+let short_conv_silu state config input_value weight_value output_value output =
+  match
+    Tensor_shape.dimensions (Ir.Value.logical_shape input_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape weight_value),
+    Tensor_shape.dimensions (Ir.Value.logical_shape output_value)
+  with
+  | ( [ batches; tokens; channels ],
+      [ weight_channels; 1; kernel_width ],
+      [ output_batches; output_tokens; output_channels ] )
+    when batches = output_batches && tokens = output_tokens
+         && channels = weight_channels && channels = output_channels ->
+      let input = find state input_value in
+      let weight = find state weight_value in
+      let convolution = Ir.Short_conv_silu.convolution config in
+      let stride = Ir.Short_conv.stride convolution in
+      let padding = Ir.Short_conv.padding convolution in
+      let dilation = Ir.Short_conv.dilation convolution in
+      let output_start = Ir.Short_conv_silu.output_start config in
+      for batch = 0 to batches - 1 do
+        for token = 0 to tokens - 1 do
+          for channel = 0 to channels - 1 do
+            let accumulator = ref 0.0 in
+            for kernel = 0 to kernel_width - 1 do
+              let source_token =
+                ((token + output_start) * stride) - padding
+                + (kernel * dilation)
+              in
+              if source_token >= 0 && source_token < tokens then
+                let input_index =
+                  (((batch * tokens) + source_token) * channels) + channel
+                in
+                let weight_index = (channel * kernel_width) + kernel in
+                accumulator :=
+                  !accumulator
+                  +. (Tensor.get_linear input input_index
+                     *. Tensor.get_linear weight weight_index)
+            done;
+            let activated = pointwise_unary Ir.Pointwise.Silu !accumulator in
+            let output_index =
+              (((batch * tokens) + token) * channels) + channel
+            in
+            Tensor.set_linear output output_index activated
+          done
+        done
+      done
+  | _ -> failf "invalid token-major short-conv-SiLU shapes"
+
 let attention state config query_value key_value value_value mask_value
     output_value output =
   match
@@ -902,6 +949,8 @@ let primitive state operation inputs output_value output =
       apply_movement state movement input output_value output
   | Ir.Primitive.Short_conv config, [ input; weight ] ->
       short_conv state config input weight output_value output
+  | Ir.Primitive.Short_conv_silu config, [ input; weight ] ->
+      short_conv_silu state config input weight output_value output
   | Ir.Primitive.Attention config, [ query; key; value; mask ] ->
       attention state config query key value mask output_value output
   | Ir.Primitive.Paged_attention_q8 _, _ ->

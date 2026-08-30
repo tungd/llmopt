@@ -4941,6 +4941,67 @@ kernel void llmopt_short_conv_f16_f32(
 }
 |}
 
+let short_conv_silu_source = {|
+struct ShortConvSiluTmParams {
+  uint batches; uint tokens; uint channels; uint kernel_width;
+  uint stride; uint padding; uint dilation; uint output_start;
+};
+
+kernel void llmopt_short_conv_silu_tm_f16(
+    device const half* input [[buffer(0)]],
+    device const half* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant ShortConvSiluTmParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.batches * params.tokens * params.channels;
+  if (gid >= count) return;
+  const uint channel = gid % params.channels;
+  const uint token = (gid / params.channels) % params.tokens;
+  const uint batch = gid / (params.tokens * params.channels);
+  float accumulator = 0.0f;
+  for (uint tap = 0; tap < params.kernel_width; ++tap) {
+    const int source_token = int((token + params.output_start) * params.stride)
+        - int(params.padding) + int(tap * params.dilation);
+    if (source_token >= 0 && source_token < int(params.tokens)) {
+      const uint input_index = ((batch * params.tokens + uint(source_token))
+          * params.channels) + channel;
+      const uint weight_index = channel * params.kernel_width + tap;
+      accumulator += float(input[input_index]) * float(weight[weight_index]);
+    }
+  }
+  const half convolved = half(accumulator);
+  const float value = float(convolved);
+  output[gid] = half(value / (1.0f + exp(-value)));
+}
+
+kernel void llmopt_short_conv_silu_tm_f32(
+    device const half* input [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant ShortConvSiluTmParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.batches * params.tokens * params.channels;
+  if (gid >= count) return;
+  const uint channel = gid % params.channels;
+  const uint token = (gid / params.channels) % params.tokens;
+  const uint batch = gid / (params.tokens * params.channels);
+  float accumulator = 0.0f;
+  for (uint tap = 0; tap < params.kernel_width; ++tap) {
+    const int source_token = int((token + params.output_start) * params.stride)
+        - int(params.padding) + int(tap * params.dilation);
+    if (source_token >= 0 && source_token < int(params.tokens)) {
+      const uint input_index = ((batch * params.tokens + uint(source_token))
+          * params.channels) + channel;
+      const uint weight_index = channel * params.kernel_width + tap;
+      accumulator += float(input[input_index]) * weight[weight_index];
+    }
+  }
+  const half convolved = half(accumulator);
+  const float value = float(convolved);
+  output[gid] = half(value / (1.0f + exp(-value)));
+}
+|}
+
 let short_conv_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_short_conv_f16"
@@ -4948,6 +5009,16 @@ let short_conv_entries =
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_short_conv_f16_f32"
+      ~operation:Kernel_abi.Operation.Short_conv
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16 ]
+
+let short_conv_silu_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_silu_tm_f16"
+      ~operation:Kernel_abi.Operation.Short_conv
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_short_conv_silu_tm_f32"
       ~operation:Kernel_abi.Operation.Short_conv
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16 ]
 
@@ -6685,6 +6756,13 @@ let has_short_conv graph =
          | Ir.Op.Primitive (Ir.Primitive.Short_conv _) -> true
          | _ -> false)
 
+let has_short_conv_silu graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive (Ir.Primitive.Short_conv_silu _) -> true
+         | _ -> false)
+
 let has_short_conv_step graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -7115,6 +7193,7 @@ let lower ?(target = Target_hardware.default) graph =
       ( has_short_conv graph,
         short_conv_source ^ short_conv_f32_weight_source,
         short_conv_entries );
+      has_short_conv_silu graph, short_conv_silu_source, short_conv_silu_entries;
       has_short_conv_step graph, short_conv_step_source, short_conv_step_entries;
       ( has_short_conv_step_fused graph,
         short_conv_step_fused_source,

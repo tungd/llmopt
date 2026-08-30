@@ -171,6 +171,17 @@ module Short_conv : sig
   val to_string : t -> string
 end
 
+module Short_conv_silu : sig
+  type t
+
+  val create :
+    convolution:Short_conv.t -> output_start:int -> (t, string) result
+
+  val convolution : t -> Short_conv.t
+  val output_start : t -> int
+  val to_string : t -> string
+end
+
 module Attention : sig
   type t
 
@@ -271,6 +282,7 @@ module Primitive : sig
     | Reduce of Reduction.t
     | Movement of Movement.t
     | Short_conv of Short_conv.t
+    | Short_conv_silu of Short_conv_silu.t
     | Attention of Attention.t
     | Paged_attention_q8 of Paged_attention_q8.t
     | Embedding

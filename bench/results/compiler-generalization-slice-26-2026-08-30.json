@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T22:02:29+07:00",
+  "git_base_commit": "d19adfdca42503eb9760d72faf9fd6c609e73a0d",
+  "slice": "graph-relational-token-major-short-conv-silu-fusion",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Short_conv_silu",
+    "selection": "sole-consumer token-major transpose -> depthwise ShortConv -> captured full-channel token trim -> SiLU -> token-major transpose topology",
+    "shape_relations": "captured batch, token, channel, kernel, output-window, depthwise-group, and trim-offset relations",
+    "lowering": "read token-major input, compute only the retained convolution window, round the convolution result to Float16, apply SiLU, and write token-major output",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "regression_shape": {
+      "batches": 2,
+      "tokens": 3,
+      "channels": 6,
+      "kernel_width": 3,
+      "padding": 2,
+      "output_start": 1
+    },
+    "sites": {
+      "qwen": 18,
+      "gemma": 0
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice26-short-conv-silu-layout",
+        "kernels": 111,
+        "commands": 1823,
+        "previous_commands": 1967,
+        "dispatches": 786,
+        "previous_dispatches": 858,
+        "removed_dispatches": {
+          "transpose_f16": 36,
+          "index_f16": 18,
+          "silu_f16": 18
+        },
+        "added_dispatches": {
+          "short_conv_silu_tm_f32": 18
+        },
+        "replaced_dispatches": {
+          "short_conv_f16_f32": 18
+        },
+        "median_ms": 8.531570,
+        "min_ms": 8.103848,
+        "max_ms": 10.875940,
+        "previous_recorded_median_ms": 8.777499,
+        "delta_ms": -0.245929,
+        "latency_reduction_percent": 2.801812,
+        "output_sha256": "3db055cc11ec4a89fbc1672415c736bd0f272c477aa00cc022c1bc198ee7a45f",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.7559375,
+        "mean_ms": 7.953529,
+        "samples_ns": [
+          7943375,
+          8752417,
+          7729750,
+          7782125,
+          7649542,
+          8843167,
+          7786708,
+          7682041,
+          7685333,
+          7680833
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.100005,
+      "latency_above_upper_ratio_ms": 0.00003875
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice26-short-conv-silu-layout",
+        "kernels": 108,
+        "commands": 2439,
+        "previous_commands": 2439,
+        "dispatches": 799,
+        "previous_dispatches": 799,
+        "median_ms": 19.030929,
+        "min_ms": 16.875982,
+        "max_ms": 61.161041,
+        "previous_recorded_median_ms": 18.818855,
+        "delta_ms": 0.212074,
+        "output_sha256": "896aa2a62df23b6890548055b5f8f94e7537c2c82dcb2c02905cc1e844a4811a",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 18.541604,
+        "mean_ms": 18.235892,
+        "samples_ns": [
+          17534166,
+          18649750,
+          18467667,
+          17541208,
+          18615541,
+          17561459,
+          17676792,
+          18692666,
+          18827541,
+          18792125
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.026391,
+      "latency_below_upper_ratio_ms": 1.364835
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_ninja_tests": "49 pass",
+    "python_pytest": "52 pass, 1 skip",
+    "metal_compilation": "pass for Qwen, Gemma, and the non-model regression",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 111 kernels, 1823 commands, 0 opaque",
+    "gemma_package": "valid, 108 kernels, 2439 commands, 0 opaque",
+    "runtime_histogram": "Qwen replaces 18 ShortConv plus 72 layout/trim/activation dispatches with 18 token-major fused dispatches",
+    "numerical_scope": "both package outputs are byte exact with slice 25 and preserve all row argmax IDs"
+  }
+}
