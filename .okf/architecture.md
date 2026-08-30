@@ -125,12 +125,12 @@ The product contract is a captured model plus an explicit, package-resident
 Model Program. The generic pipeline and runtime carry no built-in model-family
 profile and do not dispatch on GGUF architecture identifiers. FX owns topology;
 the target GGUF/UD path supplies per-tensor quantized payloads through explicit
-captured-parameter bindings. The implemented Metal backend contract is packed group-64 W4A16 for every
-linear module and grouped-Q8 for attention KV plus recurrent checkpoints. The
-current IR, kernel ABI, schedule ABI v19, package ABI v17, runtime, serving CLI,
-and Python capture surface expose no Q8-weight or FP16-KV alternative. Earlier
-Q8-weight and selectable-cache sections below describe superseded experiments
-only.
+captured-parameter bindings. The implemented Metal backend accepts dense,
+packed group-64 W4, and GGUF block-quantized Linear storage selected from
+captured tensor layout; grouped-Q8 remains the implemented serving-cache path
+for attention KV and recurrent checkpoints. The current schedule ABI is v23
+and package ABI is v21. Earlier Q8-weight and selectable-cache sections below
+describe superseded experiments only.
 
 The public frontend is a PyTorch `torch.compile` backend. Dynamo calls the
 backend with an FX `GraphModule` and example inputs, and the backend returns a

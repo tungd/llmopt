@@ -111,6 +111,9 @@ module Pointwise : sig
   type binary =
     | Add
     | Mul
+    | Silu_mul
+    | Gelu_mul
+    | Sigmoid_mul
     | Sub
     | Div
     | Logical_and

@@ -5432,6 +5432,18 @@ let pointwise_source =
   ^ pointwise_binary_kernel ~name:"llmopt_mul_f32" ~input_type:"float"
       ~output_type:"float" ~scalar_field:"f32" ~scalar_cast:"float"
       ~expression:"left_value * right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_silu_mul_f16" ~input_type:"half"
+      ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
+      ~expression:
+        "half(float(left_value) / (1.0f + exp(-float(left_value)))) * right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_gelu_mul_f16" ~input_type:"half"
+      ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
+      ~expression:
+        "half(0.5f * float(left_value) * (1.0f + tanh(clamp(0.7978845608f * (float(left_value) + 0.044715f * float(left_value) * float(left_value) * float(left_value)), -10.0f, 10.0f)))) * right_value"
+  ^ pointwise_binary_kernel ~name:"llmopt_sigmoid_mul_f16" ~input_type:"half"
+      ~output_type:"half" ~scalar_field:"f32" ~scalar_cast:"half"
+      ~expression:
+        "half(1.0f / (1.0f + exp(-float(left_value)))) * right_value"
   ^ pointwise_mixed_mul_f16_f32
   ^ pointwise_binary_kernel ~name:"llmopt_le_i64" ~input_type:"long"
       ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
@@ -5500,6 +5512,9 @@ let pointwise_entries =
     entry "llmopt_div_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f32" Ir.Dtype.Float32 Ir.Dtype.Float32;
+    entry "llmopt_silu_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_gelu_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_sigmoid_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f16_f32" Ir.Dtype.Float16 Ir.Dtype.Float32;
     entry "llmopt_le_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
     entry "llmopt_gt_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;

@@ -2076,6 +2076,15 @@ let pointwise_kernel operation output =
     | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _), Ir.Dtype.Float32,
       Ir.Dtype.Float32 ->
         Some "llmopt_mul_f32"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Silu_mul, _, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_silu_mul_f16"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Gelu_mul, _, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_gelu_mul_f16"
+    | Ir.Pointwise.Binary (Ir.Pointwise.Sigmoid_mul, _, _), Ir.Dtype.Float16,
+      Ir.Dtype.Float16 ->
+        Some "llmopt_sigmoid_mul_f16"
     | Ir.Pointwise.Binary (Ir.Pointwise.Less_equal, _, _), Ir.Dtype.Int64,
       Ir.Dtype.Bool ->
         Some "llmopt_le_i64"

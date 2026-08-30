@@ -236,6 +236,11 @@ let pointwise_binary operator left right =
   match operator with
   | Ir.Pointwise.Add -> left +. right
   | Ir.Pointwise.Mul -> left *. right
+  | Ir.Pointwise.Silu_mul -> (left /. (1.0 +. exp (-.left))) *. right
+  | Ir.Pointwise.Gelu_mul ->
+      let scaled = sqrt 2.0 *. (left +. (0.044715 *. left *. left *. left)) in
+      (0.5 *. left *. (1.0 +. tanh (scaled *. 0.5))) *. right
+  | Ir.Pointwise.Sigmoid_mul -> (1.0 /. (1.0 +. exp (-.left))) *. right
   | Ir.Pointwise.Sub -> left -. right
   | Ir.Pointwise.Div -> left /. right
   | Ir.Pointwise.Logical_and ->

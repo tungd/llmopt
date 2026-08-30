@@ -2394,6 +2394,9 @@ let write_pointwise writer = function
         (match operator with
         | Ir.Pointwise.Add -> 0
         | Ir.Pointwise.Mul -> 1
+        | Ir.Pointwise.Silu_mul -> 9
+        | Ir.Pointwise.Gelu_mul -> 10
+        | Ir.Pointwise.Sigmoid_mul -> 11
         | Ir.Pointwise.Sub -> 2
         | Ir.Pointwise.Logical_and -> 3
         | Ir.Pointwise.Equal -> 4
@@ -2432,6 +2435,9 @@ let read_pointwise values reader =
         match tag with
         | 0 -> Ok Ir.Pointwise.Add
         | 1 -> Ok Ir.Pointwise.Mul
+        | 9 -> Ok Ir.Pointwise.Silu_mul
+        | 10 -> Ok Ir.Pointwise.Gelu_mul
+        | 11 -> Ok Ir.Pointwise.Sigmoid_mul
         | 2 -> Ok Ir.Pointwise.Sub
         | 3 -> Ok Ir.Pointwise.Logical_and
         | 4 -> Ok Ir.Pointwise.Equal
@@ -2975,7 +2981,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 22;
+  Binary.Writer.u16 writer 23;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2995,7 +3001,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 22 then
+    if version <> 23 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

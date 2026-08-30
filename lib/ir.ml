@@ -226,6 +226,9 @@ module Pointwise = struct
   type binary =
     | Add
     | Mul
+    | Silu_mul
+    | Gelu_mul
+    | Sigmoid_mul
     | Sub
     | Div
     | Logical_and
@@ -256,6 +259,9 @@ module Pointwise = struct
   let binary_to_string = function
     | Add -> "add"
     | Mul -> "mul"
+    | Silu_mul -> "silu-mul"
+    | Gelu_mul -> "gelu-mul"
+    | Sigmoid_mul -> "sigmoid-mul"
     | Sub -> "sub"
     | Div -> "div"
     | Logical_and -> "and"

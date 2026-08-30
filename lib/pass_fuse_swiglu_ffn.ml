@@ -375,4 +375,92 @@ let select_legacy match_ _region =
       match Ir.node_op gate_node with Ir.Op.W4a16_linear _ -> true | _ -> false)
   | Error _ -> false
 
-let run graph = Fusion_query.Rule.rewrite rule ~select:select_legacy ~lower graph
+let value_is = Ir.Value.equal
+
+let tensor_binary_mul node =
+  match Ir.node_op node, Ir.node_output node with
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+          (Ir.Pointwise.Binary (Ir.Pointwise.Mul, left, right))),
+      Some output ) ->
+      let tensor = function
+        | Ir.Pointwise.Tensor value -> Some value
+        | Ir.Pointwise.Scalar _ -> None
+      in
+      (match tensor left, tensor right with
+      | Some left, Some right -> Some (left, right, output)
+      | _ -> None)
+  | _ -> None
+
+let activation node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise (Ir.Pointwise.Unary (Ir.Pointwise.Silu, input))),
+      [ declared_input ], Some output )
+    when value_is input declared_input ->
+      Some (Ir.Pointwise.Silu_mul, input, output)
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+          (Ir.Pointwise.Unary (Ir.Pointwise.Sigmoid, input))),
+      [ declared_input ], Some output )
+    when value_is input declared_input ->
+      Some (Ir.Pointwise.Sigmoid_mul, input, output)
+  | Ir.Op.Gelu, [ input ], Some output ->
+      Some (Ir.Pointwise.Gelu_mul, input, output)
+  | _ -> None
+
+let fuse_gated_activations graph =
+  let nodes = Ir.Graph.nodes graph in
+  let consumers value =
+    List.filter
+      (fun node -> List.exists (value_is value) (Ir.node_inputs node))
+      nodes
+  in
+  let graph_outputs = Ir.Graph.outputs graph |> List.map snd in
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) activation_node ->
+        match activation activation_node with
+        | Some (operator, input, activated)
+          when not (List.exists (value_is activated) graph_outputs) ->
+            (match consumers activated with
+            | [ multiply_node ] ->
+                (match tensor_binary_mul multiply_node with
+                | Some (left, right, _)
+                  when value_is activated left || value_is activated right ->
+                    let other = if value_is activated left then right else left in
+                    if
+                      Ir.Value.dtype input = Ir.Value.dtype other
+                      && Ir.Value.dtype input = Ir.Value.dtype activated
+                    then
+                      let fused =
+                        Ir.node_replace multiply_node
+                          ~op:
+                            (Ir.Op.Primitive
+                              (Ir.Primitive.Pointwise
+                                (Ir.Pointwise.Binary
+                                  ( operator,
+                                    Ir.Pointwise.Tensor input,
+                                    Ir.Pointwise.Tensor other ))))
+                          ~inputs:[ input; other ]
+                      in
+                      ( (Ir.node_id multiply_node, fused) :: replacements,
+                        Ir.node_id activation_node :: removed )
+                    else replacements, removed
+                | _ -> replacements, removed)
+            | _ -> replacements, removed)
+        | _ -> replacements, removed)
+      ([], []) nodes
+  in
+  Ir.Graph.with_nodes graph
+    (List.filter_map
+      (fun node ->
+        match List.assoc_opt (Ir.node_id node) replacements with
+        | Some replacement -> Some replacement
+        | None when List.mem (Ir.node_id node) removed -> None
+        | None -> Some node)
+      nodes)
+
+let run graph =
+  let* graph = Fusion_query.Rule.rewrite rule ~select:select_legacy ~lower graph in
+  Ok (fuse_gated_activations graph)

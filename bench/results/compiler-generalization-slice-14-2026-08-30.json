@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T12:28:44+07:00",
+  "git_base_commit": "e604165c1b5d2d2ac094c3a73a2e69b6c5efbacc",
+  "slice": "single-consumer-activation-product-fusion",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "matched_topology": "single-consumer SiLU, GELU, or sigmoid -> tensor multiply",
+    "selection": "producer and sole-consumer identity, graph-output escape check, equal input/intermediate dtypes, and captured tensor shapes",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "semantic_operations": [
+      "silu-mul",
+      "gelu-mul",
+      "sigmoid-mul"
+    ],
+    "kernel": "one pointwise dispatch computes the activation and product while preserving Float16 activation rounding",
+    "captured_sites": {
+      "qwen": {
+        "silu_mul": 24,
+        "sigmoid_mul": 6,
+        "total": 30
+      },
+      "gemma": {
+        "gelu_mul": 70,
+        "total": 70
+      }
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice14-activation-product-v2",
+        "kernels": 107,
+        "commands": 2453,
+        "previous_commands": 2507,
+        "dispatches": 1098,
+        "previous_dispatches": 1128,
+        "dispatch_delta": -30,
+        "median_ms": 12.590408,
+        "min_ms": 11.214018,
+        "max_ms": 25.748014,
+        "previous_recorded_median_ms": 12.533069,
+        "delta_ms": 0.057339,
+        "latency_reduction_percent": -0.457502,
+        "output_sha256": "cf98d808027aaee68a6e13ccf4f75489ccfbff530478a5bb63361940474eb4ba",
+        "previous_output_byte_exact": true,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.9534585,
+        "mean_ms": 8.037416,
+        "samples_ns": [9180375, 8010250, 7996084, 8058375, 7640667, 7845750, 7958667, 7904625, 7948250, 7831125]
+      },
+      "llmopt_over_llama_cpp_median": 1.583010
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice14-activation-product-v2",
+        "kernels": 101,
+        "commands": 3290,
+        "previous_commands": 3430,
+        "dispatches": 1150,
+        "previous_dispatches": 1220,
+        "dispatch_delta": -70,
+        "median_ms": 26.156545,
+        "min_ms": 24.494886,
+        "max_ms": 28.307199,
+        "previous_recorded_median_ms": 26.480079,
+        "delta_ms": -0.323534,
+        "latency_reduction_percent": 1.221801,
+        "output_sha256": "04a00df740a1f93d967e320e1628f15a0d33fba5eadbef1c887d5f49336370e7",
+        "previous_output_byte_exact": true,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.253188,
+        "mean_ms": 17.33655,
+        "samples_ns": [17347458, 18235042, 17231542, 17308458, 17187792, 17274834, 17456750, 17060250, 17113208, 17150167]
+      },
+      "llmopt_over_llama_cpp_median": 1.516041
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "qwen_package": "valid, 107 kernels, 2453 commands, 0 opaque",
+    "gemma_package": "valid, 101 kernels, 3290 commands, 0 opaque",
+    "numerical_scope": "both full-model Float16 output files are byte exact against slice 13"
+  }
+}

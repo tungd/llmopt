@@ -882,6 +882,50 @@ let () =
          |> List.length)
         = 3)
     "Kernel IR represents mixed GGUF projections as semantic Linear bindings";
+  let gguf_fused = Passes.fuse_swiglu_ffn gguf_ffn |> expect_ok in
+  expect
+    (Ir.Graph.nodes gguf_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | ( Ir.Op.Primitive
+                 (Ir.Primitive.Pointwise
+                   (Ir.Pointwise.Binary
+                     ( Ir.Pointwise.Silu_mul,
+                       Ir.Pointwise.Tensor actual_gate,
+                       Ir.Pointwise.Tensor actual_up ))),
+               [ declared_gate; declared_up ], Some output ) ->
+               List.for_all2 Ir.Value.equal
+                 [ actual_gate; actual_up; declared_gate; declared_up; output ]
+                 [ gguf_gate_linear; gguf_up; gguf_gate_linear; gguf_up;
+                   gguf_product ]
+           | _ -> false))
+    "single-consumer activation-product topology fuses independently of Linear storage";
+  expect
+    (Ir.Graph.nodes gguf_fused
+    |> List.for_all (fun node ->
+           match Ir.node_output node with
+           | Some output -> not (Ir.Value.equal output gguf_gate)
+           | None -> true))
+    "activation-product fusion removes the materialized activation";
+  let gguf_fused_schedule =
+    gguf_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands gguf_fused_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive
+               (Ir.Primitive.Pointwise
+                 (Ir.Pointwise.Binary (Ir.Pointwise.Silu_mul, _, _))) ->
+               true
+           | _ -> false))
+    "fused activation-product survives schedule serialization";
+  expect
+    (Metal.lower gguf_fused |> expect_ok |> Metal.Program.source
+    |> fun source ->
+    contains_substring source "kernel void llmopt_silu_mul_f16")
+    "Metal lowering emits the fused activation-product kernel";
 
   let scan_graph = Ir.Graph.create () in
   let scan_initial =

@@ -71,7 +71,7 @@ type t = {
   cache : Cache.t;
 }
 
-let current_abi_version = 20
+let current_abi_version = 21
 
 let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in

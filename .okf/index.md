@@ -67,6 +67,7 @@ configuration.
 * [Occupancy-selected full-SIMD Q5_K Linear tactic](experiments/exp-0113-occupancy-selected-q5-k-linear-2026-08-30.md) - select full-lane Q5_K execution from captured superblock occupancy.
 * [Topology-fused L2 normalization](experiments/exp-0114-topology-fused-l2-normalization-2026-08-30.md) - replace captured final-axis normalization chains with one semantic SIMD dispatch.
 * [Attention-linked token-major RMSNorm-RoPE fusion](experiments/exp-0115-attention-linked-rms-rope-2026-08-30.md) - pair captured rotary Q/K branches through their shared semantic Attention.
+* [Single-consumer activation-product fusion](experiments/exp-0116-activation-product-fusion-2026-08-30.md) - combine captured SiLU, GELU, and sigmoid products into one typed pointwise dispatch.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.
