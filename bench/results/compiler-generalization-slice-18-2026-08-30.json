@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T13:05:03+07:00",
+  "git_base_commit": "040ce9be696330e8f7ca5cc786d37244e49c1a32",
+  "slice": "gated-linear-layout-extension",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Gated_linear",
+    "selection": "the existing shared-input/sole-consumer topology rule plus equal supported weight layout and captured m=2 geometry",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "added_layouts": [
+      "Q5_K",
+      "IQ4_XS"
+    ],
+    "incremental_sites": {
+      "qwen_q5_k": 5,
+      "qwen_iq4_xs": 5,
+      "gemma_q5_k": 5
+    },
+    "total_gated_sites": {
+      "qwen": 24,
+      "gemma": 35
+    },
+    "kernel": "Q5_K retains its 4-lane superblock distribution; IQ4_XS shares activation loads while reducing four row/projection accumulators"
+  },
+  "contract": {
+    "input_shape": [
+      1,
+      2
+    ],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice18-gated-layouts",
+        "kernels": 112,
+        "commands": 2381,
+        "previous_commands": 2411,
+        "command_delta": -30,
+        "dispatches": 1050,
+        "previous_dispatches": 1070,
+        "dispatch_delta": -20,
+        "median_ms": 11.500001,
+        "min_ms": 10.812044,
+        "max_ms": 23.787022,
+        "previous_recorded_median_ms": 11.627913,
+        "delta_ms": -0.127912,
+        "latency_reduction_percent": 1.100043,
+        "output_sha256": "a7dea50ba9b424d728ccd5b8b5bc76747b4e8b85fc3cd5485aa28792474b3440",
+        "previous_output_mean_abs": 0.005456710,
+        "previous_output_max_abs": 0.037109375,
+        "argmax_rows": [
+          760,
+          16
+        ],
+        "previous_argmax_rows": [
+          760,
+          16
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.829771,
+        "mean_ms": 7.925396,
+        "samples_ns": [
+          7736625,
+          7839084,
+          7996958,
+          9000042,
+          7817333,
+          7791417,
+          7859416,
+          7820458,
+          7532625,
+          7860000
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.468753
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice18-gated-layouts",
+        "kernels": 107,
+        "commands": 2974,
+        "previous_commands": 2989,
+        "command_delta": -15,
+        "dispatches": 974,
+        "previous_dispatches": 984,
+        "dispatch_delta": -10,
+        "median_ms": 21.452665,
+        "min_ms": 20.661116,
+        "max_ms": 23.129940,
+        "previous_recorded_median_ms": 21.449566,
+        "delta_ms": 0.003099,
+        "latency_reduction_percent": -0.014448,
+        "output_sha256": "b94b581cac2603d0dd75eb2362bfa4dc3da34c905d0c8dad13d12881c1108150",
+        "previous_output_mean_abs": 0.008841064,
+        "previous_output_max_abs": 0.067382812,
+        "argmax_rows": [
+          84904,
+          148465
+        ],
+        "previous_argmax_rows": [
+          84904,
+          148465
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.1705835,
+        "mean_ms": 17.457534,
+        "samples_ns": [
+          17071625,
+          18793916,
+          16855167,
+          17209792,
+          16915125,
+          16898584,
+          18982250,
+          17507709,
+          17198417,
+          17142750
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.249385
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 112 kernels, 2381 commands, 0 opaque",
+    "gemma_package": "valid, 107 kernels, 2974 commands, 0 opaque",
+    "numerical_scope": "both models preserve both row argmax IDs with changed Float16 logits"
+  }
+}

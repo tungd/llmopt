@@ -2696,8 +2696,13 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* () = validate_linear_shapes ~m ~n ~k input up_weight output in
             let* quant =
               match Ir.Value.dtype gate_weight, Ir.Value.dtype up_weight with
-              | Ir.Dtype.Quant Ir.Dtype.Q4_K, Ir.Dtype.Quant Ir.Dtype.Q4_K ->
-                  Ok Ir.Dtype.Q4_K
+              | Ir.Dtype.Quant quant, up_dtype
+                when up_dtype = Ir.Dtype.Quant quant
+                     && (quant = Ir.Dtype.Q4_K
+                        || (m = 2
+                           && (quant = Ir.Dtype.Q5_K
+                              || quant = Ir.Dtype.IQ4_XS))) ->
+                  Ok quant
               | gate_dtype, up_dtype ->
                   Error
                     (Printf.sprintf
@@ -2714,12 +2719,23 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             in
             let* parameters = Parameters.u32s [ m; n; k; activation_tag ] in
             let name =
-              if m = 2 then "llmopt_q4_k_gated_linear_f16_m2_x1_l32"
-              else "llmopt_q4_k_gated_linear_f16"
+              match quant, m with
+              | Ir.Dtype.Q4_K, 2 ->
+                  "llmopt_q4_k_gated_linear_f16_m2_x1_l32"
+              | Ir.Dtype.Q4_K, _ -> "llmopt_q4_k_gated_linear_f16"
+              | Ir.Dtype.Q5_K, 2 ->
+                  "llmopt_q5_k_gated_linear_f16_m2_x1_l32"
+              | Ir.Dtype.IQ4_XS, 2 ->
+                  "llmopt_iq4_xs_gated_linear_f16_m2"
+              | _ -> assert false
             in
             let* grid_x =
-              if m = 2 then short_row_quant_grid (m * n)
-              else linear_f16_grid (m * n)
+              match quant, m with
+              | (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K), 2 ->
+                  short_row_quant_grid (m * n)
+              | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
+              | Ir.Dtype.Q4_K, _ -> linear_f16_grid (m * n)
+              | _ -> assert false
             in
             dispatched
               (dispatch_output ~name runtime state output

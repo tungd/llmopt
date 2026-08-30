@@ -483,6 +483,11 @@ let unbiased_projection node =
       Some (m, n, k, input, weight, output)
   | _ -> None
 
+let gated_weight_supported ~m = function
+  | Ir.Dtype.Quant Ir.Dtype.Q4_K -> true
+  | Ir.Dtype.Quant (Ir.Dtype.Q5_K | Ir.Dtype.IQ4_XS) -> m = 2
+  | _ -> false
+
 let fuse_gated_linears graph =
   let nodes = Ir.Graph.nodes graph in
   let producer value =
@@ -514,8 +519,8 @@ let fuse_gated_linears graph =
                        && not (List.exists (value_is gate) graph_outputs)
                        && not (List.exists (value_is up) graph_outputs)
                        && Ir.Value.dtype gate_input = Ir.Dtype.Float16
-                       && Ir.Value.dtype gate_weight
-                          = Ir.Dtype.Quant Ir.Dtype.Q4_K
+                       && gated_weight_supported ~m:gate_m
+                            (Ir.Value.dtype gate_weight)
                        && Ir.Value.dtype up_weight = Ir.Value.dtype gate_weight
                        && Ir.Value.dtype output = Ir.Dtype.Float16 ->
                     let fused =

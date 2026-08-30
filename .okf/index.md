@@ -71,6 +71,7 @@ configuration.
 * [Single-consumer RMSNorm-residual fusion](experiments/exp-0117-rmsnorm-residual-fusion-2026-08-30.md) - combine captured RMSNorm and residual add into one SIMD dispatch.
 * [Shape-selected wide-row RMSNorm](experiments/exp-0118-wide-row-rmsnorm-2026-08-30.md) - assign a whole threadgroup to low-row, wide captured tensors without architecture IDs.
 * [Topology-fused Q4_K gated Linear](experiments/exp-0119-q4-k-gated-linear-2026-08-30.md) - fuse same-layout gate/up branches and their sole activation-product consumer.
+* [Gated Linear layout extension](experiments/exp-0120-gated-linear-layout-extension-2026-08-30.md) - extend the same semantic fusion through Q5_K and IQ4_XS tactics.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.
