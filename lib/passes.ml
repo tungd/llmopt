@@ -93,6 +93,7 @@ let optimize ?(target = Target_hardware.default) graph =
   in
   let linear_add_graph =
     Pass_fuse_linear_bias.fuse_w4a16_linear_add no_trans_graph
+    |> Pass_fuse_linear_bias.fuse_quant_linear_add
   in
   let lowered_graph = Pass.Pipeline.run execution_pipeline linear_add_graph in
   let* execution_plan = Compute_plan.of_graph lowered_graph in

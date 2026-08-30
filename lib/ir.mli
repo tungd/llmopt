@@ -342,6 +342,7 @@ module Op : sig
     | Copy of { asynchronous : bool; barrier : int option }
     | Matmul of { m : int; n : int; k : int }
     | Linear of { m : int; n : int; k : int; bias : bool }
+    | Linear_add of { m : int; n : int; k : int }
     | Add of { broadcast : Shape.broadcast }
     | Gelu
     | Relu

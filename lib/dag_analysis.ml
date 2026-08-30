@@ -62,6 +62,14 @@ module Resource_class = struct
         let weights = Float.of_int (2 * n * k) *. 0.5625 in
         let activations = Float.of_int (m * (k + n)) *. 2.0 in
         flops /. max 1.0 (weights +. activations)
+    | Ir.Op.Linear_add { m; n; k } ->
+        let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let bytes =
+          (Float.of_int (m * k) *. 2.0)
+          +. (Float.of_int (n * k) *. 0.5625)
+          +. (Float.of_int (2 * m * n) *. 2.0)
+        in
+        flops /. max 1.0 bytes
     | Ir.Op.Matmul { m; n; k; _ }
     | Ir.Op.Fused_matmul_bias { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
@@ -88,7 +96,8 @@ module Resource_class = struct
     | Ir.Op.W4a16_lm_head_argmax _
     | Ir.Op.Matmul _
     | Ir.Op.Fused_matmul_bias _
-    | Ir.Op.Linear _ ->
+    | Ir.Op.Linear _
+    | Ir.Op.Linear_add _ ->
         Compute_bound
     | Ir.Op.Rms_norm _
     | Ir.Op.Rms_norm_add _

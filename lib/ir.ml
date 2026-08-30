@@ -645,6 +645,7 @@ module Op = struct
     | Copy of { asynchronous : bool; barrier : int option }
     | Matmul of { m : int; n : int; k : int }
     | Linear of { m : int; n : int; k : int; bias : bool }
+    | Linear_add of { m : int; n : int; k : int }
     | Add of { broadcast : Shape.broadcast }
     | Gelu
     | Relu
@@ -728,6 +729,8 @@ module Op = struct
     | Matmul { m; n; k } -> Printf.sprintf "matmul[%dx%dx%d]" m n k
     | Linear { m; n; k; bias = false } -> Printf.sprintf "linear[%dx%dx%d]" m n k
     | Linear { m; n; k; bias = true } -> Printf.sprintf "linear+bias[%dx%dx%d]" m n k
+    | Linear_add { m; n; k } ->
+        Printf.sprintf "linear-add[%dx%dx%d]" m n k
     | Add { broadcast = Shape.Same } -> "add[same]"
     | Add { broadcast = Shape.Row } -> "add[row-broadcast]"
     | Gelu -> "gelu"

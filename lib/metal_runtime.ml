@@ -1639,7 +1639,8 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
-let select_quant_linear_kernel runtime ~m ~n ~k ~output_dtype quant =
+let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
+    quant =
   let input_dtype = Ir.Dtype.Quant quant in
   let* tactic =
     match
@@ -1655,7 +1656,7 @@ let select_quant_linear_kernel runtime ~m ~n ~k ~output_dtype quant =
              "no registered quantized Linear tactic for m=%d n=%d k=%d %s"
              m n k (Ir.Dtype.to_string input_dtype))
   in
-  kernel_entry ~name:(Kernel_abi.Linear_tactic.name tactic) runtime
+  kernel_entry ~name:(Kernel_abi.Linear_tactic.name tactic ^ suffix) runtime
     ~operation:Kernel_abi.Operation.Linear ~input_dtype ~output_dtype
 
 let same_value_metadata left right =
@@ -2041,6 +2042,46 @@ let dispatch_output ?name ?batch runtime state output ~operation ~input_dtype
       ~parameters ~grid
   in
   Ok (bind_value state output output_buffer, kernel)
+
+let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
+    ~input_buffer ~weight_buffer ~additive_buffer ~epilogue_mode =
+  let* entry =
+    select_quant_linear_kernel
+      ~suffix:(if epilogue_mode = 2 then "_add" else "") runtime ~m ~n ~k
+      ~output_dtype:(Ir.Value.dtype output) quant
+  in
+  let name = Kernel_abi.Entry.name entry in
+  let tactic_name =
+    if String.ends_with ~suffix:"_add" name then
+      String.sub name 0 (String.length name - String.length "_add")
+    else name
+  in
+  let* parameters = Parameters.u32s [ m; n; k; epilogue_mode ] in
+  let columns =
+    if String.ends_with ~suffix:"_m2_n2_l32" tactic_name then (n + 1) / 2
+    else if String.ends_with ~suffix:"_m2_n1_l32" tactic_name then n
+    else if String.ends_with ~suffix:"_m2_x2_l32" tactic_name then
+      m * ((n + 1) / 2)
+    else if String.ends_with ~suffix:"_m2_x1_l32" tactic_name then m * n
+    else if String.ends_with ~suffix:"_m2_x4" tactic_name then (n + 3) / 4
+    else if String.ends_with ~suffix:"_m2" tactic_name then n
+    else m * n
+  in
+  let* grid_x =
+    if
+      String.ends_with ~suffix:"_m2_n2_l32" tactic_name
+      || String.ends_with ~suffix:"_m2_n1_l32" tactic_name
+      || String.ends_with ~suffix:"_m2_x2_l32" tactic_name
+      || String.ends_with ~suffix:"_m2_x1_l32" tactic_name
+      || String.ends_with ~suffix:"_m2_x4" tactic_name
+    then short_row_quant_grid columns
+    else linear_f16_grid columns
+  in
+  dispatch_output ~name ?batch runtime state output
+    ~operation:Kernel_abi.Operation.Linear
+    ~input_dtype:(Ir.Dtype.Quant quant)
+    ~buffers:[ input_buffer; weight_buffer; additive_buffer ] ~parameters
+    ~grid:(grid_x, 1, 1)
 
 let pointwise_kernel operation output =
   let output_dtype = Ir.Value.dtype output in
@@ -2680,54 +2721,54 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                       Ok ()
                   | Some _ -> Error "quantized Metal linear bias must be float16"
                 in
-                let* entry =
-                  select_quant_linear_kernel runtime ~m ~n ~k
-                    ~output_dtype:(Ir.Value.dtype output) quant
-                in
-                let name = Kernel_abi.Entry.name entry in
                 let* input_buffer, weight_buffer, bias_buffer =
                   match buffers with
                   | [ input; weight ] -> Ok (input, weight, weight)
                   | [ input; weight; bias ] -> Ok (input, weight, bias)
                   | _ -> Error "quantized Metal linear buffer binding is inconsistent"
                 in
-                let* parameters =
-                  Parameters.u32s [ m; n; k; if Option.is_some bias_value then 1 else 0 ]
-                in
-                let columns =
-                  if String.ends_with ~suffix:"_m2_n2_l32" name then
-                    (n + 1) / 2
-                  else if String.ends_with ~suffix:"_m2_n1_l32" name then n
-                  else if String.ends_with ~suffix:"_m2_x2_l32" name then
-                    m * ((n + 1) / 2)
-                  else if String.ends_with ~suffix:"_m2_x1_l32" name then
-                    m * n
-                  else if String.ends_with ~suffix:"_m2_x4" name then (n + 3) / 4
-                  else if String.ends_with ~suffix:"_m2" name then n
-                  else m * n
-                in
-                let* grid_x =
-                  if String.ends_with ~suffix:"_m2_n2_l32" name
-                     || String.ends_with ~suffix:"_m2_n1_l32" name
-                     || String.ends_with ~suffix:"_m2_x2_l32" name
-                     || String.ends_with ~suffix:"_m2_x1_l32" name
-                     || String.ends_with ~suffix:"_m2_x4" name
-                  then
-                    short_row_quant_grid columns
-                  else linear_f16_grid columns
-                in
                 dispatched
-                  (dispatch_output ~name runtime state output
-                     ~operation:Kernel_abi.Operation.Linear
-                     ~input_dtype:(Ir.Dtype.Quant quant)
-                     ~buffers:[ input_buffer; weight_buffer; bias_buffer ]
-                     ~parameters ~grid:(grid_x, 1, 1))
+                  (dispatch_quant_linear ~batch runtime state output ~m ~n ~k ~quant
+                     ~input_buffer ~weight_buffer ~additive_buffer:bias_buffer
+                     ~epilogue_mode:(if Option.is_some bias_value then 1 else 0))
             | input_dtype, weight_dtype, output_dtype, _ ->
                 Error
                   (Printf.sprintf "unsupported Metal linear kernel: %s + %s -> %s"
                      (Ir.Dtype.to_string input_dtype)
                      (Ir.Dtype.to_string weight_dtype)
                      (Ir.Dtype.to_string output_dtype)))
+        | ( Ir.Op.Linear_add { m; n; k },
+            [ input; weight; residual ],
+            Some output ) ->
+            let* () = validate_linear_shapes ~m ~n ~k input weight output in
+            let* quant =
+              match Ir.Value.dtype weight with
+              | Ir.Dtype.Quant quant -> Ok quant
+              | dtype ->
+                  Error
+                    (Printf.sprintf
+                       "Linear-add requires block-quantized weights, got %s"
+                       (Ir.Dtype.to_string dtype))
+            in
+            let* () =
+              if
+                same_value_metadata residual output
+                && Ir.Value.dtype input = Ir.Dtype.Float16
+                && Ir.Value.dtype output = Ir.Dtype.Float16
+              then Ok ()
+              else Error "Linear-add residual metadata is inconsistent"
+            in
+            let* buffers = find_values state [ input; weight; residual ] in
+            let* input_buffer, weight_buffer, residual_buffer =
+              match buffers with
+              | [ input_buffer; weight_buffer; residual_buffer ] ->
+                  Ok (input_buffer, weight_buffer, residual_buffer)
+              | _ -> Error "Linear-add buffer binding is inconsistent"
+            in
+            dispatched
+              (dispatch_quant_linear ~batch runtime state output ~m ~n ~k ~quant
+                 ~input_buffer ~weight_buffer ~additive_buffer:residual_buffer
+                 ~epilogue_mode:2)
         | ( Ir.Op.Gated_linear { m; n; k; activation },
             [ input; gate_weight; up_weight ],
             Some output ) ->

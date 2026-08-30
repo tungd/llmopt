@@ -1013,6 +1013,71 @@ let () =
     (not (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names))
     "Metal lowering omits the unselected generic Q4_K Linear tactic";
 
+  [ Ir.Dtype.Q8_0, 32; Ir.Dtype.Q4_K, 256; Ir.Dtype.Q5_K, 1024;
+    Ir.Dtype.Q6_K, 256; Ir.Dtype.Q5_0, 32; Ir.Dtype.Q4_0, 32;
+    Ir.Dtype.IQ4_XS, 256 ]
+  |> List.iter (fun (quant, k) ->
+         let graph = Ir.Graph.create () in
+         let input =
+           tensor_input graph ~name:"linear_add_input"
+             ~source:Ir.Input_source.Runtime ~shape:[ 2; k ]
+             ~dtype:Ir.Dtype.Float16
+         in
+         let weight =
+           tensor_input graph ~name:"linear_add_weight"
+             ~source:
+               (Ir.Input_source.Tensor_store { key = "linear_add_weight" })
+             ~shape:[ 64; k ] ~dtype:(Ir.Dtype.Quant quant)
+         in
+         let residual =
+           tensor_input graph ~name:"linear_add_residual"
+             ~source:Ir.Input_source.Runtime ~shape:[ 2; 64 ]
+             ~dtype:Ir.Dtype.Float16
+         in
+         let fresh () =
+           Ir.Graph.fresh_tensor_value graph
+             ~shape:(Tensor_shape.of_ints_exn [ 2; 64 ])
+             ~dtype:Ir.Dtype.Float16
+         in
+         let projected = fresh () in
+         Ir.Graph.append graph
+           ~op:(Ir.Op.Linear { m = 2; n = 64; k; bias = false })
+           ~inputs:[ input; weight ] ~output:(Some projected);
+         let added = fresh () in
+         Ir.Graph.append graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+           ~inputs:[ residual; projected ] ~output:(Some added);
+         Ir.Graph.add_output graph ~name:"linear_add_output" added;
+         let fused = Pass_fuse_linear_bias.fuse_quant_linear_add graph in
+         expect
+           (Ir.Graph.nodes fused
+           |> List.exists (fun node ->
+                  match Ir.node_op node, Ir.node_inputs node with
+                  | ( Ir.Op.Linear_add
+                        { m = 2; n = 64; k = fused_k },
+                      [ fused_input; fused_weight; fused_residual ] ) ->
+                      fused_k = k && Ir.Value.equal fused_input input
+                      && Ir.Value.equal fused_weight weight
+                      && Ir.Value.equal fused_residual residual
+                  | _ -> false))
+           "quantized Linear-add fusion follows typed topology for every supported block layout";
+         expect
+           (Ir.Graph.nodes fused
+           |> List.for_all (fun node ->
+                  match Ir.node_op node with
+                  | Ir.Op.Linear _ | Ir.Op.Add _ -> false
+                  | _ -> true))
+           "quantized Linear-add fusion removes the producer and residual dispatch";
+         fused |> Serving_schedule.of_graph |> expect_ok
+         |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+         |> ignore;
+         let program = fused |> Metal.lower |> expect_ok in
+         expect
+           (Metal.Program.kernels program
+           |> List.exists (fun entry ->
+                  String.ends_with ~suffix:"_add"
+                    (Kernel_abi.Entry.name entry)))
+           "quantized Linear-add lowering emits a dedicated residual epilogue tactic");
+
   let mixed_graph = Ir.Graph.create () in
   let mixed_input =
     tensor_input mixed_graph ~name:"mixed_input" ~source:Ir.Input_source.Runtime

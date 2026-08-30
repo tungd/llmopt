@@ -54,6 +54,19 @@ let w4_linear_info node =
       Some (m, n, k, output, input, weight, scale)
   | _ -> None
 
+let quant_linear_info node =
+  match Ir.node_op node, Ir.node_output node, Ir.node_inputs node with
+  | ( Ir.Op.Linear { m; n; k; bias = false },
+      Some output,
+      [ input; weight ] ) ->
+      (match Ir.Value.dtype weight with
+      | Ir.Dtype.Quant
+          (Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
+          | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS) ->
+          Some (m, n, k, output, input, weight)
+      | _ -> None)
+  | _ -> None
+
 let add_operands node =
   match Ir.node_op node, Ir.node_output node, Ir.node_inputs node with
   | Ir.Op.Add _, Some output, [ lhs; rhs ] ->
@@ -119,6 +132,63 @@ let fuse_w4a16_linear_add graph =
       nodes
   in
   Ir.Graph.with_nodes graph rewritten
+
+let fuse_quant_linear_add graph =
+  let nodes = Ir.Graph.nodes graph in
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) add_node ->
+        match add_operands add_node with
+        | Some (add_output, lhs, rhs) ->
+            let try_fuse linear_value residual =
+              let* linear_node = producer nodes linear_value in
+              let* m, n, k, linear_output, input, weight =
+                quant_linear_info linear_node
+              in
+              let same_metadata left right =
+                Ir.Value.dtype left = Ir.Value.dtype right
+                && Tensor_shape.equal
+                     (Ir.Value.logical_shape left)
+                     (Ir.Value.logical_shape right)
+              in
+              if
+                value_is linear_output linear_value
+                && only_consumer nodes linear_output add_node
+                && not
+                     (List.exists
+                        (fun (_, value) -> value_is value linear_output)
+                        (Ir.Graph.outputs graph))
+                && Ir.Value.dtype linear_output = Ir.Dtype.Float16
+                && same_metadata linear_output residual
+                && same_metadata linear_output add_output
+                && Tensor_shape.numel (Ir.Value.logical_shape residual) = m * n
+              then
+                Some
+                  ( ( Ir.node_id add_node,
+                      Ir.node_replace add_node
+                        ~op:(Ir.Op.Linear_add { m; n; k })
+                        ~inputs:[ input; weight; residual ] )
+                    :: replacements,
+                    Ir.node_id linear_node :: removed )
+              else None
+            in
+            (match try_fuse lhs rhs with
+            | Some result -> result
+            | None ->
+                (match try_fuse rhs lhs with
+                | Some result -> result
+                | None -> replacements, removed))
+        | None -> replacements, removed)
+      ([], []) nodes
+  in
+  Ir.Graph.with_nodes graph
+    (List.filter_map
+       (fun node ->
+         match List.assoc_opt (Ir.node_id node) replacements with
+         | Some replacement -> Some replacement
+         | None when List.mem (Ir.node_id node) removed -> None
+         | None -> Some node)
+       nodes)
 
 let run graph =
   let nodes = Ir.Graph.nodes graph in

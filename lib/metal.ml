@@ -4218,6 +4218,103 @@ kernel void llmopt_iq4_xs_gated_linear_f16_m2(
 }
 |}
 
+let find_substring_from source pattern offset =
+  let source_length = String.length source in
+  let pattern_length = String.length pattern in
+  let rec search index =
+    if index + pattern_length > source_length then None
+    else if String.sub source index pattern_length = pattern then Some index
+    else search (index + 1)
+  in
+  search offset
+
+let replace_all source ~pattern ~replacement =
+  let pattern_length = String.length pattern in
+  let buffer = Buffer.create (String.length source) in
+  let rec copy offset =
+    match find_substring_from source pattern offset with
+    | None ->
+        Buffer.add_substring buffer source offset (String.length source - offset)
+    | Some index ->
+        Buffer.add_substring buffer source offset (index - offset);
+        Buffer.add_string buffer replacement;
+        copy (index + pattern_length)
+  in
+  copy 0;
+  Buffer.contents buffer
+
+let extract_kernel source name =
+  let signature = "kernel void " ^ name ^ "(" in
+  match find_substring_from source signature 0 with
+  | None -> invalid_arg ("missing quantized Linear kernel source: " ^ name)
+  | Some start ->
+      let stop =
+        match find_substring_from source "\nkernel void " (start + 1) with
+        | Some stop -> stop
+        | None -> String.length source
+      in
+      String.sub source start (stop - start)
+
+let quant_source = function
+  | Ir.Dtype.Q8_0 -> q8_0_source
+  | Ir.Dtype.Q4_K -> q4_k_source
+  | Ir.Dtype.Q5_K -> q5_k_source
+  | Ir.Dtype.Q6_K -> q6_k_source
+  | Ir.Dtype.Q5_0 -> q5_0_source
+  | Ir.Dtype.Q4_0 -> q4_0_source
+  | Ir.Dtype.IQ4_XS -> iq4_xs_source
+
+let quant_linear_add_source (quant, tactic) =
+  let name = Tactic.name tactic in
+  let source = extract_kernel (quant_source quant) name in
+  let replacements =
+    [ ( "kernel void " ^ name ^ "(",
+        "kernel void " ^ name ^ "_add(" );
+      ( "    if (params.has_bias != 0u) acc += float(bias[col]);\n",
+        "" );
+      ( "    if (params.has_bias != 0u) accumulator += float(bias[col]);\n",
+        "" );
+      ( "    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;\n",
+        "" );
+      ( "      const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;\n",
+        "" );
+      ( "    output[row * params.n + col] = half(acc);\n",
+        "    const uint output_index = row * params.n + col;\n"
+        ^ "    output[output_index] = half(half(acc) + bias[output_index]);\n" );
+      ( "    output[row * params.n + col] = half(accumulator);\n",
+        "    const uint output_index = row * params.n + col;\n"
+        ^ "    output[output_index] = half(half(accumulator) + bias[output_index]);\n" );
+      ( "    output[col] = half(acc0 + bias_value);\n",
+        "    output[col] = half(half(acc0) + bias[col]);\n" );
+      ( "    output[params.n + col] = half(acc1 + bias_value);\n",
+        "    output[params.n + col] = half(half(acc1) + bias[params.n + col]);\n" );
+      ( "      output[row * params.n + col] = half(sum + bias_value);\n",
+        "      const uint output_index = row * params.n + col;\n"
+        ^ "      output[output_index] = half(half(sum) + bias[output_index]);\n" );
+      ( "    output[row * params.n + col] = half(sum + bias_value);\n",
+        "    const uint output_index = row * params.n + col;\n"
+        ^ "    output[output_index] = half(half(sum) + bias[output_index]);\n" );
+      ( "      output[col] = half(sum0 + bias_value);\n",
+        "      output[col] = half(half(sum0) + bias[col]);\n" );
+      ( "      output[params.n + col] = half(sum1 + bias_value);\n",
+        "      output[params.n + col] = half(half(sum1) + bias[params.n + col]);\n" );
+      ( "    output[col] = half(sum0 + bias_value);\n",
+        "    output[col] = half(half(sum0) + bias[col]);\n" );
+      ( "    output[params.n + col] = half(sum1 + bias_value);\n",
+        "    output[params.n + col] = half(half(sum1) + bias[params.n + col]);\n" ) ]
+  in
+  let fused =
+    List.fold_left
+      (fun source (pattern, replacement) ->
+        replace_all source ~pattern ~replacement)
+      source replacements
+  in
+  if
+    Option.is_some (find_substring_from fused "params.has_bias" 0)
+    || Option.is_none (find_substring_from fused "+ bias[" 0)
+  then invalid_arg ("unsupported quantized Linear epilogue source: " ^ name)
+  else fused
+
 let kquant_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_dequant_q4_k"
@@ -7099,6 +7196,14 @@ let has_quant_linear graph =
                  (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | IQ4_XS) ->
                  Ir.Value.dtype output = Ir.Dtype.Float16
              | _ -> false)
+         | ( Ir.Op.Linear_add _,
+             [ _input; weight; _residual ],
+             Some output ) ->
+             (match Ir.Value.dtype weight with
+             | Ir.Dtype.Quant
+                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | IQ4_XS) ->
+                 Ir.Value.dtype output = Ir.Dtype.Float16
+             | _ -> false)
          | ( Ir.Op.Gated_linear _,
              _input :: gate_weight :: up_weight :: _,
              Some output ) ->
@@ -7133,6 +7238,31 @@ let quant_tactic_entries tactics =
   |> List.filter (fun entry ->
          Kernel_abi.Entry.operation entry <> Kernel_abi.Operation.Linear
          || List.mem (Kernel_abi.Entry.name entry) selected_names)
+
+let quant_linear_add_tactics ~target graph =
+  Ir.Graph.nodes graph
+  |> List.filter_map (fun node ->
+         match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+         | ( Ir.Op.Linear_add { m; n; k },
+             [ input; weight; _residual ],
+             Some output ) ->
+             (match Ir.Value.dtype weight with
+             | Ir.Dtype.Quant quant ->
+                 Tactic.select_linear ~target ~m ~n ~k
+                   ~input_dtype:(Ir.Value.dtype input)
+                   ~storage:(Ir.Linear_storage.Block_quantized quant)
+                   ~output_dtype:(Ir.Value.dtype output)
+                 |> Option.map (fun tactic -> quant, tactic)
+             | _ -> None)
+         | _ -> None)
+  |> List.sort_uniq (fun (_, left) (_, right) ->
+         String.compare (Tactic.name left) (Tactic.name right))
+
+let quant_linear_add_entry (quant, tactic) =
+  kernel_entry_with_threadgroup ~threadgroup:(Tactic.threadgroup tactic)
+    ~name:(Tactic.name tactic ^ "_add")
+    ~operation:Kernel_abi.Operation.Linear
+    ~input_dtype:(Ir.Dtype.Quant quant) ~output_dtype:Ir.Dtype.Float16
 
 let lower_primary graph =
   let kernel =
@@ -7324,6 +7454,12 @@ let lower ?(target = Target_hardware.default) graph =
   let selected_attention_entries = attention_tactic_entries attention_tactics in
   let quant_tactics = quant_linear_tactics ~target graph in
   let selected_quant_entries = quant_tactic_entries quant_tactics in
+  let quant_add_tactics = quant_linear_add_tactics ~target graph in
+  let quant_add_source =
+    quant_add_tactics |> List.map quant_linear_add_source
+    |> String.concat "\n"
+  in
+  let quant_add_entries = List.map quant_linear_add_entry quant_add_tactics in
   let gated_delta_tactics = gated_delta_tactics graph in
   let gated_delta_source =
     gated_delta_tactics |> List.map gated_delta_source |> String.concat "\n"
@@ -7342,8 +7478,9 @@ let lower ?(target = Target_hardware.default) graph =
         w4a16_lm_head_argmax_entries );
       ( has_quant_linear graph,
         quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source
-        ^ q4_k_source ^ q5_k_source ^ q6_k_source ^ iq4_xs_source,
-        selected_quant_entries );
+        ^ q4_k_source ^ q5_k_source ^ q6_k_source ^ iq4_xs_source
+        ^ quant_add_source,
+        selected_quant_entries @ quant_add_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       ( has_f16_bf16_linear graph,
         linear_f16_bf16_source,

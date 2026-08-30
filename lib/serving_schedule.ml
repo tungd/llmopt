@@ -264,6 +264,31 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d W4A16 linear metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Linear_add { m; n; k },
+            [ input; weight; residual ],
+            Some output ) ->
+            if
+              m > 0 && n > 0 && k > 0
+              && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+              && Tensor_shape.dimensions (Ir.Value.logical_shape weight)
+                 = [ n; k ]
+              && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n
+              && same_value_metadata residual output
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && (match Ir.Value.dtype weight with
+                 | Ir.Dtype.Quant
+                     (Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K
+                     | Ir.Dtype.Q6_K | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0
+                     | Ir.Dtype.IQ4_XS) ->
+                     true
+                 | _ -> false)
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Linear-add metadata is inconsistent"
+                   command.Command.node_id)
         | Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs }, inputs, Some output ->
             if w4a16_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output extra_outputs then
               Ok ()
@@ -1384,6 +1409,14 @@ module Sequence = struct
                k = substitute substitutions k;
                bias;
              })
+    | Ir.Op.Linear_add { m; n; k } ->
+        Ok
+          (Ir.Op.Linear_add
+             {
+               m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+             })
     | Ir.Op.Fused_matmul_bias { m; n; k } ->
         Ok
           (Ir.Op.Fused_matmul_bias
@@ -1595,7 +1628,8 @@ module Sequence = struct
         Tensor_shape.broadcast (Ir.Value.logical_shape left)
           (Ir.Value.logical_shape right)
         |> shape_error
-    | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
+    | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Linear_add _
+      | Ir.Op.Fused_matmul_bias _
       | Ir.Op.W4a16_linear _ | Ir.Op.Gated_linear _ ), _ ->
         map_shape substitutions original
     | Ir.Op.W4a16_swiglu_ffn _, _ -> map_shape substitutions original
@@ -1701,6 +1735,7 @@ module Sequence = struct
 
   let projection_dimensions = function
     | Ir.Op.Linear { m; n; k; _ }
+    | Ir.Op.Linear_add { m; n; k }
     | Ir.Op.W4a16_linear { m; n; k; _ } -> Some (m, n, k)
     | _ -> None
 
@@ -3018,6 +3053,9 @@ let write_op writer = function
       Binary.Writer.u8 writer 4;
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
       Binary.Writer.bool writer bias
+  | Ir.Op.Linear_add { m; n; k } ->
+      Binary.Writer.u8 writer 40;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ]
   | Ir.Op.Add { broadcast } ->
       Binary.Writer.u8 writer 5;
       Binary.Writer.u8 writer (match broadcast with Shape.Same -> 0 | Shape.Row -> 1)
@@ -3156,6 +3194,10 @@ let read_op values reader =
       let* m, n, k = read_three_dimensions reader in
       let* bias = Binary.Reader.bool reader in
       Ok (Ir.Op.Linear { m; n; k; bias })
+  | 40 ->
+      let* m, n, k = read_three_dimensions reader in
+      if m > 0 && n > 0 && k > 0 then Ok (Ir.Op.Linear_add { m; n; k })
+      else Error "schedule contains invalid Linear-add dimensions"
   | 5 ->
       let* broadcast_tag = Binary.Reader.u8 reader in
       let* broadcast =
@@ -3310,7 +3352,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 26;
+  Binary.Writer.u16 writer 27;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -3330,7 +3372,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 26 then
+    if version <> 27 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 
