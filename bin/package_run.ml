@@ -52,6 +52,22 @@ let median values =
   if length mod 2 = 1 then sorted.(length / 2)
   else (sorted.((length / 2) - 1) +. sorted.(length / 2)) /. 2.0
 
+let dump_kernel_histogram execution =
+  match Sys.getenv_opt "LLMOPT_DUMP_KERNELS" with
+  | Some "1" ->
+      let counts = Hashtbl.create 64 in
+      Metal_runtime.Execution.kernels execution
+      |> List.iter (fun name ->
+             Hashtbl.replace counts name
+               (Option.value ~default:0 (Hashtbl.find_opt counts name) + 1));
+      counts |> Hashtbl.to_seq |> List.of_seq
+      |> List.sort (fun (left_name, left_count) (right_name, right_count) ->
+             let by_count = Int.compare right_count left_count in
+             if by_count <> 0 then by_count
+             else String.compare left_name right_name)
+      |> List.iter (fun (name, count) -> Printf.printf "%6d %s\n" count name)
+  | _ -> ()
+
 let run ~warmup_count ~repeat_count root input_name input_path output_name
     output_path =
   let* package =
@@ -73,6 +89,7 @@ let run ~warmup_count ~repeat_count root input_name input_path output_name
     (Bytes.length contents) warmup_count repeat_count (median measurements)
     (List.fold_left Float.min Float.infinity measurements)
     (List.fold_left Float.max Float.neg_infinity measurements);
+  dump_kernel_histogram execution;
   Ok ()
 
 let run_all root input_name input_path output_directory =

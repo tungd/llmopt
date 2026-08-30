@@ -414,6 +414,22 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d reduction metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.L2_norm { epsilon }),
+            [ input ],
+            Some output ) ->
+            if
+              Float.is_finite epsilon && epsilon >= 0.0
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape input)
+                   (Ir.Value.logical_shape output)
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d L2 normalization metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence config),
             [ input ],
             Some output ) ->
@@ -952,6 +968,7 @@ let validate_command seen_values command =
               | Ir.Primitive.Masked_fill _ | Ir.Primitive.Eye
               | Ir.Primitive.Batched_matmul
               | Ir.Primitive.Gated_delta
+              | Ir.Primitive.L2_norm _
               | Ir.Primitive.Paged_attention_q8 _),
             _,
             _ ) ->
@@ -1266,6 +1283,7 @@ module Sequence = struct
           (Ir.Value.logical_shape prepend) ~axis:(Ir.Diff.axis config)
         |> shape_error
     | Ir.Primitive.Cumsum _, [ input ]
+    | Ir.Primitive.L2_norm _, [ input ]
     | Ir.Primitive.Triangular_recurrence _, [ input ] ->
         Ok (Ir.Value.logical_shape input)
     | Ir.Primitive.Gated_delta, [ _; _; _; _; _ ] ->
@@ -2544,6 +2562,9 @@ let write_primitive writer = function
   | Ir.Primitive.Eye -> Binary.Writer.u8 writer 18
   | Ir.Primitive.Batched_matmul -> Binary.Writer.u8 writer 19
   | Ir.Primitive.Gated_delta -> Binary.Writer.u8 writer 21
+  | Ir.Primitive.L2_norm { epsilon } ->
+      Binary.Writer.u8 writer 22;
+      Binary.Writer.float64 writer epsilon
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2665,6 +2686,11 @@ let read_primitive values reader =
       Ir.Triangular_recurrence.create ~axis ~start ~stop
       |> Result.map (fun config -> Ir.Primitive.Triangular_recurrence config)
   | 21 -> Ok Ir.Primitive.Gated_delta
+  | 22 ->
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon && epsilon >= 0.0 then
+        Ok (Ir.Primitive.L2_norm { epsilon })
+      else Error "invalid L2 normalization epsilon"
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function
@@ -2928,7 +2954,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 21;
+  Binary.Writer.u16 writer 22;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -2948,7 +2974,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 21 then
+    if version <> 22 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

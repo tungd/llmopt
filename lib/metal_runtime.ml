@@ -2672,6 +2672,24 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~parameters ~grid:(grid_x, 1, 1)
             in
             dispatched (Ok (bind_value state output output_buffer, kernel))
+        | ( Ir.Op.Primitive (Ir.Primitive.L2_norm { epsilon }),
+            [ input ],
+            Some output ) ->
+            let input_shape = Ir.Value.logical_shape input in
+            let* width =
+              match List.rev (Tensor_shape.dimensions input_shape) with
+              | width :: _ when width > 0 -> Ok width
+              | _ -> Error "L2 normalization requires a non-empty final dimension"
+            in
+            let rows = Tensor_shape.numel input_shape / width in
+            let* input_buffer = find_value state input in
+            let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
+            let* grid_x = simd_rows_grid rows in
+            dispatched
+              (dispatch_output ~name:"llmopt_l2_norm_f16_simd" runtime state
+                 output ~operation:Kernel_abi.Operation.Rms_norm
+                 ~input_dtype:(Ir.Value.dtype input) ~buffers:[ input_buffer ]
+                 ~parameters ~grid:(grid_x, 1, 1))
         | ( Ir.Op.Rms_rope config,
             [ input; weight; cosine; sine ],
             Some output ) ->

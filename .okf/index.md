@@ -65,6 +65,7 @@ configuration.
 * [Graph-recovered zero-state gated-delta execution](experiments/exp-0111-graph-recovered-gated-delta-2026-08-30.md) - recover a semantic recurrence from captured topology and lower it directly to SIMD Metal.
 * [Full-SIMD two-column Q4_K Linear tactic](experiments/exp-0112-full-simd-q4-k-linear-2026-08-30.md) - use full SIMD lanes for captured two-row Q4_K Linear without architecture identifiers.
 * [Occupancy-selected full-SIMD Q5_K Linear tactic](experiments/exp-0113-occupancy-selected-q5-k-linear-2026-08-30.md) - select full-lane Q5_K execution from captured superblock occupancy.
+* [Topology-fused L2 normalization](experiments/exp-0114-topology-fused-l2-normalization-2026-08-30.md) - replace captured final-axis normalization chains with one semantic SIMD dispatch.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.

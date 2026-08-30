@@ -308,6 +308,29 @@ let reduce state reduction input_value output_value output =
             (Tensor.get_linear output index /. Float.of_int count))
         counts
 
+let l2_norm state ~epsilon input_value output =
+  let dimensions = Tensor_shape.dimensions (Ir.Value.logical_shape input_value) in
+  let width =
+    match List.rev dimensions with
+    | width :: _ when width > 0 -> width
+    | _ -> failf "L2 normalization requires a non-empty final dimension"
+  in
+  let input = find state input_value in
+  let rows = Tensor_shape.numel (Ir.Value.logical_shape input_value) / width in
+  for row = 0 to rows - 1 do
+    let base = row * width in
+    let square_sum = ref 0.0 in
+    for column = 0 to width - 1 do
+      let value = Tensor.get_linear input (base + column) in
+      square_sum := !square_sum +. (value *. value)
+    done;
+    let inverse = 1.0 /. Float.sqrt (!square_sum +. epsilon) in
+    for column = 0 to width - 1 do
+      Tensor.set_linear output (base + column)
+        (Tensor.get_linear input (base + column) *. inverse)
+    done
+  done
+
 let apply_index state selection input_value output_value output =
   let output_shape = Ir.Value.logical_shape output_value in
   let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
@@ -877,6 +900,8 @@ let primitive state operation inputs output_value output =
       triangular_recurrence state config input output_value output
   | Ir.Primitive.Gated_delta, [ query; key; value; gate; beta ] ->
       gated_delta state query key value gate beta output_value output
+  | Ir.Primitive.L2_norm { epsilon }, [ input ] ->
+      l2_norm state ~epsilon input output
   | Ir.Primitive.Fill scalar, [] -> fill scalar output_value output
   | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
       gather2 state source first_index second_index output_value output

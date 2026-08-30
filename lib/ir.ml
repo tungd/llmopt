@@ -515,6 +515,7 @@ module Primitive = struct
     | Cumsum of Cumsum.t
     | Triangular_recurrence of Triangular_recurrence.t
     | Gated_delta
+    | L2_norm of { epsilon : float }
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t
@@ -528,7 +529,7 @@ module Primitive = struct
     | Pointwise operation -> Pointwise.values operation
     | Cast _ | Reduce _ | Movement _ | Short_conv _ | Attention _
     | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _
-    | Triangular_recurrence _ | Gated_delta | Fill _ | Gather2 | Update_slice _
+    | Triangular_recurrence _ | Gated_delta | L2_norm _ | Fill _ | Gather2 | Update_slice _
     | Pad_right_zero _ | Triangular _
     | Masked_fill _ | Eye | Batched_matmul -> []
 
@@ -546,6 +547,7 @@ module Primitive = struct
     | Cumsum config -> Cumsum.to_string config
     | Triangular_recurrence config -> Triangular_recurrence.to_string config
     | Gated_delta -> "gated-delta"
+    | L2_norm { epsilon } -> Printf.sprintf "l2-norm(eps=%.9g)" epsilon
     | Fill scalar -> "fill(" ^ Scalar.to_string scalar ^ ")"
     | Gather2 -> "gather2"
     | Update_slice index -> "update-" ^ Tensor_shape.Index.to_string index

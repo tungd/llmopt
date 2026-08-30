@@ -319,6 +319,120 @@ let () =
        "kernel void llmopt_rms_norm_f16_wf32_simd")
     "Metal lowering preserves GGUF float32 RMSNorm weights";
 
+  let l2_graph = Ir.Graph.create () in
+  let l2_input name =
+    tensor_input l2_graph ~name ~source:Ir.Input_source.Runtime
+      ~shape:[ 2; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let l2_left = l2_input "l2_left" in
+  let l2_right = l2_input "l2_right" in
+  let l2_fresh shape =
+    Ir.Graph.fresh_tensor_value l2_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let l2_append op inputs shape =
+    let output = l2_fresh shape in
+    Ir.Graph.append l2_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let l2_square input =
+    l2_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor input,
+                 Ir.Pointwise.Tensor input ))))
+      [ input ] [ 2; 64 ]
+  in
+  let left_square = l2_square l2_left in
+  let right_square = l2_square l2_right in
+  let l2_sum square =
+    l2_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Reduce
+            { Ir.Reduction.operator = Sum; axes = [ 1 ]; keepdim = true }))
+      [ square ] [ 2; 1 ]
+  in
+  let left_sum = l2_sum left_square in
+  let right_sum = l2_sum right_square in
+  let l2_stabilize sum =
+    l2_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor sum,
+                 Ir.Pointwise.Scalar (Ir.Scalar.Float 1e-6) ))))
+      [ sum ] [ 2; 1 ]
+  in
+  let left_stabilized = l2_stabilize left_sum in
+  let right_stabilized = l2_stabilize right_sum in
+  let l2_inverse stabilized =
+    l2_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, stabilized))))
+      [ stabilized ] [ 2; 1 ]
+  in
+  let left_inverse = l2_inverse left_stabilized in
+  let right_inverse = l2_inverse right_stabilized in
+  let l2_normalize input inverse =
+    l2_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor input,
+                 Ir.Pointwise.Tensor inverse ))))
+      [ input; inverse ] [ 2; 64 ]
+  in
+  let left_normalized = l2_normalize l2_left left_inverse in
+  let right_normalized = l2_normalize l2_right right_inverse in
+  Ir.Graph.add_output l2_graph ~name:"left" left_normalized;
+  Ir.Graph.add_output l2_graph ~name:"right" right_normalized;
+  let l2_fused = Passes.fuse_rms_norm l2_graph in
+  expect
+    (Ir.Graph.nodes l2_fused
+    |> List.filter (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.L2_norm { epsilon }) ->
+               Float.abs (epsilon -. 1e-6) < 1e-12
+           | _ -> false)
+    |> List.length
+    = 2)
+    "L2 normalization fusion follows interleaved producer topology";
+  expect
+    (Ir.Graph.nodes l2_fused
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive
+               (Ir.Primitive.Reduce
+                 { operator = Sum; axes = [ 1 ]; keepdim = true }) ->
+               false
+           | Ir.Op.Primitive
+               (Ir.Primitive.Pointwise
+                 (Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, _))) ->
+               false
+           | _ -> true))
+    "L2 normalization fusion removes matched intermediates";
+  let l2_schedule =
+    l2_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands l2_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.L2_norm _) -> true
+           | _ -> false))
+    "L2 normalization survives schedule serialization";
+  let l2_program = Metal.lower l2_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source l2_program)
+       "kernel void llmopt_l2_norm_f16_simd")
+    "Metal lowering emits semantic L2 normalization";
+
   let wide_attention_graph = Ir.Graph.create () in
   let wide_attention_input name shape dtype =
     tensor_input wide_attention_graph ~name ~source:Ir.Input_source.Runtime

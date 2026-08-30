@@ -367,6 +367,124 @@ let absorb_preceding_casts graph =
   in
   Ir.Graph.with_nodes graph rewritten
 
+let graph_exposes graph value =
+  List.exists (fun (_, output) -> value_is output value) (Ir.Graph.outputs graph)
+
+let l2_square_input node expected_input =
+  match pointwise_binary node, pointwise_unary node with
+  | Some (Ir.Pointwise.Mul, left, right, output), _
+    when operands_match_pair left right expected_input expected_input ->
+      Some output
+  | _, Some (Ir.Pointwise.Pow exponent, input, output)
+    when scalar_is_two exponent && value_is input expected_input ->
+      Some output
+  | _ -> None
+
+let l2_norm_match graph nodes normalize_node input inverse output =
+  match producer nodes inverse with
+  | Some inverse_node ->
+      (match pointwise_unary inverse_node with
+      | Some (inverse_op, stabilized, inverse_output)
+        when inverse_square_root inverse_op && value_is inverse_output inverse ->
+          (match producer nodes stabilized with
+          | Some add_node ->
+              (match pointwise_binary add_node with
+              | Some (Ir.Pointwise.Add, left, right, stabilized_output)
+                when value_is stabilized_output stabilized ->
+                  (match tensor_and_scalar left right with
+                  | Some (sum, epsilon) ->
+                      (match producer nodes sum, scalar_float epsilon with
+                      | Some sum_node, Some epsilon
+                        when Float.is_finite epsilon && epsilon >= 0.0 ->
+                          (match
+                             Ir.node_op sum_node,
+                             Ir.node_inputs sum_node,
+                             Ir.node_output sum_node
+                           with
+                          | ( Ir.Op.Primitive
+                                (Ir.Primitive.Reduce
+                                  {
+                                    operator = Ir.Reduction.Sum;
+                                    axes;
+                                    keepdim = true;
+                                  }),
+                              [ square ],
+                              Some sum_output )
+                            when value_is sum_output sum
+                                 && axes
+                                    = [ Tensor_shape.rank
+                                          (Ir.Value.logical_shape input)
+                                        - 1 ] ->
+                              (match producer nodes square with
+                              | Some square_node ->
+                                  (match l2_square_input square_node input with
+                                  | Some square_output
+                                    when value_is square_output square
+                                         && only_consumer nodes square sum_node
+                                         && only_consumer nodes sum add_node
+                                         && only_consumer nodes stabilized inverse_node
+                                         && only_consumer nodes inverse normalize_node
+                                         && not (graph_exposes graph square)
+                                         && not (graph_exposes graph sum)
+                                         && not (graph_exposes graph stabilized)
+                                         && not (graph_exposes graph inverse)
+                                         && Tensor_shape.equal
+                                              (Ir.Value.logical_shape input)
+                                              (Ir.Value.logical_shape output)
+                                         && Ir.Value.dtype input
+                                            = Ir.Value.dtype output ->
+                                      Some
+                                        ( Ir.node_replace normalize_node
+                                            ~op:
+                                              (Ir.Op.Primitive
+                                                 (Ir.Primitive.L2_norm
+                                                    { epsilon }))
+                                            ~inputs:[ input ],
+                                          [ Ir.node_id square_node;
+                                            Ir.node_id sum_node;
+                                            Ir.node_id add_node;
+                                            Ir.node_id inverse_node ] )
+                                  | _ -> None)
+                              | None -> None)
+                          | _ -> None)
+                      | _ -> None)
+                  | None -> None)
+              | _ -> None)
+          | None -> None)
+      | _ -> None)
+  | None -> None
+
+let fuse_l2_norm graph =
+  let nodes = Ir.Graph.nodes graph in
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) node ->
+        match pointwise_binary node with
+        | Some (Ir.Pointwise.Mul, left, right, output) ->
+            (match tensor_operand left, tensor_operand right with
+            | Some left, Some right ->
+                let matched =
+                  match l2_norm_match graph nodes node left right output with
+                  | Some matched -> Some matched
+                  | None -> l2_norm_match graph nodes node right left output
+                in
+                (match matched with
+                | Some (replacement, matched_removed) ->
+                    ( (Ir.node_id node, replacement) :: replacements,
+                      List.rev_append matched_removed removed )
+                | None -> replacements, removed)
+            | _ -> replacements, removed)
+        | _ -> replacements, removed)
+      ([], []) nodes
+  in
+  nodes
+  |> List.filter_map (fun node ->
+         match List.assoc_opt (Ir.node_id node) replacements with
+         | Some replacement -> Some replacement
+         | None when List.mem (Ir.node_id node) removed -> None
+         | None -> Some node)
+  |> Ir.Graph.with_nodes graph
+
 let run graph =
   let rec rewrite prefix remaining =
     match rms_norm_replacement remaining with
@@ -384,6 +502,6 @@ let run graph =
                 | [] -> List.rev prefix)))
   in
   let graph = Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph)) in
-  absorb_preceding_casts graph
+  graph |> absorb_preceding_casts |> fuse_l2_norm
 
 let pass = Pass.create ~name ~description ~run

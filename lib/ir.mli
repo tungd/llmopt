@@ -270,6 +270,7 @@ module Primitive : sig
     | Cumsum of Cumsum.t
     | Triangular_recurrence of Triangular_recurrence.t
     | Gated_delta
+    | L2_norm of { epsilon : float }
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t

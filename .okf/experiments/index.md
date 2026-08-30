@@ -112,3 +112,4 @@
 * [Graph-recovered zero-state gated-delta execution](exp-0111-graph-recovered-gated-delta-2026-08-30.md) - captured-topology semantic replacement and direct SIMD recurrence execution.
 * [Full-SIMD two-column Q4_K Linear tactic](exp-0112-full-simd-q4-k-linear-2026-08-30.md) - full-lane packed Q4_K execution selected from captured geometry and physical layout.
 * [Occupancy-selected full-SIMD Q5_K Linear tactic](exp-0113-occupancy-selected-q5-k-linear-2026-08-30.md) - four-superblock Q5_K execution selected from captured occupancy geometry.
+* [Topology-fused L2 normalization](exp-0114-topology-fused-l2-normalization-2026-08-30.md) - producer/user topology selected final-axis normalization executed as one SIMD kernel.

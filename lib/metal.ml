@@ -4033,6 +4033,38 @@ let rms_norm_entries =
       ~operation:Kernel_abi.Operation.Rms_norm
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let l2_norm_source =
+  "\nconstant uint L2_NORM_SIMD_WIDTH = 32;\n"
+  ^ "constant uint L2_NORM_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct L2NormParams { uint rows; uint width; float epsilon; };\n\n"
+  ^ "kernel void llmopt_l2_norm_f16_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device half* output [[buffer(1)]],\n"
+  ^ "    constant L2NormParams& params [[buffer(2)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * L2_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += L2_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += L2_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse);\n"
+  ^ "}\n"
+
+let l2_norm_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_l2_norm_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let rms_rope_source =
   "\nconstant uint RMS_ROPE_SIMD_WIDTH = 32;\n"
   ^ "constant uint RMS_ROPE_ROWS_PER_THREADGROUP = 8;\n\n"
@@ -5876,6 +5908,13 @@ let has_rms_norm graph =
   |> List.exists (fun node ->
          match Ir.node_op node with Ir.Op.Rms_norm _ -> true | _ -> false)
 
+let has_l2_norm graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive (Ir.Primitive.L2_norm _) -> true
+         | _ -> false)
+
 let has_rms_rope graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -6308,6 +6347,7 @@ let lower ?(target = Target_hardware.default) graph =
         linear_f16_f32_source,
         linear_f16_f32_entries );
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
+      has_l2_norm graph, l2_norm_source, l2_norm_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_rms_rope_qk graph, rms_rope_qk_source, rms_rope_qk_entries;
       ( has_short_conv graph,

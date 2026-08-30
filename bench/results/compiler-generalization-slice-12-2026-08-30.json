@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T12:05:08+07:00",
+  "git_base_commit": "a9c653fc041d0fad38da7593de5754c1de9c58df",
+  "slice": "topology-fused-l2-normalization",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "matched_topology": "mul(x,x) -> sum(last-axis,keepdim) -> add(epsilon) -> rsqrt -> mul(x,inverse)",
+    "selection": "producer and sole-consumer topology, last-axis reduction, finite nonnegative epsilon, equal input/output shape and dtype, and no exposed intermediate",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "semantic_operation": "L2_norm(epsilon)",
+    "kernel": "one SIMD group normalizes one final-dimension row with Float32 accumulation",
+    "diagnostic": "LLMOPT_DUMP_KERNELS=1 prints the encoded execution kernel histogram",
+    "captured_sites": {
+      "qwen": 36,
+      "gemma": 0
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice12-l2",
+        "kernels": 104,
+        "commands": 2507,
+        "dispatches": 1128,
+        "previous_dispatches": 1272,
+        "dispatch_delta": -144,
+        "median_ms": 12.558937,
+        "min_ms": 11.403799,
+        "max_ms": 38.861036,
+        "previous_recorded_median_ms": 13.383031,
+        "delta_ms": -0.824094,
+        "latency_reduction_percent": 6.157753,
+        "output_sha256": "cf98d808027aaee68a6e13ccf4f75489ccfbff530478a5bb63361940474eb4ba",
+        "previous_output_mean_abs": 0.0051494651,
+        "previous_output_max_abs": 0.0454711914,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.931209,
+        "mean_ms": 8.217304,
+        "samples_ns": [
+          9172167,
+          8584208,
+          7947334,
+          7675917,
+          7865208,
+          7912541,
+          7915084,
+          7858500,
+          9255042,
+          7987041
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.583483
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice12-l2",
+        "kernels": 94,
+        "commands": 3997,
+        "dispatches": 1635,
+        "previous_dispatches": 1635,
+        "dispatch_delta": 0,
+        "median_ms": 28.671980,
+        "min_ms": 27.322054,
+        "max_ms": 44.676065,
+        "previous_recorded_median_ms": 28.946519,
+        "delta_ms": -0.274539,
+        "latency_reduction_percent": 0.948435,
+        "output_sha256": "b2ef1e0f662e2d5a4f74a12941eb7fd4b963b244db15d0e7f78b5258a28c9ebb",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.3268545,
+        "mean_ms": 17.720725,
+        "samples_ns": [
+          17214375,
+          18710541,
+          17151583,
+          17277875,
+          17155125,
+          17216167,
+          18866500,
+          17504917,
+          18734333,
+          17375834
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.654771
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "pass",
+    "metal_compilation": "pass for native fixture and both full-model packages",
+    "qwen_package": "valid, 104 kernels, 2507 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3997 commands, 0 opaque",
+    "numerical_scope": "Qwen preserves both previous row argmax IDs with changed Float16 logits; Gemma matches no L2 site and remains byte exact"
+  }
+}
