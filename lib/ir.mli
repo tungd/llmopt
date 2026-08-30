@@ -318,6 +318,7 @@ module Op : sig
     | Gelu
     | Relu
     | Rms_norm of { epsilon : float }
+    | Rms_norm_add of { epsilon : float }
     | Rms_rope of Rms_rope.t
     | Short_conv_step of Short_conv_step.t
     | Short_conv_step_fused of Short_conv_step.t

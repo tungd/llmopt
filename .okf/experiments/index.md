@@ -115,3 +115,4 @@
 * [Topology-fused L2 normalization](exp-0114-topology-fused-l2-normalization-2026-08-30.md) - producer/user topology selected final-axis normalization executed as one SIMD kernel.
 * [Attention-linked token-major RMSNorm-RoPE fusion](exp-0115-attention-linked-rms-rope-2026-08-30.md) - captured layout and common-Attention selected Q/K rotary execution.
 * [Single-consumer activation-product fusion](exp-0116-activation-product-fusion-2026-08-30.md) - producer/user-selected SiLU, GELU, and sigmoid product execution.
+* [Single-consumer RMSNorm-residual fusion](exp-0117-rmsnorm-residual-fusion-2026-08-30.md) - producer/user-selected RMSNorm plus residual execution.

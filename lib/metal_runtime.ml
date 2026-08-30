@@ -2675,6 +2675,31 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                      (Ir.Dtype.to_string input_dtype)
                      (Ir.Dtype.to_string weight_dtype)
                      (Ir.Dtype.to_string output_dtype)))
+        | ( Ir.Op.Rms_norm_add { epsilon },
+            [ input; weight; residual ],
+            Some output ) ->
+            let input_shape = Ir.Value.logical_shape input in
+            let* width =
+              match List.rev (Tensor_shape.dimensions input_shape) with
+              | width :: _ when width > 0 -> Ok width
+              | _ -> Error "RMSNorm-add requires a non-empty final dimension"
+            in
+            let rows = Tensor_shape.numel input_shape / width in
+            let* buffers = find_values state [ input; weight; residual ] in
+            let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
+            let* entry =
+              kernel_entry ~name:"llmopt_rms_norm_add_f16_wf32_simd" runtime
+                ~operation:Kernel_abi.Operation.Rms_norm
+                ~input_dtype:(Ir.Value.dtype input)
+                ~output_dtype:(Ir.Value.dtype output)
+            in
+            let* grid_x = simd_rows_grid rows in
+            let* output_buffer = workspace_buffer state output in
+            let* kernel =
+              dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
+                ~parameters ~grid:(grid_x, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buffer, kernel))
         | Ir.Op.Rms_norm { epsilon }, [ input; weight ], Some output ->
             let input_shape = Ir.Value.logical_shape input in
             let dimensions = Tensor_shape.dimensions input_shape in

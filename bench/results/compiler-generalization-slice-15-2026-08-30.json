@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T12:38:27+07:00",
+  "git_base_commit": "37cf5334cdbff8d8fab5cf553ea860495abc37ee",
+  "slice": "single-consumer-rmsnorm-residual-fusion",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "matched_topology": "single-consumer RMSNorm -> residual add",
+    "selection": "producer and sole-consumer identity, graph-output escape check, captured shape equality, and input/weight/residual dtypes",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "semantic_operation": "Rms_norm_add",
+    "kernel": "one SIMD dispatch normalizes and scales one captured final-axis row before adding its residual",
+    "captured_sites": {
+      "qwen": 0,
+      "gemma": 106
+    },
+    "llama_cpp_correspondence": "kernel_rms_norm_mul_add_f32 is the equivalent graph-general fused primitive"
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice15-rms-add",
+        "kernels": 108,
+        "commands": 2453,
+        "previous_commands": 2453,
+        "dispatches": 1098,
+        "previous_dispatches": 1098,
+        "dispatch_delta": 0,
+        "median_ms": 12.584567,
+        "min_ms": 11.648893,
+        "max_ms": 46.172857,
+        "previous_recorded_median_ms": 12.590408,
+        "delta_ms": -0.005841,
+        "latency_reduction_percent": 0.046392,
+        "output_sha256": "cf98d808027aaee68a6e13ccf4f75489ccfbff530478a5bb63361940474eb4ba",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 8.1262295,
+        "mean_ms": 8.612908,
+        "samples_ns": [10465208, 9028250, 8182167, 7909791, 7834542, 8070292, 9445958, 8066042, 9098000, 8028833]
+      },
+      "llmopt_over_llama_cpp_median": 1.548635
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice15-rms-add",
+        "kernels": 102,
+        "commands": 3079,
+        "previous_commands": 3290,
+        "dispatches": 1044,
+        "previous_dispatches": 1150,
+        "dispatch_delta": -106,
+        "median_ms": 25.668025,
+        "min_ms": 24.693012,
+        "max_ms": 27.353048,
+        "previous_recorded_median_ms": 26.156545,
+        "delta_ms": -0.488520,
+        "latency_reduction_percent": 1.867678,
+        "output_sha256": "183e08a53336589851419a602d2840871d090e61227e284d603463c2104766bf",
+        "previous_output_mean_abs": 0.013817219,
+        "previous_output_max_abs": 0.109375,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.2815835,
+        "mean_ms": 17.587420,
+        "samples_ns": [17395834, 18012958, 17167333, 18203875, 17090000, 17099958, 18377834, 17131833, 18284959, 17109625]
+      },
+      "llmopt_over_llama_cpp_median": 1.485282
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "qwen_package": "valid, 108 kernels, 2453 commands, 0 opaque",
+    "gemma_package": "valid, 102 kernels, 3079 commands, 0 opaque",
+    "numerical_scope": "Qwen is byte exact with slice 14; Gemma preserves both row argmax IDs with changed Float16 logits"
+  }
+}

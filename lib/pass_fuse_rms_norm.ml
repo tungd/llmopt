@@ -485,6 +485,76 @@ let fuse_l2_norm graph =
          | None -> Some node)
   |> Ir.Graph.with_nodes graph
 
+let add_operands node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | Ir.Op.Add _, [ left; right ], Some output -> Some (left, right, output)
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+          (Ir.Pointwise.Binary (Ir.Pointwise.Add, left, right))),
+      [ declared_left; declared_right ], Some output ) ->
+      (match tensor_operand left, tensor_operand right with
+      | Some left, Some right
+        when (value_is left declared_left && value_is right declared_right)
+             || (value_is left declared_right && value_is right declared_left) ->
+          Some (declared_left, declared_right, output)
+      | _ -> None)
+  | _ -> None
+
+let fuse_rms_norm_add graph =
+  let nodes = Ir.Graph.nodes graph in
+  let try_fuse add_node norm_value residual =
+    match producer nodes norm_value with
+    | Some norm_node ->
+        (match Ir.node_op norm_node, Ir.node_inputs norm_node, Ir.node_output norm_node with
+        | Ir.Op.Rms_norm { epsilon }, [ input; weight ], Some norm_output
+          when value_is norm_output norm_value
+               && only_consumer nodes norm_output add_node
+               && not (graph_exposes graph norm_output)
+               && Ir.Value.dtype input = Ir.Dtype.Float16
+               && Ir.Value.dtype weight = Ir.Dtype.Float32
+               && Ir.Value.dtype residual = Ir.Dtype.Float16
+               && Ir.Value.dtype norm_output = Ir.Dtype.Float16
+               && Tensor_shape.equal
+                    (Ir.Value.logical_shape input)
+                    (Ir.Value.logical_shape residual)
+               && Tensor_shape.equal
+                    (Ir.Value.logical_shape input)
+                    (Ir.Value.logical_shape norm_output) ->
+            Some
+              ( Ir.node_replace add_node
+                  ~op:(Ir.Op.Rms_norm_add { epsilon })
+                  ~inputs:[ input; weight; residual ],
+                Ir.node_id norm_node )
+        | _ -> None)
+    | None -> None
+  in
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) add_node ->
+        match add_operands add_node with
+        | Some (left, right, _) ->
+            let matched =
+              match try_fuse add_node left right with
+              | Some matched -> Some matched
+              | None -> try_fuse add_node right left
+            in
+            (match matched with
+            | Some (replacement, removed_id) ->
+                ( (Ir.node_id add_node, replacement) :: replacements,
+                  removed_id :: removed )
+            | None -> replacements, removed)
+        | None -> replacements, removed)
+      ([], []) nodes
+  in
+  Ir.Graph.with_nodes graph
+    (List.filter_map
+      (fun node ->
+        match List.assoc_opt (Ir.node_id node) replacements with
+        | Some replacement -> Some replacement
+        | None when List.mem (Ir.node_id node) removed -> None
+        | None -> Some node)
+      nodes)
+
 let run graph =
   let rec rewrite prefix remaining =
     match rms_norm_replacement remaining with
@@ -502,6 +572,6 @@ let run graph =
                 | [] -> List.rev prefix)))
   in
   let graph = Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph)) in
-  graph |> absorb_preceding_casts |> fuse_l2_norm
+  graph |> absorb_preceding_casts |> fuse_l2_norm |> fuse_rms_norm_add
 
 let pass = Pass.create ~name ~description ~run

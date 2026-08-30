@@ -600,6 +600,7 @@ module Op = struct
     | Gelu
     | Relu
     | Rms_norm of { epsilon : float }
+    | Rms_norm_add of { epsilon : float }
     | Rms_rope of Rms_rope.t
     | Short_conv_step of Short_conv_step.t
     | Short_conv_step_fused of Short_conv_step.t
@@ -669,6 +670,8 @@ module Op = struct
     | Gelu -> "gelu"
     | Relu -> "relu"
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
+    | Rms_norm_add { epsilon } ->
+        Printf.sprintf "rms-norm-add(eps=%.9g)" epsilon
     | Rms_rope config -> Rms_rope.to_string config
     | Rms_rope_qk { q_heads; k_heads; width; half_dimension; epsilon; _ } ->
         Printf.sprintf "rms-rope-qk(q=%d,k=%d,w=%d,half=%d,eps=%.9g)" q_heads k_heads width half_dimension epsilon

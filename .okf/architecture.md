@@ -128,8 +128,8 @@ the target GGUF/UD path supplies per-tensor quantized payloads through explicit
 captured-parameter bindings. The implemented Metal backend accepts dense,
 packed group-64 W4, and GGUF block-quantized Linear storage selected from
 captured tensor layout; grouped-Q8 remains the implemented serving-cache path
-for attention KV and recurrent checkpoints. The current schedule ABI is v23
-and package ABI is v21. Earlier Q8-weight and selectable-cache sections below
+for attention KV and recurrent checkpoints. The current schedule ABI is v24
+and package ABI is v22. Earlier Q8-weight and selectable-cache sections below
 describe superseded experiments only.
 
 The public frontend is a PyTorch `torch.compile` backend. Dynamo calls the

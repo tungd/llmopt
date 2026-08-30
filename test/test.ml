@@ -312,12 +312,58 @@ let () =
   in
   Ir.Graph.append rms_graph ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
     ~inputs:[ rms_input; rms_weight ] ~output:(Some rms_output);
-  Ir.Graph.add_output rms_graph ~name:"normalized" rms_output;
   let rms_program = Metal.lower rms_graph |> expect_ok in
   expect
     (contains_substring (Metal.Program.source rms_program)
        "kernel void llmopt_rms_norm_f16_wf32_simd")
     "Metal lowering preserves GGUF float32 RMSNorm weights";
+  let rms_residual =
+    tensor_input rms_graph ~name:"residual" ~source:Ir.Input_source.Runtime
+      ~shape:[ 2; 576 ] ~dtype:Ir.Dtype.Float16
+  in
+  let rms_added =
+    Ir.Graph.fresh_tensor_value rms_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 2; 576 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append rms_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor rms_output,
+                 Ir.Pointwise.Tensor rms_residual ))))
+    ~inputs:[ rms_output; rms_residual ] ~output:(Some rms_added);
+  Ir.Graph.add_output rms_graph ~name:"normalized_residual" rms_added;
+  let rms_add_fused = Passes.fuse_rms_norm rms_graph in
+  expect
+    (Ir.Graph.nodes rms_add_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | Ir.Op.Rms_norm_add { epsilon },
+             [ input; weight; residual ], Some output ->
+               Float.abs (epsilon -. 1e-5) < 1e-12
+               && List.for_all2 Ir.Value.equal
+                    [ input; weight; residual; output ]
+                    [ rms_input; rms_weight; rms_residual; rms_added ]
+           | _ -> false))
+    "single-consumer RMSNorm-add topology fuses without model metadata";
+  let rms_add_schedule =
+    rms_add_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands rms_add_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Rms_norm_add _ -> true
+           | _ -> false))
+    "RMSNorm-add survives schedule serialization";
+  expect
+    (Metal.lower rms_add_fused |> expect_ok |> Metal.Program.source
+    |> fun source ->
+    contains_substring source "kernel void llmopt_rms_norm_add_f16_wf32_simd")
+    "Metal lowering emits fused RMSNorm-add";
 
   let l2_graph = Ir.Graph.create () in
   let l2_input name =

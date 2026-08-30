@@ -4033,6 +4033,31 @@ let rms_norm_source =
   ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
   ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
   ^ "    output[base + col] = half(float(input[base + col]) * inverse * weight[col]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_add_f16_wf32_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device const half* residual [[buffer(2)]],\n"
+  ^ "    device half* output [[buffer(3)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(4)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const half normalized = half(float(input[base + col]) * inverse * weight[col]);\n"
+  ^ "    output[base + col] = half(normalized + residual[base + col]);\n"
+  ^ "  }\n"
   ^ "}\n"
 
 let rms_norm_entries =
@@ -4050,6 +4075,10 @@ let rms_norm_entries =
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_rms_norm_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_add_f16_wf32_simd"
       ~operation:Kernel_abi.Operation.Rms_norm
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
@@ -5966,7 +5995,9 @@ let gated_delta_widths graph =
 let has_rms_norm graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
-         match Ir.node_op node with Ir.Op.Rms_norm _ -> true | _ -> false)
+         match Ir.node_op node with
+         | Ir.Op.Rms_norm _ | Ir.Op.Rms_norm_add _ -> true
+         | _ -> false)
 
 let has_l2_norm graph =
   Ir.Graph.nodes graph

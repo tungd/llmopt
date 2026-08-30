@@ -262,6 +262,24 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d W4A16 SwiGLU metadata is inconsistent"
                    command.Command.node_id)
+        | Ir.Op.Rms_norm_add { epsilon }, [ input; weight; residual ], Some output ->
+            if
+              Float.is_finite epsilon && epsilon >= 0.0
+              && same_value_metadata input residual
+              && same_value_metadata input output
+              && Tensor_shape.dimensions (Ir.Value.logical_shape weight)
+                 =
+                 (match List.rev (Tensor_shape.dimensions (Ir.Value.logical_shape input)) with
+                 | width :: _ -> [ width ]
+                 | [] -> [])
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && Ir.Value.dtype weight = Ir.Dtype.Float32
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d RMSNorm-add metadata is inconsistent"
+                   command.Command.node_id)
         | Ir.Op.Copy _, [ source; destination ], None ->
             if
               Tensor_shape.equal
@@ -1335,7 +1353,9 @@ module Sequence = struct
     | Ir.Op.Alloc _, [] -> map_shape substitutions original
     | Ir.Op.Primitive primitive, inputs ->
         primitive_shape substitutions original primitive inputs
-    | Ir.Op.Rms_norm _, [ input; _weight ] -> Ok (Ir.Value.logical_shape input)
+    | Ir.Op.Rms_norm _, [ input; _weight ]
+    | Ir.Op.Rms_norm_add _, [ input; _weight; _ ] ->
+        Ok (Ir.Value.logical_shape input)
     | Ir.Op.Rms_rope _, input :: _ ->
         Tensor_shape.transpose (Ir.Value.logical_shape input) ~axis0:1 ~axis1:2
         |> shape_error
@@ -2752,6 +2772,9 @@ let write_op writer = function
   | Ir.Op.Rms_norm { epsilon } ->
       Binary.Writer.u8 writer 16;
       Binary.Writer.float64 writer epsilon
+  | Ir.Op.Rms_norm_add { epsilon } ->
+      Binary.Writer.u8 writer 37;
+      Binary.Writer.float64 writer epsilon
   | Ir.Op.Primitive primitive ->
       Binary.Writer.u8 writer 15;
       write_primitive writer primitive
@@ -2919,6 +2942,10 @@ let read_op values reader =
       let* epsilon = Binary.Reader.float64 reader in
       if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm { epsilon })
       else Error "schedule contains a non-finite RMSNorm epsilon"
+  | 37 ->
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm_add { epsilon })
+      else Error "schedule contains a non-finite RMSNorm-add epsilon"
   | 29 ->
       let* m, n, k = read_three_dimensions reader in
       let* epsilon = Binary.Reader.float64 reader in
@@ -2981,7 +3008,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 23;
+  Binary.Writer.u16 writer 24;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -3001,7 +3028,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 23 then
+    if version <> 24 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 
