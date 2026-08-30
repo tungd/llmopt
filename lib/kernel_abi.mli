@@ -64,3 +64,20 @@ module Entry : sig
   val threadgroup : t -> int * int * int
   val tile : t -> tile option
 end
+
+module Linear_tactic : sig
+  type t
+
+  val select :
+    supports_simd:(threads:int -> bool) ->
+    m:int ->
+    n:int ->
+    k:int ->
+    input_dtype:Ir.Dtype.t ->
+    storage:Ir.Linear_storage.layout ->
+    output_dtype:Ir.Dtype.t ->
+    t option
+
+  val name : t -> string
+  val threadgroup : t -> int * int * int
+end

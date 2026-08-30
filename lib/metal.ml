@@ -14,21 +14,6 @@ end
 module Tactic = struct
   type t = { name : string; threadgroup : int * int * int }
 
-  type linear_problem = {
-    target : Target_hardware.t;
-    m : int;
-    n : int;
-    k : int;
-    input_dtype : Ir.Dtype.t;
-    storage : Ir.Linear_storage.layout;
-    output_dtype : Ir.Dtype.t;
-  }
-
-  type linear_registration = {
-    build : linear_problem -> t;
-    accepts : linear_problem -> bool;
-  }
-
   type attention_problem = {
     target : Target_hardware.t;
     head_dimension : int;
@@ -51,92 +36,13 @@ module Tactic = struct
   let f16_io input_dtype output_dtype =
     input_dtype = Ir.Dtype.Float16 && output_dtype = Ir.Dtype.Float16
 
-  let block_quantized problem quant =
-    problem.storage = Ir.Linear_storage.Block_quantized quant
-
-  let quant_kernel_name = function
-    | Ir.Dtype.Q8_0 -> "llmopt_q8_0_linear_f16"
-    | Ir.Dtype.Q4_K -> "llmopt_q4_k_linear_f16"
-    | Ir.Dtype.Q5_K -> "llmopt_q5_k_linear_f16"
-    | Ir.Dtype.Q6_K -> "llmopt_q6_k_linear_f16"
-    | Ir.Dtype.Q5_0 -> "llmopt_q5_0_linear_f16"
-    | Ir.Dtype.Q4_0 -> "llmopt_q4_0_linear_f16"
-    | Ir.Dtype.IQ4_XS -> "llmopt_iq4_xs_linear_f16"
-
-  let block_elements = Ir.Tensor_layout.block_elements
-
-  let quant_registration quant : linear_registration =
-    { build = (fun _ -> { name = quant_kernel_name quant; threadgroup = (256, 1, 1) });
-      accepts =
-        (fun (problem : linear_problem) ->
-          problem.m > 0 && problem.n > 0 && problem.k > 0
-          && problem.k mod block_elements quant = 0
-          && f16_io problem.input_dtype problem.output_dtype
-          && block_quantized problem quant
-          && supports_simd problem.target ~threads:256) }
-
-  let paired_quant_registration quant : linear_registration =
-    { build =
-        (fun _ ->
-          { name = quant_kernel_name quant ^ "_m2";
-            threadgroup = (256, 1, 1) });
-      accepts =
-        (fun (problem : linear_problem) ->
-          problem.m = 2 && problem.n > 0 && problem.k > 0
-          && problem.k mod block_elements quant = 0
-          && f16_io problem.input_dtype problem.output_dtype
-          && block_quantized problem quant
-          && supports_simd problem.target ~threads:256) }
-
-  let four_column_quant_registration quant : linear_registration =
-    { build =
-        (fun _ ->
-          { name = quant_kernel_name quant ^ "_m2_x4";
-            threadgroup = (64, 1, 1) });
-      accepts =
-        (fun (problem : linear_problem) ->
-          problem.m = 2 && problem.n > 0 && problem.k > 0
-          && problem.k mod block_elements quant = 0
-          && f16_io problem.input_dtype problem.output_dtype
-          && block_quantized problem quant
-          && supports_simd problem.target ~threads:64) }
-
-  let full_simd_kquant_registration ~accepts_superblocks quant suffix :
-      linear_registration =
-    { build =
-        (fun _ ->
-          { name = quant_kernel_name quant ^ suffix;
-            threadgroup = (64, 1, 1) });
-      accepts =
-        (fun (problem : linear_problem) ->
-          problem.m = 2 && problem.n > 0 && problem.k > 0
-          && problem.k mod block_elements quant = 0
-          && accepts_superblocks (problem.k / block_elements quant)
-          && f16_io problem.input_dtype problem.output_dtype
-          && block_quantized problem quant
-          && supports_simd problem.target ~threads:64) }
-
-  let linear_registry : linear_registration list =
-    [ full_simd_kquant_registration ~accepts_superblocks:(fun _ -> true)
-        Ir.Dtype.Q4_K
-        "_m2_n2_l32";
-      full_simd_kquant_registration ~accepts_superblocks:(( = ) 4) Ir.Dtype.Q5_K
-        "_m2_n1_l32" ]
-    @ List.map four_column_quant_registration
-      [ Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
-    @ List.map paired_quant_registration
-      [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
-        Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
-    @ List.map quant_registration
-        [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
-          Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
-
   let select_linear ~target ~m ~n ~k ~input_dtype ~storage ~output_dtype =
-    let problem = { target; m; n; k; input_dtype; storage; output_dtype } in
-    linear_registry
-    |> List.find_map (fun (registration : linear_registration) ->
-           if registration.accepts problem then Some (registration.build problem)
-           else None)
+    Kernel_abi.Linear_tactic.select
+      ~supports_simd:(supports_simd target) ~m ~n ~k ~input_dtype ~storage
+      ~output_dtype
+    |> Option.map (fun tactic ->
+           { name = Kernel_abi.Linear_tactic.name tactic;
+             threadgroup = Kernel_abi.Linear_tactic.threadgroup tactic })
 
   let attention_registry : attention_registration list =
     [ { build =

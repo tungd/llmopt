@@ -571,8 +571,19 @@ let () =
   in
   expect
     (Metal.Tactic.name q5_unbalanced_tactic
-    = "llmopt_q5_k_linear_f16_m2_x4")
-    "Metal tactics retain sub-SIMD Q5_K execution outside the four-superblock full-lane occupancy shape";
+    = "llmopt_q5_k_linear_f16_m2_n1_l32")
+    "paired-token Q5_K execution covers block-aligned captured inner dimensions";
+  let runtime_q5_unbalanced_tactic =
+    Kernel_abi.Linear_tactic.select ~supports_simd:(fun ~threads:_ -> true)
+      ~m:2 ~n:64 ~k:1536 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q5_K)
+      ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Kernel_abi.Linear_tactic.name runtime_q5_unbalanced_tactic
+    = Metal.Tactic.name q5_unbalanced_tactic)
+    "runtime binding and compiler lowering share one shape-aware Linear tactic registry";
   let simd16_target =
     let default = Target_hardware.default in
     { default with

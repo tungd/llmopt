@@ -19,10 +19,13 @@
     "architecture_id_use": "none",
     "model_or_tensor_name_use": "none",
     "sites": {
-      "qwen": 42,
-      "gemma": 0
+      "qwen_compiler_selected": 42,
+      "qwen_runtime_dispatched": 47,
+      "gemma_compiler_selected": 0,
+      "gemma_runtime_dispatched": 0
     },
-    "kernel": "each SIMD group loads each Q5_K block once and accumulates both captured token rows for one output column"
+    "kernel": "each SIMD group loads each Q5_K block once and accumulates both captured token rows for one output column",
+    "post_commit_correction": "the package-level runtime preferred-name lookup dispatched the new tactic at five additional Qwen k=3584 sites; slice 23 replaces that lookup with the shared shape-aware registry"
   },
   "contract": {
     "input_shape": [

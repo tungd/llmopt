@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T13:48:18+07:00",
+  "git_base_commit": "bb0e327c01b16a9ef221b6f6ec6eeafe69431795",
+  "slice": "shared-shape-aware-linear-tactic-registry",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Linear",
+    "selection": "one typed registry shared by compiler lowering and runtime binding, keyed by captured m/n/k, input/output dtype, physical Linear storage, and target SIMD support",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "sites": {
+      "qwen_q5_k_paired_token": 47,
+      "gemma_q5_k_paired_token": 11
+    },
+    "kernel": "the paired-token Q5_K loop supports every positive block-aligned inner dimension and reuses each decoded block across both rows",
+    "removed_runtime_policy": "package-level preferred-name search that could override the compiler's per-shape tactic choice"
+  },
+  "contract": {
+    "input_shape": [
+      1,
+      2
+    ],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice23-shared-linear-tactic",
+        "kernels": 111,
+        "commands": 2057,
+        "dispatches": 888,
+        "median_ms": 10.38599,
+        "min_ms": 9.444952,
+        "max_ms": 23.871899,
+        "shape_restricted_baseline_median_ms": 10.361552,
+        "controlled_delta_ms": 0.024438,
+        "controlled_latency_reduction_percent": -0.235853,
+        "previous_recorded_median_ms": 10.352135,
+        "previous_recorded_delta_ms": 0.033855,
+        "output_sha256": "3db055cc11ec4a89fbc1672415c736bd0f272c477aa00cc022c1bc198ee7a45f",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [
+          760,
+          16
+        ],
+        "previous_argmax_rows": [
+          760,
+          16
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.874125,
+        "mean_ms": 8.038304,
+        "samples_ns": [
+          7971500,
+          7674084,
+          7858000,
+          7890250,
+          9154166,
+          7848292,
+          7595541,
+          7520333,
+          8839292,
+          8031583
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.319002
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice23-shared-linear-tactic",
+        "kernels": 108,
+        "commands": 2974,
+        "dispatches": 974,
+        "median_ms": 20.597577,
+        "min_ms": 19.598961,
+        "max_ms": 22.307873,
+        "shape_restricted_baseline_median_ms": 20.884991,
+        "controlled_delta_ms": -0.287414,
+        "controlled_latency_reduction_percent": 1.376175,
+        "previous_recorded_median_ms": 20.896912,
+        "previous_recorded_delta_ms": -0.299335,
+        "output_sha256": "896aa2a62df23b6890548055b5f8f94e7537c2c82dcb2c02905cc1e844a4811a",
+        "previous_output_mean_abs": 0.004798842,
+        "previous_output_max_abs": 0.0625,
+        "argmax_rows": [
+          84904,
+          148465
+        ],
+        "previous_argmax_rows": [
+          84904,
+          148465
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.1772085,
+        "mean_ms": 17.406358,
+        "samples_ns": [
+          17173375,
+          17291916,
+          17068417,
+          17125792,
+          18254166,
+          17507167,
+          18180375,
+          17141583,
+          17181042,
+          17139750
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.199122
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 111 kernels, 2057 commands, 0 opaque",
+    "gemma_package": "valid, 108 kernels, 2974 commands, 0 opaque",
+    "runtime_histogram": "Qwen dispatches 47 paired-token Q5_K kernels; Gemma dispatches 11",
+    "numerical_scope": "Qwen is byte exact with slice 22; Gemma preserves both row argmax IDs with mean/max absolute Float16 logit drift 0.004798842/0.0625"
+  }
+}

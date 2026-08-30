@@ -30,12 +30,19 @@ or architecture identifiers.
 
 | Probe | Slice 21 LLMOpt | Slice 22 LLMOpt | Matching sites | Fresh llama.cpp | Ratio |
 |---|---:|---:|---:|---:|---:|
-| Qwen3.5-0.8B UD-Q4_K_XL | `10.470986 ms` | `10.352135 ms` | `42` | `7.917021 ms` | `1.307580x` |
+| Qwen3.5-0.8B UD-Q4_K_XL | `10.470986 ms` | `10.352135 ms` | `42 compiler / 47 runtime` | `7.917021 ms` | `1.307580x` |
 | Gemma-4-E2B-it UD-Q4_K_XL | `20.900965 ms` | `20.896912 ms` | `0` | `17.4087085 ms` | `1.200371x` |
 
 In the same refreshed sequence, Qwen changes from `10.847926 ms` to
 `10.352135 ms` (`-0.495791 ms`, `-4.570376%`). The result is also
-`-0.118851 ms` from the recorded slice-21 median. Gemma's regular Q5_K
+`-0.118851 ms` from the recorded slice-21 median. A post-commit kernel
+histogram exposed that the runtime's package-level preferred-name lookup used
+the new entry for all 47 regular Qwen Q5_K Linears once the compiler emitted
+it, including five `k=3584` sites outside the compiler rule. The timing and
+byte-exact result therefore cover 47 runtime dispatches, not 42. Slice 23
+replaces that duplicated lookup with one shared typed tactic registry.
+
+Gemma's regular Q5_K
 Linears use inner dimensions `1536` or `12288`, so it selects zero new sites;
 its refreshed baseline/candidate medians are `20.883083/20.896912 ms` and are
 reported separately from the Qwen tactic effect.
