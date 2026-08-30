@@ -1604,9 +1604,15 @@ let quant_linear_kernel_name = function
 
 let quant_linear_kernel_names ~m quant =
   let generic = quant_linear_kernel_name quant in
-  if m = 2 && quant = Ir.Dtype.Q4_K then
-    [ generic ^ "_m2_x2_l32"; generic ^ "_m2_x4"; generic ^ "_m2"; generic ]
-  else if m = 2 then [ generic ^ "_m2_x4"; generic ^ "_m2"; generic ]
+  let specialized =
+    match quant with
+    | Ir.Dtype.Q4_K -> Some (generic ^ "_m2_x2_l32")
+    | Ir.Dtype.Q5_K -> Some (generic ^ "_m2_x1_l32")
+    | _ -> None
+  in
+  if m = 2 then
+    Option.to_list specialized
+    @ [ generic ^ "_m2_x4"; generic ^ "_m2"; generic ]
   else [ generic ]
 
 let select_quant_linear_kernel runtime ~m quant =
@@ -2616,12 +2622,15 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 let columns =
                   if String.ends_with ~suffix:"_m2_x2_l32" name then
                     m * ((n + 1) / 2)
+                  else if String.ends_with ~suffix:"_m2_x1_l32" name then
+                    m * n
                   else if String.ends_with ~suffix:"_m2_x4" name then (n + 3) / 4
                   else if String.ends_with ~suffix:"_m2" name then n
                   else m * n
                 in
                 let* grid_x =
                   if String.ends_with ~suffix:"_m2_x2_l32" name
+                     || String.ends_with ~suffix:"_m2_x1_l32" name
                      || String.ends_with ~suffix:"_m2_x4" name
                   then
                     short_row_quant_grid columns

@@ -367,7 +367,7 @@ let () =
 
   [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2", 32;
     Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_x2_l32", 256;
-    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_x4", 256;
+    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_x1_l32", 1024;
     Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_m2_x4", 256;
     Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16_m2", 32;
     Ir.Dtype.Q4_0, "llmopt_q4_0_linear_f16_m2", 32;
@@ -393,6 +393,17 @@ let () =
   expect
     (Metal.Tactic.name q4_m1_tactic = "llmopt_q4_k_linear_f16")
     "Metal tactics retain the generic Q4_K Linear outside the paired-row shape";
+  let q5_unbalanced_tactic =
+    Metal.Tactic.select_linear ~target:Target_hardware.default ~m:2 ~n:64
+      ~k:1536 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q5_K)
+      ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Metal.Tactic.name q5_unbalanced_tactic
+    = "llmopt_q5_k_linear_f16_m2_x4")
+    "Metal tactics retain sub-SIMD Q5_K execution outside the four-superblock full-lane occupancy shape";
   let simd16_target =
     let default = Target_hardware.default in
     { default with
