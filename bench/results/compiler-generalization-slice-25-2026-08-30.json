@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T21:51:34+07:00",
+  "git_base_commit": "35d5d6d4517e0c1bff6563abfd6509a61c6ea015",
+  "slice": "prepared-steady-state-package-execution",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "scope": "generic native package benchmark and execution preparation",
+    "preparation": "construct the liveness memory plan and allocate its reusable Metal workspace once before warmup",
+    "timed_boundary": "execute the prepared schedule through command-buffer completion",
+    "excluded_from_timing": "final validation output readback and artifact file write",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "package_or_kernel_change": "none"
+  },
+  "comparison_contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10,
+    "llama_cpp_timing_source": "llama-bench starts its timer after context reset, calls the synchronized prompt path, and stops before result printing"
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice24-general-attention-layout",
+        "kernels": 111,
+        "commands": 1967,
+        "dispatches": 858,
+        "median_ms": 8.777499,
+        "min_ms": 8.484840,
+        "max_ms": 11.221170,
+        "previous_harness_median_ms": 10.149598,
+        "delta_ms": -1.372099,
+        "latency_reduction_percent": 13.518752,
+        "output_sha256": "3db055cc11ec4a89fbc1672415c736bd0f272c477aa00cc022c1bc198ee7a45f",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.591500,
+        "mean_ms": 7.718162,
+        "samples_ns": [
+          7632667,
+          7529417,
+          8921625,
+          7503875,
+          7480083,
+          7543667,
+          7604458,
+          7688458,
+          7578542,
+          7698833
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.156227,
+      "latency_above_upper_ratio_ms": 0.426849
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice24-general-attention-layout",
+        "kernels": 108,
+        "commands": 2439,
+        "dispatches": 799,
+        "median_ms": 18.818855,
+        "min_ms": 17.047167,
+        "max_ms": 75.558901,
+        "previous_harness_median_ms": 20.252466,
+        "delta_ms": -1.433611,
+        "latency_reduction_percent": 7.078698,
+        "output_sha256": "896aa2a62df23b6890548055b5f8f94e7537c2c82dcb2c02905cc1e844a4811a",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.220854,
+        "mean_ms": 17.532170,
+        "samples_ns": [
+          17215416,
+          17205708,
+          17134458,
+          17201333,
+          18832625,
+          17487375,
+          18609916,
+          17229750,
+          17226292,
+          17178834
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.092795
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_ninja_tests": "49 pass",
+    "python_pytest": "52 pass, 1 skip",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "package_changes": "none; slice 24 Qwen and Gemma packages reused",
+    "numerical_scope": "both prepared-run outputs are byte exact with their slice 24 outputs",
+    "measurement_interpretation": "steady-state package execution latency; not a compiler or kernel speedup"
+  }
+}

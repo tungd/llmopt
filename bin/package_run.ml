@@ -19,32 +19,49 @@ let write_file path contents =
     Ok ()
   with Sys_error message -> Error message
 
-let execute_once runtime input_name input output_name =
-  let started_at = Unix.gettimeofday () in
-  let* execution = Metal_runtime.execute runtime ~inputs:[ input_name, input ] in
-  let* output =
-    match Metal_runtime.Execution.output execution ~name:output_name with
-    | Some output -> Ok output
-    | None -> Error ("package did not produce output: " ^ output_name)
-  in
-  let* contents = Metal_runtime.Buffer.contents output in
-  let elapsed_ms = (Unix.gettimeofday () -. started_at) *. 1000.0 in
-  Ok (execution, contents, elapsed_ms)
+type prepared_execution = {
+  runtime : Metal_runtime.t;
+  schedule : Serving_schedule.t;
+  memory_plan : Serving_memory_plan.t;
+  workspace : Metal_runtime.Buffer.t option;
+}
 
-let rec warmup runtime input_name input output_name remaining =
+let prepare_execution runtime =
+  let schedule =
+    Metal_runtime.package runtime |> Serving_package.schedule
+  in
+  let* memory_plan = Serving_memory_plan.create schedule in
+  let workspace_bytes = Serving_memory_plan.workspace_bytes memory_plan in
+  let* workspace =
+    if workspace_bytes = 0 then Ok None
+    else
+      Metal_runtime.Buffer.create ~runtime ~bytes:workspace_bytes
+      |> Result.map Option.some
+  in
+  Ok { runtime; schedule; memory_plan; workspace }
+
+let execute_once prepared input_name input =
+  let started_at = Unix.gettimeofday () in
+  let* execution =
+    Metal_runtime.execute_schedule ?workspace:prepared.workspace
+      ~memory_plan:prepared.memory_plan prepared.runtime
+      ~schedule:prepared.schedule ~inputs:[ input_name, input ]
+  in
+  let elapsed_ms = (Unix.gettimeofday () -. started_at) *. 1000.0 in
+  Ok (execution, elapsed_ms)
+
+let rec warmup prepared input_name input remaining =
   if remaining = 0 then Ok ()
   else
-    let* _ = execute_once runtime input_name input output_name in
-    warmup runtime input_name input output_name (remaining - 1)
+    let* _ = execute_once prepared input_name input in
+    warmup prepared input_name input (remaining - 1)
 
-let rec measure runtime input_name input output_name remaining measurements last =
+let rec measure prepared input_name input remaining measurements last =
   if remaining = 0 then Ok (List.rev measurements, last)
   else
-    let* execution, contents, elapsed_ms =
-      execute_once runtime input_name input output_name
-    in
-    measure runtime input_name input output_name (remaining - 1)
-      (elapsed_ms :: measurements) (Some (execution, contents))
+    let* execution, elapsed_ms = execute_once prepared input_name input in
+    measure prepared input_name input (remaining - 1)
+      (elapsed_ms :: measurements) (Some execution)
 
 let median values =
   let sorted = List.sort Float.compare values |> Array.of_list in
@@ -74,13 +91,20 @@ let run ~warmup_count ~repeat_count root input_name input_path output_name
     Serving_package.of_file (Filename.concat root "package.llmopt")
   in
   let* runtime = Metal_runtime.load_package ~root package in
+  let* prepared = prepare_execution runtime in
   let* input_bytes = read_file input_path in
   let* input = Metal_runtime.Buffer.of_bytes ~runtime input_bytes in
-  let* () = warmup runtime input_name input output_name warmup_count in
+  let* () = warmup prepared input_name input warmup_count in
   let* measurements, last =
-    measure runtime input_name input output_name repeat_count [] None
+    measure prepared input_name input repeat_count [] None
   in
-  let execution, contents = Option.get last in
+  let execution = Option.get last in
+  let* output =
+    match Metal_runtime.Execution.output execution ~name:output_name with
+    | Some output -> Ok output
+    | None -> Error ("package did not produce output: " ^ output_name)
+  in
+  let* contents = Metal_runtime.Buffer.contents output in
   let* () = write_file output_path contents in
   Printf.printf
     "device=%s dispatch_count=%d output_bytes=%d warmup=%d repeat=%d median_ms=%.6f min_ms=%.6f max_ms=%.6f\n"
