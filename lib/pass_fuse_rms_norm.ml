@@ -485,6 +485,113 @@ let fuse_l2_norm graph =
          | None -> Some node)
   |> Ir.Graph.with_nodes graph
 
+let movement_index node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.Index index)),
+    [ input ], Some output ->
+      Some (index, input, output)
+  | _ -> None
+
+let movement_reshape node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape),
+    [ input ], Some output ->
+      Some (input, output)
+  | _ -> None
+
+let split_last dimensions =
+  match List.rev dimensions with
+  | last :: reversed_prefix -> Some (List.rev reversed_prefix, last)
+  | [] -> None
+
+let rec full_prefix selectors dimensions =
+  match selectors, dimensions with
+  | [], [] -> true
+  | ( Tensor_shape.Index.Slice { start = 0; step = 1; length }
+      :: selectors ),
+    dimension :: dimensions
+    when length = dimension ->
+      full_prefix selectors dimensions
+  | _ -> false
+
+let l2_slice_match graph nodes node =
+  let ( let* ) = Option.bind in
+  let* epsilon, normalized_input, output =
+    match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+    | Ir.Op.Primitive (Ir.Primitive.L2_norm { epsilon }), [ input ], Some output ->
+        Some (epsilon, input, output)
+    | _ -> None
+  in
+  let* reshape_node = producer nodes normalized_input in
+  let* sliced, reshape_output = movement_reshape reshape_node in
+  let* index_node = producer nodes sliced in
+  let* index, packed, sliced_output = movement_index index_node in
+  let* packed_prefix, packed_width =
+    split_last (Tensor_shape.dimensions (Ir.Value.logical_shape packed))
+  in
+  let* sliced_prefix, slice_width =
+    split_last (Tensor_shape.dimensions (Ir.Value.logical_shape sliced_output))
+  in
+  let* grouped_prefix, width =
+    split_last (Tensor_shape.dimensions (Ir.Value.logical_shape reshape_output))
+  in
+  let* normalized_prefix, groups = split_last grouped_prefix in
+  let selectors = Tensor_shape.Index.selectors index in
+  let* prefix_selectors, offset, selected_width =
+    match List.rev selectors with
+    | ( Tensor_shape.Index.Slice { start; step = 1; length }
+        :: reversed_prefix ) ->
+        Some (List.rev reversed_prefix, start, length)
+    | _ -> None
+  in
+  if
+    packed_prefix <> sliced_prefix || packed_prefix <> normalized_prefix
+    || not (full_prefix prefix_selectors packed_prefix)
+    || groups <= 0 || width <= 0 || packed_width <= 0
+    || slice_width <> groups * width || selected_width <> slice_width
+    || offset < 0 || offset + slice_width > packed_width
+    || not
+         (Tensor_shape.equal
+            (Ir.Value.logical_shape normalized_input)
+            (Ir.Value.logical_shape output))
+    || Ir.Value.dtype packed <> Ir.Dtype.Float16
+    || Ir.Value.dtype sliced_output <> Ir.Dtype.Float16
+    || Ir.Value.dtype reshape_output <> Ir.Dtype.Float16
+    || Ir.Value.dtype output <> Ir.Dtype.Float16
+    || not (only_consumer nodes sliced_output reshape_node)
+    || not (only_consumer nodes reshape_output node)
+    || graph_exposes graph sliced_output || graph_exposes graph reshape_output
+  then None
+  else
+    let* config =
+      Ir.L2_norm_slice.create ~epsilon ~offset |> Result.to_option
+    in
+    Some
+      ( Ir.node_replace node
+          ~op:(Ir.Op.Primitive (Ir.Primitive.L2_norm_slice config))
+          ~inputs:[ packed ],
+        [ Ir.node_id index_node; Ir.node_id reshape_node ] )
+
+let absorb_l2_slices graph =
+  let nodes = Ir.Graph.nodes graph in
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) node ->
+        match l2_slice_match graph nodes node with
+        | Some (replacement, matched_removed) ->
+            ( (Ir.node_id node, replacement) :: replacements,
+              List.rev_append matched_removed removed )
+        | None -> replacements, removed)
+      ([], []) nodes
+  in
+  nodes
+  |> List.filter_map (fun node ->
+         match List.assoc_opt (Ir.node_id node) replacements with
+         | Some replacement -> Some replacement
+         | None when List.mem (Ir.node_id node) removed -> None
+         | None -> Some node)
+  |> Ir.Graph.with_nodes graph
+
 let add_operands node =
   match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
   | Ir.Op.Add _, [ left; right ], Some output -> Some (left, right, output)
@@ -572,6 +679,7 @@ let run graph =
                 | [] -> List.rev prefix)))
   in
   let graph = Ir.Graph.with_nodes graph (rewrite [] (Ir.Graph.nodes graph)) in
-  graph |> absorb_preceding_casts |> fuse_l2_norm |> fuse_rms_norm_add
+  graph |> absorb_preceding_casts |> fuse_l2_norm |> absorb_l2_slices
+  |> fuse_rms_norm_add
 
 let pass = Pass.create ~name ~description ~run

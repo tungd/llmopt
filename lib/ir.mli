@@ -182,6 +182,15 @@ module Short_conv_silu : sig
   val to_string : t -> string
 end
 
+module L2_norm_slice : sig
+  type t
+
+  val create : epsilon:float -> offset:int -> (t, string) result
+  val epsilon : t -> float
+  val offset : t -> int
+  val to_string : t -> string
+end
+
 module Attention : sig
   type t
 
@@ -292,6 +301,7 @@ module Primitive : sig
     | Triangular_recurrence of Triangular_recurrence.t
     | Gated_delta
     | L2_norm of { epsilon : float }
+    | L2_norm_slice of L2_norm_slice.t
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t

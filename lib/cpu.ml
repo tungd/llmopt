@@ -336,6 +336,43 @@ let l2_norm state ~epsilon input_value output =
     done
   done
 
+let l2_norm_slice state config input_value output_value output =
+  let last_width value =
+    match List.rev (Tensor_shape.dimensions (Ir.Value.logical_shape value)) with
+    | width :: _ when width > 0 -> width
+    | _ -> failf "sliced L2 normalization requires non-empty dimensions"
+  in
+  let input_width = last_width input_value in
+  let width = last_width output_value in
+  let input_rows =
+    Tensor_shape.numel (Ir.Value.logical_shape input_value) / input_width
+  in
+  let output_rows =
+    Tensor_shape.numel (Ir.Value.logical_shape output_value) / width
+  in
+  if input_rows = 0 || output_rows mod input_rows <> 0 then
+    failf "sliced L2 normalization has incompatible row geometry";
+  let groups = output_rows / input_rows in
+  let input = find state input_value in
+  let offset = Ir.L2_norm_slice.offset config in
+  let epsilon = Ir.L2_norm_slice.epsilon config in
+  for row = 0 to output_rows - 1 do
+    let source_row = row / groups in
+    let group = row mod groups in
+    let input_base = (source_row * input_width) + offset + (group * width) in
+    let output_base = row * width in
+    let square_sum = ref 0.0 in
+    for column = 0 to width - 1 do
+      let value = Tensor.get_linear input (input_base + column) in
+      square_sum := !square_sum +. (value *. value)
+    done;
+    let inverse = 1.0 /. Float.sqrt (!square_sum +. epsilon) in
+    for column = 0 to width - 1 do
+      Tensor.set_linear output (output_base + column)
+        (Tensor.get_linear input (input_base + column) *. inverse)
+    done
+  done
+
 let apply_index state selection input_value output_value output =
   let output_shape = Ir.Value.logical_shape output_value in
   let output_dimensions = Tensor_shape.dimensions output_shape |> Array.of_list in
@@ -968,6 +1005,8 @@ let primitive state operation inputs output_value output =
       gated_delta state query key value gate beta output_value output
   | Ir.Primitive.L2_norm { epsilon }, [ input ] ->
       l2_norm state ~epsilon input output
+  | Ir.Primitive.L2_norm_slice config, [ input ] ->
+      l2_norm_slice state config input output_value output
   | Ir.Primitive.Fill scalar, [] -> fill scalar output_value output
   | Ir.Primitive.Gather2, [ source; first_index; second_index ] ->
       gather2 state source first_index second_index output_value output

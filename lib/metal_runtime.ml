@@ -492,6 +492,13 @@ module Parameters = struct
     Bytes.set_int32_le bytes 8 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let l2_norm_slice ~input_rows ~groups ~width ~input_width ~offset ~epsilon =
+    let bytes = Bytes.make 24 '\000' in
+    let* encoded = u32s [ input_rows; groups; width; input_width; offset ] in
+    Bytes.blit encoded 0 bytes 0 20;
+    Bytes.set_int32_le bytes 20 (Int32.bits_of_float epsilon);
+    Ok bytes
+
   let w4a16_lm_head_argmax ~m ~n ~k ~epsilon =
     let bytes = Bytes.make 16 '\000' in
     let* encoded = u32s [ m; n; k ] in
@@ -2852,6 +2859,44 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             dispatched
               (dispatch_output ~name:"llmopt_l2_norm_f16_simd" runtime state
                  output ~operation:Kernel_abi.Operation.Rms_norm
+                 ~input_dtype:(Ir.Value.dtype input) ~buffers:[ input_buffer ]
+                 ~parameters ~grid:(grid_x, 1, 1))
+        | ( Ir.Op.Primitive (Ir.Primitive.L2_norm_slice config),
+            [ input ],
+            Some output ) ->
+            let last_width value =
+              match
+                List.rev
+                  (Tensor_shape.dimensions (Ir.Value.logical_shape value))
+              with
+              | width :: _ when width > 0 -> Ok width
+              | _ ->
+                  Error
+                    "sliced L2 normalization requires non-empty dimensions"
+            in
+            let* input_width = last_width input in
+            let* width = last_width output in
+            let input_rows =
+              Tensor_shape.numel (Ir.Value.logical_shape input) / input_width
+            in
+            let output_rows =
+              Tensor_shape.numel (Ir.Value.logical_shape output) / width
+            in
+            let* groups =
+              if input_rows > 0 && output_rows mod input_rows = 0 then
+                Ok (output_rows / input_rows)
+              else Error "sliced L2 normalization has incompatible row geometry"
+            in
+            let* input_buffer = find_value state input in
+            let* parameters =
+              Parameters.l2_norm_slice ~input_rows ~groups ~width ~input_width
+                ~offset:(Ir.L2_norm_slice.offset config)
+                ~epsilon:(Ir.L2_norm_slice.epsilon config)
+            in
+            let* grid_x = simd_rows_grid output_rows in
+            dispatched
+              (dispatch_output ~name:"llmopt_l2_norm_slice_f16_simd" runtime
+                 state output ~operation:Kernel_abi.Operation.Rms_norm
                  ~input_dtype:(Ir.Value.dtype input) ~buffers:[ input_buffer ]
                  ~parameters ~grid:(grid_x, 1, 1))
         | ( Ir.Op.Rms_rope config,

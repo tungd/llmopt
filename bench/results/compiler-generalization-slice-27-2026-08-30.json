@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T22:12:07+07:00",
+  "git_base_commit": "e4b4644e26b60f3cbce051b0904f838041c0c587",
+  "slice": "packed-last-axis-l2-normalization",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "L2_norm_slice",
+    "selection": "sole-consumer packed last-axis index -> reshape -> semantic final-axis L2 normalization",
+    "shape_relations": "captured prefix dimensions, packed width, contiguous slice offset/length, group count, and normalization width",
+    "lowering": "normalize each captured group directly from its contiguous packed-input offset while preserving the existing SIMD reduction order",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "regression_shape": {
+      "prefix": [2, 3],
+      "packed_width": 30,
+      "offset": 6,
+      "groups": 3,
+      "normalization_width": 4
+    },
+    "sites": {
+      "qwen": 36,
+      "gemma": 0
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice27-packed-l2-norm",
+        "kernels": 111,
+        "commands": 1751,
+        "previous_commands": 1823,
+        "dispatches": 750,
+        "previous_dispatches": 786,
+        "removed_dispatches": {
+          "index_f16": 36,
+          "l2_norm_f16_simd": 36
+        },
+        "added_dispatches": {
+          "l2_norm_slice_f16_simd": 36
+        },
+        "median_ms": 8.159995,
+        "min_ms": 7.916927,
+        "max_ms": 10.632992,
+        "previous_recorded_median_ms": 8.531570,
+        "delta_ms": -0.371575,
+        "latency_reduction_percent": 4.355295,
+        "output_sha256": "3db055cc11ec4a89fbc1672415c736bd0f272c477aa00cc022c1bc198ee7a45f",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.6398335,
+        "mean_ms": 7.916958,
+        "samples_ns": [
+          7662042,
+          7501750,
+          7489250,
+          7550792,
+          9195875,
+          7617625,
+          7595125,
+          7679417,
+          9070625,
+          7807083
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.068085,
+      "latency_below_upper_ratio_ms": 0.243822
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice27-packed-l2-norm",
+        "kernels": 108,
+        "commands": 2439,
+        "previous_commands": 2439,
+        "dispatches": 799,
+        "previous_dispatches": 799,
+        "median_ms": 18.473029,
+        "min_ms": 17.011881,
+        "max_ms": 75.571060,
+        "previous_recorded_median_ms": 19.030929,
+        "delta_ms": -0.557900,
+        "output_sha256": "896aa2a62df23b6890548055b5f8f94e7537c2c82dcb2c02905cc1e844a4811a",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.0903545,
+        "mean_ms": 17.262325,
+        "samples_ns": [
+          16941833,
+          16886125,
+          17093167,
+          17018000,
+          18181083,
+          17065959,
+          17087542,
+          17116916,
+          17654125,
+          17578500
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.080904,
+      "latency_below_upper_ratio_ms": 0.326361
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_ninja_tests": "49 pass",
+    "python_pytest": "52 pass, 1 skip",
+    "metal_compilation": "pass for Qwen, Gemma, and the non-model regression",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 111 kernels, 1751 commands, 0 opaque",
+    "gemma_package": "valid, 108 kernels, 2439 commands, 0 opaque",
+    "runtime_histogram": "Qwen replaces 36 packed-input index dispatches plus 36 L2 dispatches with 36 direct sliced-L2 dispatches",
+    "numerical_scope": "both package outputs are byte exact with slice 26 and preserve all row argmax IDs"
+  }
+}

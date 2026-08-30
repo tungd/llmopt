@@ -4719,6 +4719,50 @@ let l2_norm_entries =
       ~operation:Kernel_abi.Operation.Rms_norm
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let l2_norm_slice_source =
+  {|
+constant uint L2_NORM_SLICE_SIMD_WIDTH = 32;
+constant uint L2_NORM_SLICE_ROWS_PER_THREADGROUP = 8;
+
+struct L2NormSliceParams {
+  uint input_rows; uint groups; uint width; uint input_width; uint offset;
+  float epsilon;
+};
+
+kernel void llmopt_l2_norm_slice_f16_simd(
+    device const half* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant L2NormSliceParams& params [[buffer(2)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x * L2_NORM_SLICE_ROWS_PER_THREADGROUP
+      + simdgroup;
+  const uint rows = params.input_rows * params.groups;
+  if (row >= rows) return;
+  const uint source_row = row / params.groups;
+  const uint group = row % params.groups;
+  const uint input_base = source_row * params.input_width + params.offset
+      + group * params.width;
+  const uint output_base = row * params.width;
+  float square_sum = 0.0f;
+  for (uint col = lane; col < params.width; col += L2_NORM_SLICE_SIMD_WIDTH) {
+    const float value = float(input[input_base + col]);
+    square_sum += value * value;
+  }
+  square_sum = simd_sum(square_sum);
+  const float inverse = rsqrt(square_sum + params.epsilon);
+  for (uint col = lane; col < params.width; col += L2_NORM_SLICE_SIMD_WIDTH)
+    output[output_base + col] = half(float(input[input_base + col]) * inverse);
+}
+|}
+
+let l2_norm_slice_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_l2_norm_slice_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let rms_rope_f16_weight_source =
   "\nconstant uint RMS_ROPE_SIMD_WIDTH = 32;\n"
   ^ "constant uint RMS_ROPE_ROWS_PER_THREADGROUP = 8;\n\n"
@@ -6739,6 +6783,13 @@ let has_l2_norm graph =
          | Ir.Op.Primitive (Ir.Primitive.L2_norm _) -> true
          | _ -> false)
 
+let has_l2_norm_slice graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive (Ir.Primitive.L2_norm_slice _) -> true
+         | _ -> false)
+
 let has_rms_rope graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -7188,6 +7239,7 @@ let lower ?(target = Target_hardware.default) graph =
         linear_f16_f32_entries );
       has_rms_norm graph, rms_norm_source, rms_norm_entries;
       has_l2_norm graph, l2_norm_source, l2_norm_entries;
+      has_l2_norm_slice graph, l2_norm_slice_source, l2_norm_slice_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_rms_rope_qk graph, rms_rope_qk_source, rms_rope_qk_entries;
       ( has_short_conv graph,

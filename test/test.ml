@@ -488,6 +488,83 @@ let () =
        "kernel void llmopt_l2_norm_f16_simd")
     "Metal lowering emits semantic L2 normalization";
 
+  let l2_slice_graph = Ir.Graph.create () in
+  let l2_packed =
+    tensor_input l2_slice_graph ~name:"l2_packed"
+      ~source:Ir.Input_source.Runtime ~shape:[ 2; 3; 30 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let l2_slice_fresh shape =
+    Ir.Graph.fresh_tensor_value l2_slice_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let l2_slice_append op inputs shape =
+    let output = l2_slice_fresh shape in
+    Ir.Graph.append l2_slice_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let l2_slice_index =
+    let slice start length =
+      Tensor_shape.Index.Slice { start; step = 1; length }
+    in
+    Tensor_shape.Index.of_selectors
+      [ slice 0 2; slice 0 3; slice 6 12 ]
+    |> expect_ok
+  in
+  let l2_sliced =
+    l2_slice_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Movement (Ir.Movement.Index l2_slice_index)))
+      [ l2_packed ] [ 2; 3; 12 ]
+  in
+  let l2_grouped =
+    l2_slice_append
+      (Ir.Op.Primitive (Ir.Primitive.Movement Ir.Movement.Reshape))
+      [ l2_sliced ] [ 2; 3; 3; 4 ]
+  in
+  let l2_slice_output =
+    l2_slice_append
+      (Ir.Op.Primitive (Ir.Primitive.L2_norm { epsilon = 1e-6 }))
+      [ l2_grouped ] [ 2; 3; 3; 4 ]
+  in
+  Ir.Graph.add_output l2_slice_graph ~name:"normalized" l2_slice_output;
+  let l2_slice_fused = Passes.fuse_rms_norm l2_slice_graph in
+  expect
+    (Ir.Graph.nodes l2_slice_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+           | ( Ir.Op.Primitive (Ir.Primitive.L2_norm_slice config),
+               [ input ], Some output ) ->
+               Ir.Value.equal input l2_packed
+               && Ir.Value.equal output l2_slice_output
+               && Ir.L2_norm_slice.offset config = 6
+           | _ -> false))
+    "L2 normalization absorbs a captured packed last-axis slice";
+  expect
+    (Ir.Graph.nodes l2_slice_fused
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive (Ir.Primitive.Movement _) -> false
+           | _ -> true))
+    "sliced L2 normalization removes index and reshape intermediates";
+  let l2_slice_schedule =
+    l2_slice_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands l2_slice_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Primitive (Ir.Primitive.L2_norm_slice config) ->
+               Ir.L2_norm_slice.offset config = 6
+           | _ -> false))
+    "sliced L2 normalization survives schedule serialization";
+  expect
+    (l2_slice_fused |> Metal.lower |> expect_ok |> Metal.Program.source
+    |> fun source ->
+    contains_substring source "kernel void llmopt_l2_norm_slice_f16_simd")
+    "Metal lowering emits sliced L2 normalization";
+
   let wide_attention_graph = Ir.Graph.create () in
   let wide_attention_input name shape dtype =
     tensor_input wide_attention_graph ~name ~source:Ir.Input_source.Runtime

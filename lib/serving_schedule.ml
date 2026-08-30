@@ -499,6 +499,41 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d L2 normalization metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.L2_norm_slice config),
+            [ input ],
+            Some output ) ->
+            let split_last dimensions =
+              match List.rev dimensions with
+              | last :: reversed_prefix -> Some (List.rev reversed_prefix, last)
+              | [] -> None
+            in
+            let shape_matches =
+              match
+                split_last
+                  (Tensor_shape.dimensions (Ir.Value.logical_shape input)),
+                split_last
+                  (Tensor_shape.dimensions (Ir.Value.logical_shape output))
+              with
+              | Some (input_prefix, input_width),
+                Some (grouped_prefix, width) ->
+                  (match split_last grouped_prefix with
+                  | Some (output_prefix, groups) ->
+                      input_prefix = output_prefix && groups > 0 && width > 0
+                      && Ir.L2_norm_slice.offset config + (groups * width)
+                         <= input_width
+                  | None -> false)
+              | _ -> false
+            in
+            if
+              shape_matches
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d sliced L2 normalization metadata is inconsistent"
+                   command.Command.node_id)
         | ( Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence config),
             [ input ],
             Some output ) ->
@@ -1102,6 +1137,7 @@ let validate_command seen_values command =
               | Ir.Primitive.Batched_matmul
               | Ir.Primitive.Gated_delta
               | Ir.Primitive.L2_norm _
+              | Ir.Primitive.L2_norm_slice _
               | Ir.Primitive.Paged_attention_q8 _),
             _,
             _ ) ->
@@ -1425,9 +1461,12 @@ module Sequence = struct
           (Ir.Value.logical_shape prepend) ~axis:(Ir.Diff.axis config)
         |> shape_error
     | Ir.Primitive.Cumsum _, [ input ]
-    | Ir.Primitive.L2_norm _, [ input ]
     | Ir.Primitive.Triangular_recurrence _, [ input ] ->
         Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.L2_norm _, [ input ] ->
+        Ok (Ir.Value.logical_shape input)
+    | Ir.Primitive.L2_norm_slice _, [ _input ] ->
+        map_shape substitutions original
     | Ir.Primitive.Gated_delta, [ _; _; _; _; _ ] ->
         map_shape substitutions original
     | Ir.Primitive.Fill _, [] -> map_shape substitutions original
@@ -2723,6 +2762,10 @@ let write_primitive writer = function
   | Ir.Primitive.L2_norm { epsilon } ->
       Binary.Writer.u8 writer 22;
       Binary.Writer.float64 writer epsilon
+  | Ir.Primitive.L2_norm_slice config ->
+      Binary.Writer.u8 writer 24;
+      Binary.Writer.float64 writer (Ir.L2_norm_slice.epsilon config);
+      Binary.Writer.u32 writer (Ir.L2_norm_slice.offset config)
 
 let read_primitive values reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2860,6 +2903,11 @@ let read_primitive values reader =
       in
       Ir.Short_conv_silu.create ~convolution ~output_start
       |> Result.map (fun config -> Ir.Primitive.Short_conv_silu config)
+  | 24 ->
+      let* epsilon = Binary.Reader.float64 reader in
+      let* offset = Binary.Reader.u32 reader in
+      Ir.L2_norm_slice.create ~epsilon ~offset
+      |> Result.map (fun config -> Ir.Primitive.L2_norm_slice config)
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function

@@ -360,6 +360,24 @@ module Short_conv_silu = struct
       (Short_conv.to_string config.convolution) config.output_start
 end
 
+module L2_norm_slice = struct
+  type t = { epsilon : float; offset : int }
+
+  let create ~epsilon ~offset =
+    if not (Float.is_finite epsilon) || epsilon < 0.0 then
+      Error "L2-normalization slice epsilon must be finite and non-negative"
+    else if offset < 0 then
+      Error "L2-normalization slice offset must be non-negative"
+    else Ok { epsilon; offset }
+
+  let epsilon config = config.epsilon
+  let offset config = config.offset
+
+  let to_string config =
+    Printf.sprintf "l2-norm-slice(eps=%.9g,offset=%d)" config.epsilon
+      config.offset
+end
+
 module Attention = struct
   type t = { scale : float; causal : bool }
 
@@ -548,6 +566,7 @@ module Primitive = struct
     | Triangular_recurrence of Triangular_recurrence.t
     | Gated_delta
     | L2_norm of { epsilon : float }
+    | L2_norm_slice of L2_norm_slice.t
     | Fill of Scalar.t
     | Gather2
     | Update_slice of Tensor_shape.Index.t
@@ -562,7 +581,8 @@ module Primitive = struct
     | Cast _ | Reduce _ | Movement _ | Short_conv _ | Short_conv_silu _
     | Attention _
     | Paged_attention_q8 _ | Embedding | Arange _ | Diff _ | Cumsum _
-    | Triangular_recurrence _ | Gated_delta | L2_norm _ | Fill _ | Gather2 | Update_slice _
+    | Triangular_recurrence _ | Gated_delta | L2_norm _ | L2_norm_slice _
+    | Fill _ | Gather2 | Update_slice _
     | Pad_right_zero _ | Triangular _
     | Masked_fill _ | Eye | Batched_matmul -> []
 
@@ -582,6 +602,7 @@ module Primitive = struct
     | Triangular_recurrence config -> Triangular_recurrence.to_string config
     | Gated_delta -> "gated-delta"
     | L2_norm { epsilon } -> Printf.sprintf "l2-norm(eps=%.9g)" epsilon
+    | L2_norm_slice config -> L2_norm_slice.to_string config
     | Fill scalar -> "fill(" ^ Scalar.to_string scalar ^ ")"
     | Gather2 -> "gather2"
     | Update_slice index -> "update-" ^ Tensor_shape.Index.to_string index
