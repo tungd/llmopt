@@ -535,7 +535,7 @@ let () =
     "Metal lowering does not emit uncaptured attention widths";
 
   [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2", 32;
-    Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_x2_l32", 256;
+    Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_n2_l32", 256;
     Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_x1_l32", 1024;
     Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_m2_x4", 256;
     Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16_m2", 32;
@@ -618,8 +618,8 @@ let () =
     Metal.Program.kernels q4_m2_program |> List.map Kernel_abi.Entry.name
   in
   expect
-    (List.mem "llmopt_q4_k_linear_f16_m2_x2_l32" q4_m2_kernel_names)
-    "Metal lowering declares the selected full-SIMD two-column tactic";
+    (List.mem "llmopt_q4_k_linear_f16_m2_n2_l32" q4_m2_kernel_names)
+    "Metal lowering declares the selected full-SIMD two-token/two-column tactic";
   expect
     (not (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names))
     "Metal lowering omits the unselected generic Q4_K Linear tactic";

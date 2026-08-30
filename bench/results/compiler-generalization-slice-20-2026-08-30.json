@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T13:22:27+07:00",
+  "git_base_commit": "91817ca614ac71c94615504443ed15c4e8e19a87",
+  "slice": "q4-k-two-token-two-output-tactic",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Linear",
+    "selection": "captured m=2, Float16 input/output, Q4_K storage, SIMD32 target, block-aligned k, and positive n",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "sites": {
+      "qwen": 20,
+      "gemma": 79
+    },
+    "kernel": "each full SIMD group reuses two Q4_K output-column blocks across both captured token rows and emits a 2x2 output tile"
+  },
+  "contract": {
+    "input_shape": [
+      1,
+      2
+    ],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice20-q4-m2n2",
+        "kernels": 112,
+        "commands": 2057,
+        "dispatches": 888,
+        "median_ms": 10.501027,
+        "min_ms": 9.662151,
+        "max_ms": 18.997908,
+        "previous_recorded_median_ms": 10.674,
+        "delta_ms": -0.172973,
+        "latency_reduction_percent": 1.620508,
+        "output_sha256": "3db055cc11ec4a89fbc1672415c736bd0f272c477aa00cc022c1bc198ee7a45f",
+        "previous_output_mean_abs": 0.001639833,
+        "previous_output_max_abs": 0.017578125,
+        "argmax_rows": [
+          760,
+          16
+        ],
+        "previous_argmax_rows": [
+          760,
+          16
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.9201875,
+        "mean_ms": 8.033495,
+        "samples_ns": [
+          7867208,
+          7952625,
+          7829000,
+          7860334,
+          9199167,
+          8040541,
+          7952500,
+          7989375,
+          7756333,
+          7887875
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.325856
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice20-q4-m2n2",
+        "kernels": 107,
+        "commands": 2974,
+        "dispatches": 974,
+        "median_ms": 21.069527,
+        "min_ms": 19.512177,
+        "max_ms": 23.216963,
+        "previous_recorded_median_ms": 21.584868,
+        "delta_ms": -0.515341,
+        "latency_reduction_percent": 2.387511,
+        "output_sha256": "7e7d79a9118a74da902742d5e81235b8b724c65a3c5d7b0b31967c73a978d2f4",
+        "previous_output_mean_abs": 0.003507356,
+        "previous_output_max_abs": 0.048828125,
+        "argmax_rows": [
+          84904,
+          148465
+        ],
+        "previous_argmax_rows": [
+          84904,
+          148465
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.2832505,
+        "mean_ms": 17.518958,
+        "samples_ns": [
+          17147000,
+          16931875,
+          16946375,
+          18086000,
+          18077750,
+          17546125,
+          17335584,
+          17201459,
+          17230917,
+          18686500
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.219072
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 112 kernels, 2057 commands, 0 opaque",
+    "gemma_package": "valid, 107 kernels, 2974 commands, 0 opaque",
+    "numerical_scope": "both models preserve both row argmax IDs with changed Float16 logits"
+  }
+}

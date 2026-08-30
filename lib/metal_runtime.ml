@@ -1638,7 +1638,7 @@ let quant_linear_kernel_names ~m quant =
   let generic = quant_linear_kernel_name quant in
   let specialized =
     match quant with
-    | Ir.Dtype.Q4_K -> Some (generic ^ "_m2_x2_l32")
+    | Ir.Dtype.Q4_K -> Some (generic ^ "_m2_n2_l32")
     | Ir.Dtype.Q5_K -> Some (generic ^ "_m2_x1_l32")
     | _ -> None
   in
@@ -2694,7 +2694,9 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Parameters.u32s [ m; n; k; if Option.is_some bias_value then 1 else 0 ]
                 in
                 let columns =
-                  if String.ends_with ~suffix:"_m2_x2_l32" name then
+                  if String.ends_with ~suffix:"_m2_n2_l32" name then
+                    (n + 1) / 2
+                  else if String.ends_with ~suffix:"_m2_x2_l32" name then
                     m * ((n + 1) / 2)
                   else if String.ends_with ~suffix:"_m2_x1_l32" name then
                     m * n
@@ -2703,7 +2705,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   else m * n
                 in
                 let* grid_x =
-                  if String.ends_with ~suffix:"_m2_x2_l32" name
+                  if String.ends_with ~suffix:"_m2_n2_l32" name
+                     || String.ends_with ~suffix:"_m2_x2_l32" name
                      || String.ends_with ~suffix:"_m2_x1_l32" name
                      || String.ends_with ~suffix:"_m2_x4" name
                   then
