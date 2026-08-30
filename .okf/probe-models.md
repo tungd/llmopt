@@ -45,6 +45,9 @@ sources:
   - id: gated-delta
     resource: /.okf/experiments/exp-0111-graph-recovered-gated-delta-2026-08-30.md
     title: Graph-recovered zero-state gated-delta execution
+  - id: full-simd-q4-k
+    resource: /.okf/experiments/exp-0112-full-simd-q4-k-linear-2026-08-30.md
+    title: Full-SIMD two-column Q4_K Linear tactic
 ---
 
 # Boundary
@@ -65,8 +68,8 @@ Ninja `all` target excludes model-specific diagnostic executables.
 |---|---|---|
 | `LiquidAI/LFM2.5-350M` | Complete W4A16/Q8-KV prefill, decode, cache, tokenizer, Model Program ABI v2 serving, and a four-repeat same-text comparison with llama.cpp Q4_0 | Only end-to-end serving probe. The comparison is not GGUF/UD weight parity and remains owned by `Lfm25_probe`, probe-only diagnostics, and LFM receipts. |
 | `HuggingFaceTB/SmolLM2-135M-Instruct` | Q4_K_M GGUF: 2,131-node capture, 273 statics, 2,461-command zero-opaque native full forward; both token argmax IDs match the same-GGUF Transformers reference | Two-token no-cache median is `10.454059 ms` versus llama.cpp `3.7798125 ms` (`2.7658x`). No LLMOpt cached decode, Model Program, or HTTP serving run. |
-| `unsloth/Qwen3.5-0.8B` | UD-Q4_K_XL GGUF: 14,219-node capture, all 321 statics resolved, and a 2,723-command/1,272-dispatch zero-opaque native full forward after graph-recovered gated-delta execution, including direct `IQ4_XS` Linear execution | Two-token no-cache median is `14.506459 ms` versus llama.cpp `7.937812 ms` (`1.827514x`). Semantic recurrence replacement preserves argmax rows `760,16`; full Torch parity remains absent against corrected reference `198,16`. No cached decode, Model Program, or HTTP serving run. |
-| `unsloth/gemma-4-E2B-it` | UD-Q4_K_XL GGUF: 4,399-node capture and zero-opaque native full forward; graph-general RMSNorm fusion plus output liveness produce 3,997 commands/1,635 dispatches, while short-row K-quant tactics preserve both token argmax IDs | Latest two-token no-cache median is `30.664444 ms` versus llama.cpp `17.2634165 ms` (`1.776267x`). The gated-delta topology does not occur in this graph and the latest output is byte exact with slice 8. No LLMOpt cached decode, Model Program, or HTTP serving run. |
+| `unsloth/Qwen3.5-0.8B` | UD-Q4_K_XL GGUF: 14,219-node capture, all 321 statics resolved, and a 2,723-command/1,272-dispatch zero-opaque native full forward after graph-recovered gated-delta execution, including direct `IQ4_XS` Linear execution | Two-token no-cache median is `14.441490 ms` versus llama.cpp `7.6178545 ms` (`1.895742x`). Graph-general Q4_K full-SIMD execution and semantic recurrence replacement preserve argmax rows `760,16`; full Torch parity remains absent against corrected reference `198,16`. No cached decode, Model Program, or HTTP serving run. |
+| `unsloth/gemma-4-E2B-it` | UD-Q4_K_XL GGUF: 4,399-node capture and zero-opaque native full forward; graph-general RMSNorm fusion plus output liveness produce 3,997 commands/1,635 dispatches, while full-SIMD Q4_K execution preserves both token argmax IDs | Latest two-token no-cache median is `28.633475 ms` versus llama.cpp `16.6469585 ms` (`1.720042x`). The gated-delta topology does not occur in this graph. No LLMOpt cached decode, Model Program, or HTTP serving run. |
 
 # Adding a probe
 

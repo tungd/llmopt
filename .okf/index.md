@@ -63,6 +63,7 @@ configuration.
 * [SIMD-group batched matmul tactic](experiments/exp-0109-simdgroup-batched-matmul-2026-08-30.md) - broadcast-aware SIMD matrix tiles selected from captured batched-matmul geometry.
 * [Sub-SIMD short-row K-quant Linear tactics](experiments/exp-0110-subsimd-short-row-kquant-linear-2026-08-30.md) - four-column SIMD execution for captured two-row Q4_K/Q5_K/Q6_K Linear.
 * [Graph-recovered zero-state gated-delta execution](experiments/exp-0111-graph-recovered-gated-delta-2026-08-30.md) - recover a semantic recurrence from captured topology and lower it directly to SIMD Metal.
+* [Full-SIMD two-column Q4_K Linear tactic](experiments/exp-0112-full-simd-q4-k-linear-2026-08-30.md) - use full SIMD lanes for captured two-row Q4_K Linear without architecture identifiers.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.

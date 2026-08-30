@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T11:14:18+07:00",
+  "git_base_commit": "c8486d5",
+  "slice": "full-simd-two-column-q4-k-linear",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "selection": "captured m=2 shape, Q4_K physical layout, Float16 activation and result dtypes, and SIMD32 target capability",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "kernel": "one full SIMD group computes two output columns for one captured input row; two SIMD groups per threadgroup",
+    "fallback": "existing four-column sub-SIMD, paired-row, and generic Q4_K tactics remain registered"
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 3,
+    "llmopt_repeats": 20,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-q4-l32-x2",
+        "kernels": 105,
+        "commands": 2723,
+        "dispatches": 1272,
+        "median_ms": 14.441490,
+        "min_ms": 12.861967,
+        "max_ms": 17.554045,
+        "previous_median_ms": 14.506459,
+        "delta_ms": -0.064969,
+        "latency_reduction_percent": 0.447863,
+        "output_sha256": "65bf30fe6cc357ba27f92370430f36b7a011a08190adb4825013bdb85ba7392d",
+        "previous_output_mean_abs": 0.0034628396,
+        "previous_output_max_abs": 0.025390625,
+        "argmax_rows": [760, 16],
+        "previous_argmax_rows": [760, 16]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.6178545,
+        "mean_ms": 7.988975,
+        "samples_ns": [
+          9823959,
+          8344625,
+          7745875,
+          7465250,
+          8558417,
+          7489834,
+          7356375,
+          7429125,
+          8331916,
+          7344375
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.895742
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-q4-l32-x2",
+        "kernels": 94,
+        "commands": 3997,
+        "dispatches": 1635,
+        "median_ms": 28.633475,
+        "min_ms": 26.716948,
+        "max_ms": 47.261953,
+        "previous_median_ms": 30.664444,
+        "delta_ms": -2.030969,
+        "latency_reduction_percent": 6.623205,
+        "output_sha256": "b2ef1e0f662e2d5a4f74a12941eb7fd4b963b244db15d0e7f78b5258a28c9ebb",
+        "previous_output_mean_abs": 0.0120636337,
+        "previous_output_max_abs": 0.078125,
+        "argmax_rows": [84904, 148465],
+        "previous_argmax_rows": [84904, 148465]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 16.6469585,
+        "mean_ms": 16.911091,
+        "samples_ns": [
+          16689750,
+          17560667,
+          16634916,
+          16651667,
+          16590541,
+          16561625,
+          17854000,
+          16642250,
+          17332917,
+          16592583
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.720042
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "native_metal_fixture": "pass, 454 dispatches and exact outputs",
+    "metal_compilation": "pass for native fixture and both full-model packages",
+    "qwen_package": "valid, 105 kernels, 2723 commands, 0 opaque",
+    "gemma_package": "valid, 94 kernels, 3997 commands, 0 opaque",
+    "numerical_scope": "both probes preserve both previous row argmax IDs with changed Float16 logits"
+  }
+}

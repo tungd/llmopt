@@ -110,3 +110,4 @@
 * [SIMD-group batched matmul tactic](exp-0109-simdgroup-batched-matmul-2026-08-30.md) - aligned SIMD matrix execution plus a tiled fallback selected from captured shape.
 * [Sub-SIMD short-row K-quant Linear tactics](exp-0110-subsimd-short-row-kquant-linear-2026-08-30.md) - four-column vectorized Q4_K/Q5_K/Q6_K execution selected from captured shape and layout.
 * [Graph-recovered zero-state gated-delta execution](exp-0111-graph-recovered-gated-delta-2026-08-30.md) - captured-topology semantic replacement and direct SIMD recurrence execution.
+* [Full-SIMD two-column Q4_K Linear tactic](exp-0112-full-simd-q4-k-linear-2026-08-30.md) - full-lane packed Q4_K execution selected from captured geometry and physical layout.

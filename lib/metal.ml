@@ -101,8 +101,22 @@ module Tactic = struct
           && block_quantized problem quant
           && supports_simd problem.target ~threads:64) }
 
+  let two_column_q4_k_registration : linear_registration =
+    { build =
+        (fun _ ->
+          { name = quant_kernel_name Ir.Dtype.Q4_K ^ "_m2_x2_l32";
+            threadgroup = (64, 1, 1) });
+      accepts =
+        (fun (problem : linear_problem) ->
+          problem.m = 2 && problem.n > 0 && problem.k > 0
+          && problem.k mod block_elements Ir.Dtype.Q4_K = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem Ir.Dtype.Q4_K
+          && supports_simd problem.target ~threads:64) }
+
   let linear_registry : linear_registration list =
-    List.map four_column_quant_registration
+    two_column_q4_k_registration
+    :: List.map four_column_quant_registration
       [ Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
     @ List.map paired_quant_registration
       [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
@@ -2652,6 +2666,112 @@ kernel void llmopt_q4_k_linear_f16_m2(
   }
 }
 
+kernel void llmopt_q4_k_linear_f16_m2_x2_l32(
+    device const half* input [[buffer(0)]],
+    device const block_q4_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint columns_per_row = (params.n + 1u) >> 1;
+  const uint task = gid >> 5;
+  const uint total_tasks = params.m * columns_per_row;
+  if (task >= total_tasks) return;
+
+  const uint row = task / columns_per_row;
+  const uint first_col = (task - row * columns_per_row) << 1;
+  const uint superblock_quarter = lane >> 3;
+  const uint local_lane = lane & 7u;
+  const uint quant_half = local_lane >> 2;
+  const uint quant_offset = local_lane & 3u;
+  const uint num_superblocks = params.k >> 8;
+  device const half* activation = input + row * params.k
+    + (superblock_quarter << 8) + (quant_half << 6)
+    + (quant_offset << 3);
+
+  float low_values[16];
+  float high_values[16];
+  float accumulators[2] = { 0.0f, 0.0f };
+  ushort packed_scales[4];
+  thread const uchar* scale_bytes =
+    reinterpret_cast<thread const uchar*>(packed_scales);
+
+  for (uint sb = superblock_quarter; sb < num_superblocks; sb += 4u) {
+    float4 activation_sums = float4(0.0f);
+    for (uint index = 0; index < 8u; ++index) {
+      low_values[index] = float(activation[index]);
+      activation_sums[0] += low_values[index];
+      low_values[index + 8u] = float(activation[index + 32u]);
+      activation_sums[1] += low_values[index + 8u];
+      high_values[index] = float(activation[index + 128u]);
+      activation_sums[2] += high_values[index];
+      high_values[index + 8u] = float(activation[index + 160u]);
+      activation_sums[3] += high_values[index + 8u];
+    }
+
+    for (uint column_offset = 0; column_offset < 2u; ++column_offset) {
+      const uint col = first_col + column_offset;
+      if (col >= params.n) continue;
+      device const block_q4_K& block =
+        weight[col * num_superblocks + sb];
+      device const ushort* scales =
+        reinterpret_cast<device const ushort*>(block.scales) + quant_half;
+      packed_scales[0] = scales[0] & 0x3f3fu;
+      packed_scales[1] = scales[2] & 0x3f3fu;
+      packed_scales[2] = ((scales[4] >> 0) & 0x0f0fu)
+        | ((scales[0] & 0xc0c0u) >> 2);
+      packed_scales[3] = ((scales[4] >> 4) & 0x0f0fu)
+        | ((scales[2] & 0xc0c0u) >> 2);
+
+      device const ushort* low_quant =
+        reinterpret_cast<device const ushort*>(block.qs)
+        + 16u * quant_half + 4u * quant_offset;
+      device const ushort* high_quant = low_quant + 32u;
+      float4 low_dot = float4(0.0f);
+      float4 high_dot = float4(0.0f);
+      for (uint index = 0; index < 4u; ++index) {
+        low_dot[0] += low_values[2u * index] * float(low_quant[index] & 0x000fu);
+        low_dot[1] += low_values[2u * index + 1u]
+          * float(low_quant[index] & 0x0f00u);
+        low_dot[2] += low_values[2u * index + 8u]
+          * float(low_quant[index] & 0x00f0u);
+        low_dot[3] += low_values[2u * index + 9u]
+          * float(low_quant[index] & 0xf000u);
+        high_dot[0] += high_values[2u * index]
+          * float(high_quant[index] & 0x000fu);
+        high_dot[1] += high_values[2u * index + 1u]
+          * float(high_quant[index] & 0x0f00u);
+        high_dot[2] += high_values[2u * index + 8u]
+          * float(high_quant[index] & 0x00f0u);
+        high_dot[3] += high_values[2u * index + 9u]
+          * float(high_quant[index] & 0xf000u);
+      }
+
+      accumulators[column_offset] += float(block.d)
+        * ((low_dot[0] + low_dot[1] / 256.0f) * float(scale_bytes[0])
+          + (low_dot[2] + low_dot[3] / 256.0f) * float(scale_bytes[1]) / 16.0f
+          + (high_dot[0] + high_dot[1] / 256.0f) * float(scale_bytes[4])
+          + (high_dot[2] + high_dot[3] / 256.0f) * float(scale_bytes[5]) / 16.0f)
+        - float(block.dmin)
+        * (activation_sums[0] * float(scale_bytes[2])
+          + activation_sums[1] * float(scale_bytes[3])
+          + activation_sums[2] * float(scale_bytes[6])
+          + activation_sums[3] * float(scale_bytes[7]));
+    }
+    activation += 1024u;
+  }
+
+  for (uint column_offset = 0; column_offset < 2u; ++column_offset) {
+    const uint col = first_col + column_offset;
+    const float sum = simd_sum(accumulators[column_offset]);
+    if (lane == 0u && col < params.n) {
+      const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+      output[row * params.n + col] = half(sum + bias_value);
+    }
+  }
+}
+
 kernel void llmopt_q4_k_linear_f16_m2_x4(
     device const half* input [[buffer(0)]],
     device const block_q4_K* weight [[buffer(1)]],
@@ -3484,6 +3604,10 @@ let kquant_entries =
       ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_k_linear_f16_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_q4_k_linear_f16_m2_x2_l32"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
