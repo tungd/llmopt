@@ -982,6 +982,80 @@ let () =
     contains_substring source "kernel void llmopt_silu_mul_f16")
     "Metal lowering emits the fused activation-product kernel";
 
+  let gated_graph = Ir.Graph.create () in
+  let gated_input =
+    tensor_input gated_graph ~name:"gated_input" ~source:Ir.Input_source.Runtime
+      ~shape:[ 2; 256 ] ~dtype:Ir.Dtype.Float16
+  in
+  let gated_weight name =
+    tensor_input gated_graph ~name
+      ~source:(Ir.Input_source.Tensor_store { key = name })
+      ~shape:[ 512; 256 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_K)
+  in
+  let gate_weight = gated_weight "gated_gate.weight" in
+  let up_weight = gated_weight "gated_up.weight" in
+  let append_gated op inputs =
+    let output =
+      Ir.Graph.fresh_tensor_value gated_graph
+        ~shape:(Tensor_shape.of_ints_exn [ 2; 512 ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append gated_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let gated_gate =
+    append_gated (Ir.Op.Linear { m = 2; n = 512; k = 256; bias = false })
+      [ gated_input; gate_weight ]
+  in
+  let gated_up =
+    append_gated (Ir.Op.Linear { m = 2; n = 512; k = 256; bias = false })
+      [ gated_input; up_weight ]
+  in
+  let gated_product =
+    append_gated
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Silu_mul,
+                 Ir.Pointwise.Tensor gated_gate,
+                 Ir.Pointwise.Tensor gated_up ))))
+      [ gated_gate; gated_up ]
+  in
+  Ir.Graph.add_output gated_graph ~name:"product" gated_product;
+  let gated_fused = Passes.fuse_swiglu_ffn gated_graph |> expect_ok in
+  expect
+    (Ir.Graph.nodes gated_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Gated_linear
+                 { m = 2; n = 512; k = 256; activation = Ir.Gated_activation.Silu },
+               [ input; gate; up ] ) ->
+               List.for_all2 Ir.Value.equal [ input; gate; up ]
+                 [ gated_input; gate_weight; up_weight ]
+           | _ -> false))
+    "same-layout independent Linear branches fuse into semantic gated Linear";
+  expect
+    (Ir.Graph.nodes gated_fused
+    |> List.for_all (fun node ->
+           match Ir.node_op node with Ir.Op.Linear _ -> false | _ -> true))
+    "gated Linear fusion removes both materialized projections";
+  let gated_schedule =
+    gated_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands gated_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Gated_linear _ -> true
+           | _ -> false))
+    "gated Linear survives schedule serialization";
+  expect
+    (Metal.lower gated_fused |> expect_ok |> Metal.Program.source
+    |> fun source ->
+    contains_substring source "kernel void llmopt_q4_k_gated_linear_f16")
+    "Metal lowering emits the Q4_K gated Linear tactic";
+
   let scan_graph = Ir.Graph.create () in
   let scan_initial =
     tensor_input scan_graph ~name:"scan_initial" ~source:Ir.Input_source.Runtime

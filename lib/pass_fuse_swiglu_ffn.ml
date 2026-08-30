@@ -461,6 +461,89 @@ let fuse_gated_activations graph =
         | None -> Some node)
       nodes)
 
+let fused_gated_activation node =
+  match Ir.node_op node, Ir.node_inputs node with
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+          (Ir.Pointwise.Binary (operator, _, _))),
+      [ gate; up ] ) ->
+      let activation =
+        match operator with
+        | Ir.Pointwise.Silu_mul -> Some Ir.Gated_activation.Silu
+        | Ir.Pointwise.Gelu_mul -> Some Ir.Gated_activation.Gelu
+        | Ir.Pointwise.Sigmoid_mul -> Some Ir.Gated_activation.Sigmoid
+        | _ -> None
+      in
+      Option.map (fun activation -> activation, gate, up) activation
+  | _ -> None
+
+let unbiased_projection node =
+  match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+  | Ir.Op.Linear { m; n; k; bias = false }, [ input; weight ], Some output ->
+      Some (m, n, k, input, weight, output)
+  | _ -> None
+
+let fuse_gated_linears graph =
+  let nodes = Ir.Graph.nodes graph in
+  let producer value =
+    List.find_opt
+      (fun node -> Option.exists (value_is value) (Ir.node_output node))
+      nodes
+  in
+  let consumers value =
+    List.filter
+      (fun node -> List.exists (value_is value) (Ir.node_inputs node))
+      nodes
+  in
+  let graph_outputs = Ir.Graph.outputs graph |> List.map snd in
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) gated_node ->
+        match fused_gated_activation gated_node, Ir.node_output gated_node with
+        | Some (activation, gate, up), Some output ->
+            (match producer gate, producer up with
+            | Some gate_node, Some up_node ->
+                (match unbiased_projection gate_node, unbiased_projection up_node with
+                | ( Some (gate_m, gate_n, gate_k, gate_input, gate_weight, gate_output),
+                    Some (up_m, up_n, up_k, up_input, up_weight, up_output) )
+                  when gate_m = up_m && gate_n = up_n && gate_k = up_k
+                       && value_is gate_input up_input
+                       && value_is gate gate_output && value_is up up_output
+                       && consumers gate = [ gated_node ]
+                       && consumers up = [ gated_node ]
+                       && not (List.exists (value_is gate) graph_outputs)
+                       && not (List.exists (value_is up) graph_outputs)
+                       && Ir.Value.dtype gate_input = Ir.Dtype.Float16
+                       && Ir.Value.dtype gate_weight
+                          = Ir.Dtype.Quant Ir.Dtype.Q4_K
+                       && Ir.Value.dtype up_weight = Ir.Value.dtype gate_weight
+                       && Ir.Value.dtype output = Ir.Dtype.Float16 ->
+                    let fused =
+                      Ir.node_replace gated_node
+                        ~op:
+                          (Ir.Op.Gated_linear
+                            { m = gate_m;
+                              n = gate_n;
+                              k = gate_k;
+                              activation })
+                        ~inputs:[ gate_input; gate_weight; up_weight ]
+                    in
+                    ( (Ir.node_id gated_node, fused) :: replacements,
+                      Ir.node_id gate_node :: Ir.node_id up_node :: removed )
+                | _ -> replacements, removed)
+            | _ -> replacements, removed)
+        | _ -> replacements, removed)
+      ([], []) nodes
+  in
+  Ir.Graph.with_nodes graph
+    (List.filter_map
+      (fun node ->
+        match List.assoc_opt (Ir.node_id node) replacements with
+        | Some replacement -> Some replacement
+        | None when List.mem (Ir.node_id node) removed -> None
+        | None -> Some node)
+      nodes)
+
 let run graph =
   let* graph = Fusion_query.Rule.rewrite rule ~select:select_legacy ~lower graph in
-  Ok (fuse_gated_activations graph)
+  Ok (graph |> fuse_gated_activations |> fuse_gated_linears)

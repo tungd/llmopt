@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T12:58:54+07:00",
+  "git_base_commit": "93dc99d79cc553de390e31c3cae3545188c8e038",
+  "slice": "topology-fused-q4-k-gated-linear",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "matched_topology": "two unbiased Linear projections with one shared input and one sole gated-activation product consumer",
+    "selection": "producer and sole-consumer identity, graph-output escape checks, captured m/n/k, input/output dtype, equal Q4_K storage layout, and target SIMD geometry",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "semantic_operation": "Gated_linear",
+    "kernel": "one SIMD group computes one captured row/column for both Q4_K projections with an eight-lane superblock decomposition",
+    "selected_sites": {
+      "qwen": 14,
+      "gemma": 30
+    },
+    "controlled_rejection": {
+      "kernel": "one full SIMD group per row/column",
+      "qwen_median_ms": 12.676477,
+      "gemma_median_ms": 31.209588,
+      "reason": "discarded the faster established sub-SIMD Q4_K decomposition"
+    }
+  },
+  "abi": {
+    "schedule": 25,
+    "package": 23,
+    "backward_compatibility": "not retained by user direction"
+  },
+  "contract": {
+    "input_shape": [
+      1,
+      2
+    ],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice17-q4-gated-linear-x1",
+        "kernels": 111,
+        "commands": 2411,
+        "previous_commands": 2453,
+        "command_delta": -42,
+        "dispatches": 1070,
+        "previous_dispatches": 1098,
+        "dispatch_delta": -28,
+        "median_ms": 11.627913,
+        "min_ms": 10.873079,
+        "max_ms": 21.327972,
+        "previous_recorded_median_ms": 11.730433,
+        "delta_ms": -0.102520,
+        "latency_reduction_percent": 0.873966,
+        "output_sha256": "6cf776efe75b309900b6bfb238f8f332463e7ccc311a455715107d15bbfaa584",
+        "previous_output_mean_abs": 0.002864912,
+        "previous_output_max_abs": 0.019531250,
+        "argmax_rows": [
+          760,
+          16
+        ],
+        "previous_argmax_rows": [
+          760,
+          16
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.911646,
+        "mean_ms": 8.032771,
+        "samples_ns": [
+          8031000,
+          7895875,
+          7851833,
+          7830834,
+          7927417,
+          7895583,
+          7701292,
+          7965334,
+          9157709,
+          8070833
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.469721
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice17-q4-gated-linear-x1",
+        "kernels": 105,
+        "commands": 2989,
+        "previous_commands": 3079,
+        "command_delta": -90,
+        "dispatches": 984,
+        "previous_dispatches": 1044,
+        "dispatch_delta": -60,
+        "median_ms": 21.449566,
+        "min_ms": 20.071983,
+        "max_ms": 23.241997,
+        "previous_recorded_median_ms": 22.013426,
+        "delta_ms": -0.563860,
+        "latency_reduction_percent": 2.561437,
+        "output_sha256": "3f3b2da040c668a47a8b5aefa8a03c75beff6c3841f89bd06f2fc2c03f40be0b",
+        "previous_output_mean_abs": 0.014898818,
+        "previous_output_max_abs": 0.099670410,
+        "argmax_rows": [
+          84904,
+          148465
+        ],
+        "previous_argmax_rows": [
+          84904,
+          148465
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.350833,
+        "mean_ms": 17.636325,
+        "samples_ns": [
+          17134625,
+          17216583,
+          18492042,
+          17488083,
+          18445875,
+          17303041,
+          17398625,
+          17200875,
+          17145791,
+          18537708
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.236227
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 111 kernels, 2411 commands, 0 opaque",
+    "gemma_package": "valid, 105 kernels, 2989 commands, 0 opaque",
+    "numerical_scope": "both models preserve both row argmax IDs with changed Float16 logits"
+  }
+}

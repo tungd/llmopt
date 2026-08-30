@@ -2689,6 +2689,43 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                      (Ir.Dtype.to_string input_dtype)
                      (Ir.Dtype.to_string weight_dtype)
                      (Ir.Dtype.to_string output_dtype)))
+        | ( Ir.Op.Gated_linear { m; n; k; activation },
+            [ input; gate_weight; up_weight ],
+            Some output ) ->
+            let* () = validate_linear_shapes ~m ~n ~k input gate_weight output in
+            let* () = validate_linear_shapes ~m ~n ~k input up_weight output in
+            let* quant =
+              match Ir.Value.dtype gate_weight, Ir.Value.dtype up_weight with
+              | Ir.Dtype.Quant Ir.Dtype.Q4_K, Ir.Dtype.Quant Ir.Dtype.Q4_K ->
+                  Ok Ir.Dtype.Q4_K
+              | gate_dtype, up_dtype ->
+                  Error
+                    (Printf.sprintf
+                       "unsupported gated Linear weights: gate=%s up=%s"
+                       (Ir.Dtype.to_string gate_dtype)
+                       (Ir.Dtype.to_string up_dtype))
+            in
+            let* buffers = find_values state [ input; gate_weight; up_weight ] in
+            let activation_tag =
+              match activation with
+              | Ir.Gated_activation.Silu -> 0
+              | Ir.Gated_activation.Gelu -> 1
+              | Ir.Gated_activation.Sigmoid -> 2
+            in
+            let* parameters = Parameters.u32s [ m; n; k; activation_tag ] in
+            let name =
+              if m = 2 then "llmopt_q4_k_gated_linear_f16_m2_x1_l32"
+              else "llmopt_q4_k_gated_linear_f16"
+            in
+            let* grid_x =
+              if m = 2 then short_row_quant_grid (m * n)
+              else linear_f16_grid (m * n)
+            in
+            dispatched
+              (dispatch_output ~name runtime state output
+                 ~operation:Kernel_abi.Operation.Gated_linear
+                 ~input_dtype:(Ir.Dtype.Quant quant) ~buffers ~parameters
+                 ~grid:(grid_x, 1, 1))
         | ( Ir.Op.Rms_norm_add { epsilon },
             [ input; weight; residual ],
             Some output ) ->

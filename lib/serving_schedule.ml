@@ -280,6 +280,28 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d RMSNorm-add metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Gated_linear { m; n; k; _ },
+            [ input; gate_weight; up_weight ],
+            Some output ) ->
+            if
+              m > 0 && n > 0 && k > 0
+              && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+              && Tensor_shape.dimensions (Ir.Value.logical_shape gate_weight)
+                 = [ n; k ]
+              && Tensor_shape.equal
+                   (Ir.Value.logical_shape gate_weight)
+                   (Ir.Value.logical_shape up_weight)
+              && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && Ir.Value.dtype gate_weight = Ir.Dtype.Quant Ir.Dtype.Q4_K
+              && Ir.Value.dtype up_weight = Ir.Value.dtype gate_weight
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d gated Linear metadata is inconsistent"
+                   command.Command.node_id)
         | Ir.Op.Copy _, [ source; destination ], None ->
             if
               Tensor_shape.equal
@@ -1226,6 +1248,13 @@ module Sequence = struct
                k = substitute substitutions k;
                epsilon;
              })
+    | Ir.Op.Gated_linear { m; n; k; activation } ->
+        Ok
+          (Ir.Op.Gated_linear
+             { m = substitute substitutions m;
+               n = substitute substitutions n;
+               k = substitute substitutions k;
+               activation })
     | Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
         Ok
           (Ir.Op.W4a16_lm_head_argmax
@@ -1375,7 +1404,7 @@ module Sequence = struct
           (Ir.Value.logical_shape right)
         |> shape_error
     | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Fused_matmul_bias _
-      | Ir.Op.W4a16_linear _ ), _ ->
+      | Ir.Op.W4a16_linear _ | Ir.Op.Gated_linear _ ), _ ->
         map_shape substitutions original
     | Ir.Op.W4a16_swiglu_ffn _, _ -> map_shape substitutions original
     | Ir.Op.W4a16_lm_head_argmax { m; _ }, _ ->
@@ -2775,6 +2804,14 @@ let write_op writer = function
   | Ir.Op.Rms_norm_add { epsilon } ->
       Binary.Writer.u8 writer 37;
       Binary.Writer.float64 writer epsilon
+  | Ir.Op.Gated_linear { m; n; k; activation } ->
+      Binary.Writer.u8 writer 38;
+      List.iter (Binary.Writer.u64 writer) [ m; n; k ];
+      Binary.Writer.u8 writer
+        (match activation with
+        | Ir.Gated_activation.Silu -> 0
+        | Ir.Gated_activation.Gelu -> 1
+        | Ir.Gated_activation.Sigmoid -> 2)
   | Ir.Op.Primitive primitive ->
       Binary.Writer.u8 writer 15;
       write_primitive writer primitive
@@ -2946,6 +2983,19 @@ let read_op values reader =
       let* epsilon = Binary.Reader.float64 reader in
       if Float.is_finite epsilon then Ok (Ir.Op.Rms_norm_add { epsilon })
       else Error "schedule contains a non-finite RMSNorm-add epsilon"
+  | 38 ->
+      let* m, n, k = read_three_dimensions reader in
+      let* activation_tag = Binary.Reader.u8 reader in
+      let* activation =
+        match activation_tag with
+        | 0 -> Ok Ir.Gated_activation.Silu
+        | 1 -> Ok Ir.Gated_activation.Gelu
+        | 2 -> Ok Ir.Gated_activation.Sigmoid
+        | _ -> Error "schedule contains an invalid gated activation"
+      in
+      if m > 0 && n > 0 && k > 0 then
+        Ok (Ir.Op.Gated_linear { m; n; k; activation })
+      else Error "schedule contains invalid gated Linear dimensions"
   | 29 ->
       let* m, n, k = read_three_dimensions reader in
       let* epsilon = Binary.Reader.float64 reader in
@@ -3008,7 +3058,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 24;
+  Binary.Writer.u16 writer 25;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -3028,7 +3078,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 24 then
+    if version <> 25 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

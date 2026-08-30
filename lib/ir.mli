@@ -127,6 +127,12 @@ module Pointwise : sig
   val to_string : t -> string
 end
 
+module Gated_activation : sig
+  type t = Silu | Gelu | Sigmoid
+
+  val to_string : t -> string
+end
+
 module Reduction : sig
   type operator = Mean | Sum
   type t = { operator : operator; axes : int list; keepdim : bool }
@@ -319,6 +325,12 @@ module Op : sig
     | Relu
     | Rms_norm of { epsilon : float }
     | Rms_norm_add of { epsilon : float }
+    | Gated_linear of {
+        m : int;
+        n : int;
+        k : int;
+        activation : Gated_activation.t;
+      }
     | Rms_rope of Rms_rope.t
     | Short_conv_step of Short_conv_step.t
     | Short_conv_step_fused of Short_conv_step.t

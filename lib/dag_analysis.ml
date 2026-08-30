@@ -57,6 +57,11 @@ module Resource_class = struct
         in
         let activations = Float.of_int (m * (2 * k + n)) *. 2.0 in
         flops /. max 1.0 (packed_weights +. group_scales +. activations)
+    | Ir.Op.Gated_linear { m; n; k; _ } ->
+        let flops = 4.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
+        let weights = Float.of_int (2 * n * k) *. 0.5625 in
+        let activations = Float.of_int (m * (k + n)) *. 2.0 in
+        flops /. max 1.0 (weights +. activations)
     | Ir.Op.Matmul { m; n; k; _ }
     | Ir.Op.Fused_matmul_bias { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
@@ -79,6 +84,7 @@ module Resource_class = struct
     | Ir.Op.W4a16_linear _
     | Ir.Op.W4a16_qkv_linear _
     | Ir.Op.W4a16_swiglu_ffn _
+    | Ir.Op.Gated_linear _
     | Ir.Op.W4a16_lm_head_argmax _
     | Ir.Op.Matmul _
     | Ir.Op.Fused_matmul_bias _

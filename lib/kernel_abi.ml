@@ -3,6 +3,7 @@ module Operation = struct
     | Matmul
     | Fused_linear
     | Linear
+    | Gated_linear
     | W4a16_linear
     | W4a16_qkv_linear
     | W4a16_swiglu_ffn
@@ -35,6 +36,7 @@ module Operation = struct
     | Matmul -> "matmul"
     | Fused_linear -> "fused-linear"
     | Linear -> "linear"
+    | Gated_linear -> "gated-linear"
     | W4a16_linear -> "w4a16-linear-g64"
     | W4a16_qkv_linear -> "w4a16-qkv-linear-g64"
     | W4a16_swiglu_ffn -> "w4a16-swiglu-ffn-g64"
@@ -67,6 +69,7 @@ module Operation = struct
     | "matmul" -> Ok Matmul
     | "fused-linear" -> Ok Fused_linear
     | "linear" -> Ok Linear
+    | "gated-linear" -> Ok Gated_linear
     | "w4a16-linear-g64" -> Ok W4a16_linear
     | "w4a16-qkv-linear-g64" -> Ok W4a16_qkv_linear
     | "w4a16-swiglu-ffn-g64" -> Ok W4a16_swiglu_ffn
