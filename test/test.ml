@@ -536,7 +536,7 @@ let () =
 
   [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2", 32;
     Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_n2_l32", 256;
-    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_x1_l32", 1024;
+    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_n1_l32", 1024;
     Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_m2_x4", 256;
     Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16_m2", 32;
     Ir.Dtype.Q4_0, "llmopt_q4_0_linear_f16_m2", 32;

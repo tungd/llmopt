@@ -121,7 +121,7 @@ module Tactic = struct
         Ir.Dtype.Q4_K
         "_m2_n2_l32";
       full_simd_kquant_registration ~accepts_superblocks:(( = ) 4) Ir.Dtype.Q5_K
-        "_m2_x1_l32" ]
+        "_m2_n1_l32" ]
     @ List.map four_column_quant_registration
       [ Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
     @ List.map paired_quant_registration
@@ -3564,6 +3564,149 @@ kernel void llmopt_q5_k_linear_f16_m2_x1_l32(
   }
 }
 
+kernel void llmopt_q5_k_linear_f16_m2_n1_l32(
+    device const half* input [[buffer(0)]],
+    device const block_q5_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint col = gid >> 5;
+  if (col >= params.n) return;
+  const uint lane_cluster = lane >> 2;
+  const uint superblock_offset = lane & 3u;
+  const uint quant_half = lane_cluster >> 2;
+  const uint quant_chunk = lane_cluster & 3u;
+  const uint element_offset = quant_chunk << 3;
+  const uint quant_offset = (quant_half << 5) + element_offset;
+  const uint activation_offset = (quant_half << 6) + element_offset;
+  const uchar low_high_mask = uchar(1u << (quant_half << 1));
+  const uchar high_high_mask = low_high_mask << 1;
+  const uchar upper_low_high_mask = low_high_mask << 4;
+  const uchar upper_high_high_mask = high_high_mask << 4;
+  const uint num_superblocks = params.k >> 8;
+  device const half* activation0 = input
+    + (superblock_offset << 8) + activation_offset;
+  device const half* activation1 = activation0 + params.k;
+
+  float low_values0[16];
+  float high_values0[16];
+  float low_values1[16];
+  float high_values1[16];
+  float accumulators[2] = { 0.0f, 0.0f };
+  ushort packed_scales[4];
+  thread const uchar* scale_bytes =
+    reinterpret_cast<thread const uchar*>(packed_scales);
+
+  for (uint sb = superblock_offset; sb < num_superblocks; sb += 4u) {
+    float4 activation_sums0 = float4(0.0f);
+    float4 activation_sums1 = float4(0.0f);
+    for (uint index = 0; index < 8u; ++index) {
+      low_values0[index] = float(activation0[index]);
+      activation_sums0[0] += low_values0[index];
+      low_values0[index + 8u] = float(activation0[index + 32u]);
+      activation_sums0[1] += low_values0[index + 8u];
+      high_values0[index] = float(activation0[index + 128u]);
+      activation_sums0[2] += high_values0[index];
+      high_values0[index + 8u] = float(activation0[index + 160u]);
+      activation_sums0[3] += high_values0[index + 8u];
+      low_values1[index] = float(activation1[index]);
+      activation_sums1[0] += low_values1[index];
+      low_values1[index + 8u] = float(activation1[index + 32u]);
+      activation_sums1[1] += low_values1[index + 8u];
+      high_values1[index] = float(activation1[index + 128u]);
+      activation_sums1[2] += high_values1[index];
+      high_values1[index + 8u] = float(activation1[index + 160u]);
+      activation_sums1[3] += high_values1[index + 8u];
+    }
+
+    device const block_q5_K& block = weight[col * num_superblocks + sb];
+    device const ushort* scales =
+      reinterpret_cast<device const ushort*>(block.scales) + quant_half;
+    packed_scales[0] = scales[0] & 0x3f3fu;
+    packed_scales[1] = scales[2] & 0x3f3fu;
+    packed_scales[2] = ((scales[4] >> 0) & 0x0f0fu)
+      | ((scales[0] & 0xc0c0u) >> 2);
+    packed_scales[3] = ((scales[4] >> 4) & 0x0f0fu)
+      | ((scales[2] & 0xc0c0u) >> 2);
+
+    device const uchar* low_quant = block.qs + quant_offset;
+    device const uchar* high_quant = low_quant + 64u;
+    device const uchar* high_bits = block.qh + element_offset;
+    float4 quant_dots0 = float4(0.0f);
+    float4 high_dots0 = float4(0.0f);
+    float4 quant_dots1 = float4(0.0f);
+    float4 high_dots1 = float4(0.0f);
+    for (uint index = 0; index < 8u; ++index) {
+      const uchar high = high_bits[index];
+      const float low_quant_value = float(low_quant[index] & 0x0fu);
+      const float low_quant_high = float(low_quant[index] & 0xf0u);
+      const float high_quant_value = float(high_quant[index] & 0x0fu);
+      const float high_quant_high = float(high_quant[index] & 0xf0u);
+      quant_dots0[0] += low_values0[index] * low_quant_value;
+      quant_dots0[1] += low_values0[index + 8u] * low_quant_high;
+      quant_dots0[2] += high_values0[index] * high_quant_value;
+      quant_dots0[3] += high_values0[index + 8u] * high_quant_high;
+      quant_dots1[0] += low_values1[index] * low_quant_value;
+      quant_dots1[1] += low_values1[index + 8u] * low_quant_high;
+      quant_dots1[2] += high_values1[index] * high_quant_value;
+      quant_dots1[3] += high_values1[index + 8u] * high_quant_high;
+      if ((high & low_high_mask) != 0u) {
+        high_dots0[0] += low_values0[index];
+        high_dots1[0] += low_values1[index];
+      }
+      if ((high & high_high_mask) != 0u) {
+        high_dots0[1] += low_values0[index + 8u];
+        high_dots1[1] += low_values1[index + 8u];
+      }
+      if ((high & upper_low_high_mask) != 0u) {
+        high_dots0[2] += high_values0[index];
+        high_dots1[2] += high_values1[index];
+      }
+      if ((high & upper_high_high_mask) != 0u) {
+        high_dots0[3] += high_values0[index + 8u];
+        high_dots1[3] += high_values1[index + 8u];
+      }
+    }
+
+    accumulators[0] += float(block.d)
+      * (float(scale_bytes[0]) * (quant_dots0[0] + 16.0f * high_dots0[0])
+        + float(scale_bytes[1]) * (quant_dots0[1] / 16.0f
+          + 16.0f * high_dots0[1])
+        + float(scale_bytes[4]) * (quant_dots0[2] + 16.0f * high_dots0[2])
+        + float(scale_bytes[5]) * (quant_dots0[3] / 16.0f
+          + 16.0f * high_dots0[3]))
+      - float(block.dmin)
+      * (activation_sums0[0] * float(scale_bytes[2])
+        + activation_sums0[1] * float(scale_bytes[3])
+        + activation_sums0[2] * float(scale_bytes[6])
+        + activation_sums0[3] * float(scale_bytes[7]));
+    accumulators[1] += float(block.d)
+      * (float(scale_bytes[0]) * (quant_dots1[0] + 16.0f * high_dots1[0])
+        + float(scale_bytes[1]) * (quant_dots1[1] / 16.0f
+          + 16.0f * high_dots1[1])
+        + float(scale_bytes[4]) * (quant_dots1[2] + 16.0f * high_dots1[2])
+        + float(scale_bytes[5]) * (quant_dots1[3] / 16.0f
+          + 16.0f * high_dots1[3]))
+      - float(block.dmin)
+      * (activation_sums1[0] * float(scale_bytes[2])
+        + activation_sums1[1] * float(scale_bytes[3])
+        + activation_sums1[2] * float(scale_bytes[6])
+        + activation_sums1[3] * float(scale_bytes[7]));
+    activation0 += 1024u;
+    activation1 += 1024u;
+  }
+
+  const float sum0 = simd_sum(accumulators[0]);
+  const float sum1 = simd_sum(accumulators[1]);
+  if (lane == 0u) {
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(sum0 + bias_value);
+    output[params.n + col] = half(sum1 + bias_value);
+  }
+}
+
 kernel void llmopt_q5_k_gated_linear_f16_m2_x1_l32(
     device const half* input [[buffer(0)]],
     device const block_q5_K* gate_weight [[buffer(1)]],
@@ -4166,6 +4309,10 @@ let kquant_entries =
       ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
       ~name:"llmopt_q5_k_linear_f16_m2_x1_l32"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_q5_k_linear_f16_m2_n1_l32"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
