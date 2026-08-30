@@ -295,7 +295,9 @@ let validate_command seen_values command =
               && Ir.Value.dtype input = Ir.Dtype.Float16
               && (match Ir.Value.dtype gate_weight with
                  | Ir.Dtype.Quant Ir.Dtype.Q4_K -> true
-                 | Ir.Dtype.Quant (Ir.Dtype.Q5_K | Ir.Dtype.IQ4_XS) -> m = 2
+                 | Ir.Dtype.Quant
+                     (Ir.Dtype.Q5_K | Ir.Dtype.Q5_0 | Ir.Dtype.IQ4_XS) ->
+                     m = 2
                  | _ -> false)
               && Ir.Value.dtype up_weight = Ir.Value.dtype gate_weight
               && Ir.Value.dtype output = Ir.Dtype.Float16

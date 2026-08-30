@@ -2738,6 +2738,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                      && (quant = Ir.Dtype.Q4_K
                         || (m = 2
                            && (quant = Ir.Dtype.Q5_K
+                              || quant = Ir.Dtype.Q5_0
                               || quant = Ir.Dtype.IQ4_XS))) ->
                   Ok quant
               | gate_dtype, up_dtype ->
@@ -2762,6 +2763,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | Ir.Dtype.Q4_K, _ -> "llmopt_q4_k_gated_linear_f16"
               | Ir.Dtype.Q5_K, 2 ->
                   "llmopt_q5_k_gated_linear_f16_m2_x1_l32"
+              | Ir.Dtype.Q5_0, 2 ->
+                  "llmopt_q5_0_gated_linear_f16_m2"
               | Ir.Dtype.IQ4_XS, 2 ->
                   "llmopt_iq4_xs_gated_linear_f16_m2"
               | _ -> assert false
@@ -2770,6 +2773,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               match quant, m with
               | (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K), 2 ->
                   short_row_quant_grid (m * n)
+              | Ir.Dtype.Q5_0, 2 -> linear_f16_grid (m * n)
               | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
               | Ir.Dtype.Q4_K, _ -> linear_f16_grid (m * n)
               | _ -> assert false

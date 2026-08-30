@@ -485,7 +485,8 @@ let unbiased_projection node =
 
 let gated_weight_supported ~m = function
   | Ir.Dtype.Quant Ir.Dtype.Q4_K -> true
-  | Ir.Dtype.Quant (Ir.Dtype.Q5_K | Ir.Dtype.IQ4_XS) -> m = 2
+  | Ir.Dtype.Quant (Ir.Dtype.Q5_K | Ir.Dtype.Q5_0 | Ir.Dtype.IQ4_XS) ->
+      m = 2
   | _ -> false
 
 let fuse_gated_linears graph =

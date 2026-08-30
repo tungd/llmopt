@@ -2195,6 +2195,48 @@ kernel void llmopt_q5_0_linear_f16_m2(
     output[params.n + col] = half(acc1 + bias_value);
   }
 }
+
+kernel void llmopt_q5_0_gated_linear_f16_m2(
+    device const half* input [[buffer(0)]],
+    device const block_q5_0* gate_weight [[buffer(1)]],
+    device const block_q5_0* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint task = gid >> 5;
+  const uint total_tasks = params.m * params.n;
+  if (task >= total_tasks) return;
+  const uint row = task / params.n;
+  const uint col = task - row * params.n;
+  const uint num_blocks = params.k >> 5;
+  device const block_q5_0* gate_blocks = gate_weight + col * num_blocks;
+  device const block_q5_0* up_blocks = up_weight + col * num_blocks;
+  device const half* activation = input + row * params.k;
+  float gate_acc = 0.0f;
+  float up_acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    device const block_q5_0& gate = gate_blocks[b];
+    device const block_q5_0& up = up_blocks[b];
+    const uint8_t gate_high = (gate.qh[lane >> 3] >> (lane & 7u)) & 1u;
+    const uint8_t up_high = (up.qh[lane >> 3] >> (lane & 7u)) & 1u;
+    const uint8_t gate_byte = lane < 16u ? gate.qs[lane] : gate.qs[lane - 16u];
+    const uint8_t up_byte = lane < 16u ? up.qs[lane] : up.qs[lane - 16u];
+    const uint8_t gate_low = lane < 16u ? (gate_byte & 0x0fu) : (gate_byte >> 4);
+    const uint8_t up_low = lane < 16u ? (up_byte & 0x0fu) : (up_byte >> 4);
+    const int gate_q = int(gate_low | (gate_high << 4)) - 16;
+    const int up_q = int(up_low | (up_high << 4)) - 16;
+    const float value = float(activation[b * 32 + lane]);
+    gate_acc += value * (float(gate.d) * float(gate_q));
+    up_acc += value * (float(up.d) * float(up_q));
+  }
+  gate_acc = simd_sum(gate_acc);
+  up_acc = simd_sum(up_acc);
+  if (lane == 0u) {
+    product[row * params.n + col] =
+      llmopt_gated_product(gate_acc, up_acc, params.has_bias);
+  }
+}
 |}
 
 let q4_0_source = {|
@@ -2388,6 +2430,10 @@ let block32_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q5_0_linear_f16_m2"
       ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q5_0_gated_linear_f16_m2"
+      ~operation:Kernel_abi.Operation.Gated_linear
       ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_linear_f16"
@@ -7049,7 +7095,9 @@ let has_quant_linear graph =
              Some output ) ->
              (match Ir.Value.dtype gate_weight with
              | Ir.Dtype.Quant
-                 (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.IQ4_XS) -> true
+                 (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q5_0
+                 | Ir.Dtype.IQ4_XS) ->
+                 true
              | _ -> false)
              && Ir.Value.dtype up_weight = Ir.Value.dtype gate_weight
              && Ir.Value.dtype output = Ir.Dtype.Float16

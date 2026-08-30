@@ -1338,6 +1338,32 @@ let () =
       [ gated_gate; gated_up ]
   in
   Ir.Graph.add_output gated_graph ~name:"product" gated_product;
+  let q5_weight name =
+    tensor_input gated_graph ~name
+      ~source:(Ir.Input_source.Tensor_store { key = name })
+      ~shape:[ 512; 256 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+  in
+  let q5_gate_weight = q5_weight "q5_gate.weight" in
+  let q5_up_weight = q5_weight "q5_up.weight" in
+  let q5_gate =
+    append_gated (Ir.Op.Linear { m = 2; n = 512; k = 256; bias = false })
+      [ gated_input; q5_gate_weight ]
+  in
+  let q5_up =
+    append_gated (Ir.Op.Linear { m = 2; n = 512; k = 256; bias = false })
+      [ gated_input; q5_up_weight ]
+  in
+  let q5_product =
+    append_gated
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Silu_mul,
+                 Ir.Pointwise.Tensor q5_gate,
+                 Ir.Pointwise.Tensor q5_up ))))
+      [ q5_gate; q5_up ]
+  in
+  Ir.Graph.add_output gated_graph ~name:"q5_product" q5_product;
   let gated_fused = Passes.fuse_swiglu_ffn gated_graph |> expect_ok in
   expect
     (Ir.Graph.nodes gated_fused
@@ -1371,6 +1397,11 @@ let () =
     |> fun source ->
     contains_substring source "kernel void llmopt_q4_k_gated_linear_f16")
     "Metal lowering emits the Q4_K gated Linear tactic";
+  expect
+    (Metal.lower gated_fused |> expect_ok |> Metal.Program.source
+    |> fun source ->
+    contains_substring source "kernel void llmopt_q5_0_gated_linear_f16_m2")
+    "Metal lowering emits the Q5_0 gated Linear tactic";
 
   let scan_graph = Ir.Graph.create () in
   let scan_initial =

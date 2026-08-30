@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T22:32:00+07:00",
+  "git_base_commit": "8db1fba",
+  "slice": "q5_0-gated-linear",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Gated_linear",
+    "selection": "same-input Q5_0 Linear producers with exclusive fused activation-product consumer",
+    "shape_relations": "captured two-row input, equal projection dimensions and Q5_0 block layout, Float16 input/output, activation kind, and producer/user escape checks",
+    "lowering": "one SIMD kernel accumulates Q5_0 gate/up projections and applies the captured gated activation with Float16 projection rounding",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "regression_shape": {
+      "rows": 2,
+      "input_width": 256,
+      "output_width": 512
+    },
+    "sites": {
+      "smollm2": 30,
+      "qwen": 0,
+      "gemma": 0
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/smollm/package-slice29-q5-gated",
+        "kernels": 100,
+        "commands": 1204,
+        "previous_commands": 1294,
+        "dispatches": 430,
+        "previous_dispatches": 490,
+        "campaign_medians_ms": [3.527522, 3.910422, 3.650904],
+        "median_of_campaign_medians_ms": 3.650904,
+        "min_ms": 3.458977,
+        "max_ms": 6.503105,
+        "output_sha256": "2d0bfafce55ae643f91e330c67b712d25df321aa4bc32377b7f1748756c701eb",
+        "previous_output_mean_abs": 0.0437366962,
+        "previous_output_max_abs": 0.203125,
+        "reference_mean_abs": 0.3769990504,
+        "reference_max_abs": 4.9296875,
+        "argmax_rows": [198, 198]
+      },
+      "llama_cpp": {
+        "gguf": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+        "campaign_medians_ms": [4.4244375, 2.91275, 2.9767295],
+        "median_of_campaign_medians_ms": 2.9767295,
+        "final_samples_ns": [6704875, 3929791, 3129250, 4164625, 2960209, 2935875, 2881250, 2917916, 2993250, 2943833]
+      },
+      "llmopt_over_llama_cpp_median_of_campaign_medians": 1.226482
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_ninja_tests": "49 pass",
+    "metal_compilation": "pass for SmolLM2 and non-model regression",
+    "package": "valid, 100 kernels, 1204 commands, 0 opaque",
+    "runtime_histogram": "30 Q5_0 gated Linear dispatches replace 60 Linear plus 30 SiLU-multiply dispatches",
+    "cross_model_scope": "current Qwen and Gemma plans contain no Q5_0 weights, so this typed layout extension selects zero sites",
+    "numerical_scope": "both rows preserve reference argmax 198; fused-versus-slice28 max/mean absolute logit deltas are 0.203125/0.0437366962"
+  }
+}
