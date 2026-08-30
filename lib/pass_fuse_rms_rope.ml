@@ -456,6 +456,210 @@ let share_attention_user nodes left right =
     (Node_id_set.disjoint (attention_users nodes left)
        (attention_users nodes right))
 
+type rotary_match = {
+  rotary_final : Ir.node;
+  rotary_input : Ir.Value.t;
+  rotary_output : Ir.Value.t;
+  rotary_cosine : Ir.Value.t;
+  rotary_sine : Ir.Value.t;
+  rotary_heads : int;
+  rotary_width : int;
+  rotary_half_dimension : int;
+  rotary_removed : Node_id_set.t;
+}
+
+let match_rotary nodes producers final_node =
+  let attempt direct_value rotated_value output =
+    let* rope = match_rope_term producers rotated_value in
+    let* direct =
+      match_direct_term producers ~transposed:rope.transposed direct_value
+    in
+    let* transpose_node = producer producers rope.transposed in
+    let* input =
+      match Ir.node_op transpose_node, Ir.node_inputs transpose_node with
+      | ( Ir.Op.Primitive
+            (Ir.Primitive.Movement
+              (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })),
+          [ input ] ) ->
+          Some input
+      | _ -> None
+    in
+    let dimensions value =
+      Tensor_shape.dimensions (Ir.Value.logical_shape value)
+    in
+    let* batches, tokens, heads, width =
+      match dimensions input, dimensions rope.transposed with
+      | ( [ batches; tokens; heads; width ],
+          [ out_batches; out_heads; out_tokens; out_width ] )
+        when batches = out_batches && tokens = out_tokens
+             && heads = out_heads && width = out_width ->
+          Some (batches, tokens, heads, width)
+      | _ -> None
+    in
+    let metadata_matches =
+      width = 2 * rope.half_dimension
+      && dimensions output = [ batches; heads; tokens; width ]
+      && trig_shape_matches ~batches ~tokens ~width
+           (dimensions direct.cosine)
+      && trig_shape_matches ~batches ~tokens ~width (dimensions rope.sine)
+      && List.for_all
+           (fun value -> Ir.Value.dtype value = Ir.Dtype.Float16)
+           [ input; rope.transposed; direct.cosine; rope.sine; direct.output;
+             rope.rotated_term; output ]
+    in
+    let uses_match =
+      used_only_by nodes rope.transposed
+        [ direct.node; rope.low_node; rope.high_node ]
+      && used_only_by nodes rope.low [ rope.concat_node ]
+      && used_only_by nodes rope.high [ rope.neg_node ]
+      && used_only_by nodes rope.negated [ rope.concat_node ]
+      && used_only_by nodes rope.rotated [ rope.multiply_node ]
+      && used_only_by nodes direct.output [ final_node ]
+      && used_only_by nodes rope.rotated_term [ final_node ]
+    in
+    if metadata_matches && uses_match then
+      Some
+        {
+          rotary_final = final_node;
+          rotary_input = input;
+          rotary_output = output;
+          rotary_cosine = direct.cosine;
+          rotary_sine = rope.sine;
+          rotary_heads = heads;
+          rotary_width = width;
+          rotary_half_dimension = rope.half_dimension;
+          rotary_removed =
+            node_ids
+              [ transpose_node; direct.node; rope.low_node; rope.high_node;
+                rope.neg_node; rope.concat_node; rope.multiply_node; final_node ];
+        }
+    else None
+  in
+  match Ir.node_output final_node, tensor_binary Ir.Pointwise.Add final_node with
+  | Some output, Some (left, right, _) ->
+      (match attempt left right output with
+      | Some _ as matched -> matched
+      | None -> attempt right left output)
+  | _ -> None
+
+type attention_role = Query | Key
+
+let attention_roles nodes value =
+  let rec visit seen value =
+    let id = Ir.Value.id value in
+    if Value_id_map.mem id seen then []
+    else
+      let seen = Value_id_map.add id () seen in
+      nodes
+      |> List.concat_map (fun node ->
+             if not (List.exists (value_is value) (Ir.node_inputs node)) then []
+             else
+               match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
+               | Ir.Op.Primitive (Ir.Primitive.Attention _), inputs, _ ->
+                   inputs
+                   |> List.mapi (fun index input -> index, input)
+                   |> List.filter_map (function
+                        | 0, input when value_is input value ->
+                            Some (Ir.node_id node, Query)
+                        | 1, input when value_is input value ->
+                            Some (Ir.node_id node, Key)
+                        | _ -> None)
+               | Ir.Op.Primitive (Ir.Primitive.Movement _), _, Some output ->
+                   visit seen output
+               | _ -> [])
+  in
+  visit Value_id_map.empty value
+
+let has_attention_role nodes match_ role =
+  attention_roles nodes match_.rotary_output
+  |> List.exists (fun (_, actual) -> actual = role)
+
+let share_attention_roles nodes query key =
+  let query_roles = attention_roles nodes query.rotary_output in
+  let key_roles = attention_roles nodes key.rotary_output in
+  List.exists
+    (fun (query_node, query_role) ->
+      query_role = Query
+      && List.exists
+           (fun (key_node, key_role) ->
+             query_node = key_node && key_role = Key)
+           key_roles)
+    query_roles
+
+let fuse_rotary_qk_nodes nodes =
+  let producers = producer_map nodes in
+  let matches = List.filter_map (match_rotary nodes producers) nodes in
+  let same_alias left right =
+    value_is (alias_root producers left) (alias_root producers right)
+  in
+  let rec pair used pairs = function
+    | [] -> List.rev pairs
+    | query :: rest when Node_id_set.mem (Ir.node_id query.rotary_final) used ->
+        pair used pairs rest
+    | query :: rest ->
+        if not (has_attention_role nodes query Query) then pair used pairs rest
+        else
+          let key =
+            List.find_opt
+              (fun key ->
+                not (Node_id_set.mem (Ir.node_id key.rotary_final) used)
+                && Ir.node_id query.rotary_final <> Ir.node_id key.rotary_final
+                && query.rotary_width = key.rotary_width
+                && query.rotary_half_dimension = key.rotary_half_dimension
+                && same_alias query.rotary_cosine key.rotary_cosine
+                && same_alias query.rotary_sine key.rotary_sine
+                && share_attention_roles nodes query key)
+              matches
+          in
+          (match key with
+          | None -> pair used pairs rest
+          | Some key ->
+              let used =
+                used |> Node_id_set.add (Ir.node_id query.rotary_final)
+                |> Node_id_set.add (Ir.node_id key.rotary_final)
+              in
+              pair used ((query, key) :: pairs) rest)
+  in
+  let pairs = pair Node_id_set.empty [] matches in
+  if pairs = [] then nodes
+  else
+    let removed, replacements =
+      List.fold_left
+        (fun (removed, replacements) (query, key) ->
+          let query_id = Ir.node_id query.rotary_final in
+          let removed =
+            Node_id_set.union removed
+              (Node_id_set.union query.rotary_removed key.rotary_removed)
+            |> Node_id_set.remove query_id
+          in
+          let replacement =
+            Ir.node_replace query.rotary_final
+              ~op:
+                (Ir.Op.Rotary_qk
+                   {
+                     q_heads = query.rotary_heads;
+                     k_heads = key.rotary_heads;
+                     width = query.rotary_width;
+                     half_dimension = query.rotary_half_dimension;
+                     extra_outputs = [ key.rotary_output ];
+                   })
+              ~inputs:
+                [ query.rotary_input; key.rotary_input; query.rotary_cosine;
+                  query.rotary_sine ]
+          in
+          removed, Node_id_map.add query_id replacement replacements)
+        (Node_id_set.empty, Node_id_map.empty) pairs
+    in
+    List.filter_map
+      (fun node ->
+        let id = Ir.node_id node in
+        if Node_id_set.mem id removed then None
+        else
+          match Node_id_map.find_opt id replacements with
+          | Some replacement -> Some replacement
+          | None -> Some node)
+      nodes
+
 let fuse_qk_nodes nodes =
   let producers = producer_map nodes in
   let same_alias left right =
@@ -543,7 +747,7 @@ let run graph =
         | None -> Some node)
       nodes
   in
-  let final_nodes = fuse_qk_nodes rewritten in
+  let final_nodes = rewritten |> fuse_qk_nodes |> fuse_rotary_qk_nodes in
   Ir.Graph.with_nodes graph final_nodes
 
 let pass = Pass.create ~name ~description ~run

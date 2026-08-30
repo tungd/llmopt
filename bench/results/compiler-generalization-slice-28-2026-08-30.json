@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T22:26:33+07:00",
+  "git_base_commit": "979b8d4",
+  "slice": "attention-linked-token-major-rotary-qk",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Rotary_qk",
+    "selection": "paired sole-consumer token-major transpose and half-rotation branches linked as query/key inputs of the same captured Attention node",
+    "shape_relations": "captured batch, token, query-head, key-head, width, half-width, trigonometric broadcast shape, dtype, and attention input roles",
+    "lowering": "one SIMD kernel rotates paired token-major Q/K inputs and writes head-major Attention inputs directly",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "regression_shape": {
+      "batch": 1,
+      "tokens": 2,
+      "query_heads": 4,
+      "key_heads": 1,
+      "width": 64
+    },
+    "sites": {
+      "smollm2": 30
+    }
+  },
+  "contract": {
+    "input_shape": [1, 2],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/smollm/package-slice28-rotary-qk",
+        "kernels": 99,
+        "commands": 1294,
+        "previous_commands": 1890,
+        "dispatches": 490,
+        "previous_dispatches": 940,
+        "median_ms": 3.880978,
+        "min_ms": 3.379107,
+        "max_ms": 6.006002,
+        "output_sha256": "04059433124a45e55358cff2453aec0822197ff8ab3ed29b999c61fb943394f2",
+        "previous_output_mean_abs": 0.0022838116,
+        "previous_output_max_abs": 0.03125,
+        "reference_mean_abs": 0.3595110476,
+        "reference_max_abs": 4.9296875,
+        "argmax_rows": [198, 198]
+      },
+      "llama_cpp": {
+        "gguf": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+        "median_ms": 2.9916045,
+        "mean_ms": 3.2349043,
+        "samples_ns": [4035042, 3554750, 2848209, 2911000, 2895708, 4145125, 3024959, 3032500, 2943500, 2958250]
+      },
+      "llmopt_over_llama_cpp_median": 1.29729
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_ninja_tests": "49 pass",
+    "metal_compilation": "pass for SmolLM2 and non-model regression",
+    "package": "valid, 99 kernels, 1294 commands, 0 opaque",
+    "runtime_histogram": "30 rotary-QK dispatches replace 480 Q/K transpose, index, negate, concat, multiply, and add dispatches",
+    "numerical_scope": "both rows preserve reference argmax 198; fused-versus-prior max/mean absolute logit deltas are 0.03125/0.0022838116"
+  }
+}

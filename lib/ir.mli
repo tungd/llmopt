@@ -387,6 +387,13 @@ module Op : sig
         epsilon : float;
         extra_outputs : Value.t list;
       }
+    | Rotary_qk of {
+        q_heads : int;
+        k_heads : int;
+        width : int;
+        half_dimension : int;
+        extra_outputs : Value.t list;
+      }
     | W4a16_lm_head_argmax of {
         m : int;
         n : int;

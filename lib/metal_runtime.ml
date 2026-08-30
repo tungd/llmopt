@@ -533,6 +533,11 @@ module Parameters = struct
     Bytes.set_int32_le bytes 28 (Int32.bits_of_float epsilon);
     Ok bytes
 
+  let rotary_qk ~batches ~tokens ~q_heads ~k_heads ~width ~half_dimension
+      ~trig_batches =
+    u32s
+      [ batches; tokens; q_heads; k_heads; width; half_dimension; trig_batches ]
+
   let arange ~count ~start ~step =
     let bytes = Bytes.make 24 '\000' in
     let* () = set_u32 bytes 0 count in
@@ -3033,6 +3038,61 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let state = bind_value state q_output q_out_buf in
             let state = bind_value state k_output k_out_buf in
             dispatched (Ok (state, kernel))
+        | ( Ir.Op.Rotary_qk
+              {
+                q_heads;
+                k_heads;
+                width;
+                half_dimension;
+                extra_outputs = [ k_output ];
+              },
+            [ q_input; k_input; cosine; sine ],
+            Some q_output ) ->
+            let* batches, tokens =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape q_input) with
+              | [ batches; tokens; heads; w ]
+                when batches > 0 && tokens > 0 && heads = q_heads && w = width ->
+                  Ok (batches, tokens)
+              | _ -> Error "Metal rotary-QK Q input must have rank four"
+            in
+            let* trig_batches =
+              rotary_trig_batches ~batches ~tokens ~width cosine sine
+            in
+            if
+              Tensor_shape.dimensions (Ir.Value.logical_shape k_input)
+              <> [ batches; tokens; k_heads; width ]
+              || Tensor_shape.dimensions (Ir.Value.logical_shape q_output)
+                 <> [ batches; q_heads; tokens; width ]
+              || Tensor_shape.dimensions (Ir.Value.logical_shape k_output)
+                 <> [ batches; k_heads; tokens; width ]
+              || List.exists
+                   (fun value -> Ir.Value.dtype value <> Ir.Dtype.Float16)
+                   [ q_input; k_input; cosine; sine; q_output; k_output ]
+            then Error "Metal rotary-QK tensor metadata is inconsistent"
+            else
+              let* buffers = find_values state [ q_input; k_input; cosine; sine ] in
+              let* parameters =
+                Parameters.rotary_qk ~batches ~tokens ~q_heads ~k_heads ~width
+                  ~half_dimension ~trig_batches
+              in
+              let* entry =
+                kernel_entry ~name:"llmopt_rotary_qk_f16_simd_h64" runtime
+                  ~operation:Kernel_abi.Operation.Rotary_qk
+                  ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+              in
+              let* grid_x =
+                simd_rows_grid (batches * (q_heads + k_heads) * tokens)
+              in
+              let* q_out_buf = workspace_buffer state q_output in
+              let* k_out_buf = workspace_buffer state k_output in
+              let* kernel =
+                dispatch ~batch runtime entry
+                  ~buffers:(buffers @ [ q_out_buf; k_out_buf ]) ~parameters
+                  ~grid:(grid_x, 1, 1)
+              in
+              let state = bind_value state q_output q_out_buf in
+              let state = bind_value state k_output k_out_buf in
+              dispatched (Ok (state, kernel))
         | ( (Ir.Op.Short_conv_step config | Ir.Op.Short_conv_step_fused config),
             [ in_proj; conv_state; conv_weight ],
             Some output ) ->

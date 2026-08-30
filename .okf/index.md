@@ -81,6 +81,7 @@ configuration.
 * [Prepared steady-state package execution](experiments/exp-0127-prepared-steady-state-package-execution-2026-08-30.md) - reuse typed memory preparation and exclude validation readback from synchronized execution timing.
 * [Graph-relational token-major ShortConv-SiLU fusion](experiments/exp-0128-graph-relational-short-conv-silu-fusion-2026-08-30.md) - fuse captured depthwise convolution trim, activation, and layout movement from topology and shape relations.
 * [Packed last-axis L2 normalization](experiments/exp-0129-packed-last-axis-l2-normalization-2026-08-30.md) - normalize captured contiguous packed slices directly without materialized indexing.
+* [Attention-linked token-major rotary QK fusion](experiments/exp-0130-attention-linked-token-major-rotary-qk-2026-08-30.md) - fuse paired captured Q/K half-rotation topology into one layout-aware semantic kernel.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.

@@ -399,6 +399,47 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d RMS-RoPE-QK metadata is inconsistent"
                    command.Command.node_id)
+        | ( Ir.Op.Rotary_qk
+              { q_heads; k_heads; width; half_dimension; extra_outputs },
+            [ q_input; k_input; cosine; sine ],
+            Some q_output ) ->
+            let dimensions value =
+              Tensor_shape.dimensions (Ir.Value.logical_shape value)
+            in
+            let input_matches =
+              match dimensions q_input, dimensions k_input with
+              | ( [ batches; tokens; actual_q_heads; input_width ],
+                  [ k_batches; k_tokens; actual_k_heads; k_width ] ) ->
+                  batches = k_batches && tokens = k_tokens
+                  && actual_q_heads = q_heads && actual_k_heads = k_heads
+                  && input_width = width && k_width = width
+                  && rotary_trig_shape_matches ~batches ~tokens ~width cosine
+                  && rotary_trig_shape_matches ~batches ~tokens ~width sine
+              | _ -> false
+            in
+            let output_matches =
+              match dimensions q_input, dimensions q_output, extra_outputs with
+              | ( [ batches; tokens; _; _ ],
+                  [ q_batches; actual_q_heads; q_tokens; q_width ],
+                  [ k_output ] ) ->
+                  q_batches = batches && q_tokens = tokens
+                  && actual_q_heads = q_heads && q_width = width
+                  && dimensions k_output = [ batches; k_heads; tokens; width ]
+              | _ -> false
+            in
+            if
+              width = 2 * half_dimension && input_matches && output_matches
+              && List.for_all
+                   (fun value -> Ir.Value.dtype value = Ir.Dtype.Float16)
+                   (q_input :: k_input :: cosine :: sine :: q_output
+                    :: extra_outputs)
+              && fresh_outputs seen_values (q_output :: extra_outputs)
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d rotary-QK metadata is inconsistent"
+                   command.Command.node_id)
         | _, _, Some output when Int_set.mem (value_id output) seen_values ->
             Error
               (Printf.sprintf "schedule redefines value %d" (value_id output))
@@ -1384,6 +1425,16 @@ module Sequence = struct
                epsilon;
                extra_outputs;
              })
+    | Ir.Op.Rotary_qk { q_heads; k_heads; width; half_dimension; extra_outputs } ->
+        Ok
+          (Ir.Op.Rotary_qk
+             {
+               q_heads = substitute substitutions q_heads;
+               k_heads = substitute substitutions k_heads;
+               width = substitute substitutions width;
+               half_dimension = substitute substitutions half_dimension;
+               extra_outputs;
+             })
     | Ir.Op.Primitive primitive ->
         let* primitive = map_primitive substitutions values primitive in
         Ok (Ir.Op.Primitive primitive)
@@ -1578,6 +1629,9 @@ module Sequence = struct
     | Ir.Op.Rms_rope_qk _, [ k_out ] ->
         specialized_generic_value substitutions k_out
         |> Result.map (fun output -> [ output ])
+    | Ir.Op.Rotary_qk _, [ k_out ] ->
+        specialized_generic_value substitutions k_out
+        |> Result.map (fun output -> [ output ])
     | _, [] -> Ok []
     | _, _ -> Error "unexpected secondary outputs in specialized schedule"
 
@@ -1589,6 +1643,8 @@ module Sequence = struct
         Ir.Op.W4a16_qkv_linear { config with extra_outputs = outputs }
     | Ir.Op.Rms_rope_qk config ->
         Ir.Op.Rms_rope_qk { config with extra_outputs = outputs }
+    | Ir.Op.Rotary_qk config ->
+        Ir.Op.Rotary_qk { config with extra_outputs = outputs }
     | _ -> operation
 
   type last_token_projection = {
@@ -3013,6 +3069,15 @@ let write_op writer = function
       Binary.Writer.float64 writer epsilon;
       Binary.Writer.u8 writer (List.length extra_outputs);
       List.iter (write_value writer) extra_outputs
+  | Ir.Op.Rotary_qk
+      { q_heads; k_heads; width; half_dimension; extra_outputs } ->
+      Binary.Writer.u8 writer 39;
+      Binary.Writer.u64 writer q_heads;
+      Binary.Writer.u64 writer k_heads;
+      Binary.Writer.u64 writer width;
+      Binary.Writer.u64 writer half_dimension;
+      Binary.Writer.u8 writer (List.length extra_outputs);
+      List.iter (write_value writer) extra_outputs
   | Ir.Op.Short_conv_step config ->
       Binary.Writer.u8 writer 21;
       Binary.Writer.u64 writer (Ir.Short_conv_step.channels config);
@@ -3192,6 +3257,24 @@ let read_op values reader =
       in
       let* extra_outputs = outputs [] count in
       Ok (Ir.Op.Rms_rope_qk { q_heads; k_heads; width; half_dimension; epsilon; extra_outputs })
+  | 39 ->
+      let* q_heads = Binary.Reader.u64 reader in
+      let* k_heads = Binary.Reader.u64 reader in
+      let* width = Binary.Reader.u64 reader in
+      let* half_dimension = Binary.Reader.u64 reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      if count = 1 then
+        Ok
+          (Ir.Op.Rotary_qk
+             { q_heads; k_heads; width; half_dimension; extra_outputs })
+      else Error "schedule contains invalid rotary-QK secondary outputs"
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"
@@ -3199,7 +3282,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 25;
+  Binary.Writer.u16 writer 26;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -3219,7 +3302,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 25 then
+    if version <> 26 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

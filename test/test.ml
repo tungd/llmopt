@@ -2083,6 +2083,141 @@ let () =
        "kernel void llmopt_rms_rope_qk_f16_wf32_simd")
     "Metal lowering emits Float32-weight RMS-RoPE-QK";
 
+  let rotary_graph = Ir.Graph.create () in
+  let rotary_input name shape dtype =
+    tensor_input rotary_graph ~name ~source:Ir.Input_source.Runtime ~shape
+      ~dtype
+  in
+  let rotary_fresh shape dtype =
+    Ir.Graph.fresh_tensor_value rotary_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype
+  in
+  let rotary_append op inputs shape dtype =
+    let output = rotary_fresh shape dtype in
+    Ir.Graph.append rotary_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let rotary_full length =
+    Tensor_shape.Index.Slice { start = 0; step = 1; length }
+  in
+  let rotary_branch input heads cosine sine =
+    let transposed =
+      rotary_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Movement
+              (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })))
+        [ input ] [ 1; heads; 2; 64 ] Ir.Dtype.Float16
+    in
+    let half start =
+      let index =
+        Tensor_shape.Index.of_selectors
+          [ rotary_full 1; rotary_full heads; rotary_full 2;
+            Tensor_shape.Index.Slice { start; step = 1; length = 32 } ]
+        |> expect_ok
+      in
+      rotary_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Movement (Ir.Movement.Index index)))
+        [ transposed ] [ 1; heads; 2; 32 ] Ir.Dtype.Float16
+    in
+    let low = half 0 in
+    let high = half 32 in
+    let negated =
+      rotary_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary (Ir.Pointwise.Neg, high))))
+        [ high ] [ 1; heads; 2; 32 ] Ir.Dtype.Float16
+    in
+    let rotated =
+      rotary_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Movement (Ir.Movement.Concat { axis = 3 })))
+        [ negated; low ] [ 1; heads; 2; 64 ] Ir.Dtype.Float16
+    in
+    let multiply left right =
+      rotary_append
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Mul,
+                   Ir.Pointwise.Tensor left,
+                   Ir.Pointwise.Tensor right ))))
+        [ left; right ] [ 1; heads; 2; 64 ] Ir.Dtype.Float16
+    in
+    let direct = multiply transposed cosine in
+    let turned = multiply rotated sine in
+    rotary_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor direct,
+                 Ir.Pointwise.Tensor turned ))))
+      [ direct; turned ] [ 1; heads; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rotary_q = rotary_input "rotary_q" [ 1; 2; 4; 64 ] Ir.Dtype.Float16 in
+  let rotary_k = rotary_input "rotary_k" [ 1; 2; 1; 64 ] Ir.Dtype.Float16 in
+  let rotary_cosine =
+    rotary_input "rotary_cosine" [ 1; 1; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rotary_sine =
+    rotary_input "rotary_sine" [ 1; 1; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rotary_q_output = rotary_branch rotary_q 4 rotary_cosine rotary_sine in
+  let rotary_k_output = rotary_branch rotary_k 1 rotary_cosine rotary_sine in
+  let rotary_value =
+    rotary_input "rotary_value" [ 1; 1; 2; 64 ] Ir.Dtype.Float16
+  in
+  let rotary_mask =
+    rotary_input "rotary_mask" [ 1; 1; 2; 2 ] Ir.Dtype.Bool
+  in
+  let rotary_attention =
+    rotary_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Attention
+            (Ir.Attention.create ~scale:0.125 ~causal:false |> expect_ok)))
+      [ rotary_q_output; rotary_k_output; rotary_value; rotary_mask ]
+      [ 1; 4; 2; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.add_output rotary_graph ~name:"rotary" rotary_attention;
+  let rotary_fused = Passes.fuse_rms_rope rotary_graph in
+  expect
+    (Ir.Graph.nodes rotary_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Rotary_qk
+                 {
+                   q_heads = 4;
+                   k_heads = 1;
+                   width = 64;
+                   half_dimension = 32;
+                   extra_outputs = [ _ ];
+                 },
+               [ q_input; k_input; cosine; sine ] ) ->
+               Ir.Value.equal q_input rotary_q
+               && Ir.Value.equal k_input rotary_k
+               && Ir.Value.equal cosine rotary_cosine
+               && Ir.Value.equal sine rotary_sine
+           | _ -> false))
+    "captured token-major rotary Q/K branches fuse by attention roles";
+  let rotary_schedule =
+    rotary_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands rotary_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Rotary_qk { q_heads = 4; k_heads = 1; _ } -> true
+           | _ -> false))
+    "rotary-QK survives schedule serialization";
+  let rotary_program = Metal.lower rotary_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source rotary_program)
+       "kernel void llmopt_rotary_qk_f16_simd_h64")
+    "Metal lowering emits fused rotary-QK";
+
   let layout =
     Kv_cache.Layout.create ~format:Kv_cache.Format.default
       ~attention_layers:6 ~kv_heads:8 ~head_dim:64 ~recurrent_layers:10

@@ -11,6 +11,7 @@ module Operation : sig
     | Rms_norm
     | Rms_rope
     | Rms_rope_qk
+    | Rotary_qk
     | Short_conv
     | Short_conv_step
     | Short_conv_prefill

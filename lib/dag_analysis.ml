@@ -73,7 +73,7 @@ module Resource_class = struct
         flops /. max 1.0 bytes
     | Ir.Op.Short_conv_prefill _ -> 4.0
     | Ir.Op.Rms_norm _ | Ir.Op.Rms_norm_add _ | Ir.Op.Rms_rope _
-    | Ir.Op.Rms_rope_qk _ | Ir.Op.Primitive _ -> 0.5
+    | Ir.Op.Rms_rope_qk _ | Ir.Op.Rotary_qk _ | Ir.Op.Primitive _ -> 0.5
     | Ir.Op.Short_conv_step _ | Ir.Op.Short_conv_step_fused _ | Ir.Op.Add _
     | Ir.Op.Gelu | Ir.Op.Relu -> 0.8
     | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _ | Ir.Op.Barrier_create _ -> 0.0
@@ -94,6 +94,7 @@ module Resource_class = struct
     | Ir.Op.Rms_norm_add _
     | Ir.Op.Rms_rope _
     | Ir.Op.Rms_rope_qk _
+    | Ir.Op.Rotary_qk _
     | Ir.Op.Short_conv_step _
     | Ir.Op.Short_conv_step_fused _
     | Ir.Op.Short_conv_prefill _

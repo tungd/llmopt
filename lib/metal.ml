@@ -4928,6 +4928,58 @@ let rms_rope_qk_entries =
       ~operation:Kernel_abi.Operation.Rms_rope_qk
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let rotary_qk_source =
+  "\nconstant uint ROTARY_QK_SIMD_WIDTH = 32;\n"
+  ^ "constant uint ROTARY_QK_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct RotaryQKParams {\n"
+  ^ "  uint batches; uint tokens; uint q_heads; uint k_heads;\n"
+  ^ "  uint width; uint half_dimension; uint trig_batches;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_rotary_qk_f16_simd_h64(\n"
+  ^ "    device const half* q_input [[buffer(0)]],\n"
+  ^ "    device const half* k_input [[buffer(1)]],\n"
+  ^ "    device const half* cosine [[buffer(2)]],\n"
+  ^ "    device const half* sine [[buffer(3)]],\n"
+  ^ "    device half* q_output [[buffer(4)]],\n"
+  ^ "    device half* k_output [[buffer(5)]],\n"
+  ^ "    constant RotaryQKParams& params [[buffer(6)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * ROTARY_QK_ROWS_PER_THREADGROUP + simdgroup;\n"
+  ^ "  const uint total_rows = params.batches * (params.q_heads + params.k_heads) * params.tokens;\n"
+  ^ "  if (row >= total_rows) return;\n"
+  ^ "  const uint q_rows = params.batches * params.q_heads * params.tokens;\n"
+  ^ "  const bool is_q = (row < q_rows);\n"
+  ^ "  const uint local_row = is_q ? row : (row - q_rows);\n"
+  ^ "  const uint heads = is_q ? params.q_heads : params.k_heads;\n"
+  ^ "  const uint batch = local_row / (heads * params.tokens);\n"
+  ^ "  const uint head_token = local_row % (heads * params.tokens);\n"
+  ^ "  const uint head = head_token / params.tokens;\n"
+  ^ "  const uint token = head_token % params.tokens;\n"
+  ^ "  const uint input_row = (batch * params.tokens + token) * heads + head;\n"
+  ^ "  const uint input_base = input_row * params.width;\n"
+  ^ "  device const half* input = is_q ? q_input : k_input;\n"
+  ^ "  device half* output = is_q ? q_output : k_output;\n"
+  ^ "  const uint trig_batch = params.trig_batches == 1 ? 0 : batch;\n"
+  ^ "  const uint trig_base = (trig_batch * params.tokens + token) * params.width;\n"
+  ^ "  const uint output_base = local_row * params.width;\n"
+  ^ "  for (uint col = lane; col < params.width; col += ROTARY_QK_SIMD_WIDTH) {\n"
+  ^ "    const uint rotated_col = col < params.half_dimension ? col + params.half_dimension : col - params.half_dimension;\n"
+  ^ "    half rotated = input[input_base + rotated_col];\n"
+  ^ "    if (col < params.half_dimension) rotated = -rotated;\n"
+  ^ "    const half direct = half(input[input_base + col] * cosine[trig_base + col]);\n"
+  ^ "    const half turned = half(rotated * sine[trig_base + col]);\n"
+  ^ "    output[output_base + col] = half(direct + turned);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let rotary_qk_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rotary_qk_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Rotary_qk
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
 let short_conv_source =
   "\nstruct ShortConvParams {\n"
   ^ "  uint batches; uint channels; uint input_width; uint output_width;\n"
@@ -6800,6 +6852,11 @@ let has_rms_rope_qk graph =
   |> List.exists (fun node ->
          match Ir.node_op node with Ir.Op.Rms_rope_qk _ -> true | _ -> false)
 
+let has_rotary_qk graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with Ir.Op.Rotary_qk _ -> true | _ -> false)
+
 let has_short_conv graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -7242,6 +7299,7 @@ let lower ?(target = Target_hardware.default) graph =
       has_l2_norm_slice graph, l2_norm_slice_source, l2_norm_slice_entries;
       has_rms_rope graph, rms_rope_source, rms_rope_entries;
       has_rms_rope_qk graph, rms_rope_qk_source, rms_rope_qk_entries;
+      has_rotary_qk graph, rotary_qk_source, rotary_qk_entries;
       ( has_short_conv graph,
         short_conv_source ^ short_conv_f32_weight_source,
         short_conv_entries );

@@ -71,7 +71,7 @@ type t = {
   cache : Cache.t;
 }
 
-let current_abi_version = 23
+let current_abi_version = 24
 
 let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
@@ -171,6 +171,7 @@ let operation_tag = function
   | Kernel_abi.Operation.Batched_matmul -> 33
   | Kernel_abi.Operation.Gated_delta -> 34
   | Kernel_abi.Operation.Gated_linear -> 35
+  | Kernel_abi.Operation.Rotary_qk -> 36
 
 let operation_of_tag = function
   | 0 -> Ok Kernel_abi.Operation.Matmul
@@ -204,6 +205,7 @@ let operation_of_tag = function
   | 33 -> Ok Kernel_abi.Operation.Batched_matmul
   | 34 -> Ok Kernel_abi.Operation.Gated_delta
   | 35 -> Ok Kernel_abi.Operation.Gated_linear
+  | 36 -> Ok Kernel_abi.Operation.Rotary_qk
   | tag -> Error (Printf.sprintf "unknown kernel operation tag: %d" tag)
 
 let dtype_tag = function
