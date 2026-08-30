@@ -1519,6 +1519,18 @@ let gated_delta_grid state_rows =
 
 let simd_rows_grid rows = linear_f16_grid rows
 
+let wide_rows_grid rows =
+  let threadgroup_width = 256 in
+  if rows > max_int / threadgroup_width then
+    Error "Metal wide-row grid dimension overflows"
+  else Ok (rows * threadgroup_width)
+
+let use_wide_rows ~rows ~width =
+  let simdgroups_per_threadgroup = 8 in
+  let simd_width = 32 in
+  rows < simdgroups_per_threadgroup
+  && width / simd_width >= simdgroups_per_threadgroup
+
 let rotary_trig_dimensions value =
   match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
   | [ batches; 1; tokens; width ]
@@ -1537,13 +1549,15 @@ let rotary_trig_batches ~batches ~tokens ~width cosine sine =
       Ok cosine_batches
   | _ -> Error "Metal rotary trigonometric tables are inconsistent"
 
-let rms_norm_kernel_name input_dtype weight_dtype =
+let rms_norm_kernel_name ~wide input_dtype weight_dtype =
   match input_dtype, weight_dtype with
   | Ir.Dtype.Float32, Ir.Dtype.Float16 ->
       Ok "llmopt_rms_norm_f32_f16_simd"
   | Ir.Dtype.Float16, Ir.Dtype.Float16 -> Ok "llmopt_rms_norm_f16_simd"
   | Ir.Dtype.Float32, Ir.Dtype.Float32 ->
       Ok "llmopt_rms_norm_f32_f16_wf32_simd"
+  | Ir.Dtype.Float16, Ir.Dtype.Float32 when wide ->
+      Ok "llmopt_rms_norm_f16_wf32_wide"
   | Ir.Dtype.Float16, Ir.Dtype.Float32 ->
       Ok "llmopt_rms_norm_f16_wf32_simd"
   | _ ->
@@ -1557,8 +1571,8 @@ let legacy_rms_norm_kernel_name input_dtype weight_dtype =
   | Ir.Dtype.Float16, Ir.Dtype.Float16 -> Some "llmopt_rms_norm_f16"
   | _ -> None
 
-let select_rms_norm_kernel runtime input_dtype weight_dtype output_dtype =
-  let* preferred = rms_norm_kernel_name input_dtype weight_dtype in
+let select_rms_norm_kernel runtime ~wide input_dtype weight_dtype output_dtype =
+  let* preferred = rms_norm_kernel_name ~wide input_dtype weight_dtype in
   match
     kernel_entry ~name:preferred runtime
       ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype ~output_dtype
@@ -2685,15 +2699,26 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | _ -> Error "RMSNorm-add requires a non-empty final dimension"
             in
             let rows = Tensor_shape.numel input_shape / width in
+            let wide =
+              use_wide_rows ~rows ~width
+              && Ir.Value.dtype input = Ir.Dtype.Float16
+              && Ir.Value.dtype weight = Ir.Dtype.Float32
+            in
             let* buffers = find_values state [ input; weight; residual ] in
             let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
+            let name =
+              if wide then "llmopt_rms_norm_add_f16_wf32_wide"
+              else "llmopt_rms_norm_add_f16_wf32_simd"
+            in
             let* entry =
-              kernel_entry ~name:"llmopt_rms_norm_add_f16_wf32_simd" runtime
+              kernel_entry ~name runtime
                 ~operation:Kernel_abi.Operation.Rms_norm
                 ~input_dtype:(Ir.Value.dtype input)
                 ~output_dtype:(Ir.Value.dtype output)
             in
-            let* grid_x = simd_rows_grid rows in
+            let* grid_x =
+              if wide then wide_rows_grid rows else simd_rows_grid rows
+            in
             let* output_buffer = workspace_buffer state output in
             let* kernel =
               dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
@@ -2713,11 +2738,20 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
             let input_dtype = Ir.Value.dtype input in
             let weight_dtype = Ir.Value.dtype weight in
+            let wide =
+              use_wide_rows ~rows ~width
+              && input_dtype = Ir.Dtype.Float16
+              && weight_dtype = Ir.Dtype.Float32
+            in
             let* entry, simd =
-              select_rms_norm_kernel runtime input_dtype weight_dtype
+              select_rms_norm_kernel runtime ~wide input_dtype weight_dtype
                 (Ir.Value.dtype output)
             in
-            let* grid_x = if simd then simd_rows_grid rows else Ok rows in
+            let* grid_x =
+              if wide then wide_rows_grid rows
+              else if simd then simd_rows_grid rows
+              else Ok rows
+            in
             let* output_buffer = workspace_buffer state output in
             let* kernel =
               dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])

@@ -317,6 +317,10 @@ let () =
     (contains_substring (Metal.Program.source rms_program)
        "kernel void llmopt_rms_norm_f16_wf32_simd")
     "Metal lowering preserves GGUF float32 RMSNorm weights";
+  expect
+    (contains_substring (Metal.Program.source rms_program)
+       "kernel void llmopt_rms_norm_f16_wf32_wide")
+    "Metal lowering emits the shape-selectable wide-row RMSNorm tactic";
   let rms_residual =
     tensor_input rms_graph ~name:"residual" ~source:Ir.Input_source.Runtime
       ~shape:[ 2; 576 ] ~dtype:Ir.Dtype.Float16
@@ -364,6 +368,11 @@ let () =
     |> fun source ->
     contains_substring source "kernel void llmopt_rms_norm_add_f16_wf32_simd")
     "Metal lowering emits fused RMSNorm-add";
+  expect
+    (Metal.lower rms_add_fused |> expect_ok |> Metal.Program.source
+    |> fun source ->
+    contains_substring source "kernel void llmopt_rms_norm_add_f16_wf32_wide")
+    "Metal lowering emits the wide-row fused RMSNorm-add tactic";
 
   let l2_graph = Ir.Graph.create () in
   let l2_input name =

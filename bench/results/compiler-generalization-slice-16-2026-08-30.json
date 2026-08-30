@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T12:45:27+07:00",
+  "git_base_commit": "b4487235f390272c59c428f08f22e566937127b0",
+  "slice": "shape-selected-wide-row-rmsnorm",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "selection": "captured row count and final-axis width, input and weight dtype, and target SIMD/threadgroup geometry",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "weight_format_use": "none",
+    "kernel": "one 256-thread threadgroup cooperatively reduces and writes one wide final-axis row",
+    "selection_rule": "rows < 8 and width / 32 >= 8 for Float16 input with Float32 weight",
+    "selected_sites": {
+      "qwen_wide_rms_norm": 55,
+      "qwen_row_parallel_rms_norm": 24,
+      "gemma_wide_rms_norm": 71,
+      "gemma_wide_rms_norm_add": 105,
+      "gemma_row_parallel_rms_norm_add": 1
+    },
+    "llama_cpp_correspondence": "the Metal RMSNorm implementation assigns a whole threadgroup to each wide row and reduces across SIMD groups"
+  },
+  "contract": {
+    "input_shape": [
+      1,
+      2
+    ],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice16-wide-rms",
+        "kernels": 110,
+        "commands": 2453,
+        "dispatches": 1098,
+        "previous_dispatches": 1098,
+        "dispatch_delta": 0,
+        "median_ms": 11.730433,
+        "min_ms": 10.860920,
+        "max_ms": 52.485943,
+        "previous_recorded_median_ms": 12.584567,
+        "delta_ms": -0.854134,
+        "latency_reduction_percent": 6.787154,
+        "output_sha256": "b62aff862017757f7938366aa58ebe4eeef2c360df160730855b2e403a4e8f6f",
+        "previous_output_mean_abs": 0.001557522,
+        "previous_output_max_abs": 0.011718750,
+        "argmax_rows": [
+          760,
+          16
+        ],
+        "previous_argmax_rows": [
+          760,
+          16
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.993271,
+        "mean_ms": 8.081008,
+        "samples_ns": [
+          8160917,
+          8912958,
+          7547000,
+          7946959,
+          8039583,
+          8749334,
+          8050167,
+          7828125,
+          7741459,
+          7833584
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.467539
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice16-wide-rms",
+        "kernels": 104,
+        "commands": 3079,
+        "dispatches": 1044,
+        "previous_dispatches": 1044,
+        "dispatch_delta": 0,
+        "median_ms": 22.013426,
+        "min_ms": 20.781040,
+        "max_ms": 23.577213,
+        "previous_recorded_median_ms": 25.668025,
+        "delta_ms": -3.654599,
+        "latency_reduction_percent": 14.237944,
+        "output_sha256": "4594af43ff355b80da4d4bdbae19e788abc6a62e419127c7b766d16276fb9f50",
+        "previous_output_mean_abs": 0.009134801,
+        "previous_output_max_abs": 0.072265625,
+        "argmax_rows": [
+          84904,
+          148465
+        ],
+        "previous_argmax_rows": [
+          84904,
+          148465
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.202084,
+        "mean_ms": 17.580542,
+        "samples_ns": [
+          16959792,
+          18351042,
+          18436958,
+          17182584,
+          17164125,
+          17117834,
+          17221584,
+          18407625,
+          17113709,
+          17850167
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.279695
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 110 kernels, 2453 commands, 0 opaque",
+    "gemma_package": "valid, 104 kernels, 3079 commands, 0 opaque",
+    "numerical_scope": "both models preserve both row argmax IDs with changed Float16 logits"
+  }
+}
