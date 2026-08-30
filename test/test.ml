@@ -688,6 +688,7 @@ let () =
   ignore (Serving_schedule.of_graph mixed_graph |> expect_ok);
   let mixed_source = Metal.lower mixed_graph |> expect_ok |> Metal.Program.source in
   [ "kernel void llmopt_linear_f16_f32";
+    "kernel void llmopt_linear_f16_f32_m2_n2";
     "kernel void llmopt_linear_f16_bf16";
     "kernel void llmopt_gelu_f16";
     "tanh(clamp(";

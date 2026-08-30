@@ -4325,10 +4325,48 @@ let linear_f16_f32_source =
   ^ "    }\n"
   ^ "  }\n"
   ^ "}\n\n"
+  ^ "kernel void llmopt_linear_f16_f32_m2_n2(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant LinearF32WeightParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint first_column = (gid / LINEAR_F32_WEIGHT_SIMD_WIDTH) << 1;\n"
+  ^ "  if (first_column >= params.n || params.m != 2u) return;\n"
+  ^ "  const uint second_column = first_column + 1u;\n"
+  ^ "  const uint first_weight_base = first_column * params.k;\n"
+  ^ "  const uint second_weight_base = second_column * params.k;\n"
+  ^ "  float first0 = 0.0f; float first1 = 0.0f;\n"
+  ^ "  float second0 = 0.0f; float second1 = 0.0f;\n"
+  ^ "  for (uint inner = lane; inner < params.k; inner += LINEAR_F32_WEIGHT_SIMD_WIDTH) {\n"
+  ^ "    const float input0 = float(input[inner]);\n"
+  ^ "    const float input1 = float(input[params.k + inner]);\n"
+  ^ "    const float weight0 = weight[first_weight_base + inner];\n"
+  ^ "    first0 += input0 * weight0; first1 += input1 * weight0;\n"
+  ^ "    if (second_column < params.n) {\n"
+  ^ "      const float weight1 = weight[second_weight_base + inner];\n"
+  ^ "      second0 += input0 * weight1; second1 += input1 * weight1;\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  first0 = simd_sum(first0); first1 = simd_sum(first1);\n"
+  ^ "  second0 = simd_sum(second0); second1 = simd_sum(second1);\n"
+  ^ "  if (lane == 0u) {\n"
+  ^ "    output[first_column] = half(first0);\n"
+  ^ "    output[params.n + first_column] = half(first1);\n"
+  ^ "    if (second_column < params.n) {\n"
+  ^ "      output[second_column] = half(second0);\n"
+  ^ "      output[params.n + second_column] = half(second1);\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "}\n\n"
 
 let linear_f16_f32_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_linear_f16_f32" ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_linear_f16_f32_m2_n2" ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
 let replace_first ~needle ~replacement source =

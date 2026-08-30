@@ -2655,9 +2655,13 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                      ~grid:(grid_x, 1, 1))
             | Ir.Dtype.Float16, Ir.Dtype.Float32, Ir.Dtype.Float16, None ->
                 let* parameters = Parameters.u32s [ m; n; k ] in
-                let* grid_x = linear_f16_grid n in
+                let name, columns =
+                  if m = 2 then "llmopt_linear_f16_f32_m2_n2", (n + 1) / 2
+                  else "llmopt_linear_f16_f32", n
+                in
+                let* grid_x = linear_f16_grid columns in
                 dispatched
-                  (dispatch_output ~name:"llmopt_linear_f16_f32" runtime state
+                  (dispatch_output ~name runtime state
                      output ~operation:Kernel_abi.Operation.Linear
                      ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
                      ~grid:(grid_x, 1, 1))

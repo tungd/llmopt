@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T13:27:15+07:00",
+  "git_base_commit": "a77a812e1cca0c85caef044b1ea0358b38866df4",
+  "slice": "f32-weight-two-token-two-output-tactic",
+  "host": {
+    "device": "Apple M4 Pro",
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "target": {
+    "metric": "llmopt median / llama.cpp median",
+    "lower_ratio": 0.9,
+    "upper_ratio": 1.1,
+    "declared_by": "user"
+  },
+  "change": {
+    "semantic_operation": "Linear",
+    "selection": "captured m=2, Float16 input/output, dense Float32 weight, no bias, and positive n/k",
+    "architecture_id_use": "none",
+    "model_or_tensor_name_use": "none",
+    "sites": {
+      "qwen": 0,
+      "gemma": 70
+    },
+    "kernel": "each SIMD group reuses both token activations while producing two dense Float32-weight output columns"
+  },
+  "contract": {
+    "input_shape": [
+      1,
+      2
+    ],
+    "use_cache": false,
+    "llmopt_warmup": 5,
+    "llmopt_repeats": 50,
+    "llama_cpp_prompt_tokens": 2,
+    "llama_cpp_generated_tokens": 0,
+    "llama_cpp_repetitions": 10
+  },
+  "models": [
+    {
+      "model": "unsloth/Qwen3.5-0.8B",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/qwen/package-slice21-f32-m2n2",
+        "kernels": 112,
+        "commands": 2057,
+        "dispatches": 888,
+        "median_ms": 10.470986,
+        "min_ms": 9.818077,
+        "max_ms": 17.172813,
+        "previous_recorded_median_ms": 10.501027,
+        "delta_ms": -0.030041,
+        "latency_reduction_percent": 0.286077,
+        "output_sha256": "3db055cc11ec4a89fbc1672415c736bd0f272c477aa00cc022c1bc198ee7a45f",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [
+          760,
+          16
+        ],
+        "previous_argmax_rows": [
+          760,
+          16
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+        "median_ms": 7.866583,
+        "mean_ms": 8.00312,
+        "samples_ns": [
+          7746291,
+          7946500,
+          7871625,
+          7873250,
+          7816833,
+          7861541,
+          7847292,
+          7942167,
+          9315250,
+          7810458
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.331072
+    },
+    {
+      "model": "unsloth/gemma-4-E2B-it",
+      "llmopt": {
+        "package": "_artifacts/full-model-probe/gemma/package-slice21-f32-m2n2",
+        "kernels": 108,
+        "commands": 2974,
+        "dispatches": 974,
+        "median_ms": 20.900965,
+        "min_ms": 19.791842,
+        "max_ms": 22.627831,
+        "previous_recorded_median_ms": 21.069527,
+        "delta_ms": -0.168562,
+        "latency_reduction_percent": 0.800027,
+        "output_sha256": "7e7d79a9118a74da902742d5e81235b8b724c65a3c5d7b0b31967c73a978d2f4",
+        "previous_output_mean_abs": 0.0,
+        "previous_output_max_abs": 0.0,
+        "argmax_rows": [
+          84904,
+          148465
+        ],
+        "previous_argmax_rows": [
+          84904,
+          148465
+        ]
+      },
+      "llama_cpp": {
+        "gguf": "gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+        "median_ms": 17.415771,
+        "mean_ms": 17.836362,
+        "samples_ns": [
+          17097416,
+          18579292,
+          17510750,
+          18606083,
+          17320792,
+          17100333,
+          17195208,
+          17172542,
+          18882375,
+          18898833
+        ]
+      },
+      "llmopt_over_llama_cpp_median": 1.200117
+    }
+  ],
+  "validation": {
+    "ocaml_tests": "pass",
+    "python_tests": "49 pass",
+    "metal_compilation": "pass for both full-model packages",
+    "native_primitive_fixture": "101 kernels and 1081 commands exact",
+    "qwen_package": "valid, 112 kernels, 2057 commands, 0 opaque",
+    "gemma_package": "valid, 108 kernels, 2974 commands, 0 opaque",
+    "numerical_scope": "both package outputs are byte exact with slice 20 and preserve both row argmax IDs"
+  }
+}
