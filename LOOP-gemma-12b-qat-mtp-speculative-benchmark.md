@@ -150,6 +150,15 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `VERIFY`: `PYTHONPATH=python:bench python3 -m unittest python.tests.test_gemma4_mtp_capture && python3 bench/gemma4_mtp_capture.py --verify`
 - `DONE WHEN`: Both graph signatures and every required GGUF tensor binding are recorded and reproducible.
 - `ESCALATE IF`: The installed PyTorch exporter cannot represent explicit heterogeneous cache tensors.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: `bench/gemma4_mtp_capture.py` captures target prefill/decode
+    with 96 explicit layer-cache inputs/outputs and captures the assistant with
+    explicit 7680-wide target coupling and shared full/sliding KV. The receipt
+    lists all 666 target and 48 assistant GGUF weight/state bindings.
+  - `RECEIPT`: `bench/results/gemma4-mtp-functional-capture-2026-08-31.json`
+    and `.okf/experiments/exp-0135-gemma4-mtp-functional-capture-2026-08-31.md`.
+  - `VERIFICATION`: Four focused tests pass; `python3.13 bench/gemma4_mtp_capture.py --verify`
+    exits `0` with 6,423-node target graphs and a 424-node assistant graph.
 
 ---
 

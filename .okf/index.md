@@ -90,6 +90,7 @@ configuration.
 * [Token-major Attention value absorption](experiments/exp-0132-token-major-attention-value-2026-08-30.md) - let captured Attention consume exclusive token-major value tensors directly.
 * [Topology-fused quantized Linear residuals](experiments/exp-0133-quantized-linear-residual-2026-08-30.md) - fuse exclusive block-quantized Linear plus residual topology through shared tactics.
 * [Gemma 4 12B QAT llama.cpp MTP baseline](experiments/exp-0134-gemma12b-mtp-llama-cpp-2026-08-31.md) - three-campaign sequential and MTP sustained-generation measurements.
+* [Gemma 4 12B target-coupled MTP functional capture](experiments/exp-0135-gemma4-mtp-functional-capture-2026-08-31.md) - explicit target cache and assistant shared-state FX signatures plus pinned-GGUF binding coverage.
 * [Hardware-derived prefill cost model](experiments/exp-0097-hardware-derived-prefill-cost-model.md) - analytical roofline knee, core saturation limits, SLA-bounded chunk budget, and serving queue scheduler integration.
 * [Zero-overhead parameterized sampling engine](experiments/exp-0098-parameterized-sampling-engine.md) - zero-allocation streaming min-heap ARM NEON sampler with temperature, top-k, top-p, min-p, and seeded PRNG.
 * [Executable W4A16 SwiGLU rule](experiments/exp-0092-w4a16-swiglu-rule-2026-08-27.md) - deletion audit, rule-engine rewrite, parallel Metal lowering, package inventory, and Q4 comparison.
