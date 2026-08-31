@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-31
+* **Gemma 4 12B QAT llama.cpp MTP baseline**: Recovered and completed the stalled three-campaign, 128-token sequential-versus-MTP run with llama.cpp build 10531. Sequential median was `32.36 ms/token` and `30.90 tok/s`; MTP median was `53.87 ms/token`, `18.56 tok/s`, and `67.2%` reported acceptance, for a measured MTP-to-sequential throughput ratio of `0.60x`. The runner now enforces single-turn execution, kills its process group on timeout or shutdown, rejects overlapping runs, parses both legacy and compact timing output, enables verbose acceptance telemetry, and refuses incomplete measurements.
 * **Hardware bitfield acceleration and speculative pipelining execution**: Completed all items in `LOOP-speculative-pipelining-hardware-acceleration.md`:
   - Accelerated Superblock-256 (`Q4_K`, `Q5_K`, `Q6_K`) unpack sequences using native `metal::extract_bits(src, offset, count)` hardware bitfield extraction instructions in `lib/metal.ml`.
   - Implemented 4-way SIMDgroup intra-threadgroup Split-K parallel reductions for wide Linear layers ($K \ge 4096$) in `lib/metal.ml` with automatic tactic fallback candidate querying in `lib/kernel_abi.ml` and `lib/metal_runtime.ml`.

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-31T12:24:43+07:00",
+  "git_base_commit": "c5d1186286122c51bedd20e98de66bc56bbff6ab",
+  "slice": "llama-cpp-gemma4-12b-mtp",
+  "host": {
+    "device": "Apple M4 Pro",
+    "memory": "24 GB",
+    "preflight_system_memory_free_percent": 72,
+    "llama_cpp": "0.1.2-dev build 10531 commit f20395d"
+  },
+  "models": {
+    "repository": "unsloth/gemma-4-12B-it-qat-GGUF",
+    "target": {
+      "file": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+      "sha256": "90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370"
+    },
+    "draft": {
+      "file": "mtp-gemma-4-12B-it.gguf",
+      "sha256": "fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6"
+    }
+  },
+  "protocol": {
+    "command": "python3 bench/llama_cpp_speculative_bench.py --tokens 128 --campaigns 3",
+    "requested_generation_tokens": 128,
+    "campaigns_per_mode": 3,
+    "temperature": 0.0,
+    "threads": 8,
+    "warmup": false,
+    "single_turn": true,
+    "draft_n_max": 4,
+    "spec_type": "draft-mtp"
+  },
+  "results": {
+    "sequential": {
+      "campaign_tpot_ms_reported": [32.30, 32.38, 32.36],
+      "campaign_tokens_per_second_reported": [30.96, 30.89, 30.90],
+      "median_tpot_ms_reported": 32.36,
+      "median_tokens_per_second_reported": 30.90
+    },
+    "mtp": {
+      "campaign_tpot_ms_reported": [53.82, 54.39, 53.87],
+      "campaign_tokens_per_second_reported": [18.58, 18.39, 18.56],
+      "campaign_acceptance_rate_reported": [0.672, 0.672, 0.672],
+      "median_tpot_ms_reported": 53.87,
+      "median_tokens_per_second_reported": 18.56,
+      "median_acceptance_rate_reported": 0.672
+    },
+    "mtp_over_sequential_throughput_ratio_reported": 0.60
+  },
+  "result_scope": "Observed llama.cpp external baseline; no performance threshold and no LLMOpt Gemma execution claim."
+}
