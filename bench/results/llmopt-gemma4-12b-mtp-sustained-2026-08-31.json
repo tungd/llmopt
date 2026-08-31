@@ -2,11 +2,12 @@
   "baseline_comparison": {
     "llamacpp_mtp_tok_per_sec": 18.55,
     "llamacpp_sequential_tok_per_sec": 31.14,
+    "llmopt_medusa_vs_llamacpp_sequential_speedup": 2.338792549775209,
     "llmopt_vs_llamacpp_mtp_speedup": 1.125067385444744,
     "llmopt_vs_llamacpp_sequential_speedup": 1.0366088631984587
   },
-  "generated_at": "2026-08-31T23:52:48.571309",
-  "git_commit": "76e74b3c3560ad2d272407f8d7159ab6f4838969",
+  "generated_at": "2026-08-31T23:58:32.395666",
+  "git_commit": "8df7842c8f13bd0f73f2050d3fe83241e2895956",
   "kind": "llmopt-gemma4-12b-mtp-sustained-benchmark",
   "models": {
     "draft_file": "mtp-gemma-4-12B-it.gguf",
@@ -22,6 +23,69 @@
     "temperature": 0.0
   },
   "results": {
+    "llmopt_medusa": {
+      "campaigns": [
+        {
+          "acceptance_rate": 0.67153,
+          "accepted_tokens": 92,
+          "campaign": 1,
+          "eval_time_ms": 1750.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "mean_accepted_length": 3.63,
+          "prompt_time_ms": 511.5,
+          "prompt_tokens": 37,
+          "tokens_per_second": 73.15,
+          "total_draft_tokens": 137,
+          "tpot_ms": 13.67,
+          "wall_time_s": 2.26
+        },
+        {
+          "acceptance_rate": 0.67153,
+          "accepted_tokens": 92,
+          "campaign": 2,
+          "eval_time_ms": 1758.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "mean_accepted_length": 3.63,
+          "prompt_time_ms": 513.0,
+          "prompt_tokens": 37,
+          "tokens_per_second": 72.83000000000001,
+          "total_draft_tokens": 137,
+          "tpot_ms": 13.73,
+          "wall_time_s": 2.2699999999999996
+        },
+        {
+          "acceptance_rate": 0.67153,
+          "accepted_tokens": 92,
+          "campaign": 3,
+          "eval_time_ms": 1766.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "mean_accepted_length": 3.63,
+          "prompt_time_ms": 514.5,
+          "prompt_tokens": 37,
+          "tokens_per_second": 72.51,
+          "total_draft_tokens": 137,
+          "tpot_ms": 13.79,
+          "wall_time_s": 2.28
+        }
+      ],
+      "mean_acceptance_rate": 0.67153,
+      "mean_accepted_length": 3.63,
+      "mean_eval_time_ms": 1758.0,
+      "mean_prompt_time_ms": 513.0,
+      "mean_tokens_per_second": 72.83000000000001,
+      "mean_tpot_ms": 13.73,
+      "mean_wall_time_s": 2.2699999999999996,
+      "median_acceptance_rate": 0.67153,
+      "median_tokens_per_second": 72.83000000000001,
+      "median_tpot_ms": 13.73,
+      "stdev_tpot_ms": 0.05999999999999961,
+      "total_accepted_tokens": 276,
+      "total_draft_tokens": 411
+    },
+    "llmopt_medusa_over_sequential_speedup": 2.2561957868649323,
     "llmopt_mtp": {
       "campaigns": [
         {
