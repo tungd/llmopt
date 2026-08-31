@@ -83,6 +83,25 @@ probe:
 ninja -f ninja.build probe-lfm25
 ```
 
+## Measure the compilation target
+
+The native hardware probe measures empty-dispatch overhead and streaming-copy
+bandwidth on the selected Metal device, then writes a target profile consumed
+by both compiler entrypoints:
+
+```sh
+_build/bin/llmopt-hardware-probe --output /tmp/llmopt-target.json
+_build/bin/llmopt-fx --target-profile /tmp/llmopt-target.json graph.llmopt output
+_build/bin/llmopt-pipeline --target-profile /tmp/llmopt-target.json \
+  --model org/model --vocab-size 32000 --max-positions 4096 \
+  --chat-format chatml --weights weights.llmopt --tokenizer tokenizer.llmopt \
+  --prefill prefill.llmopt --decode decode.llmopt --output engine
+```
+
+The profile records the actual device name, maximum threads per threadgroup,
+median dispatch time, and measured streaming bandwidth. Structural device
+facts that Metal does not expose remain explicit target-profile fields.
+
 ## Link a Model Program
 
 The current low-level pipeline links already captured packages. Model metadata

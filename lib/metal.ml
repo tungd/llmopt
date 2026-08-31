@@ -114,7 +114,7 @@ let input_name graph value =
       Printf.sprintf "value-%d" (Ir.Value_id.to_int (Ir.Value.id value))
 
 let w4a16_source =
-  "\nstruct W4A16Params { uint m; uint n; uint k; uint has_bias; };\n\n"
+  "\nstruct W4A16Params { uint m; uint n; uint k; uint has_bias; uint bias_row_stride; };\n\n"
   ^ "kernel void llmopt_w4a16_linear_f16_g64(\n"
   ^ "    device const half* input [[buffer(0)]],\n"
   ^ "    device const uchar* packed_weight [[buffer(1)]],\n"
@@ -145,7 +145,7 @@ let w4a16_source =
   ^ "  }\n"
   ^ "  acc = simd_sum(acc);\n"
   ^ "  if (lane == 0) {\n"
-  ^ "    if (params.has_bias != 0u) acc += float(bias_or_scale[col]);\n"
+  ^ "    if (params.has_bias != 0u) acc += float(bias_or_scale[row * params.bias_row_stride + col]);\n"
   ^ "    output[row * params.n + col] = half(acc);\n"
   ^ "  }\n"
   ^ "}\n\n"
@@ -214,18 +214,18 @@ let w4a16_source =
   ^ "  if (valid3) acc3 = simd_sum(acc3);\n"
   ^ "  if (lane == 0) {\n"
   ^ "    const bool has_bias = (params.has_bias != 0u);\n"
-  ^ "    if (has_bias) acc0 += float(bias_or_scale[col]);\n"
+  ^ "    if (has_bias) acc0 += float(bias_or_scale[row0 * params.bias_row_stride + col]);\n"
   ^ "    output[row0 * params.n + col] = half(acc0);\n"
   ^ "    if (valid1) {\n"
-  ^ "      if (has_bias) acc1 += float(bias_or_scale[col]);\n"
+  ^ "      if (has_bias) acc1 += float(bias_or_scale[row1 * params.bias_row_stride + col]);\n"
   ^ "      output[row1 * params.n + col] = half(acc1);\n"
   ^ "    }\n"
   ^ "    if (valid2) {\n"
-  ^ "      if (has_bias) acc2 += float(bias_or_scale[col]);\n"
+  ^ "      if (has_bias) acc2 += float(bias_or_scale[row2 * params.bias_row_stride + col]);\n"
   ^ "      output[row2 * params.n + col] = half(acc2);\n"
   ^ "    }\n"
   ^ "    if (valid3) {\n"
-  ^ "      if (has_bias) acc3 += float(bias_or_scale[col]);\n"
+  ^ "      if (has_bias) acc3 += float(bias_or_scale[row3 * params.bias_row_stride + col]);\n"
   ^ "      output[row3 * params.n + col] = half(acc3);\n"
   ^ "    }\n"
   ^ "  }\n"
@@ -291,15 +291,15 @@ let w4a16_source =
   ^ "  if (valid7) acc7 = simd_sum(acc7);\n"
   ^ "  if (lane == 0) {\n"
   ^ "    const bool has_bias = (params.has_bias != 0u);\n"
-  ^ "    if (has_bias) acc0 += float(bias_or_scale[col]);\n"
+  ^ "    if (has_bias) acc0 += float(bias_or_scale[row0 * params.bias_row_stride + col]);\n"
   ^ "    output[row0 * params.n + col] = half(acc0);\n"
-  ^ "    if (valid1) { const uint r = row0 + 1u; if (has_bias) acc1 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc1); }\n"
-  ^ "    if (valid2) { const uint r = row0 + 2u; if (has_bias) acc2 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc2); }\n"
-  ^ "    if (valid3) { const uint r = row0 + 3u; if (has_bias) acc3 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc3); }\n"
-  ^ "    if (valid4) { const uint r = row0 + 4u; if (has_bias) acc4 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc4); }\n"
-  ^ "    if (valid5) { const uint r = row0 + 5u; if (has_bias) acc5 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc5); }\n"
-  ^ "    if (valid6) { const uint r = row0 + 6u; if (has_bias) acc6 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc6); }\n"
-  ^ "    if (valid7) { const uint r = row0 + 7u; if (has_bias) acc7 += float(bias_or_scale[col]); output[r * params.n + col] = half(acc7); }\n"
+  ^ "    if (valid1) { const uint r = row0 + 1u; if (has_bias) acc1 += float(bias_or_scale[r * params.bias_row_stride + col]); output[r * params.n + col] = half(acc1); }\n"
+  ^ "    if (valid2) { const uint r = row0 + 2u; if (has_bias) acc2 += float(bias_or_scale[r * params.bias_row_stride + col]); output[r * params.n + col] = half(acc2); }\n"
+  ^ "    if (valid3) { const uint r = row0 + 3u; if (has_bias) acc3 += float(bias_or_scale[r * params.bias_row_stride + col]); output[r * params.n + col] = half(acc3); }\n"
+  ^ "    if (valid4) { const uint r = row0 + 4u; if (has_bias) acc4 += float(bias_or_scale[r * params.bias_row_stride + col]); output[r * params.n + col] = half(acc4); }\n"
+  ^ "    if (valid5) { const uint r = row0 + 5u; if (has_bias) acc5 += float(bias_or_scale[r * params.bias_row_stride + col]); output[r * params.n + col] = half(acc5); }\n"
+  ^ "    if (valid6) { const uint r = row0 + 6u; if (has_bias) acc6 += float(bias_or_scale[r * params.bias_row_stride + col]); output[r * params.n + col] = half(acc6); }\n"
+  ^ "    if (valid7) { const uint r = row0 + 7u; if (has_bias) acc7 += float(bias_or_scale[r * params.bias_row_stride + col]); output[r * params.n + col] = half(acc7); }\n"
   ^ "  }\n"
   ^ "}\n"
 
@@ -1834,9 +1834,10 @@ kernel void llmopt_attention_q8_paged_simd_h64(
     if (mask != nullptr && params.mask_batches > 0) {
       const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
       const uint mask_head = params.mask_heads == 1 ? 0 : head;
+      const uint mask_key_stride = params.past_length + q_len;
       const uint mask_index =
           ((mask_batch * params.mask_heads + mask_head) * q_len + q_pos)
-              * key_length + key_position;
+              * mask_key_stride + key_position;
       if (mask[mask_index] == 0) continue;
     }
     float partial_score = 0.0f;
@@ -1872,7 +1873,7 @@ kernel void llmopt_attention_q8_paged_simd_h64(
     maximum = next_maximum;
   }
   const uint output_base =
-      ((batch * params.query_heads + head) * q_len + q_pos) * params.head_dim;
+      ((batch * q_len + q_pos) * params.query_heads + head) * params.head_dim;
   if (lane < params.head_dim)
     output[output_base + lane] = half(
         denominator == 0.0f ? 0.0f : result_low / denominator);
@@ -8477,5 +8478,3 @@ let emit_simdgroup_matrix_gemm ~name ~epilogue =
    \    output[out_row1 * params.n + out_col1] = half(%s);\n\
    \  }\n\
    }\n" name epilogue_buffers epilogue_code epilogue_code
-
-

@@ -39,6 +39,7 @@ module Sequence : sig
       is the full-sequence vocabulary projection, specialize its existing
       identity index and W4A16 linear command to the final token row. *)
   val specialize_prefill :
+    ?all_token_outputs:bool ->
     minimum_tokens:int ->
     captured_tokens:int ->
     tokens:int ->
@@ -50,6 +51,7 @@ module Sequence : sig
 
   val q8_attention_pool_input : string
   val q8_attention_slots_input : string
+  val suffix_mask_input : string
 
   (** Specialize one-token decode and replace the captured RoPE tables with
       canonical runtime bindings. *)
@@ -67,9 +69,21 @@ module Sequence : sig
     t ->
     (t, string) result
 
+  (** Specialize a captured cached multi-token target graph for one speculative
+      verification window and direct grouped-Q8 cache reads. *)
+  val specialize_prompt_lookup_paged_q8 :
+    captured_query:int ->
+    query_tokens:int ->
+    captured_past:int ->
+    past_tokens:int ->
+    cache:Kv_cache.Config.t ->
+    t ->
+    (t, string) result
+
   val recurrent_in_input : int -> string
 
   val specialize_suffix_prefill_paged_q8 :
+    ?all_token_outputs:bool ->
     minimum_tokens:int ->
     captured_tokens:int ->
     tokens:int ->

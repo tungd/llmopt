@@ -178,9 +178,13 @@ let legacy_model_program_v2_bytes program =
 let legacy_model_program_v3_bytes program =
   let bytes = Model_program.to_bytes program in
   let final = Bytes.length bytes - 1 in
-  if final < 0 || Bytes.get bytes final <> '\000' then
-    fail "expected an ABI-v4 Model Program without an MTP entrypoint";
-  let legacy = Bytes.sub bytes 0 final in
+  if
+    final < 1
+    || Bytes.get bytes final <> '\000'
+    || Bytes.get bytes (final - 1) <> '\000'
+  then
+    fail "expected an ABI-v5 Model Program without optional entrypoints";
+  let legacy = Bytes.sub bytes 0 (final - 1) in
   let version_offset = String.length "LLMOPT-MODEL\000" in
   Bytes.set legacy version_offset '\003';
   Bytes.set legacy (version_offset + 1) '\000';
@@ -475,6 +479,13 @@ let () =
   in
   expect (no_candidates = [||])
     "Prompt lookup returns empty array when no n-gram match exists in history";
+
+  let repeated_candidates =
+    Serving_engine.Prompt_lookup.find_candidate_ngram ~min_ngram:2 ~max_ngram:4
+      ~max_draft_tokens:4 ~tokens:[| 7; 7; 7; 7; 7; 7; 7; 7 |] ()
+  in
+  expect (repeated_candidates = [| 7; 7; 7; 7 |])
+    "Prompt lookup scans beyond an overlapping nearest match for the longest continuation";
 
   let no_tree_opt =
     Serving_engine.Prompt_lookup.propose_tree ~min_ngram:2 ~max_ngram:3
@@ -2659,12 +2670,9 @@ let () =
     (runtime_shape "graph_mask" = None)
     "suffix prefill prunes the captured graph mask";
   expect
-    (Serving_schedule.commands suffix_schedule
-    |> List.exists (fun command ->
-           match Serving_schedule.Command.op command with
-           | Ir.Op.Primitive (Ir.Primitive.Fill (Ir.Scalar.Bool true)) -> true
-           | _ -> false))
-    "suffix prefill emits an all-ones mask fill";
+    (runtime_shape Serving_schedule.Sequence.suffix_mask_input
+    = Some [ 1; 1; suffix_tokens; past_tokens + suffix_tokens ])
+    "suffix prefill binds its causal mask as a runtime input";
   expect
     (Serving_schedule.commands suffix_schedule
     |> List.exists (fun command ->
@@ -2689,6 +2697,14 @@ let () =
                && mask_shape = [ 1; 1; suffix_tokens; past_tokens + suffix_tokens ]
            | _ -> false))
     "suffix prefill attends over cached prefix through the paged Q8 pool";
+  let paged_attention_source =
+    suffix_graph |> Metal.lower |> expect_ok |> Metal.add_cache_kernels
+    |> Metal.Program.source
+  in
+  expect
+    (contains_substring paged_attention_source
+       "((batch * q_len + q_pos) * params.query_heads + head) * params.head_dim")
+    "paged Q8 attention writes token-major multi-token output";
   expect
     (Serving_schedule.commands suffix_schedule
     |> List.for_all (fun command ->
@@ -2762,6 +2778,29 @@ let () =
   expect (target_roundtrip.device_name = target.device_name) "target JSON round-trip preserves device name";
   expect (target_roundtrip.memory.simd_lanes = 32) "target JSON round-trip preserves simd_lanes";
   expect (target_roundtrip.memory.sram_banks = 32) "target JSON round-trip preserves sram_banks";
+  let calibrated =
+    Target_hardware.calibrate ~measured_bandwidth_gbps:174.5
+      ~measured_dispatch_overhead_seconds:3.6e-6 target
+  in
+  expect
+    (calibrated.execution.memory_bandwidth_gbps = 174.5
+    && calibrated.execution.dispatch_overhead_seconds = 3.6e-6)
+    "hardware calibration installs measured bandwidth and dispatch cost";
+  let profile_json =
+    `Assoc
+      [
+        "schema_version", `Int 1;
+        "backend", `String "metal";
+        "target", Target_hardware.to_json calibrated;
+      ]
+  in
+  let profiled =
+    Target_hardware.of_profile_json profile_json |> expect_ok
+  in
+  expect
+    (profiled.execution.memory_bandwidth_gbps = 174.5
+    && profiled.execution.dispatch_overhead_seconds = 3.6e-6)
+    "hardware profile envelope round-trips measured device costs";
 
   (* Prefill batch/chunk size cost model tests *)
   let prefill_cm_350m =

@@ -3784,8 +3784,16 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Error
                     "W4A16 schedule command has inconsistent bias inputs"
             in
+            let bias_row_stride =
+              match values, has_bias with
+              | [ _; _; _; bias_value ], true
+                when Tensor_shape.numel (Ir.Value.logical_shape bias_value) = m * n ->
+                  n
+              | _ -> 0
+            in
             let* parameters =
-              Parameters.u32s [ m; n; k; if has_bias then 1 else 0 ]
+              Parameters.u32s
+                [ m; n; k; if has_bias then 1 else 0; bias_row_stride ]
             in
             if m = 1 then
               let* grid_x = linear_f16_grid (m * n) in

@@ -1,25 +1,24 @@
+(** Structural dispatch geometry selected from a measured target profile.
+
+    Latency and bandwidth are measured by [llmopt-hardware-probe] and carried
+    by [Target_hardware]. This module deliberately contains no learned model or
+    generated predictor. *)
+
 module Device : sig
   type t
 
   val create :
-    gpu_core_count:int -> memory_bandwidth_gbps:float -> (t, string) result
+    ?dispatch_overhead_seconds:float ->
+    gpu_core_count:int ->
+    memory_bandwidth_gbps:float ->
+    unit ->
+    (t, string) result
 
   val default : t
   val gpu_core_count : t -> int
   val memory_bandwidth_gbps : t -> float
+  val dispatch_overhead_seconds : t -> float
 end
-
-val predict_latency :
-  float ->
-  float ->
-  float ->
-  float ->
-  float ->
-  float ->
-  float ->
-  float ->
-  float ->
-  float -> float
 
 module Megakernel : sig
   type qkv_rope_tile = {

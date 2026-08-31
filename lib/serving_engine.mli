@@ -66,6 +66,9 @@ val vocabulary : t -> int
 val prefill_tokens : t -> int
 val past_tokens : t -> int
 val prompt : t -> tokens:int array -> (Prompt.t, string) result
+(** Execute a batched suffix against a cached prefix without inserting the
+    speculative suffix into the radix/KV cache. *)
+val verify_prompt : t -> tokens:int array -> (Prompt.t, string) result
 val prefill : t -> tokens:int array -> (Step.t, string) result
 val decode : t -> prefix:int array -> token:int -> (Step.t, string) result
 val step_batch :
@@ -134,6 +137,8 @@ module Medusa : sig
 end
 
 module Prompt_lookup : sig
+  type verification
+
   val find_candidate_ngram :
     ?min_ngram:int ->
     ?max_ngram:int ->
@@ -157,4 +162,14 @@ module Prompt_lookup : sig
     tokens:int array ->
     unit ->
     Medusa.tree option
+
+  val verify_and_commit :
+    t ->
+    history:int array ->
+    draft_tokens:int array ->
+    (verification, string) result
+
+  val target_predictions : verification -> int array
+  val emitted_tokens : verification -> int array
+  val accepted_draft_tokens : verification -> int
 end

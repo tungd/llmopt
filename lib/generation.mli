@@ -84,3 +84,35 @@ val generate :
   config:Generation_core.Config.t ->
   messages:Chat_template.Message.t list ->
   (Result.t, string) result
+
+val generate_tokens :
+  ?emit:(int -> unit) ->
+  ?sampling_params:Sampling.Params.t ->
+  ?ignore_eos:bool ->
+  t ->
+  config:Generation_core.Config.t ->
+  messages:Chat_template.Message.t list ->
+  (Generation_core.Result.t, string) result
+
+module Prompt_lookup : sig
+  type t
+
+  val prompt_tokens : t -> int array
+  val completion_tokens : t -> int array
+  val text : t -> (string, string) result
+  val elapsed_seconds : t -> float
+  val target_forward_passes : t -> int
+  val verification_passes : t -> int
+  val proposed_tokens : t -> int
+  val accepted_draft_tokens : t -> int
+end
+
+val generate_prompt_lookup :
+  ?min_ngram:int ->
+  ?max_ngram:int ->
+  ?max_draft_tokens:int ->
+  ?ignore_eos:bool ->
+  t ->
+  max_new_tokens:int ->
+  messages:Chat_template.Message.t list ->
+  (Prompt_lookup.t, string) result

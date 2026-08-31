@@ -413,6 +413,172 @@ CAMLprim value caml_llmopt_metal_device_name(value context_value) {
   CAMLreturn(result);
 }
 
+static double llmopt_command_duration(id<MTLCommandBuffer> command,
+                                      uint64_t started,
+                                      uint64_t finished) {
+  if (@available(macOS 10.15, *)) {
+    if (command.GPUEndTime > command.GPUStartTime) {
+      return command.GPUEndTime - command.GPUStartTime;
+    }
+  }
+  mach_timebase_info_data_t info;
+  mach_timebase_info(&info);
+  return ((double)(finished - started) * (double)info.numer /
+          (double)info.denom) * 1e-9;
+}
+
+static double llmopt_median(double *values, int count) {
+  for (int i = 1; i < count; ++i) {
+    double value = values[i];
+    int j = i - 1;
+    while (j >= 0 && values[j] > value) {
+      values[j + 1] = values[j];
+      --j;
+    }
+    values[j + 1] = value;
+  }
+  if ((count & 1) != 0) {
+    return values[count / 2];
+  }
+  return (values[count / 2 - 1] + values[count / 2]) * 0.5;
+}
+
+CAMLprim value caml_llmopt_metal_measure_hardware(value warmup_value,
+                                                   value repeat_value,
+                                                   value bytes_value) {
+  CAMLparam3(warmup_value, repeat_value, bytes_value);
+  CAMLlocal1(result);
+  int warmup = Int_val(warmup_value);
+  int repeats = Int_val(repeat_value);
+  int byte_count = Int_val(bytes_value);
+  if (warmup < 0 || repeats <= 0 || byte_count < 4096 ||
+      (byte_count % 16) != 0) {
+    caml_invalid_argument(
+        "Metal hardware probe requires warmup >= 0, repeats > 0, and "
+        "16-byte-aligned bytes >= 4096");
+  }
+
+  @autoreleasepool {
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id<MTLCommandQueue> queue = [device newCommandQueue];
+    if (device == nil || queue == nil) {
+      caml_failwith("Metal hardware probe could not create a device queue");
+    }
+    NSString *source =
+        @"#include <metal_stdlib>\n"
+         "using namespace metal;\n"
+         "kernel void llmopt_probe_empty(uint gid [[thread_position_in_grid]]) { "
+         "(void)gid; }\n"
+         "kernel void llmopt_probe_copy(device const uint4 *src [[buffer(0)]], "
+         "device uint4 *dst [[buffer(1)]], uint gid "
+         "[[thread_position_in_grid]], uint count [[threads_per_grid]]) { "
+         "if (gid < count) dst[gid] = src[gid]; }\n";
+    NSError *error = nil;
+    MTLCompileOptions *options = [[MTLCompileOptions alloc] init];
+    options.fastMathEnabled = NO;
+    id<MTLLibrary> library =
+        [device newLibraryWithSource:source options:options error:&error];
+    [options release];
+    if (library == nil) {
+      fail_with_error("Metal hardware probe could not compile kernels", error);
+    }
+    id<MTLFunction> empty_function = [library newFunctionWithName:@"llmopt_probe_empty"];
+    id<MTLFunction> copy_function = [library newFunctionWithName:@"llmopt_probe_copy"];
+    id<MTLComputePipelineState> empty_pipeline =
+        [device newComputePipelineStateWithFunction:empty_function error:&error];
+    if (empty_pipeline == nil) {
+      fail_with_error("Metal hardware probe could not create empty pipeline", error);
+    }
+    id<MTLComputePipelineState> copy_pipeline =
+        [device newComputePipelineStateWithFunction:copy_function error:&error];
+    if (copy_pipeline == nil) {
+      fail_with_error("Metal hardware probe could not create copy pipeline", error);
+    }
+    id<MTLBuffer> input = [device newBufferWithLength:(NSUInteger)byte_count
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> output = [device newBufferWithLength:(NSUInteger)byte_count
+                                               options:MTLResourceStorageModeShared];
+    if (input == nil || output == nil) {
+      caml_raise_out_of_memory();
+    }
+
+    double *dispatch_samples = calloc((size_t)repeats, sizeof(double));
+    double *copy_samples = calloc((size_t)repeats, sizeof(double));
+    if (dispatch_samples == NULL || copy_samples == NULL) {
+      free(dispatch_samples);
+      free(copy_samples);
+      caml_raise_out_of_memory();
+    }
+    NSUInteger vectors = (NSUInteger)byte_count / 16;
+    NSUInteger copy_width = MIN(copy_pipeline.maxTotalThreadsPerThreadgroup, 256);
+    int total = warmup + repeats;
+    for (int iteration = 0; iteration < total; ++iteration) {
+      id<MTLCommandBuffer> empty_command = [queue commandBuffer];
+      id<MTLComputeCommandEncoder> empty_encoder =
+          [empty_command computeCommandEncoder];
+      [empty_encoder setComputePipelineState:empty_pipeline];
+      [empty_encoder dispatchThreads:MTLSizeMake(1, 1, 1)
+               threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+      [empty_encoder endEncoding];
+      uint64_t started = mach_continuous_time();
+      [empty_command commit];
+      [empty_command waitUntilCompleted];
+      uint64_t finished = mach_continuous_time();
+      if (empty_command.status != MTLCommandBufferStatusCompleted) {
+        fail_with_error("Metal empty dispatch probe failed", empty_command.error);
+      }
+
+      id<MTLCommandBuffer> copy_command = [queue commandBuffer];
+      id<MTLComputeCommandEncoder> copy_encoder =
+          [copy_command computeCommandEncoder];
+      [copy_encoder setComputePipelineState:copy_pipeline];
+      [copy_encoder setBuffer:input offset:0 atIndex:0];
+      [copy_encoder setBuffer:output offset:0 atIndex:1];
+      [copy_encoder dispatchThreads:MTLSizeMake(vectors, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(copy_width, 1, 1)];
+      [copy_encoder endEncoding];
+      uint64_t copy_started = mach_continuous_time();
+      [copy_command commit];
+      [copy_command waitUntilCompleted];
+      uint64_t copy_finished = mach_continuous_time();
+      if (copy_command.status != MTLCommandBufferStatusCompleted) {
+        fail_with_error("Metal copy bandwidth probe failed", copy_command.error);
+      }
+      if (iteration >= warmup) {
+        int sample = iteration - warmup;
+        dispatch_samples[sample] =
+            llmopt_command_duration(empty_command, started, finished);
+        copy_samples[sample] =
+            llmopt_command_duration(copy_command, copy_started, copy_finished);
+      }
+    }
+
+    double dispatch_seconds = llmopt_median(dispatch_samples, repeats);
+    double copy_seconds = llmopt_median(copy_samples, repeats);
+    double bandwidth_gbps =
+        (2.0 * (double)byte_count) / copy_seconds / 1e9;
+    free(dispatch_samples);
+    free(copy_samples);
+
+    result = caml_alloc_tuple(4);
+    Store_field(result, 0, caml_copy_string(device.name.UTF8String));
+    Store_field(result, 1,
+                Val_int((int)copy_pipeline.maxTotalThreadsPerThreadgroup));
+    Store_field(result, 2, caml_copy_double(dispatch_seconds));
+    Store_field(result, 3, caml_copy_double(bandwidth_gbps));
+
+    [input release];
+    [output release];
+    [empty_pipeline release];
+    [copy_pipeline release];
+    [empty_function release];
+    [copy_function release];
+    [library release];
+    [queue release];
+  }
+  CAMLreturn(result);
+}
+
 CAMLprim value caml_llmopt_metal_load_library(value context_value,
                                                value path_value) {
   CAMLparam2(context_value, path_value);

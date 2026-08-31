@@ -1,6 +1,10 @@
 {
-  "created_at": "2026-08-31T12:51:32+07:00",
-  "git_base_commit": "e5002dd3cbbfb67da00b55b1a4cb5fed95ec7e68",
+  "created_at": "2026-09-01T00:16:53+07:00",
+  "git_base_commit": "239112caae2e836a9ea49c9265d814f92a6842df",
+  "llama_cpp": {
+    "executable": "/opt/local/bin/llama-cli",
+    "version": "version: 0.1.2-dev (build 10531, commit f20395d)"
+  },
   "models": {
     "draft_file": "mtp-gemma-4-12B-it.gguf",
     "repository": "unsloth/gemma-4-12B-it-qat-GGUF",
@@ -26,105 +30,105 @@
         {
           "acceptance_rate": 0.67153,
           "accepted_tokens": 92,
-          "eval_time_ms": 6850.33,
+          "eval_time_ms": 7268.92,
           "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
           "generated_tokens": 128,
           "mean_accepted_length": 3.63,
-          "prompt_time_ms": 534.33,
+          "prompt_time_ms": 555.0,
           "prompt_tokens": 37,
-          "tokens_per_second": 18.54,
+          "tokens_per_second": 17.47,
           "total_draft_tokens": 137,
-          "tpot_ms": 53.94,
-          "wall_time_s": 9.88217429202632
+          "tpot_ms": 57.24,
+          "wall_time_s": 10.55634937499417
         },
         {
           "acceptance_rate": 0.67153,
           "accepted_tokens": 92,
-          "eval_time_ms": 6846.8,
+          "eval_time_ms": 7306.1,
           "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
           "generated_tokens": 128,
           "mean_accepted_length": 3.63,
-          "prompt_time_ms": 524.02,
+          "prompt_time_ms": 545.98,
           "prompt_tokens": 37,
-          "tokens_per_second": 18.55,
+          "tokens_per_second": 17.38,
           "total_draft_tokens": 137,
-          "tpot_ms": 53.91,
-          "wall_time_s": 9.84373212500941
+          "tpot_ms": 57.53,
+          "wall_time_s": 10.76418683299562
         },
         {
           "acceptance_rate": 0.67153,
           "accepted_tokens": 92,
-          "eval_time_ms": 6834.28,
+          "eval_time_ms": 7203.47,
           "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
           "generated_tokens": 128,
           "mean_accepted_length": 3.63,
-          "prompt_time_ms": 525.06,
+          "prompt_time_ms": 561.43,
           "prompt_tokens": 37,
-          "tokens_per_second": 18.58,
+          "tokens_per_second": 17.63,
           "total_draft_tokens": 137,
-          "tpot_ms": 53.81,
-          "wall_time_s": 9.85481308301678
+          "tpot_ms": 56.72,
+          "wall_time_s": 10.671901041991077
         }
       ],
       "generated_text_sha256": [
         "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1"
       ],
       "median_acceptance_rate": 0.67153,
-      "median_tokens_per_second": 18.55,
-      "median_tpot_ms": 53.91
+      "median_tokens_per_second": 17.47,
+      "median_tpot_ms": 57.24
     },
-    "mtp_over_sequential_throughput_ratio": 0.5956968529222865,
+    "mtp_over_sequential_throughput_ratio": 0.6252684323550465,
     "sequential": {
       "campaigns": [
         {
           "acceptance_rate": 0.0,
           "accepted_tokens": 0,
-          "eval_time_ms": 4111.23,
+          "eval_time_ms": 4544.96,
           "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
           "generated_tokens": 128,
           "mean_accepted_length": null,
-          "prompt_time_ms": 536.39,
+          "prompt_time_ms": 550.64,
           "prompt_tokens": 37,
-          "tokens_per_second": 30.89,
+          "tokens_per_second": 27.94,
           "total_draft_tokens": 0,
-          "tpot_ms": 32.37,
-          "wall_time_s": 7.7063038750202395
+          "tpot_ms": 35.79,
+          "wall_time_s": 13.506679957965389
         },
         {
           "acceptance_rate": 0.0,
           "accepted_tokens": 0,
-          "eval_time_ms": 4078.98,
+          "eval_time_ms": 4442.27,
           "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
           "generated_tokens": 128,
           "mean_accepted_length": null,
-          "prompt_time_ms": 537.32,
+          "prompt_time_ms": 574.04,
           "prompt_tokens": 37,
-          "tokens_per_second": 31.14,
+          "tokens_per_second": 28.59,
           "total_draft_tokens": 0,
-          "tpot_ms": 32.12,
-          "wall_time_s": 6.235068791982485
+          "tpot_ms": 34.98,
+          "wall_time_s": 6.992424124968238
         },
         {
           "acceptance_rate": 0.0,
           "accepted_tokens": 0,
-          "eval_time_ms": 4069.46,
+          "eval_time_ms": 4743.93,
           "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
           "generated_tokens": 128,
           "mean_accepted_length": null,
-          "prompt_time_ms": 536.4,
+          "prompt_time_ms": 557.3,
           "prompt_tokens": 37,
-          "tokens_per_second": 31.21,
+          "tokens_per_second": 26.77,
           "total_draft_tokens": 0,
-          "tpot_ms": 32.04,
-          "wall_time_s": 6.2441714580054395
+          "tpot_ms": 37.35,
+          "wall_time_s": 7.146777165995445
         }
       ],
       "generated_text_sha256": [
         "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1"
       ],
       "median_acceptance_rate": 0.0,
-      "median_tokens_per_second": 31.14,
-      "median_tpot_ms": 32.12
+      "median_tokens_per_second": 27.94,
+      "median_tpot_ms": 35.79
     }
   },
   "schema_version": 2

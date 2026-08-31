@@ -82,6 +82,17 @@ module Greedy = struct
            (Bytes.length bytes))
     else Ok (token_at bytes (Bytes.length bytes - 4))
 
+  let on_device_all bytes =
+    if Bytes.length bytes = 0 || Bytes.length bytes mod 4 <> 0 then
+      Error
+        (Printf.sprintf
+           "on-device greedy token rows contain %d bytes; expected a positive multiple of 4"
+           (Bytes.length bytes))
+    else
+      Ok
+        (Array.init (Bytes.length bytes / 4) (fun index ->
+             token_at bytes (index * 4)))
+
   external f16_argmax_native : bytes -> int -> int = "caml_llmopt_f16_argmax"
 
   let f16_last_row ~vocabulary bytes =
@@ -105,6 +116,20 @@ module Greedy = struct
             else select best_token best_value (token + 1)
         in
         select 0 first 1
+
+  let f16_all_rows ~vocabulary bytes =
+    let ( let* ) = Result.bind in
+    let* _, row_bytes = Float16_logits.row_offset ~vocabulary bytes in
+    let rows = Bytes.length bytes / row_bytes in
+    let rec collect index output =
+      if index = rows then Ok output
+      else
+        let row = Bytes.sub bytes (index * row_bytes) row_bytes in
+        let* token = f16_last_row ~vocabulary row in
+        output.(index) <- token;
+        collect (index + 1) output
+    in
+    collect 0 (Array.make rows 0)
 end
 
 external f16_sample_native :

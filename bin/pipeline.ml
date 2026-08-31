@@ -81,14 +81,14 @@ let rename_logits_to_token_id graph =
     in
     Ok (Ir.Graph.with_nodes_and_outputs graph nodes outputs)
 
-let compile_single_graph ~weights_path ~graph_path ~output_dir ~greedy =
+let compile_single_graph ~target ~weights_path ~graph_path ~output_dir ~greedy =
   ensure_directory output_dir;
   let* fx_graph = Fx.of_file graph_path in
   let* graph = Fx_plan.plan fx_graph in
   let* graph =
     if greedy then rename_logits_to_token_id graph else Ok graph
   in
-  let* optimization = Passes.optimize graph in
+  let* optimization = Passes.optimize ~target graph in
   let planned = Passes.Optimization.execution_graph optimization in
   let fusion_regions = Passes.Optimization.fusion_regions optimization in
   let graph_plan = Format.asprintf "%a" Ir.Graph.pp planned in
@@ -101,7 +101,7 @@ let compile_single_graph ~weights_path ~graph_path ~output_dir ~greedy =
         ^ "\n"
   in
   let* schedule = Serving_schedule.of_graph planned in
-  let* metal_program = Metal.lower planned in
+  let* metal_program = Metal.lower ~target planned in
   let tensor_store =
     Serving_package.Tensor_store.weights ~file:(artifact "weights.llmopt")
   in
@@ -140,7 +140,11 @@ type options = {
   tokenizer : string;
   prefill_graph : string;
   decode_graph : string;
+  verification_graph : string option;
+  verification_captured_past : int option;
+  verification_captured_query : int option;
   output_dir : string;
+  target_profile : string option;
   greedy : bool;
   model : string;
   architecture : string option;
@@ -163,7 +167,10 @@ let usage () =
      --model <id> --vocab-size <count> --max-positions <count> \
      --chat-format chatml --bos-token-id <id> \
      --message-start-token-id <id> --message-end-token-id <id> \
-     [--architecture <name>] [--family <name>] [--minimum-prefill-tokens <count>] \
+     [--architecture <name>] [--family <name>] [--target-profile <path>] \
+     [--verification <graph.llmopt> --verification-captured-past <count> \
+      --verification-captured-query <count>] \
+     [--minimum-prefill-tokens <count>] \
      [--attention-state <key-in>:<value-in>:<key-out>:<value-out>]... \
      [--recurrent-state <state-in>:<state-out>]...";
   exit 64
@@ -205,7 +212,15 @@ let parse_arguments () =
     | "--tokenizer" :: v :: rest -> loop { opts with tokenizer = v } rest
     | "--prefill" :: v :: rest -> loop { opts with prefill_graph = v } rest
     | "--decode" :: v :: rest -> loop { opts with decode_graph = v } rest
+    | "--verification" :: v :: rest ->
+        loop { opts with verification_graph = Some v } rest
+    | "--verification-captured-past" :: v :: rest ->
+        loop { opts with verification_captured_past = Some (positive v) } rest
+    | "--verification-captured-query" :: v :: rest ->
+        loop { opts with verification_captured_query = Some (positive v) } rest
     | "--output" :: v :: rest -> loop { opts with output_dir = v } rest
+    | "--target-profile" :: v :: rest ->
+        loop { opts with target_profile = Some v } rest
     | "--no-greedy" :: rest -> loop { opts with greedy = false } rest
     | "--model" :: v :: rest -> loop { opts with model = v } rest
     | "--architecture" :: v :: rest ->
@@ -246,7 +261,11 @@ let parse_arguments () =
             tokenizer = "";
             prefill_graph = "";
             decode_graph = "";
+            verification_graph = None;
+            verification_captured_past = None;
+            verification_captured_query = None;
             output_dir = "";
+            target_profile = None;
             greedy = true;
             model = "";
             architecture = None;
@@ -270,7 +289,15 @@ let parse_arguments () =
         || opts.decode_graph = ""
         || opts.output_dir = ""
       then usage ()
-      else opts
+      else
+        (match
+           ( opts.verification_graph,
+             opts.verification_captured_past,
+             opts.verification_captured_query )
+         with
+        | None, None, None -> opts
+        | Some _, Some _, Some query when query > 1 -> opts
+        | _ -> usage ())
   | [] -> usage ()
 
 let model_profile opts =
@@ -332,8 +359,19 @@ let run () =
   let opts = parse_arguments () in
   let* profile = model_profile opts in
   let* attentions, recurrents = state_bindings opts in
+  let* target =
+    match opts.target_profile with
+    | None -> Ok (Target_hardware.discover ())
+    | Some path ->
+        (try
+           Yojson.Basic.from_file path |> Target_hardware.of_profile_json
+         with Yojson.Json_error message ->
+           Error ("invalid target hardware profile JSON: " ^ message))
+  in
   Printf.printf "[llmopt-pipeline] Building unified engine at: %s\n%!" opts.output_dir;
   ensure_directory opts.output_dir;
+  write_file (Filename.concat opts.output_dir "target.json")
+    (Yojson.Basic.pretty_to_string (Target_hardware.to_json target) ^ "\n");
 
   (* 1. Copy tokenizer and link weights *)
   let target_tok = Filename.concat opts.output_dir "tokenizer.llmopt" in
@@ -345,7 +383,7 @@ let run () =
   let prefill_dir = Filename.concat opts.output_dir "prefill" in
   Printf.printf "[llmopt-pipeline] Compiling prefill engine & shaders...\n%!";
   let* prefill_pkg, p_fx, p_ir =
-    compile_single_graph ~weights_path:opts.weights
+    compile_single_graph ~target ~weights_path:opts.weights
       ~graph_path:opts.prefill_graph ~output_dir:prefill_dir ~greedy:opts.greedy
   in
   Printf.printf "[llmopt-pipeline] Prefill: %d FX nodes -> %d IR nodes\n%!" p_fx p_ir;
@@ -354,10 +392,27 @@ let run () =
   let decode_dir = Filename.concat opts.output_dir "decode" in
   Printf.printf "[llmopt-pipeline] Compiling decode engine & shaders...\n%!";
   let* decode_pkg, d_fx, d_ir =
-    compile_single_graph ~weights_path:opts.weights
+    compile_single_graph ~target ~weights_path:opts.weights
       ~graph_path:opts.decode_graph ~output_dir:decode_dir ~greedy:opts.greedy
   in
   Printf.printf "[llmopt-pipeline] Decode: %d FX nodes -> %d IR nodes\n%!" d_fx d_ir;
+
+  let* verification_pkg =
+    match opts.verification_graph with
+    | None -> Ok None
+    | Some graph_path ->
+        let output_dir = Filename.concat opts.output_dir "verification" in
+        Printf.printf
+          "[llmopt-pipeline] Compiling prompt-lookup verification engine & shaders...\n%!";
+        let* package, fx_nodes, ir_nodes =
+          compile_single_graph ~target ~weights_path:opts.weights ~graph_path
+            ~output_dir ~greedy:true
+        in
+        Printf.printf
+          "[llmopt-pipeline] Verification: %d FX nodes -> %d IR nodes\n%!"
+          fx_nodes ir_nodes;
+        Ok (Some package)
+  in
 
   (* 4. Construct and emit root Model Program *)
   Printf.printf "[llmopt-pipeline] Linking root Model Program (model.llmopt)...\n%!";
@@ -372,6 +427,54 @@ let run () =
       ~decode_path:decode_art
       ~decode:decode_pkg
       ()
+  in
+  let* program =
+    match
+      ( verification_pkg,
+        opts.verification_captured_past,
+        opts.verification_captured_query )
+    with
+    | None, None, None -> Ok program
+    | Some package, Some captured_past_tokens, Some captured_query_tokens ->
+        let runtime_inputs =
+          package |> Serving_package.schedule
+          |> Serving_schedule.runtime_inputs
+        in
+        let input_ids =
+          Model_program.Entrypoint.input_ids (Model_program.prefill program)
+        in
+        let* () =
+          if List.mem_assoc input_ids runtime_inputs then Ok ()
+          else Error "verification package is missing the model input_ids binding"
+        in
+        let outputs =
+          package |> Serving_package.schedule |> Serving_schedule.commands
+          |> List.filter_map (fun command ->
+                 match
+                   Serving_schedule.Command.op command,
+                   Serving_schedule.Command.inputs command
+                 with
+                 | Ir.Op.Output { name }, [ _ ] -> Some name
+                 | _ -> None)
+        in
+        let* head =
+          if List.mem "token_id" outputs then
+            Model_program.Entrypoint.Head.create ~token_id:"token_id" ()
+          else Error "verification package has no token_id output"
+        in
+        let* package =
+          Model_program.Artifact.create "verification/package.llmopt"
+        in
+        let* entrypoint =
+          Model_program.Entrypoint.create
+            ~kind:Model_program.Entrypoint.Verify ~package ~input_ids ~head
+        in
+        let* prompt_lookup =
+          Model_program.Prompt_lookup.create ~entrypoint
+            ~captured_past_tokens ~captured_query_tokens
+        in
+        Model_program.with_prompt_lookup program prompt_lookup
+    | _ -> Error "incomplete prompt-lookup verification options"
   in
   let* () =
     Model_program.write_file

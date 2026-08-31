@@ -26,9 +26,10 @@ end
 module Greedy : sig
   val on_device : bytes -> (int, string) result
   val on_device_last : bytes -> (int, string) result
+  val on_device_all : bytes -> (int array, string) result
   val f16_last_row : vocabulary:int -> bytes -> (int, string) result
+  val f16_all_rows : vocabulary:int -> bytes -> (int array, string) result
 end
 
 val sample :
   params:Params.t -> vocabulary:int -> bytes -> (int, string) result
-

@@ -140,16 +140,20 @@ module Session = struct
     Tokenizer.decode session.parent.tokenizer tokens
 end
 
-let generate ?emit ?(sampling_params = Sampling.Params.greedy)
+let generate_tokens ?emit ?(sampling_params = Sampling.Params.greedy)
     ?(ignore_eos = false) generation ~config ~messages =
   let* prompt = Chat_template.encode generation.chat messages in
   let is_stop =
     if ignore_eos then Fun.const false
     else Chat_template.is_end_token generation.chat
   in
+  Driver.run ?emit ~sampling_params generation.engine ~config ~is_stop ~prompt
+
+let generate ?emit ?(sampling_params = Sampling.Params.greedy)
+    ?(ignore_eos = false) generation ~config ~messages =
   let* result =
-    Driver.run ?emit ~sampling_params generation.engine ~config
-      ~is_stop ~prompt
+    generate_tokens ?emit ~sampling_params ~ignore_eos generation ~config
+      ~messages
   in
   let completion = Generation_core.Result.completion_tokens result in
   let* text = Tokenizer.decode generation.tokenizer completion in
@@ -160,3 +164,116 @@ let generate ?emit ?(sampling_params = Sampling.Params.greedy)
       text;
       cache = Serving_engine.stats generation.engine;
     }
+
+module Prompt_lookup = struct
+  type t = {
+    prompt_tokens : int array;
+    completion_tokens : int array;
+    text : (string, string) result;
+    elapsed_seconds : float;
+    target_forward_passes : int;
+    verification_passes : int;
+    proposed_tokens : int;
+    accepted_draft_tokens : int;
+  }
+
+  let prompt_tokens result = Array.copy result.prompt_tokens
+  let completion_tokens result = Array.copy result.completion_tokens
+  let text result = result.text
+  let elapsed_seconds result = result.elapsed_seconds
+  let target_forward_passes result = result.target_forward_passes
+  let verification_passes result = result.verification_passes
+  let proposed_tokens result = result.proposed_tokens
+  let accepted_draft_tokens result = result.accepted_draft_tokens
+end
+
+let append left right =
+  let joined = Array.make (Array.length left + Array.length right) 0 in
+  Array.blit left 0 joined 0 (Array.length left);
+  Array.blit right 0 joined (Array.length left) (Array.length right);
+  joined
+
+let take count values =
+  if count >= Array.length values then values else Array.sub values 0 count
+
+let generate_prompt_lookup ?(min_ngram = 2) ?(max_ngram = 4)
+    ?(max_draft_tokens = 4) ?(ignore_eos = false) generation ~max_new_tokens
+    ~messages =
+  if max_new_tokens <= 0 then Error "max_new_tokens must be positive"
+  else if min_ngram <= 0 || max_ngram < min_ngram then
+    Error "prompt-lookup n-gram bounds are invalid"
+  else if max_draft_tokens <= 0 then
+    Error "prompt-lookup max_draft_tokens must be positive"
+  else
+    let* prompt_tokens = Chat_template.encode generation.chat messages in
+    let started_at = Unix.gettimeofday () in
+    let* prompt = Serving_engine.prompt generation.engine ~tokens:prompt_tokens in
+    let* first_token = Native_engine.next_token (Serving_engine.Prompt.step prompt) in
+    let is_stop =
+      if ignore_eos then Fun.const false
+      else Chat_template.is_end_token generation.chat
+    in
+    let rec loop history completion_rev count target_forward_passes
+        verification_passes proposed_tokens accepted_draft_tokens =
+      if count >= max_new_tokens || is_stop (List.hd completion_rev) then
+        Ok
+          ( history,
+            completion_rev,
+            target_forward_passes,
+            verification_passes,
+            proposed_tokens,
+            accepted_draft_tokens )
+      else
+        let proposal =
+          Serving_engine.Prompt_lookup.propose_linear ~min_ngram ~max_ngram
+            ~max_draft_tokens ~tokens:history ()
+        in
+        if Array.length proposal < 2 then
+          let prefix = Array.sub history 0 (Array.length history - 1) in
+          let token = history.(Array.length history - 1) in
+          let* step = Serving_engine.decode generation.engine ~prefix ~token in
+          let* next = Native_engine.next_token step in
+          loop (append history [| next |]) (next :: completion_rev) (count + 1)
+            (target_forward_passes + 1) verification_passes proposed_tokens
+            accepted_draft_tokens
+        else
+          let* verification =
+            Serving_engine.Prompt_lookup.verify_and_commit generation.engine
+              ~history ~draft_tokens:proposal
+          in
+            let remaining = max_new_tokens - count in
+            let emitted =
+              Serving_engine.Prompt_lookup.emitted_tokens verification
+              |> take remaining
+            in
+            let completion_rev =
+              List.rev_append (Array.to_list emitted) completion_rev
+            in
+            let accepted =
+              Serving_engine.Prompt_lookup.accepted_draft_tokens verification
+            in
+            loop (append history emitted) completion_rev
+              (count + Array.length emitted)
+              (target_forward_passes + 1)
+              (verification_passes + 1)
+              (proposed_tokens + Array.length proposal)
+              (accepted_draft_tokens + accepted)
+    in
+    let* _, completion_rev, target_forward_passes, verification_passes,
+         proposed_tokens, accepted_draft_tokens =
+      loop (append prompt_tokens [| first_token |]) [ first_token ] 1 1 0 0 0
+    in
+    let completion_tokens = Array.of_list (List.rev completion_rev) in
+    let text = Tokenizer.decode generation.tokenizer completion_tokens in
+    let* () = Serving_engine.validate generation.engine in
+    Ok
+      {
+        Prompt_lookup.prompt_tokens;
+        completion_tokens;
+        text;
+        elapsed_seconds = Unix.gettimeofday () -. started_at;
+        target_forward_passes;
+        verification_passes;
+        proposed_tokens;
+        accepted_draft_tokens;
+      }

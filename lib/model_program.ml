@@ -121,11 +121,12 @@ module Entrypoint = struct
     let token_id head = head.token_id
   end
 
-  type kind = Prefill | Decode
+  type kind = Prefill | Decode | Verify
 
   let kind_to_string = function
     | Prefill -> "prefill"
     | Decode -> "decode"
+    | Verify -> "verify"
 
   type t = {
     kind : kind;
@@ -144,6 +145,27 @@ module Entrypoint = struct
   let package entrypoint = entrypoint.package
   let input_ids entrypoint = entrypoint.input_ids
   let head entrypoint = entrypoint.head
+end
+
+module Prompt_lookup = struct
+  type t = {
+    entrypoint : Entrypoint.t;
+    captured_past_tokens : int;
+    captured_query_tokens : int;
+  }
+
+  let create ~entrypoint ~captured_past_tokens ~captured_query_tokens =
+    if Entrypoint.kind entrypoint <> Entrypoint.Verify then
+      Error "prompt-lookup entrypoint must have kind Verify"
+    else if captured_past_tokens <= 0 then
+      Error "prompt-lookup captured past length must be positive"
+    else if captured_query_tokens <= 1 then
+      Error "prompt-lookup captured query length must exceed one"
+    else Ok { entrypoint; captured_past_tokens; captured_query_tokens }
+
+  let entrypoint value = value.entrypoint
+  let captured_past_tokens value = value.captured_past_tokens
+  let captured_query_tokens value = value.captured_query_tokens
 end
 
 module Mtp = struct
@@ -556,9 +578,11 @@ type t = {
   state : State.t;
   specialization : Specialization.t;
   mtp : Mtp.t option;
+  prompt_lookup : Prompt_lookup.t option;
 }
 
-let current_abi_version = 4
+let current_abi_version = 5
+let mtp_abi_version = 4
 let legacy_uniform_cache_abi_version = 2
 let legacy_heterogeneous_cache_abi_version = 3
 
@@ -592,6 +616,7 @@ let make ~identity ~processor ~prefill ~decode ~generation ~state ~specializatio
       state;
       specialization;
       mtp = None;
+      prompt_lookup = None;
     }
   in
   let* () = validate program in
@@ -606,6 +631,11 @@ let with_mtp program mtp =
   let* () = validate program in
   Ok program
 
+let with_prompt_lookup program prompt_lookup =
+  let program = { program with prompt_lookup = Some prompt_lookup } in
+  let* () = validate program in
+  Ok program
+
 let abi_version _program = current_abi_version
 let identity program = program.identity
 let processor program = program.processor
@@ -615,6 +645,7 @@ let generation program = program.generation
 let state program = program.state
 let specialization program = program.specialization
 let mtp program = program.mtp
+let prompt_lookup program = program.prompt_lookup
 
 let magic = "LLMOPT-MODEL\000"
 
@@ -688,6 +719,20 @@ let read_mtp reader =
     ~full_attention_value_input ~sliding_attention_key_input
     ~sliding_attention_value_input ~logits_output
     ~projected_target_hidden_output ~max_draft_tokens
+
+let write_prompt_lookup writer prompt_lookup =
+  write_entrypoint writer (Prompt_lookup.entrypoint prompt_lookup);
+  Binary.Writer.u32 writer
+    (Prompt_lookup.captured_past_tokens prompt_lookup);
+  Binary.Writer.u32 writer
+    (Prompt_lookup.captured_query_tokens prompt_lookup)
+
+let read_prompt_lookup reader =
+  let* entrypoint = read_entrypoint reader Entrypoint.Verify in
+  let* captured_past_tokens = Binary.Reader.u32 reader in
+  let* captured_query_tokens = Binary.Reader.u32 reader in
+  Prompt_lookup.create ~entrypoint ~captured_past_tokens
+    ~captured_query_tokens
 
 let to_bytes program =
   let writer = Binary.Writer.create () in
@@ -769,6 +814,9 @@ let to_bytes program =
   (* Optional target-coupled MTP assistant entrypoint (ABI v4). *)
   write_option writer write_mtp program.mtp;
 
+  (* Optional cached multi-token verifier (ABI v5). *)
+  write_option writer write_prompt_lookup program.prompt_lookup;
+
   Binary.Writer.contents writer
 
 let of_bytes bytes =
@@ -781,6 +829,7 @@ let of_bytes bytes =
     let* version = Binary.Reader.u16 reader in
     if
       version <> current_abi_version
+      && version <> mtp_abi_version
       && version <> legacy_uniform_cache_abi_version
       && version <> legacy_heterogeneous_cache_abi_version
     then
@@ -901,7 +950,13 @@ let of_bytes bytes =
       let* specialization = Specialization.create ~min_prefill_tokens ?rope_cosine_input ?rope_sine_input ?paged_slots_input () in
 
       let* mtp =
-        if version >= current_abi_version then read_option reader read_mtp
+        if version >= mtp_abi_version then read_option reader read_mtp
+        else Ok None
+      in
+
+      let* prompt_lookup =
+        if version >= current_abi_version then
+          read_option reader read_prompt_lookup
         else Ok None
       in
 
@@ -910,7 +965,12 @@ let of_bytes bytes =
         make ~identity ~processor ~prefill ~decode ~generation ~state
           ~specialization
       in
-      match mtp with None -> Ok program | Some mtp -> with_mtp program mtp
+      let* program =
+        match mtp with None -> Ok program | Some mtp -> with_mtp program mtp
+      in
+      (match prompt_lookup with
+      | None -> Ok program
+      | Some prompt_lookup -> with_prompt_lookup program prompt_lookup)
 
 let write_file path program =
   try
@@ -946,6 +1006,14 @@ let validate_files ~root program =
     match program.mtp with
     | None -> []
     | Some mtp -> [ Mtp.assistant_package mtp ]
+  in
+  let artifacts =
+    artifacts
+    @
+    match program.prompt_lookup with
+    | None -> []
+    | Some prompt_lookup ->
+        [ Entrypoint.package (Prompt_lookup.entrypoint prompt_lookup) ]
   in
   let rec check = function
     | [] -> Ok ()

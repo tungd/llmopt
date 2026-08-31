@@ -151,7 +151,9 @@ def run_llama_cli(
     prompt: str = DEFAULT_PROMPT,
     n_predict: int = 128,
     draft_n_max: int = 4,
-    spec_type: str = "draft-mtp",
+    spec_type: str = "none",
+    ngram_size_n: int | None = None,
+    ngram_size_m: int | None = None,
     threads: int = 8,
     gpu_layers: int = 999,
     flash_attention: str = "on",
@@ -189,11 +191,19 @@ def run_llama_cli(
             "--verbose",
             "-o", str(output_path),
         ]
+        speculative = spec_type != "none"
+        if speculative:
+            cmd.extend([
+                "--spec-draft-n-max", str(draft_n_max),
+                "--spec-type", spec_type,
+            ])
+        if ngram_size_n is not None:
+            cmd.extend(["--spec-ngram-simple-size-n", str(ngram_size_n)])
+        if ngram_size_m is not None:
+            cmd.extend(["--spec-ngram-simple-size-m", str(ngram_size_m)])
         if draft_path is not None:
             cmd.extend([
                 "--spec-draft-model", str(draft_path),
-                "--spec-draft-n-max", str(draft_n_max),
-                "--spec-type", spec_type,
                 "--spec-draft-ngl", str(gpu_layers),
             ])
 
@@ -299,7 +309,7 @@ def run_llama_cli(
         mean_accepted_length = (
             float(mean_match.group(1)) if mean_match is not None else None
         )
-    elif draft_path is None:
+    elif not speculative:
         accepted_tokens = 0
         total_draft_tokens = 0
         acceptance_rate = 0.0
@@ -318,6 +328,9 @@ def run_llama_cli(
         "eval_time_ms": eval_time_ms,
         "tpot_ms": tpot_ms,
         "tokens_per_sec": tok_per_sec,
+        "timing_consistent_with_wall_clock": (
+            eval_time_ms is None or eval_time_ms <= wall_time * 1000.0
+        ),
         "accepted_tokens": accepted_tokens,
         "total_draft_tokens": total_draft_tokens,
         "acceptance_rate": acceptance_rate,
@@ -346,6 +359,9 @@ def summarize_campaigns(results: list[dict]) -> dict:
                 "eval_time_ms": result["eval_time_ms"],
                 "tpot_ms": result["tpot_ms"],
                 "tokens_per_second": result["tokens_per_sec"],
+                "timing_consistent_with_wall_clock": result.get(
+                    "timing_consistent_with_wall_clock", True
+                ),
                 "accepted_tokens": result["accepted_tokens"],
                 "total_draft_tokens": result["total_draft_tokens"],
                 "acceptance_rate": result["acceptance_rate"],
@@ -553,6 +569,7 @@ def main() -> None:
                 gpu_layers=args.gpu_layers,
                 flash_attention=args.flash_attn,
                 seed=args.seed,
+                spec_type="draft-mtp",
                 executable=args.llama_cli,
                 timeout_seconds=args.timeout_seconds,
                 termination_grace_seconds=args.termination_grace_seconds,

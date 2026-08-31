@@ -29,8 +29,8 @@ Cross-family drafting (e.g. SmolLM2 for Gemma) exhibits $\alpha \to 0$ due to mi
 # 3. Consequences and evidence
 
 - Produces the verified external llama.cpp baseline receipt for sequential and MTP decoding under the specified prompt, greedy sampling, and campaign parameters.
-- The 2026-08-31 llama.cpp baseline measured:
-  - **Sequential**: `31.14 tok/s` (32.12 ms/tok)
-  - **MTP ($K=4$)**: `18.55 tok/s` (53.91 ms/tok) at exact `92/137` acceptance (`67.153%`) and mean accepted length `3.63` (`0.59569x` ratio vs sequential).
+- The latest 2026-09-01 llama.cpp rerun measured:
+  - **Sequential**: `27.94 tok/s` (35.79 ms/tok)
+  - **MTP ($K=4$)**: `17.47 tok/s` (57.24 ms/tok) at exact `92/137` acceptance (`67.153%`) and mean accepted length `3.63` (`0.6252684323550465x` ratio vs sequential).
   - All outputs had identical SHA-256 `8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1`.
 - LLMOpt lowering probe (`bench/results/gemma4-mtp-lowering-probe-2026-08-31.json`) confirms 0 opaque commands across target prefill, target decode, and MTP assistant step. End-to-end sustained generation benchmark in LLMOpt remains an open milestone until the model program is executed with weights.

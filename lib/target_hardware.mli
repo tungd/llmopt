@@ -45,6 +45,12 @@ module Execution_profile : sig
 
   val m4_pro : t
   val default_apple : t
+  val of_device_name : string -> t
+  val calibrate :
+    measured_bandwidth_gbps:float ->
+    measured_dispatch_overhead_seconds:float ->
+    t ->
+    t
 end
 
 module Prefill_cost_model : sig
@@ -82,7 +88,13 @@ val create :
 
 val default : t
 
-val discover : unit -> t
+val discover : ?device_name:string -> unit -> t
+
+val calibrate :
+  measured_bandwidth_gbps:float ->
+  measured_dispatch_overhead_seconds:float ->
+  t ->
+  t
 
 val bank_conflict_degree :
   Memory_hierarchy.t -> element_bytes:int -> stride_elements:int -> int
@@ -97,4 +109,5 @@ val should_fuse_sram_reduction :
 
 val to_json : t -> Yojson.Basic.t
 val of_json : Yojson.Basic.t -> (t, string) result
+val of_profile_json : Yojson.Basic.t -> (t, string) result
 val to_string : t -> string

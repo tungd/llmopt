@@ -30,7 +30,8 @@ let package_files =
 let usage () =
   prerr_endline
     "usage: llmopt-fx [--weights <weights.llmopt>] \
-     [--greedy-token-id] <graph.llmopt|legacy-fx.json> <output-directory>";
+     [--target-profile <target-hardware.json>] [--greedy-token-id] \
+     <graph.llmopt|legacy-fx.json> <output-directory>";
   exit 64
 
 let rename_logits_to_token_id graph =
@@ -58,27 +59,32 @@ let rename_logits_to_token_id graph =
     Ok (Ir.Graph.with_nodes_and_outputs graph nodes outputs)
 
 let arguments () =
-  let rec parse greedy tensor_store positional = function
+  let rec parse greedy tensor_store target_profile positional = function
     | [] ->
         (match List.rev positional with
         | [ graph_input; output_directory ] ->
-            Ok (greedy, tensor_store, graph_input, output_directory)
+            Ok (greedy, tensor_store, target_profile, graph_input, output_directory)
         | _ -> usage ())
-    | "--greedy-token-id" :: rest -> parse true tensor_store positional rest
+    | "--greedy-token-id" :: rest ->
+        parse true tensor_store target_profile positional rest
     | "--weights" :: path :: rest ->
         parse greedy
           (Some (Serving_package.Tensor_store.weights ~file:(artifact path)))
-          positional rest
+          target_profile positional rest
     | "--weights" :: [] -> usage ()
+    | "--target-profile" :: path :: rest ->
+        parse greedy tensor_store (Some path) positional rest
+    | "--target-profile" :: [] -> usage ()
     | option :: _ when String.starts_with ~prefix:"--" option -> usage ()
-    | value :: rest -> parse greedy tensor_store (value :: positional) rest
+    | value :: rest ->
+        parse greedy tensor_store target_profile (value :: positional) rest
   in
   match Array.to_list Sys.argv with
-  | _ :: argv -> parse false None [] argv
+  | _ :: argv -> parse false None None [] argv
   | [] -> usage ()
 
 let () =
-  let greedy_token_id, tensor_store, graph_input, output_directory =
+  let greedy_token_id, tensor_store, target_profile, graph_input, output_directory =
     match arguments () with
     | Ok arguments -> arguments
     | Error message ->
@@ -92,7 +98,17 @@ let () =
       exit 2
   in
   ensure_directory output_directory;
-  let target = Target_hardware.discover () in
+  let target =
+    match target_profile with
+    | None -> Target_hardware.discover ()
+    | Some path ->
+        let json = Yojson.Basic.from_file path in
+        (match Target_hardware.of_profile_json json with
+        | Ok target -> target
+        | Error message ->
+            prerr_endline ("invalid target hardware profile: " ^ message);
+            exit 2)
+  in
   Printf.printf "llmopt AOT target hardware: %s\n%!" (Target_hardware.to_string target);
   write_file
     (Filename.concat output_directory "target.json")

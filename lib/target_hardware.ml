@@ -87,6 +87,58 @@ module Execution_profile = struct
       fp16_tflops = 10.0;
       dispatch_overhead_seconds = 7.0e-6;
     }
+
+  let of_device_name device_name =
+    let lower = String.lowercase_ascii device_name in
+    let has needle =
+      let len_n = String.length needle in
+      let len_s = String.length lower in
+      let rec check idx =
+        if idx + len_n > len_s then false
+        else if String.sub lower idx len_n = needle then true
+        else check (idx + 1)
+      in
+      check 0
+    in
+    if has "ultra" then
+      {
+        gpu_cores = 64;
+        max_threads_per_threadgroup = 1024;
+        memory_bandwidth_gbps = 800.0;
+        fp16_tflops = 75.0;
+        dispatch_overhead_seconds = 6.0e-6;
+      }
+    else if has "max" then
+      {
+        gpu_cores = 32;
+        max_threads_per_threadgroup = 1024;
+        memory_bandwidth_gbps = 400.0;
+        fp16_tflops = 37.0;
+        dispatch_overhead_seconds = 6.0e-6;
+      }
+    else if has "pro" then
+      {
+        gpu_cores = 16;
+        max_threads_per_threadgroup = 1024;
+        memory_bandwidth_gbps = 273.0;
+        fp16_tflops = 18.7;
+        dispatch_overhead_seconds = 6.5e-6;
+      }
+    else
+      default_apple
+
+  let calibrate ~measured_bandwidth_gbps ~measured_dispatch_overhead_seconds profile =
+    let bw =
+      if Float.is_finite measured_bandwidth_gbps && measured_bandwidth_gbps > 0.0 then
+        measured_bandwidth_gbps
+      else profile.memory_bandwidth_gbps
+    in
+    let dispatch =
+      if Float.is_finite measured_dispatch_overhead_seconds && measured_dispatch_overhead_seconds > 0.0 then
+        measured_dispatch_overhead_seconds
+      else profile.dispatch_overhead_seconds
+    in
+    { profile with memory_bandwidth_gbps = bw; dispatch_overhead_seconds = dispatch }
 end
 
 module Prefill_cost_model = struct
@@ -210,24 +262,31 @@ let default =
     execution = Execution_profile.m4_pro;
   }
 
-let discover () =
-  let device_name =
-    try
-      let ic = Unix.open_process_in "sysctl -n machdep.cpu.brand_string" in
-      let name = input_line ic in
-      close_in ic;
-      String.trim name
-    with _ -> "Apple M4 Pro"
+let discover ?device_name () =
+  let name =
+    match device_name with
+    | Some name when String.trim name <> "" -> String.trim name
+    | _ ->
+        (try
+           let ic = Unix.open_process_in "sysctl -n machdep.cpu.brand_string" in
+           let s = input_line ic in
+           close_in ic;
+           String.trim s
+         with _ -> "Apple M4 Pro")
   in
-  let execution =
-    if String.contains device_name '4' && String.contains device_name 'P' then
-      Execution_profile.m4_pro
-    else Execution_profile.default_apple
-  in
+  let execution = Execution_profile.of_device_name name in
   {
-    device_name;
+    device_name = name;
     memory = Memory_hierarchy.apple_silicon;
     execution;
+  }
+
+let calibrate ~measured_bandwidth_gbps ~measured_dispatch_overhead_seconds hw =
+  {
+    hw with
+    execution =
+      Execution_profile.calibrate ~measured_bandwidth_gbps
+        ~measured_dispatch_overhead_seconds hw.execution;
   }
 
 let bank_conflict_degree (mem : Memory_hierarchy.t) ~element_bytes ~stride_elements =
@@ -245,10 +304,6 @@ let should_fuse_sram_reduction (hw : t) ~elements ~element_bytes ~threadgroups ~
   let footprint = elements * element_bytes in
   if footprint > hw.memory.sram_capacity_bytes then false
   else
-    (* Analytical comparison:
-       1. Fusing reduction into all threadgroups repeats footprint read/compute N_tg times.
-       2. Keeping separate reduction kernel: 1 TG writes footprint to L1 cache,
-          which broadcasts to all consumer threadgroups without redundant work. *)
     let sram_bandwidth_gbps = float_of_int hw.execution.gpu_cores *. 128.0 in
     let l1_bandwidth_gbps = float_of_int hw.execution.gpu_cores *. 64.0 in
     let conflict =
@@ -328,6 +383,14 @@ let of_json (json : Yojson.Basic.t) : (t, string) result =
     in
     create ~device_name ~memory ~execution
   with Type_error (msg, _) -> Error ("JSON decoding error: " ^ msg)
+
+let of_profile_json (json : Yojson.Basic.t) =
+  match json with
+  | `Assoc fields ->
+      (match List.assoc_opt "target" fields with
+      | Some target -> of_json target
+      | None -> of_json json)
+  | _ -> Error "hardware profile must be a JSON object"
 
 let to_string (hw : t) : string =
   Printf.sprintf

@@ -7,13 +7,15 @@
 * [llama.cpp performance target](llama-cpp-target.md) - llama.cpp Q8_0 as the primary external comparison, with MPS retained as reference.
 * [SRPT and Queueing-Theoretic Continuous Serving Scheduler](srpt-queueing-serving-scheduler.md) - Continuous batching and SRPT priority scheduling for the serving engine.
 * [DAG Concurrency Analysis and Complementary Co-Scheduling Optimizer Pass](dag-co-scheduling-optimizer-pass.md) - Staged concurrent execution plan generation and resource co-scheduling on Apple Silicon.
-* [XGBoost / GBDT Micro-Level Kernel Cost Model and Tile Optimizer](xgboost-kernel-cost-model.md) - Learned cost modeling and dynamic Metal tile selection on Apple Silicon.
+* [Retired XGBoost kernel cost model](xgboost-kernel-cost-model.md) - Historical learned-selector experiments superseded by measured hardware probing.
+* [Measured hardware probing for AOT target costs](measured-hardware-probing.md) - Native Metal measurements become an explicit compiler input.
 * [Fewest-Hops Whole-Block Megakernel Compiler Architecture](fewest-hops-megakernel-compiler.md) - Whole-block megakernels (SwiGLU FFN, ShortConv, Attention) executing in ~40 hops with zero DRAM activation round-trips.
 * [Macro-Operator Fusions: Dual-Linear, QKV, ShortConv Step, Residual-Norm, and On-GPU Argmax](macro-operator-fusions.md) - High-impact compiler fusions eliminating intermediate DRAM roundtrips.
 * [Model Program boundary](model-program-boundary.md) - An explicit, model-neutral profile and captured packages produce one root execution contract consumed by shared serving modules.
 * [AOT Decode Solidification and Zero-JIT Serving Architecture](aot-decode-solidification-zero-jit-serving.md) - Move all graph specialization and memory planning into the offline AOT compiler pipeline for true model portability and zero-overhead serving.
-* [Hardware-Aware AOT Compilation and Microarchitectural Discovery](hardware-aware-aot-compilation-and-discovery.md) - Formalize hardware discovery (SIMD lanes, SRAM banks, bank width, SRAM capacity, cache line sizes) as a first-class compiler phase in llmopt-fx for generalizable graph optimization.
+* [Hardware-Aware AOT Compilation and Microarchitectural Discovery](hardware-aware-aot-compilation-and-discovery.md) - Consume measured costs and explicit structural target facts in optimization and Metal lowering.
 * [GGUF and Unsloth Dynamic (UD) Quantization Support with AOT Code Specialization](gguf-unsloth-dynamic-quantization.md) - Adopt GGUF and Unsloth Dynamic mixed quantization with specialized AOT Metal megakernels.
 * [Corrected hardware and speculative primitive inventory](speculative-pipelining-hardware-acceleration.md) - Retains implemented bitfield, Split-K, tree-attention, and cache primitives while retracting unsupported end-to-end claims.
 * [Gemma 4 target-coupled MTP runtime contract](gemma4-mtp-runtime-contract.md) - Defines linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance.
 * [Sustained Speculative Decoding Benchmark with Gemma 4 12B QAT and MTP](gemma-12b-qat-mtp-speculative-benchmark.md) - Multi-campaign sustained benchmark protocol comparing LLMOpt sequential, MTP, and Medusa tree decoding against llama.cpp.
+* [Weightless Prompt-Lookup Speculative Decoding](prompt-lookup-tree-speculative-decoding.md) - Linked target verification with measured LLMOpt and llama.cpp comparisons and an explicit parity defect.

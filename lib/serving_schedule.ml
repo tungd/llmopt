@@ -1956,7 +1956,8 @@ module Sequence = struct
     in
     map_commands Value_map.empty [] commands
 
-  let specialize_prefill ~minimum_tokens ~captured_tokens ~tokens schedule =
+  let specialize_prefill ?(all_token_outputs = false) ~minimum_tokens
+      ~captured_tokens ~tokens schedule =
     if captured_tokens <= 0 then Error "captured prefill length must be positive"
     else if minimum_tokens <= 0 then
       Error "minimum prefill length must be positive"
@@ -1966,7 +1967,9 @@ module Sequence = struct
            "prefill length must be at least %d tokens"
            minimum_tokens)
     else
-      let* projection = last_token_projection schedule in
+      let* projection =
+        if all_token_outputs then Ok None else last_token_projection schedule
+      in
       specialize ?projection [ captured_tokens, tokens ] schedule
 
   let q8_attention_pool_input = "__llmopt_q8_attention_pool"
@@ -2053,14 +2056,17 @@ module Sequence = struct
         (fun command ->
           match command.Command.op, command.Command.inputs with
           | Ir.Op.Rms_rope config, [ input; weight; cosine; sine ] ->
-              Some (config, input, weight, cosine, sine)
+              Some
+                (Ir.Rms_rope.half_dimension config, input, weight, cosine, sine)
+          | ( Ir.Op.Rotary_qk { half_dimension; _ },
+              [ query; key; cosine; sine ] ) ->
+              Some (half_dimension, query, key, cosine, sine)
           | _ -> None)
         commands
     in
     match ropes with
     | [] -> Ok schedule
-    | (first_config, _, _, first_cosine, first_sine) :: rest ->
-        let half_dimension = Ir.Rms_rope.half_dimension first_config in
+    | (half_dimension, _, _, first_cosine, first_sine) :: rest ->
         if half_dimension > max_int / 2 then
           Error "decode RoPE width overflows"
         else
@@ -2075,8 +2081,8 @@ module Sequence = struct
             Error "decode RoPE trigonometric input has unexpected metadata"
           else if
             List.exists
-              (fun (config, _, _, cosine, sine) ->
-                Ir.Rms_rope.half_dimension config <> half_dimension
+              (fun (other_half_dimension, _, _, cosine, sine) ->
+                other_half_dimension <> half_dimension
                 || not (valid_trig cosine && valid_trig sine))
               rest
           then Error "decode RoPE commands disagree on trigonometric metadata"
@@ -2101,6 +2107,8 @@ module Sequence = struct
                 match command.Command.op, command.Command.inputs with
                 | Ir.Op.Rms_rope _, [ input; weight; _; _ ] ->
                     { command with Command.inputs = [ input; weight; cosine; sine ] }
+                | Ir.Op.Rotary_qk _, [ query; key; _; _ ] ->
+                    { command with Command.inputs = [ query; key; cosine; sine ] }
                 | _ -> command
               in
               let commands = List.map rewrite commands in
@@ -2403,29 +2411,52 @@ module Sequence = struct
             | _ -> command)
           commands
       in
-      let fill_command =
+      let mask_input =
         {
           Command.node_id = maximum_node_id + 1;
-          op = Ir.Op.Primitive (Ir.Primitive.Fill (Ir.Scalar.Bool true));
+          op = Ir.Op.Input { name = suffix_mask_input; source = Ir.Input_source.Runtime };
           inputs = [];
           output = Some mask;
         }
       in
-      create (prune (fill_command :: commands))
+      create (prune (mask_input :: commands))
 
-  let specialize_suffix_prefill_paged_q8 ~minimum_tokens ~captured_tokens
-      ~tokens ~past_tokens ~cache schedule =
+  let specialize_suffix_prefill_paged_q8 ?(all_token_outputs = false)
+      ~minimum_tokens ~captured_tokens ~tokens ~past_tokens ~cache schedule =
     if past_tokens <= 0 then Error "suffix prefill past length must be positive"
     else if past_tokens > max_int - tokens then
       Error "suffix prefill total length overflows"
     else
       let* schedule =
-        specialize_prefill ~minimum_tokens ~captured_tokens ~tokens schedule
+        specialize_prefill ~all_token_outputs ~minimum_tokens ~captured_tokens
+          ~tokens schedule
       in
       let* schedule = specialize_rope ~tokens schedule in
       let* schedule = direct_q8_attention ~past_tokens ~cache schedule in
       let* schedule = specialize_conv_checkpoint schedule in
       specialize_suffix_mask ~past_tokens ~tokens schedule
+
+  let specialize_prompt_lookup_paged_q8 ~captured_query ~query_tokens
+      ~captured_past ~past_tokens ~cache schedule =
+    if captured_query <= 1 || query_tokens <= 1 then
+      Error "prompt-lookup query length must exceed one"
+    else if captured_past <= 0 || past_tokens <= 0 then
+      Error "prompt-lookup past length must be positive"
+    else if
+      captured_query > max_int - captured_past
+      || query_tokens > max_int - past_tokens
+    then Error "prompt-lookup total length overflows"
+    else
+      let* schedule =
+        specialize
+          [ captured_query, query_tokens;
+            captured_past, past_tokens;
+            captured_query + captured_past, query_tokens + past_tokens ]
+          schedule
+      in
+      let* schedule = specialize_rope ~tokens:query_tokens schedule in
+      let* schedule = direct_q8_attention ~past_tokens ~cache schedule in
+      specialize_suffix_mask ~past_tokens ~tokens:query_tokens schedule
 end
 
 let dtype_tag = function

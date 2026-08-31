@@ -8,6 +8,7 @@ val prefill :
 val recurrent_in_input : int -> string
 
 val suffix_prefill_paged_q8 :
+  ?all_token_outputs:bool ->
   specialization:Model_program.Specialization.t ->
   captured_tokens:int ->
   tokens:int ->
@@ -28,5 +29,15 @@ val decode :
   specialization:Model_program.Specialization.t ->
   captured_past:int ->
   past_tokens:int ->
+  Serving_schedule.t ->
+  (Serving_schedule.t, string) result
+
+val prompt_lookup_paged_q8 :
+  specialization:Model_program.Specialization.t ->
+  captured_query:int ->
+  query_tokens:int ->
+  captured_past:int ->
+  past_tokens:int ->
+  cache:Kv_cache.Config.t ->
   Serving_schedule.t ->
   (Serving_schedule.t, string) result

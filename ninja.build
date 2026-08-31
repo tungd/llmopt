@@ -199,6 +199,7 @@ build _build/ocaml/kernel_cost_model.cmx: ocaml_module lib/kernel_cost_model.ml 
 
 build _build/ocaml/target_hardware.cmi: ocaml_interface lib/target_hardware.mli
 build _build/ocaml/target_hardware.cmx: ocaml_module lib/target_hardware.ml | _build/ocaml/target_hardware.cmi
+build _build/ocaml/hardware_probe.cmx: ocaml_module bin/hardware_probe.ml | _build/ocaml/target_hardware.cmx
 
 build _build/ocaml/tile_effect.cmi: ocaml_interface lib/tile_effect.mli | _build/ocaml/shape.cmi _build/ocaml/tensor_shape.cmi _build/ocaml/ir.cmi
 build _build/ocaml/tile_effect.cmx: ocaml_module lib/tile_effect.ml | _build/ocaml/tile_effect.cmi _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx
@@ -254,8 +255,8 @@ build _build/ocaml/passes.cmx: ocaml_module lib/passes.ml | _build/ocaml/passes.
 build _build/ocaml/kernel_abi.cmi: ocaml_interface lib/kernel_abi.mli | _build/ocaml/ir.cmi
 build _build/ocaml/kernel_abi.cmx: ocaml_module lib/kernel_abi.ml | _build/ocaml/kernel_abi.cmi _build/ocaml/ir.cmx
 
-build _build/ocaml/metal.cmi: ocaml_interface lib/metal.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/kv_cache.cmi _build/ocaml/epilogue.cmi
-build _build/ocaml/metal.cmx: ocaml_module lib/metal.ml | _build/ocaml/metal.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/epilogue.cmx
+build _build/ocaml/metal.cmi: ocaml_interface lib/metal.mli | _build/ocaml/ir.cmi _build/ocaml/kernel_abi.cmi _build/ocaml/kv_cache.cmi _build/ocaml/epilogue.cmi _build/ocaml/target_hardware.cmi
+build _build/ocaml/metal.cmx: ocaml_module lib/metal.ml | _build/ocaml/metal.cmi _build/ocaml/ir.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/epilogue.cmx _build/ocaml/target_hardware.cmx
 
 build _build/ocaml/llvm_ir.cmi: ocaml_interface lib/llvm_ir.mli | _build/ocaml/ir.cmi
 build _build/ocaml/llvm_ir.cmx: ocaml_module lib/llvm_ir.ml | _build/ocaml/llvm_ir.cmi _build/ocaml/ir.cmx
@@ -399,6 +400,7 @@ build _build/bin/llmopt-inspect-gguf: ocaml_link _build/ocaml/shape.cmx _build/o
 
 build _build/ocaml/llmopt_bench_quant.cmx: ocaml_module bin/llmopt_bench_quant.ml | _build/ocaml/metal_runtime.cmx _build/ocaml/metal.cmx
 build _build/bin/llmopt-bench-quant: ocaml_metal_link _build/ocaml/shape.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/ir.cmx _build/ocaml/epilogue.cmx _build/ocaml/target_hardware.cmx _build/ocaml/kernel_abi.cmx _build/ocaml/kv_cache.cmx _build/ocaml/binary.cmx _build/ocaml/kernel_cost_model.cmx _build/ocaml/serving_schedule.cmx _build/ocaml/serving_memory_plan.cmx _build/ocaml/serving_package.cmx _build/ocaml/weight_archive.cmx _build/ocaml/gguf.cmx _build/ocaml/serving_validation.cmx _build/ocaml/metal_runtime.cmx _build/ocaml/metal.cmx _build/ocaml/llmopt_bench_quant.cmx _build/native/ocaml_metal_stubs.o
+build _build/bin/llmopt-hardware-probe: ocaml_metal_link _build/ocaml/target_hardware.cmx _build/ocaml/hardware_probe.cmx _build/native/ocaml_metal_stubs.o
 
 build _build/fx-inputs/linear.graph.llmopt: fx_graph python/examples/linear_fx.json | python/examples/json_to_fx_graph.py python/llmopt_backend/fx_graph.py
 build _build/fx-example/graph.llmopt _build/fx-example/plan.txt _build/fx-example/plan.sexp _build/fx-example/kernel.metal _build/fx-example/kernel.ll _build/fx-example/package.llmopt: fx_manifest _build/fx-inputs/linear.graph.llmopt | _build/bin/llmopt-fx
@@ -447,7 +449,7 @@ build probe-lfm25-metal-runtime-model-smoke: phony _artifacts/phase1-350m-mps/re
 build _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json: lfm25_prefill_decode_capture _build/bin/llmopt-fx _build/bin/llmopt-package-check _build/bin/llmopt-lfm-serving-check _build/native/metal-runtime.stamp bench/lfm25_capture_decode.py python/llmopt_backend/__init__.py python/llmopt_backend/metal_runtime.py python/llmopt_backend/quantization.py python/llmopt_backend/tensor_archive.py
 build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json
 
-build all: phony _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-pipeline _build/bin/llmopt-package-check _build/bin/llmopt-model-check _build/bin/llmopt-package-run _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-tokenize _build/bin/llmopt-generate _build/bin/llmopt-serve _build/bin/llmopt-inspect-gguf _build/bin/llmopt-bench-quant
+build all: phony _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-pipeline _build/bin/llmopt-package-check _build/bin/llmopt-model-check _build/bin/llmopt-package-run _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-tokenize _build/bin/llmopt-generate _build/bin/llmopt-serve _build/bin/llmopt-inspect-gguf _build/bin/llmopt-bench-quant _build/bin/llmopt-hardware-probe
 build probe-lfm25: phony _build/bin/llmopt-demo _build/bin/llmopt-lfm-serving-check _build/bin/llmopt-lfm-serving-smoke
 build ocaml-test: run_test _build/bin/llmopt-test
 build python-test: python_test

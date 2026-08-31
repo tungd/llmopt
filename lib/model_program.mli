@@ -56,7 +56,7 @@ module Entrypoint : sig
     val token_id : t -> string option
   end
 
-  type kind = Prefill | Decode
+  type kind = Prefill | Decode | Verify
 
   val kind_to_string : kind -> string
 
@@ -73,6 +73,22 @@ module Entrypoint : sig
   val package : t -> Artifact.t
   val input_ids : t -> string
   val head : t -> Head.t
+end
+
+(** A cached multi-token target entrypoint used by weightless prompt lookup.
+    The captured dimensions are part of the specialization contract. *)
+module Prompt_lookup : sig
+  type t
+
+  val create :
+    entrypoint:Entrypoint.t ->
+    captured_past_tokens:int ->
+    captured_query_tokens:int ->
+    (t, string) result
+
+  val entrypoint : t -> Entrypoint.t
+  val captured_past_tokens : t -> int
+  val captured_query_tokens : t -> int
 end
 
 (** The pinned Gemma MTP assistant is an entrypoint coupled to the target
@@ -257,6 +273,7 @@ val create :
   (t, string) result
 
 val with_mtp : t -> Mtp.t -> (t, string) result
+val with_prompt_lookup : t -> Prompt_lookup.t -> (t, string) result
 
 val validate : t -> (unit, string) result
 
@@ -268,6 +285,7 @@ val generation : t -> Generation.t
 val state : t -> State.t
 val specialization : t -> Specialization.t
 val mtp : t -> Mtp.t option
+val prompt_lookup : t -> Prompt_lookup.t option
 
 val to_bytes : t -> bytes
 val of_bytes : bytes -> (t, string) result

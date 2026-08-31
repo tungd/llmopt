@@ -30,7 +30,8 @@ configuration.
 * [llama.cpp performance target](decisions/llama-cpp-target.md) - llama.cpp Q4_0 as the W4 parity comparison, with MPS retained as reference.
 * [Model Program boundary](decisions/model-program-boundary.md) - root execution contract joining PyTorch capture, compiled entrypoints, state, and serving assets.
 * [SRPT and Queueing-Theoretic Serving Scheduler](decisions/srpt-queueing-serving-scheduler.md) - continuous batching, age-weighted SRPT queue optimization, admission watermarks, and decode-first scheduling.
-* [XGBoost / GBDT Kernel Cost Model](decisions/xgboost-kernel-cost-model.md) - learned GBDT cost model trained on profiling sweeps and transpiled to pure OCaml AST.
+* [Retired XGBoost kernel cost model](decisions/xgboost-kernel-cost-model.md) - historical learned-selector experiments superseded by native hardware probing.
+* [Measured hardware probing](decisions/measured-hardware-probing.md) - native Metal dispatch and streaming-copy measurements consumed as an explicit compiler target profile.
 * [Hardware-Aware AOT Compilation & Microarchitectural Discovery](decisions/hardware-aware-aot-compilation-and-discovery.md) - discovery of SIMD width, SRAM banks, bank conflicts, and analytical prefill roofline modeling.
 * [DAG Concurrency Analysis & Co-Scheduling](decisions/dag-co-scheduling-optimizer-pass.md) - SSA dependency DAG analysis, ready antichain concurrency, and barrier placement.
 * [Fewest-Hops Whole-Block Megakernel Compiler](decisions/fewest-hops-megakernel-compiler.md) - fusing multi-layer blocks into ~40 hops with zero DRAM activation roundtrips.
@@ -40,6 +41,7 @@ configuration.
 * [Corrected hardware and speculative primitive inventory](decisions/speculative-pipelining-hardware-acceleration.md) - implemented bitfield, Split-K, tree-attention, and cache primitives; unsupported end-to-end pipelining claims are retracted.
 * [Gemma 4 target-coupled MTP runtime contract](decisions/gemma4-mtp-runtime-contract.md) - linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance semantics.
 * [Gemma 4 12B QAT and MTP llama.cpp benchmark](decisions/gemma-12b-qat-mtp-speculative-benchmark.md) - same-prompt sequential and MTP measurement protocol without an assumed result threshold.
+* [Weightless prompt-lookup speculative decoding](decisions/prompt-lookup-tree-speculative-decoding.md) - linked ABI-v5 verifier, real runtime benchmark, and recorded token-parity defect.
 * [Parametric Epilogue Inlining and Hardware Prefill Tiling](decisions/parametric-epilogues-and-hardware-tiling.md) - algebraic epilogue fusion replacing 2,500 lines of AST matchers, plus bank-swizzled simdgroup_matrix staging for prefill GEMM.
 
 ## Prior art
