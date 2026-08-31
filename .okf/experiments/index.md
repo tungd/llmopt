@@ -134,3 +134,4 @@
 * [Topology-fused quantized Linear residuals](exp-0133-quantized-linear-residual-2026-08-30.md) - fuse exclusive block-quantized Linear plus residual topology through shared tactics.
 * [Gemma 4 12B QAT llama.cpp MTP baseline](exp-0134-gemma12b-mtp-llama-cpp-2026-08-31.md) - three-campaign sequential and MTP sustained-generation measurements.
 * [Gemma 4 12B target-coupled MTP functional capture](exp-0135-gemma4-mtp-functional-capture-2026-08-31.md) - explicit target cache and assistant shared-state FX signatures plus pinned-GGUF binding coverage.
+* [Gemma 4 MTP meta-graph lowering probe](exp-0136-gemma4-mtp-lowering-probe-2026-08-31.md) - native FX/Metal lowering inventory that records opaque target and assistant operations.
