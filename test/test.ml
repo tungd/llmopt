@@ -420,6 +420,33 @@ let () =
           ~commit:(fun _ ~accepted_draft_tokens:_ ->
             failwith "commit must not run")))
     "target-coupled MTP rejects an assistant proposal beyond the declared K";
+  let medusa_tree =
+    Serving_engine.Medusa.create_linear_tree ~head_predictions:[| 101; 102; 103 |]
+  in
+  let masks = Serving_engine.Medusa.tree_masks medusa_tree in
+  expect (masks.(0) = 1 && masks.(1) = 3 && masks.(2) = 7)
+    "Medusa linear tree generates causal prefix masks";
+  let medusa_commit_depths = ref [] in
+  let medusa_result, medusa_state =
+    Serving_engine.Medusa.run ~tree:medusa_tree ~state:"medusa-before"
+      ~verify:(fun state tree ->
+        if state = "medusa-before"
+           && Serving_engine.Medusa.tree_tokens_array tree = [| 101; 102; 103 |]
+        then Ok ([| 101; 102; 999; 104 |], `Verified)
+        else Error "Medusa verification did not receive the candidate tree")
+      ~commit:(fun verified ~accepted_depth ->
+        medusa_commit_depths := accepted_depth :: !medusa_commit_depths;
+        match verified with
+        | `Verified -> Ok "medusa-after"
+        | _ -> Error "unexpected verified state")
+    |> Result.get_ok
+  in
+  expect
+    (Serving_engine.Medusa.accepted_depth medusa_result = 2
+    && Serving_engine.Medusa.emitted_tokens medusa_result = [| 101; 102; 999 |]
+    && medusa_state = "medusa-after"
+    && !medusa_commit_depths = [ 2 ])
+    "Medusa tree accepts matching candidate prefix and bonus target token";
   let capacity_queue =
     Serving_queue.create ~token_capacity:1000 ~high_watermark_ratio:0.90
       ~low_watermark_ratio:0.75 ()

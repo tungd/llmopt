@@ -108,3 +108,27 @@ module Target_coupled_mtp : sig
   val emitted_tokens : t -> int array
   val accepted_draft_tokens : t -> int
 end
+
+module Medusa : sig
+  type tree
+  type t
+
+  val create_linear_tree : head_predictions:int array -> tree
+  val create_tree : nodes:int array -> parents:int array -> depths:int array -> tree
+  val tree_masks : tree -> int array
+  val tree_tokens_array : tree -> int array
+
+  val accept_tree :
+    tree:tree -> target_predictions:int array -> (t, string) result
+
+  val run :
+    tree:tree ->
+    state:'state ->
+    verify:('state -> tree -> (int array * 'verified, string) result) ->
+    commit:('verified -> accepted_depth:int -> ('state, string) result) ->
+    (t * 'state, string) result
+
+  val tree_tokens : t -> int array
+  val emitted_tokens : t -> int array
+  val accepted_depth : t -> int
+end

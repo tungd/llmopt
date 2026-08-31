@@ -1716,3 +1716,88 @@ module Target_coupled_mtp = struct
   let emitted_tokens result = Array.copy result.emitted_tokens
   let accepted_draft_tokens result = result.accepted_draft_tokens
 end
+
+module Medusa = struct
+  type tree = {
+    tokens : int array;
+    masks : int array;
+    depths : int array;
+    parents : int array;
+  }
+
+  type t = {
+    tree_tokens : int array;
+    emitted_tokens : int array;
+    accepted_depth : int;
+  }
+
+  let create_linear_tree ~head_predictions =
+    let count = Array.length head_predictions in
+    let tokens = Array.copy head_predictions in
+    let depths = Array.init count (fun i -> i + 1) in
+    let parents = Array.init count (fun i -> if i = 0 then -1 else i - 1) in
+    let masks =
+      Array.init 8 (fun i ->
+          if i < count then
+            (1 lsl (i + 1)) - 1
+          else 0)
+    in
+    { tokens; masks; depths; parents }
+
+  let create_tree ~nodes ~parents ~depths =
+    let count = Array.length nodes in
+    let tokens = Array.copy nodes in
+    let masks =
+      Array.init 8 (fun i ->
+          if i >= count then 0
+          else
+            let rec ancestors node_idx acc =
+              if node_idx < 0 || node_idx >= count then acc
+              else
+                let acc' = acc lor (1 lsl node_idx) in
+                let parent = parents.(node_idx) in
+                if parent >= 0 && parent < node_idx then
+                  ancestors parent acc'
+                else acc'
+            in
+            ancestors i (1 lsl i))
+    in
+    { tokens; masks; depths; parents }
+
+  let tree_masks tree = Array.copy tree.masks
+  let tree_tokens_array tree = Array.copy tree.tokens
+
+  let accept_tree ~tree ~target_predictions =
+    let count = Array.length tree.tokens in
+    if Array.length target_predictions < count + 1 then
+      Error
+        (Printf.sprintf
+           "Medusa verification requires at least %d target predictions for tree of size %d"
+           (count + 1) count)
+    else
+      let rec match_linear idx =
+        if idx = count then count
+        else if tree.tokens.(idx) = target_predictions.(idx) then
+          match_linear (idx + 1)
+        else idx
+      in
+      let accepted_count = match_linear 0 in
+      let emitted = Array.make (accepted_count + 1) target_predictions.(accepted_count) in
+      if accepted_count > 0 then Array.blit tree.tokens 0 emitted 0 accepted_count;
+      Ok
+        {
+          tree_tokens = Array.copy tree.tokens;
+          emitted_tokens = emitted;
+          accepted_depth = accepted_count;
+        }
+
+  let run ~tree ~state ~verify ~commit =
+    let* target_predictions, verified_state = verify state tree in
+    let* acceptance = accept_tree ~tree ~target_predictions in
+    let* state = commit verified_state ~accepted_depth:acceptance.accepted_depth in
+    Ok (acceptance, state)
+
+  let tree_tokens result = Array.copy result.tree_tokens
+  let emitted_tokens result = Array.copy result.emitted_tokens
+  let accepted_depth result = result.accepted_depth
+end
