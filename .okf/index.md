@@ -36,6 +36,8 @@ configuration.
 * [Fewest-Hops Whole-Block Megakernel Compiler](decisions/fewest-hops-megakernel-compiler.md) - fusing multi-layer blocks into ~40 hops with zero DRAM activation roundtrips.
 * [Macro-Operator Fusions](decisions/macro-operator-fusions.md) - high-impact fusions for SwiGLU, RMSNorm-RoPE, QKV, ShortConv, and on-GPU Argmax.
 * [AOT Decode Solidification & Zero-JIT Serving](decisions/aot-decode-solidification-zero-jit-serving.md) - zero-overhead serving with prebaked Indirect Command Buffers (ICB).
+* [GGUF and Unsloth Dynamic (UD) Quantization Support](decisions/gguf-unsloth-dynamic-quantization.md) - GGUF ingestion, dequantization, and AOT code specialization.
+* [Hardware Bitfield Extraction, Speculative Multi-Token Verification, and Queue-Coordinated Pipelining](decisions/speculative-pipelining-hardware-acceleration.md) - single-cycle bitfield extraction, Split-K reductions, and speculative draft verification pipelined through SRPT continuous batching.
 
 ## Prior art
 
