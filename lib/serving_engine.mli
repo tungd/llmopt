@@ -88,3 +88,23 @@ module Speculative_acceptance : sig
   val emitted_tokens : t -> int array
   val accepted_draft_tokens : t -> int
 end
+
+(** Runs one target-coupled MTP transaction. The assistant owns proposal
+    sequencing; the target verifies its complete proposal in one K+1 window.
+    [commit] receives the verified target state and only the accepted draft
+    prefix, so a physical-cache implementation can discard rejected writes. *)
+module Target_coupled_mtp : sig
+  type t
+
+  val run :
+    max_draft_tokens:int ->
+    state:'state ->
+    propose:('state -> (int array, string) result) ->
+    verify:('state -> int array -> (int array * 'verified, string) result) ->
+    commit:('verified -> accepted_draft_tokens:int -> ('state, string) result) ->
+    (t * 'state, string) result
+
+  val proposed_tokens : t -> int array
+  val emitted_tokens : t -> int array
+  val accepted_draft_tokens : t -> int
+end

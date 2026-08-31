@@ -68,16 +68,17 @@ contract. Performance is reported from measured sequential and MTP campaigns.
 | Speculative slot metadata | `Serving_cache.commit_speculative` and `rollback_speculative` tests | primitive only |
 | Tree-attention Metal entrypoint | Registered generated kernel and runtime dispatch | primitive only |
 | Heterogeneous 256/512-head persistent cache | ABI-v3 per-layer geometry, exact Q8 regions, ABI-v2 reads, and mixed-layout transaction tests | implemented |
-| Functional target prefill/decode capture | No Gemma package exposing hidden state and explicit KV inputs/outputs | missing |
-| Target-coupled assistant entrypoint | No linked assistant ABI or tensor binding | missing |
+| Functional target prefill/decode capture | Meta-device FX signatures and complete GGUF binding audit; no `Serving_package` artifact | capture only |
+| Target-coupled assistant entrypoint | ABI-v4 serializes the pinned hidden/shared-KV name boundary and package path; no assistant package or Metal binding | metadata only |
 | End-to-end server integration | No MTP request state or executable proposal/verification path | missing |
 
 # Consequences
 
 - GGUF inspection verifies tensor storage and shapes; it does not establish an
   executable Model Program.
-- The runtime work proceeds through functional graph capture, heterogeneous KV
-  layout, linked target/assistant ABI, then serving integration.
+- The runtime work has functional graph capture, heterogeneous KV layout, and
+  linked target/assistant metadata. It still needs executable package lowering
+  and runtime binding before serving integration.
 - The corrected external baseline remains an observation: `31.14 tok/s`
   sequential versus `18.55 tok/s` MTP, a `0.5956968529x` throughput ratio, with
   exact `92/137` draft acceptance and identical generated output.

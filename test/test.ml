@@ -175,6 +175,17 @@ let legacy_model_program_v2_bytes program =
     (Model_program.Specialization.paged_slots_input specialization);
   Binary.Writer.contents writer
 
+let legacy_model_program_v3_bytes program =
+  let bytes = Model_program.to_bytes program in
+  let final = Bytes.length bytes - 1 in
+  if final < 0 || Bytes.get bytes final <> '\000' then
+    fail "expected an ABI-v4 Model Program without an MTP entrypoint";
+  let legacy = Bytes.sub bytes 0 final in
+  let version_offset = String.length "LLMOPT-MODEL\000" in
+  Bytes.set legacy version_offset '\003';
+  Bytes.set legacy (version_offset + 1) '\000';
+  legacy
+
 let contains_substring source needle =
   let source_length = String.length source in
   let needle_length = String.length needle in
@@ -375,6 +386,40 @@ let () =
        (Serving_engine.Speculative_acceptance.greedy
           ~draft_tokens:[| 11; 12 |] ~target_predictions:[| 11; 12 |]))
     "speculative acceptance requires one target prediction beyond the draft";
+  let mtp_commit_counts = ref [] in
+  let mtp_result, mtp_state =
+    Serving_engine.Target_coupled_mtp.run ~max_draft_tokens:4
+      ~state:"target-before"
+      ~propose:(fun state ->
+        if state = "target-before" then Ok [| 11; 12; 13 |]
+        else Error "assistant did not receive the target state")
+      ~verify:(fun state draft_tokens ->
+        if state = "target-before" && draft_tokens = [| 11; 12; 13 |]
+        then Ok ([| 11; 99; 13; 14 |], `Verified)
+        else Error "target verification did not receive the full proposal")
+      ~commit:(fun verified ~accepted_draft_tokens ->
+        mtp_commit_counts := accepted_draft_tokens :: !mtp_commit_counts;
+        match verified with
+        | `Verified -> Ok "target-after"
+        | _ -> Error "unexpected verified target state")
+    |> Result.get_ok
+  in
+  expect
+    (Serving_engine.Target_coupled_mtp.proposed_tokens mtp_result
+       = [| 11; 12; 13 |]
+    && Serving_engine.Target_coupled_mtp.emitted_tokens mtp_result
+       = [| 11; 99 |]
+    && Serving_engine.Target_coupled_mtp.accepted_draft_tokens mtp_result = 1
+    && mtp_state = "target-after" && !mtp_commit_counts = [ 1 ])
+    "target-coupled MTP verifies one full proposal then commits only its accepted prefix";
+  expect
+    (Result.is_error
+       (Serving_engine.Target_coupled_mtp.run ~max_draft_tokens:4 ~state:()
+          ~propose:(fun () -> Ok [| 1; 2; 3; 4; 5 |])
+          ~verify:(fun () _ -> failwith "verification must not run")
+          ~commit:(fun _ ~accepted_draft_tokens:_ ->
+            failwith "commit must not run")))
+    "target-coupled MTP rejects an assistant proposal beyond the declared K";
   let capacity_queue =
     Serving_queue.create ~token_capacity:1000 ~high_watermark_ratio:0.90
       ~low_watermark_ratio:0.75 ()
@@ -2965,11 +3010,17 @@ let () =
     program |> legacy_model_program_v2_bytes |> Model_program.of_bytes
     |> expect_ok
   in
+  let restored_v3 =
+    program |> legacy_model_program_v3_bytes |> Model_program.of_bytes
+    |> expect_ok
+  in
   expect
     (Model_program.State.Cache_layout.uniform_attention
        (Model_program.State.layout (Model_program.state restored_v2))
     = Some (4, 64))
     "reads the ABI-v2 uniform cache layout into per-layer geometry";
+  expect (Model_program.mtp restored_v3 = None)
+    "reads the ABI-v3 heterogeneous cache layout without an MTP entrypoint";
   let obsolete_program = Bytes.copy program_bytes in
   let version_offset = String.length "LLMOPT-MODEL\000" in
   Bytes.set obsolete_program version_offset '\001';
@@ -3041,6 +3092,45 @@ let () =
     = Some "cos")
     "restored specialization rope cosine matches";
 
+  let assistant_pkg =
+    Model_program.Artifact.create "assistant/package.llmopt" |> expect_ok
+  in
+  let mtp =
+    Model_program.Mtp.create ~assistant_package:assistant_pkg
+      ~target_hidden_output:"target_hidden_state"
+      ~coupled_target_state_input:"coupled_target_embedding_and_hidden"
+      ~position_ids_input:"position_ids"
+      ~full_attention_mask_input:"full_attention_mask"
+      ~sliding_attention_mask_input:"sliding_attention_mask"
+      ~full_attention_key_input:"shared.full_attention.key"
+      ~full_attention_value_input:"shared.full_attention.value"
+      ~sliding_attention_key_input:"shared.sliding_attention.key"
+      ~sliding_attention_value_input:"shared.sliding_attention.value"
+      ~logits_output:"logits"
+      ~projected_target_hidden_output:"projected_target_hidden_state"
+      ~max_draft_tokens:4
+    |> expect_ok
+  in
+  let mtp_program =
+    Model_program.create ~identity ~processor ~prefill:prefill_entry
+      ~decode:decode_entry ~generation ~state ~specialization
+    |> expect_ok |> fun program -> Model_program.with_mtp program mtp
+    |> expect_ok |> Model_program.to_bytes |> Model_program.of_bytes |> expect_ok
+  in
+  let restored_mtp = Model_program.mtp mtp_program |> Option.get in
+  expect
+    (Model_program.Artifact.path
+       (Model_program.Mtp.assistant_package restored_mtp)
+    = "assistant/package.llmopt"
+    && Model_program.Mtp.target_hidden_output restored_mtp
+       = "target_hidden_state"
+    && Model_program.Mtp.coupled_target_state_input restored_mtp
+       = "coupled_target_embedding_and_hidden"
+    && Model_program.Mtp.projected_target_hidden_output restored_mtp
+       = "projected_target_hidden_state"
+    && Model_program.Mtp.max_draft_tokens restored_mtp = 4)
+    "ABI-v4 round-trip preserves the target-coupled MTP assistant boundary";
+
   (* Validation rejection tests *)
   expect
     (Result.is_error (Model_program.Artifact.create "/absolute/path"))
@@ -3078,6 +3168,34 @@ let () =
     (Result.is_error
        (Model_program.Specialization.create ~min_prefill_tokens:0 ()))
     "rejects min prefill tokens < 1";
+  expect
+    (Result.is_error
+       (Model_program.Mtp.create ~assistant_package:assistant_pkg
+          ~target_hidden_output:"target_hidden_state"
+          ~coupled_target_state_input:"coupled"
+          ~position_ids_input:"position_ids"
+          ~full_attention_mask_input:"full_attention_mask"
+          ~sliding_attention_mask_input:"sliding_attention_mask"
+          ~full_attention_key_input:"full_key"
+          ~full_attention_value_input:"full_value"
+          ~sliding_attention_key_input:"sliding_key"
+          ~sliding_attention_value_input:"sliding_value" ~logits_output:"logits"
+          ~projected_target_hidden_output:"projected" ~max_draft_tokens:0))
+    "rejects a non-positive target-coupled MTP proposal bound";
+  expect
+    (Result.is_error
+       (Model_program.Mtp.create ~assistant_package:assistant_pkg
+          ~target_hidden_output:"target_hidden_state"
+          ~coupled_target_state_input:"coupled"
+          ~position_ids_input:"position_ids"
+          ~full_attention_mask_input:"full_attention_mask"
+          ~sliding_attention_mask_input:"sliding_attention_mask"
+          ~full_attention_key_input:"full_key"
+          ~full_attention_value_input:"full_value"
+          ~sliding_attention_key_input:"sliding_key"
+          ~sliding_attention_value_input:"sliding_value" ~logits_output:"logits"
+          ~projected_target_hidden_output:"projected" ~max_draft_tokens:65_536))
+    "rejects an MTP proposal bound that cannot round-trip through ABI-v4";
 
   (* LFM2.5 probe fixture tests *)
   let lfm_att, lfm_rec = Lfm25_probe.cache_bindings () in

@@ -211,6 +211,17 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `DONE WHEN`: The pinned target/drafter pair executes one complete speculative
   step and repeated sustained steps with exact sequential token parity.
 - `ESCALATE IF`: Required operations lower to opaque runtime fallbacks.
+- `STATUS`: **PARTIAL** (2026-08-31)
+  - `EVIDENCE`: Model Program ABI v4 records the pinned assistant package path,
+    target hidden-state output, shared full/sliding KV names, assistant outputs,
+    and the four-token proposal bound while preserving ABI-v2/v3 reads.
+    `Serving_engine.Target_coupled_mtp` performs one assistant proposal, one
+    exact K+1 verification, and commits only the accepted prefix in its typed
+    transaction contract.
+  - `BOUNDARY`: Repository inspection found no Gemma target prefill/decode
+    package, assistant package, or linked Gemma `model.llmopt` artifact. The
+    ABI and protocol tests do not execute the pinned target/drafter through
+    Metal, so ITEM-05 has no LLMOpt executable to measure.
 
 ---
 

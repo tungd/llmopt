@@ -75,6 +75,44 @@ module Entrypoint : sig
   val head : t -> Head.t
 end
 
+(** The pinned Gemma MTP assistant is an entrypoint coupled to the target
+    hidden state and its shared attention state.  It is deliberately not a
+    second token-ID model program: its inputs and outputs name the boundary
+    that is wired to the target decode package. *)
+module Mtp : sig
+  type t
+
+  val create :
+    assistant_package:Artifact.t ->
+    target_hidden_output:string ->
+    coupled_target_state_input:string ->
+    position_ids_input:string ->
+    full_attention_mask_input:string ->
+    sliding_attention_mask_input:string ->
+    full_attention_key_input:string ->
+    full_attention_value_input:string ->
+    sliding_attention_key_input:string ->
+    sliding_attention_value_input:string ->
+    logits_output:string ->
+    projected_target_hidden_output:string ->
+    max_draft_tokens:int ->
+    (t, string) result
+
+  val assistant_package : t -> Artifact.t
+  val target_hidden_output : t -> string
+  val coupled_target_state_input : t -> string
+  val position_ids_input : t -> string
+  val full_attention_mask_input : t -> string
+  val sliding_attention_mask_input : t -> string
+  val full_attention_key_input : t -> string
+  val full_attention_value_input : t -> string
+  val sliding_attention_key_input : t -> string
+  val sliding_attention_value_input : t -> string
+  val logits_output : t -> string
+  val projected_target_hidden_output : t -> string
+  val max_draft_tokens : t -> int
+end
+
 module Generation : sig
   type t
 
@@ -218,6 +256,8 @@ val create :
   specialization:Specialization.t ->
   (t, string) result
 
+val with_mtp : t -> Mtp.t -> (t, string) result
+
 val validate : t -> (unit, string) result
 
 val identity : t -> Identity.t
@@ -227,6 +267,7 @@ val decode : t -> Entrypoint.t
 val generation : t -> Generation.t
 val state : t -> State.t
 val specialization : t -> Specialization.t
+val mtp : t -> Mtp.t option
 
 val to_bytes : t -> bytes
 val of_bytes : bytes -> (t, string) result

@@ -1670,3 +1670,49 @@ module Speculative_acceptance = struct
   let emitted_tokens result = Array.copy result.emitted_tokens
   let accepted_draft_tokens result = result.accepted_draft_tokens
 end
+
+module Target_coupled_mtp = struct
+  type t = {
+    proposed_tokens : int array;
+    emitted_tokens : int array;
+    accepted_draft_tokens : int;
+  }
+
+  let run ~max_draft_tokens ~state ~propose ~verify ~commit =
+    if max_draft_tokens <= 0 then
+      Error "target-coupled MTP max_draft_tokens must be positive"
+    else
+      let* proposed_tokens = propose state in
+      let proposal_count = Array.length proposed_tokens in
+      if proposal_count = 0 then
+        Error "target-coupled MTP assistant produced no draft tokens"
+      else if proposal_count > max_draft_tokens then
+        Error
+          (Printf.sprintf
+             "target-coupled MTP assistant produced %d tokens; maximum is %d"
+             proposal_count max_draft_tokens)
+      else
+        let* target_predictions, verified_state = verify state proposed_tokens in
+        let* acceptance =
+          Speculative_acceptance.greedy ~draft_tokens:proposed_tokens
+            ~target_predictions
+        in
+        let accepted_draft_tokens =
+          Speculative_acceptance.accepted_draft_tokens acceptance
+        in
+        let* state =
+          commit verified_state ~accepted_draft_tokens
+        in
+        Ok
+          ( {
+              proposed_tokens = Array.copy proposed_tokens;
+              emitted_tokens =
+                Speculative_acceptance.emitted_tokens acceptance;
+              accepted_draft_tokens;
+            },
+            state )
+
+  let proposed_tokens result = Array.copy result.proposed_tokens
+  let emitted_tokens result = Array.copy result.emitted_tokens
+  let accepted_draft_tokens result = result.accepted_draft_tokens
+end

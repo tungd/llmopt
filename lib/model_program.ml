@@ -146,6 +146,88 @@ module Entrypoint = struct
   let head entrypoint = entrypoint.head
 end
 
+module Mtp = struct
+  type t = {
+    assistant_package : Artifact.t;
+    target_hidden_output : string;
+    coupled_target_state_input : string;
+    position_ids_input : string;
+    full_attention_mask_input : string;
+    sliding_attention_mask_input : string;
+    full_attention_key_input : string;
+    full_attention_value_input : string;
+    sliding_attention_key_input : string;
+    sliding_attention_value_input : string;
+    logits_output : string;
+    projected_target_hidden_output : string;
+    max_draft_tokens : int;
+  }
+
+  let create ~assistant_package ~target_hidden_output
+      ~coupled_target_state_input ~position_ids_input
+      ~full_attention_mask_input ~sliding_attention_mask_input
+      ~full_attention_key_input ~full_attention_value_input
+      ~sliding_attention_key_input ~sliding_attention_value_input ~logits_output
+      ~projected_target_hidden_output ~max_draft_tokens =
+    let fields =
+      [ "target_hidden_output", target_hidden_output;
+        "coupled_target_state_input", coupled_target_state_input;
+        "position_ids_input", position_ids_input;
+        "full_attention_mask_input", full_attention_mask_input;
+        "sliding_attention_mask_input", sliding_attention_mask_input;
+        "full_attention_key_input", full_attention_key_input;
+        "full_attention_value_input", full_attention_value_input;
+        "sliding_attention_key_input", sliding_attention_key_input;
+        "sliding_attention_value_input", sliding_attention_value_input;
+        "logits_output", logits_output;
+        "projected_target_hidden_output", projected_target_hidden_output ]
+    in
+    let rec clean acc = function
+      | [] -> Ok (List.rev acc)
+      | (name, value) :: rest ->
+          let value = String.trim value in
+          if value = "" then
+            Error (Printf.sprintf "model-program MTP %s cannot be empty" name)
+          else clean ((name, value) :: acc) rest
+    in
+    if max_draft_tokens <= 0 || max_draft_tokens > 0xffff then
+      Error "model-program MTP max_draft_tokens must be in [1, 65535]"
+    else
+      let* fields = clean [] fields in
+      let find name = List.assoc name fields in
+      Ok
+        {
+          assistant_package;
+          target_hidden_output = find "target_hidden_output";
+          coupled_target_state_input = find "coupled_target_state_input";
+          position_ids_input = find "position_ids_input";
+          full_attention_mask_input = find "full_attention_mask_input";
+          sliding_attention_mask_input = find "sliding_attention_mask_input";
+          full_attention_key_input = find "full_attention_key_input";
+          full_attention_value_input = find "full_attention_value_input";
+          sliding_attention_key_input = find "sliding_attention_key_input";
+          sliding_attention_value_input = find "sliding_attention_value_input";
+          logits_output = find "logits_output";
+          projected_target_hidden_output =
+            find "projected_target_hidden_output";
+          max_draft_tokens;
+        }
+
+  let assistant_package mtp = mtp.assistant_package
+  let target_hidden_output mtp = mtp.target_hidden_output
+  let coupled_target_state_input mtp = mtp.coupled_target_state_input
+  let position_ids_input mtp = mtp.position_ids_input
+  let full_attention_mask_input mtp = mtp.full_attention_mask_input
+  let sliding_attention_mask_input mtp = mtp.sliding_attention_mask_input
+  let full_attention_key_input mtp = mtp.full_attention_key_input
+  let full_attention_value_input mtp = mtp.full_attention_value_input
+  let sliding_attention_key_input mtp = mtp.sliding_attention_key_input
+  let sliding_attention_value_input mtp = mtp.sliding_attention_value_input
+  let logits_output mtp = mtp.logits_output
+  let projected_target_hidden_output mtp = mtp.projected_target_hidden_output
+  let max_draft_tokens mtp = mtp.max_draft_tokens
+end
+
 module Generation = struct
   type t = {
     vocab_size : int;
@@ -473,10 +555,12 @@ type t = {
   generation : Generation.t;
   state : State.t;
   specialization : Specialization.t;
+  mtp : Mtp.t option;
 }
 
-let current_abi_version = 3
+let current_abi_version = 4
 let legacy_uniform_cache_abi_version = 2
+let legacy_heterogeneous_cache_abi_version = 3
 
 let validate program =
   if program.prefill.Entrypoint.kind <> Entrypoint.Prefill then
@@ -507,6 +591,7 @@ let make ~identity ~processor ~prefill ~decode ~generation ~state ~specializatio
       generation;
       state;
       specialization;
+      mtp = None;
     }
   in
   let* () = validate program in
@@ -516,6 +601,11 @@ let create ~identity ~processor ~prefill ~decode ~generation ~state
     ~specialization =
   make ~identity ~processor ~prefill ~decode ~generation ~state ~specialization
 
+let with_mtp program mtp =
+  let program = { program with mtp = Some mtp } in
+  let* () = validate program in
+  Ok program
+
 let abi_version _program = current_abi_version
 let identity program = program.identity
 let processor program = program.processor
@@ -524,6 +614,7 @@ let decode program = program.decode
 let generation program = program.generation
 let state program = program.state
 let specialization program = program.specialization
+let mtp program = program.mtp
 
 let magic = "LLMOPT-MODEL\000"
 
@@ -560,6 +651,43 @@ let read_entrypoint reader kind =
   let* token_id = read_option reader Binary.Reader.string in
   let* head = Entrypoint.Head.create ?logits ?token_id () in
   Entrypoint.create ~kind ~package ~input_ids ~head
+
+let write_mtp writer (mtp : Mtp.t) =
+  write_artifact writer (Mtp.assistant_package mtp);
+  List.iter (Binary.Writer.string writer)
+    [ Mtp.target_hidden_output mtp;
+      Mtp.coupled_target_state_input mtp;
+      Mtp.position_ids_input mtp;
+      Mtp.full_attention_mask_input mtp;
+      Mtp.sliding_attention_mask_input mtp;
+      Mtp.full_attention_key_input mtp;
+      Mtp.full_attention_value_input mtp;
+      Mtp.sliding_attention_key_input mtp;
+      Mtp.sliding_attention_value_input mtp;
+      Mtp.logits_output mtp;
+      Mtp.projected_target_hidden_output mtp ];
+  Binary.Writer.u16 writer (Mtp.max_draft_tokens mtp)
+
+let read_mtp reader =
+  let* assistant_package = read_artifact reader in
+  let* target_hidden_output = Binary.Reader.string reader in
+  let* coupled_target_state_input = Binary.Reader.string reader in
+  let* position_ids_input = Binary.Reader.string reader in
+  let* full_attention_mask_input = Binary.Reader.string reader in
+  let* sliding_attention_mask_input = Binary.Reader.string reader in
+  let* full_attention_key_input = Binary.Reader.string reader in
+  let* full_attention_value_input = Binary.Reader.string reader in
+  let* sliding_attention_key_input = Binary.Reader.string reader in
+  let* sliding_attention_value_input = Binary.Reader.string reader in
+  let* logits_output = Binary.Reader.string reader in
+  let* projected_target_hidden_output = Binary.Reader.string reader in
+  let* max_draft_tokens = Binary.Reader.u16 reader in
+  Mtp.create ~assistant_package ~target_hidden_output
+    ~coupled_target_state_input ~position_ids_input ~full_attention_mask_input
+    ~sliding_attention_mask_input ~full_attention_key_input
+    ~full_attention_value_input ~sliding_attention_key_input
+    ~sliding_attention_value_input ~logits_output
+    ~projected_target_hidden_output ~max_draft_tokens
 
 let to_bytes program =
   let writer = Binary.Writer.create () in
@@ -638,6 +766,9 @@ let to_bytes program =
   write_option writer Binary.Writer.string (Specialization.rope_sine_input program.specialization);
   write_option writer Binary.Writer.string (Specialization.paged_slots_input program.specialization);
 
+  (* Optional target-coupled MTP assistant entrypoint (ABI v4). *)
+  write_option writer write_mtp program.mtp;
+
   Binary.Writer.contents writer
 
 let of_bytes bytes =
@@ -651,6 +782,7 @@ let of_bytes bytes =
     if
       version <> current_abi_version
       && version <> legacy_uniform_cache_abi_version
+      && version <> legacy_heterogeneous_cache_abi_version
     then
       Error (Printf.sprintf "unsupported model-program version: %d" version)
     else
@@ -768,9 +900,17 @@ let of_bytes bytes =
       let* paged_slots_input = read_option reader Binary.Reader.string in
       let* specialization = Specialization.create ~min_prefill_tokens ?rope_cosine_input ?rope_sine_input ?paged_slots_input () in
 
+      let* mtp =
+        if version >= current_abi_version then read_option reader read_mtp
+        else Ok None
+      in
+
       let* () = Binary.Reader.finish reader in
-      make ~identity ~processor ~prefill ~decode ~generation ~state
-        ~specialization
+      let* program =
+        make ~identity ~processor ~prefill ~decode ~generation ~state
+          ~specialization
+      in
+      match mtp with None -> Ok program | Some mtp -> with_mtp program mtp
 
 let write_file path program =
   try
@@ -802,6 +942,10 @@ let validate_files ~root program =
       Entrypoint.package program.prefill;
       Entrypoint.package program.decode;
     ]
+    @
+    match program.mtp with
+    | None -> []
+    | Some mtp -> [ Mtp.assistant_package mtp ]
   in
   let rec check = function
     | [] -> Ok ()
