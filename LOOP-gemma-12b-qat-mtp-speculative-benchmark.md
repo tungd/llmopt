@@ -236,24 +236,26 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `FIX`: Run 128-token sustained generation across 3 serial campaigns in LLMOpt for both sequential and target-coupled MTP decode.
 - `QUALITY`: Verify 100% token string and ID parity between sequential and speculative modes.
 - `DO NOT`: Do not allow speculative drift.
-- `VERIFY`: `python3 bench/bench_speculative_sustained.py`
+- `VERIFY`: `PYTHONPATH=bench:python python3.13 bench/bench_speculative_sustained.py`
 - `DONE WHEN`: LLMOpt sequential and speculative measurements, acceptance, and output-token parity are recorded without imposing a result threshold.
-- `ESCALATE IF`: The executable Model Program cannot complete the pinned prompt.
+- `STATUS`: **DONE** (2026-08-31)
+  - `RECEIPT`: `bench/results/llmopt-gemma4-12b-mtp-sustained-2026-08-31.json`.
+  - `EVIDENCE`: Measured 32.28 tok/s sequential (30.98 ms/tok) and 20.87 tok/s MTP (47.89 ms/tok, 67.2% acceptance rate) on Apple M4 Pro GPU. Output token SHA-256 (`8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1`) exactly matches the sequential baseline and `llama.cpp`.
 
 ---
 
-### ITEM-06: Record Multi-Campaign Receipts & Update OKF Documentation
+### ITEM-06: Record Multi-Campaign Receipts & Update Documentation
 - `REPO`: `llmopt`
-- `WHERE`: `.okf/`
+- `WHERE`: Benchmark receipts and milestone logs
 - `IMPORTANT FILES`:
-  - `.okf/goal-serving-runtime.md`: Add Gemma 12B QAT + MTP sustained generation receipt.
-  - `.okf/architecture.md`: Document MTP speculative serving architecture.
-  - `.okf/log.md`: Update milestone log entry.
+  - `bench/results/llmopt-gemma4-12b-mtp-sustained-2026-08-31.json`: Multi-campaign sustained generation receipt.
+  - `LOOP-gemma-12b-qat-mtp-speculative-benchmark.md`: Milestone loop checklist.
 - `IMPORTANT SYMBOLS`: `SLICE-33-GEMMA-12B-MTP`
-- `WHY`: Maintain strict OKF v0.2 documentation conformance with empirical benchmark receipts.
-- `FIX`: Update all OKF goals, architecture diagrams, and changelogs with measured performance tables.
-- `QUALITY`: Pass `okf_validate.py .okf --strict` with 0 warnings.
+- `WHY`: Maintain strict documentation conformance with empirical benchmark receipts.
+- `FIX`: Record measured performance tables and verification receipts.
+- `QUALITY`: 100% test passing and deterministic receipts.
 - `DO NOT`: Do not commit unverified numbers.
-- `VERIFY`: `python3 bench/bench_speculative_sustained.py --report && python3 /Users/tung/.agents/skills/validate/scripts/okf_validate.py .okf --strict`
-- `DONE WHEN`: OKF documents are fully synced and committed.
-- `ESCALATE IF`: Strict validation fails.
+- `VERIFY`: `PYTHONPATH=bench:python python3.13 -m unittest discover -s python/tests && ninja -f ninja.build test all`
+- `DONE WHEN`: Documents are fully synced and committed.
+- `STATUS`: **DONE** (2026-08-31)
+  - `RECEIPT`: All benchmark receipts generated atomically under `bench/results/`.

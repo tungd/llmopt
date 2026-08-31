@@ -335,7 +335,7 @@
   "generated_at": "2026-08-31",
   "graphs": {
     "assistant_step": {
-      "graph_sha256": "c23457ff1c0ccd27d8f5f6b52ae9b25abab5cfbc05b2f3a49bbad87ff8f05e3b",
+      "graph_sha256": "371f2c2c85796bf6ab90fc8e09eeeebc4a2db1c0215d5411c95542a02defcee1",
       "inputs": [
         {
           "dtype": "float16",
@@ -439,7 +439,7 @@
       "static_tensor_count": 50
     },
     "target_decode": {
-      "graph_sha256": "61bc9d2f945b995bb128d075641d6ea68f8e3577822b221d19ec91a7098ed1ac",
+      "graph_sha256": "77e9b42417dbe34997d495617be4a174729b98a5af70fd3ea26a9cc882dec854",
       "inputs": [
         {
           "dtype": "int64",
@@ -1438,7 +1438,7 @@
           ]
         }
       ],
-      "node_count": 6423,
+      "node_count": 6087,
       "outputs": [
         {
           "dtype": "float16",
@@ -2462,7 +2462,7 @@
       "static_tensor_count": 669
     },
     "target_prefill": {
-      "graph_sha256": "fbd5af3f763a21a22a3831c863116e8d8b5f8056495d3fb0ca1a1b62ec5d04f1",
+      "graph_sha256": "2a82cd3fe2f8dc09cc3a3408df166362c0ed2425dc3e30639a6d5282cd5943ad",
       "inputs": [
         {
           "dtype": "int64",
@@ -3461,7 +3461,7 @@
           ]
         }
       ],
-      "node_count": 6423,
+      "node_count": 6087,
       "outputs": [
         {
           "dtype": "float16",

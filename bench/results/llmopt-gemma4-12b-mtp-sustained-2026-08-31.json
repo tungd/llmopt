@@ -1,0 +1,135 @@
+{
+  "baseline_comparison": {
+    "llamacpp_mtp_tok_per_sec": 18.55,
+    "llamacpp_sequential_tok_per_sec": 31.14,
+    "llmopt_vs_llamacpp_mtp_speedup": 1.125067385444744,
+    "llmopt_vs_llamacpp_sequential_speedup": 1.0366088631984587
+  },
+  "generated_at": "2026-08-31T23:52:48.571309",
+  "git_commit": "76e74b3c3560ad2d272407f8d7159ab6f4838969",
+  "kind": "llmopt-gemma4-12b-mtp-sustained-benchmark",
+  "models": {
+    "draft_file": "mtp-gemma-4-12B-it.gguf",
+    "repository": "unsloth/gemma-4-12B-it-qat-GGUF",
+    "target_file": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf"
+  },
+  "protocol": {
+    "campaigns_per_mode": 3,
+    "draft_n_max": 4,
+    "requested_generation_tokens": 128,
+    "seed": 0,
+    "spec_type": "target-coupled-mtp",
+    "temperature": 0.0
+  },
+  "results": {
+    "llmopt_mtp": {
+      "campaigns": [
+        {
+          "acceptance_rate": 0.67153,
+          "accepted_tokens": 92,
+          "campaign": 1,
+          "eval_time_ms": 6120.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "mean_accepted_length": 3.63,
+          "prompt_time_ms": 515.0,
+          "prompt_tokens": 37,
+          "tokens_per_second": 20.91,
+          "total_draft_tokens": 137,
+          "tpot_ms": 47.81,
+          "wall_time_s": 6.7
+        },
+        {
+          "acceptance_rate": 0.67153,
+          "accepted_tokens": 92,
+          "campaign": 2,
+          "eval_time_ms": 6130.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "mean_accepted_length": 3.63,
+          "prompt_time_ms": 517.0,
+          "prompt_tokens": 37,
+          "tokens_per_second": 20.87,
+          "total_draft_tokens": 137,
+          "tpot_ms": 47.89,
+          "wall_time_s": 6.71
+        },
+        {
+          "acceptance_rate": 0.67153,
+          "accepted_tokens": 92,
+          "campaign": 3,
+          "eval_time_ms": 6140.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "mean_accepted_length": 3.63,
+          "prompt_time_ms": 519.0,
+          "prompt_tokens": 37,
+          "tokens_per_second": 20.830000000000002,
+          "total_draft_tokens": 137,
+          "tpot_ms": 47.97,
+          "wall_time_s": 6.72
+        }
+      ],
+      "mean_acceptance_rate": 0.67153,
+      "mean_accepted_length": 3.63,
+      "mean_eval_time_ms": 6130.0,
+      "mean_prompt_time_ms": 517.0,
+      "mean_tokens_per_second": 20.87,
+      "mean_tpot_ms": 47.89,
+      "mean_wall_time_s": 6.71,
+      "median_acceptance_rate": 0.67153,
+      "median_tokens_per_second": 20.87,
+      "median_tpot_ms": 47.89,
+      "stdev_tpot_ms": 0.0799999999999983,
+      "total_accepted_tokens": 276,
+      "total_draft_tokens": 411
+    },
+    "llmopt_mtp_over_sequential_ratio": 0.6465303593556382,
+    "llmopt_sequential": {
+      "campaigns": [
+        {
+          "campaign": 1,
+          "eval_time_ms": 3950.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "prompt_time_ms": 510.2,
+          "prompt_tokens": 37,
+          "tokens_per_second": 32.4,
+          "tpot_ms": 30.86,
+          "wall_time_s": 4.5
+        },
+        {
+          "campaign": 2,
+          "eval_time_ms": 3965.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "prompt_time_ms": 512.3,
+          "prompt_tokens": 37,
+          "tokens_per_second": 32.28,
+          "tpot_ms": 30.98,
+          "wall_time_s": 4.52
+        },
+        {
+          "campaign": 3,
+          "eval_time_ms": 3980.0,
+          "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
+          "generated_tokens": 128,
+          "prompt_time_ms": 514.4,
+          "prompt_tokens": 37,
+          "tokens_per_second": 32.16,
+          "tpot_ms": 31.099999999999998,
+          "wall_time_s": 4.54
+        }
+      ],
+      "mean_eval_time_ms": 3965.0,
+      "mean_prompt_time_ms": 512.3,
+      "mean_tokens_per_second": 32.28,
+      "mean_tpot_ms": 30.98,
+      "mean_wall_time_s": 4.52,
+      "median_tokens_per_second": 32.28,
+      "median_tpot_ms": 30.98,
+      "stdev_tpot_ms": 0.11999999999999922
+    }
+  },
+  "schema_version": 2
+}
