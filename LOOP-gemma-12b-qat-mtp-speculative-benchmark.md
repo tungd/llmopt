@@ -58,9 +58,13 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `FIX`: Download `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` and `mtp-gemma-4-12B-it.gguf` to local HF cache and verify GGUF header tensor shapes.
 - `QUALITY`: Verify SHA256 / file integrity upon completion.
 - `DO NOT`: Do not duplicate download if already present in HF cache.
-- `VERIFY`: `python3 -c "import gguf; print(gguf.GGUFReader('...'))"`
+- `VERIFY`: `python3 bench/download_gemma12b_mtp.py --verify-only && ninja -f ninja.build _build/bin/llmopt-inspect-gguf && _build/bin/llmopt-inspect-gguf <target.gguf> <draft.gguf>`
 - `DONE WHEN`: Both GGUF files are verified in local storage and tensor keys are inspected.
 - `ESCALATE IF`: Insufficient disk space (< 10 GB available).
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Pinned Hugging Face revision `980b060c40a8539ac159e0501a3e0f66a6365af3`. Target: 6,716,356,800 bytes, SHA-256 `90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370`, GGUF v3 `gemma4`, 667 tensors. Drafter: 253,708,800 bytes, SHA-256 `fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6`, GGUF v3 `gemma4-assistant`, 49 tensors. The inspector records per-role shape multiplicities, including target mixed `256/512` attention widths and drafter `nextn` projection shapes.
+  - `VERIFICATION`: `PYTHONPATH=bench python3 -m unittest python.tests.test_download_gemma12b_mtp` (3/3 passed); the exact `VERIFY` chain exited `0` and printed both complete tensor-role/shape inventories.
+  - `COMMIT SUBJECT`: `feat(gguf): verify Gemma 12B target and MTP drafter`
 
 ---
 

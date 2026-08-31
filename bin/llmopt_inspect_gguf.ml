@@ -64,15 +64,42 @@ let inspect_file path =
         quant_counts;
       Printf.printf "  Total Weight Size: %s\n" (format_bytes !total_bytes);
 
-      (* Sample first 5 tensors *)
-      Printf.printf "\n  First 5 Tensors:\n";
-      List.iteri
-        (fun i (info : Gguf.Tensor_info.t) ->
-          if i < 5 then
-            Printf.printf "    [%2d] %-40s %-16s %s\n" i info.name
-              (String.concat "x" (List.map string_of_int info.shape))
-              (format_bytes info.byte_length))
+      Printf.printf "\n  Tensor Role Breakdown:\n";
+      let role_counts = Hashtbl.create 32 in
+      let role_shape_counts = Hashtbl.create 64 in
+      List.iter
+        (fun (info : Gguf.Tensor_info.t) ->
+          let role =
+            let parts = String.split_on_char '.' info.name in
+            match parts with
+            | "blk" :: _num :: rest -> "blk.*." ^ String.concat "." rest
+            | _ -> info.name
+          in
+          let c = Hashtbl.find_opt role_counts role |> Option.value ~default:0 in
+          Hashtbl.replace role_counts role (c + 1);
+          let shape = String.concat "x" (List.map string_of_int info.shape) in
+          let shape_key = (role, shape) in
+          let shape_count =
+            Hashtbl.find_opt role_shape_counts shape_key |> Option.value ~default:0
+          in
+          Hashtbl.replace role_shape_counts shape_key (shape_count + 1))
         model.tensors;
+      let sorted_roles =
+        Hashtbl.fold (fun r c acc -> (r, c) :: acc) role_counts []
+        |> List.sort (fun (r1, _) (r2, _) -> String.compare r1 r2)
+      in
+      List.iter
+        (fun (role, count) ->
+          Printf.printf "    • %-45s : %2d tensors\n" role count;
+          Hashtbl.fold
+            (fun (candidate_role, shape) shape_count acc ->
+              if candidate_role = role then (shape, shape_count) :: acc else acc)
+            role_shape_counts []
+          |> List.sort (fun (shape1, _) (shape2, _) ->
+                 String.compare shape1 shape2)
+          |> List.iter (fun (shape, shape_count) ->
+                 Printf.printf "      %-43s × %d\n" shape shape_count))
+        sorted_roles;
       Printf.printf "  Status: VALID GGUF MODEL\n\n%!"
 
 let () =
