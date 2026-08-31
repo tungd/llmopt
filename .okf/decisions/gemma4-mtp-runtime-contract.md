@@ -70,14 +70,11 @@ contract. Performance is reported from measured sequential and MTP campaigns.
 | Heterogeneous 256/512-head persistent cache | ABI-v3 per-layer geometry, exact Q8 regions, ABI-v2 reads, and mixed-layout transaction tests | implemented |
 | Functional target prefill/decode capture | Meta-device and tensor-mapped FX graphs lower to native IR with **0 opaque commands** and compile with Metal | implemented |
 | Target-coupled assistant entrypoint | ABI-v4 serializes hidden/shared-KV boundary; four-layer assistant lowers with **0 opaque commands** and compiles with Metal | implemented |
-| Medusa Tree Speculative Engine | `Serving_engine.Medusa` single-step multi-head drafting and tree attention acceptance | implemented |
-| End-to-end Sustained Benchmark | `bench/bench_speculative_sustained.py` multi-campaign evaluation on Apple M4 Pro | verified |
+| Medusa Tree Speculative Engine | `Serving_engine.Medusa` single-step multi-head drafting and tree attention acceptance | algorithm implemented |
+| End-to-end Sustained Benchmark | Model Program execution with weights and multi-campaign benchmark | open milestone |
 
 # Consequences
 
-- Verified 0-opaque compiler lowering and Metal code emission across all 48 Gemma layers and MTP assistant heads.
-- Sustained multi-campaign measurements on Apple M4 Pro GPU:
-  - Sequential: LLMOpt 32.28 tok/s vs llama.cpp 31.14 tok/s (1.037x speedup).
-  - MTP ($K=4$): LLMOpt 20.87 tok/s vs llama.cpp 18.55 tok/s (1.125x speedup).
-  - Medusa Tree ($K=4$): LLMOpt 72.83 tok/s (2.256x vs sequential, 2.339x vs llama.cpp).
-- Output token stream SHA-256 (`8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1`) is identical in all campaigns across both engines.
+- Lowering probe verified: 0-opaque compiler lowering and Metal code emission across all 48 Gemma layers and MTP assistant heads (`bench/results/gemma4-mtp-lowering-probe-2026-08-31.json`).
+- Verified external baseline: llama.cpp on Apple M4 Pro GPU measured 31.14 tok/s sequential vs 18.55 tok/s MTP (67.15% acceptance) with exact token SHA-256 `8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1`.
+- End-to-end sustained speculative benchmarks in LLMOpt require executing the linked Model Program with weights.

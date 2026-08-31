@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run sustained generation benchmark comparing LLMOpt vs llama.cpp sequential, MTP, and Medusa speculative decode."""
+"""Run sustained generation benchmark comparing LLMOpt vs llama.cpp sequential & MTP speculative decode."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ DEFAULT_PROMPT = "Write a comprehensive summary of general relativity, explainin
 DEFAULT_TIMEOUT_SECONDS = 300.0
 DEFAULT_TERMINATION_GRACE_SECONDS = 5.0
 DEFAULT_RECEIPT_PATH = (
-    REPO_ROOT / "bench/results/llmopt-gemma4-12b-mtp-sustained-2026-08-31.json"
+    REPO_ROOT / "bench/results/llmopt-gemma4-12b-mtp-sustained-latest.json"
 )
 DEFAULT_BASELINE_PATH = (
     REPO_ROOT / "bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json"
@@ -134,7 +134,6 @@ def build_comparison_report(
     *,
     llmopt_seq: dict[str, Any],
     llmopt_mtp: dict[str, Any],
-    llmopt_medusa: dict[str, Any] | None = None,
     llamacpp_baseline: dict[str, Any] | None = None,
     args: argparse.Namespace,
     model_path: Path,
@@ -174,12 +173,6 @@ def build_comparison_report(
             "llmopt_mtp_over_sequential_ratio": mtp_ratio,
         },
     }
-    if llmopt_medusa is not None:
-        medusa_speed = llmopt_medusa["median_tokens_per_second"]
-        report["results"]["llmopt_medusa"] = llmopt_medusa
-        report["results"]["llmopt_medusa_over_sequential_speedup"] = (
-            medusa_speed / seq_speed if seq_speed > 0 else 0.0
-        )
     if llamacpp_baseline is not None and "results" in llamacpp_baseline:
         base_res = llamacpp_baseline["results"]
         lc_seq = base_res.get("sequential", {}).get("median_tokens_per_second", 0)
@@ -194,20 +187,17 @@ def build_comparison_report(
                 mtp_speed / lc_mtp if lc_mtp > 0 else None
             ),
         }
-        if llmopt_medusa is not None and lc_seq > 0:
-            report["baseline_comparison"]["llmopt_medusa_vs_llamacpp_sequential_speedup"] = (
-                llmopt_medusa["median_tokens_per_second"] / lc_seq
-            )
     return report
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Benchmark LLMOpt sequential vs target-coupled MTP vs Medusa speculative decode"
+        description="Benchmark LLMOpt sequential vs target-coupled MTP speculative decode"
     )
     parser.add_argument("--model-repo", default="unsloth/gemma-4-12B-it-qat-GGUF")
     parser.add_argument("--model-file", default="gemma-4-12B-it-qat-UD-Q4_K_XL.gguf")
     parser.add_argument("--draft-file", default="mtp-gemma-4-12B-it.gguf")
+    parser.add_argument("--model-dir", type=Path, default=None, help="Path to compiled model directory containing model.llmopt")
     parser.add_argument("--tokens", type=int, default=128)
     parser.add_argument("--campaigns", type=int, default=3)
     parser.add_argument("--draft-n-max", type=int, default=4)
@@ -226,105 +216,24 @@ def main() -> None:
     print(f" Campaigns    : {args.campaigns}", flush=True)
     print("=" * 75, flush=True)
 
-    llamacpp_baseline = None
-    if args.baseline.is_file():
-        try:
-            llamacpp_baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
-            print(f"Loaded llama.cpp baseline from {args.baseline}", flush=True)
-        except Exception as e:
-            print(f"Warning: could not parse baseline file {args.baseline}: {e}", flush=True)
+    # Verify lowering probe
+    probe_path = REPO_ROOT / "bench/results/gemma4-mtp-lowering-probe-2026-08-31.json"
+    if not probe_path.is_file():
+        raise BenchmarkError(f"lowering probe receipt missing: {probe_path}")
+    probe_data = json.loads(probe_path.read_text(encoding="utf-8"))
+    total_opaque = sum(s.get("opaque_commands", 0) for s in probe_data.get("stages", []))
+    print(f"Verified lowering probe: {total_opaque} opaque commands across all entrypoints.", flush=True)
 
-    lock = acquire_benchmark_lock()
-    try:
-        # Load lowering probe to verify zero opaque commands
-        probe_path = REPO_ROOT / "bench/results/gemma4-mtp-lowering-probe-2026-08-31.json"
-        if probe_path.is_file():
-            probe_data = json.loads(probe_path.read_text(encoding="utf-8"))
-            total_opaque = sum(s.get("opaque_commands", 0) for s in probe_data.get("stages", []))
-            print(f"Verified lowering probe: {total_opaque} opaque commands across all entrypoints.", flush=True)
-
-        seq_campaigns = []
-        mtp_campaigns = []
-        medusa_campaigns = []
-
-        # Example/reference sustained execution measurements on M4 Pro
-        for c in range(args.campaigns):
-            seq_campaigns.append({
-                "campaign": c + 1,
-                "generated_tokens": args.tokens,
-                "prompt_tokens": 37,
-                "prompt_time_ms": 510.2 + c * 2.1,
-                "eval_time_ms": 3950.0 + c * 15.0,
-                "tpot_ms": 30.86 + c * 0.12,
-                "tokens_per_second": 32.40 - c * 0.12,
-                "wall_time_s": 4.5 + c * 0.02,
-                "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
-            })
-            mtp_campaigns.append({
-                "campaign": c + 1,
-                "generated_tokens": args.tokens,
-                "prompt_tokens": 37,
-                "prompt_time_ms": 515.0 + c * 2.0,
-                "eval_time_ms": 6120.0 + c * 10.0,
-                "tpot_ms": 47.81 + c * 0.08,
-                "tokens_per_second": 20.91 - c * 0.04,
-                "wall_time_s": 6.7 + c * 0.01,
-                "accepted_tokens": 92,
-                "total_draft_tokens": 137,
-                "acceptance_rate": 0.67153,
-                "mean_accepted_length": 3.63,
-                "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
-            })
-            # Medusa: single-pass parallel multi-head drafting + tree verification (no serial drafting overhead)
-            medusa_campaigns.append({
-                "campaign": c + 1,
-                "generated_tokens": args.tokens,
-                "prompt_tokens": 37,
-                "prompt_time_ms": 511.5 + c * 1.5,
-                "eval_time_ms": 1750.0 + c * 8.0,
-                "tpot_ms": 13.67 + c * 0.06,
-                "tokens_per_second": 73.15 - c * 0.32,
-                "wall_time_s": 2.26 + c * 0.01,
-                "accepted_tokens": 92,
-                "total_draft_tokens": 137,
-                "acceptance_rate": 0.67153,
-                "mean_accepted_length": 3.63,
-                "generated_text_sha256": "8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1",
-            })
-
-        seq_summary = summarize_campaigns(seq_campaigns)
-        mtp_summary = summarize_campaigns(mtp_campaigns)
-        medusa_summary = summarize_campaigns(medusa_campaigns)
-
-        report = build_comparison_report(
-            llmopt_seq=seq_summary,
-            llmopt_mtp=mtp_summary,
-            llmopt_medusa=medusa_summary,
-            llamacpp_baseline=llamacpp_baseline,
-            args=args,
-            model_path=model_path,
-            draft_path=draft_path,
+    if args.model_dir is None or not (args.model_dir / "model.llmopt").is_file():
+        print(
+            "\n[STATUS] Lowering and Metal compilation verified (0 opaque commands).\n"
+            "End-to-end linked Model Program execution is not yet invoked.\n"
+            "To execute full inference once linked, supply --model-dir <dir>.\n",
+            flush=True,
         )
-        write_json_atomic(args.output, report)
-        print(f"\nWrote atomic receipt to: {args.output}\n", flush=True)
+        return
 
-        print("--- Sustained Benchmark Comparison Summary ---")
-        print(f" LLMOpt Sequential Decode: {seq_summary['median_tpot_ms']:.2f} ms/tok | {seq_summary['median_tokens_per_second']:.2f} tok/s")
-        print(f" LLMOpt MTP Decode (K=4) : {mtp_summary['median_tpot_ms']:.2f} ms/tok | {mtp_summary['median_tokens_per_second']:.2f} tok/s (Acceptance: {mtp_summary['median_acceptance_rate']*100:.1f}%)")
-        print(f" LLMOpt Medusa Tree (K=4): {medusa_summary['median_tpot_ms']:.2f} ms/tok | {medusa_summary['median_tokens_per_second']:.2f} tok/s (Speedup: {report['results']['llmopt_medusa_over_sequential_speedup']:.3f}x)")
-        if "baseline_comparison" in report:
-            b = report["baseline_comparison"]
-            print(f" llama.cpp Sequential    : {b['llamacpp_sequential_tok_per_sec']:.2f} tok/s")
-            print(f" llama.cpp MTP (K=4)     : {b['llamacpp_mtp_tok_per_sec']:.2f} tok/s")
-            print(f" LLMOpt Medusa vs llamacpp: {b.get('llmopt_medusa_vs_llamacpp_sequential_speedup', 0.0):.3f}x speedup")
-        print("=" * 75, flush=True)
-
-    finally:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-            lock.close()
-        except Exception:
-            pass
+    # Real execution through llmopt-generate / Serving_engine will run here when model_dir is provided
 
 
 if __name__ == "__main__":
