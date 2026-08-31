@@ -841,17 +841,15 @@ let validate_command seen_values command =
                   [ past_tokens ],
                   [ mask_batches; mask_heads; mask_query; _key_length ] ) ->
                   let group_size = Ir.Paged_attention_q8.group_size config in
-                  let attention_layers =
-                    Ir.Paged_attention_q8.attention_layers config
-                  in
                   let token_elements =
-                    2 * attention_layers * kv_heads * head_dim
+                    Ir.Paged_attention_q8.token_elements config
                   in
                   let token_groups = token_elements / group_size in
                   batches = key_batches && batches = value_batches
                   && query_tokens = key_tokens && query_tokens = value_tokens
                   && kv_heads = value_heads
                   && kv_heads = Ir.Paged_attention_q8.kv_heads config
+                  && head_dim = Ir.Paged_attention_q8.head_dim config
                   && query_heads mod kv_heads = 0
                   && head_dim = key_dim && head_dim = value_dim
                   && head_dim mod group_size = 0
@@ -2204,11 +2202,34 @@ module Sequence = struct
                 Some _ ) ->
                 let* key = cache_chain producers key in
                 let* value = cache_chain producers value in
+                let* geometry =
+                  match Kv_cache.Layout.attention layout ~layer with
+                  | Some geometry -> Ok geometry
+                  | None ->
+                      Error
+                        (Printf.sprintf
+                           "paged Q8 attention layer %d has no cache geometry"
+                           layer)
+                in
+                let* key_offset =
+                  match Kv_cache.Layout.attention_key_offset layout ~layer with
+                  | Some offset -> Ok offset
+                  | None -> Error "paged Q8 attention key region is missing"
+                in
+                let* value_offset =
+                  match Kv_cache.Layout.attention_value_offset layout ~layer with
+                  | Some offset -> Ok offset
+                  | None -> Error "paged Q8 attention value region is missing"
+                in
                 let* config =
                   Ir.Paged_attention_q8.create
                     ~scale:(Ir.Attention.scale attention) ~cache_layer:layer
-                    ~attention_layers:(Kv_cache.Layout.attention_layers layout)
-                    ~kv_heads:(Kv_cache.Layout.kv_heads layout) ~group_size
+                    ~kv_heads:
+                      (Kv_cache.Layout.Attention_layer.kv_heads geometry)
+                    ~head_dim:
+                      (Kv_cache.Layout.Attention_layer.head_dim geometry)
+                    ~token_elements:(Kv_cache.Layout.token_elements layout)
+                    ~key_offset ~value_offset ~group_size
                     ~token_stride:(Kv_cache.Layout.bytes_per_token layout)
                 in
                 let command =
@@ -2837,8 +2858,11 @@ let write_primitive writer = function
       Binary.Writer.float64 writer (Ir.Paged_attention_q8.scale config);
       List.iter (Binary.Writer.u32 writer)
         [ Ir.Paged_attention_q8.cache_layer config;
-          Ir.Paged_attention_q8.attention_layers config;
           Ir.Paged_attention_q8.kv_heads config;
+          Ir.Paged_attention_q8.head_dim config;
+          Ir.Paged_attention_q8.token_elements config;
+          Ir.Paged_attention_q8.key_offset config;
+          Ir.Paged_attention_q8.value_offset config;
           Ir.Paged_attention_q8.group_size config;
           Ir.Paged_attention_q8.token_stride config ]
   | Ir.Primitive.Embedding -> Binary.Writer.u8 writer 6
@@ -2980,12 +3004,15 @@ let read_primitive values reader =
   | 14 ->
       let* scale = Binary.Reader.float64 reader in
       let* cache_layer = Binary.Reader.u32 reader in
-      let* attention_layers = Binary.Reader.u32 reader in
       let* kv_heads = Binary.Reader.u32 reader in
+      let* head_dim = Binary.Reader.u32 reader in
+      let* token_elements = Binary.Reader.u32 reader in
+      let* key_offset = Binary.Reader.u32 reader in
+      let* value_offset = Binary.Reader.u32 reader in
       let* group_size = Binary.Reader.u32 reader in
       let* token_stride = Binary.Reader.u32 reader in
-      Ir.Paged_attention_q8.create ~scale ~cache_layer ~attention_layers
-        ~kv_heads ~group_size ~token_stride
+      Ir.Paged_attention_q8.create ~scale ~cache_layer ~kv_heads ~head_dim
+        ~token_elements ~key_offset ~value_offset ~group_size ~token_stride
       |> Result.map (fun config -> Ir.Primitive.Paged_attention_q8 config)
   | 15 ->
       Binary.Reader.u16 reader

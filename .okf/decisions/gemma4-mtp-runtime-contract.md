@@ -67,7 +67,7 @@ contract. Performance is reported from measured sequential and MTP campaigns.
 | Greedy acceptance rule | `Serving_engine.Speculative_acceptance` plus mismatch, partial-match, full-match, and invalid-window tests | implemented |
 | Speculative slot metadata | `Serving_cache.commit_speculative` and `rollback_speculative` tests | primitive only |
 | Tree-attention Metal entrypoint | Registered generated kernel and runtime dispatch | primitive only |
-| Heterogeneous 256/512-head persistent cache | Uniform Model Program layout and 64-wide Q8 guard | missing |
+| Heterogeneous 256/512-head persistent cache | ABI-v3 per-layer geometry, exact Q8 regions, ABI-v2 reads, and mixed-layout transaction tests | implemented |
 | Functional target prefill/decode capture | No Gemma package exposing hidden state and explicit KV inputs/outputs | missing |
 | Target-coupled assistant entrypoint | No linked assistant ABI or tensor binding | missing |
 | End-to-end server integration | No MTP request state or executable proposal/verification path | missing |

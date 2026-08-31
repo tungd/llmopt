@@ -74,6 +74,107 @@ let tokenizer_fixture () =
   merge space "a";
   Binary.Writer.contents writer
 
+let legacy_model_program_v2_bytes program =
+  let writer = Binary.Writer.create () in
+  let write_option write = function
+    | None -> Binary.Writer.u8 writer 0
+    | Some value ->
+        Binary.Writer.u8 writer 1;
+        write value
+  in
+  let write_artifact artifact =
+    Binary.Writer.string writer (Model_program.Artifact.path artifact)
+  in
+  let write_entrypoint entry =
+    write_artifact (Model_program.Entrypoint.package entry);
+    Binary.Writer.string writer (Model_program.Entrypoint.input_ids entry);
+    let head = Model_program.Entrypoint.head entry in
+    write_option (Binary.Writer.string writer)
+      (Model_program.Entrypoint.Head.logits head);
+    write_option (Binary.Writer.string writer)
+      (Model_program.Entrypoint.Head.token_id head)
+  in
+  Binary.Writer.raw_string writer "LLMOPT-MODEL\000";
+  Binary.Writer.u16 writer 2;
+  let identity = Model_program.identity program in
+  Binary.Writer.string writer (Model_program.Identity.model identity);
+  write_option (Binary.Writer.string writer)
+    (Model_program.Identity.architecture identity);
+  write_option (Binary.Writer.string writer)
+    (Model_program.Identity.family identity);
+  let processor = Model_program.processor program in
+  write_artifact (Model_program.Processor.tokenizer processor);
+  write_option
+    (fun chat ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.u32 writer
+        (Model_program.Processor.Chat.bos_token_id chat);
+      Binary.Writer.u32 writer
+        (Model_program.Processor.Chat.message_start_token_id chat);
+      Binary.Writer.u32 writer
+        (Model_program.Processor.Chat.message_end_token_id chat))
+    (Model_program.Processor.chat processor);
+  write_entrypoint (Model_program.prefill program);
+  write_entrypoint (Model_program.decode program);
+  let generation = Model_program.generation program in
+  Binary.Writer.u64 writer
+    (Model_program.Generation.vocab_size generation);
+  Binary.Writer.u64 writer
+    (Model_program.Generation.max_positions generation);
+  write_option (Binary.Writer.i64 writer)
+    (Model_program.Generation.eos_token_id generation);
+  write_option (Binary.Writer.i64 writer)
+    (Model_program.Generation.bos_token_id generation);
+  let state = Model_program.state program in
+  let layout = Model_program.State.layout state in
+  let kv_heads, head_dim =
+    Model_program.State.Cache_layout.uniform_attention layout
+    |> Option.get
+  in
+  Binary.Writer.u16 writer
+    (Model_program.State.Cache_layout.attention_layers layout);
+  Binary.Writer.u16 writer kv_heads;
+  Binary.Writer.u16 writer head_dim;
+  Binary.Writer.u16 writer
+    (Model_program.State.Cache_layout.recurrent_layers layout);
+  Binary.Writer.u16 writer
+    (Model_program.State.Cache_layout.recurrent_dim layout);
+  Binary.Writer.u16 writer
+    (Model_program.State.Cache_layout.recurrent_window layout);
+  let attentions = Model_program.State.attentions state in
+  Binary.Writer.u16 writer (List.length attentions);
+  List.iter
+    (fun binding ->
+      Binary.Writer.u16 writer
+        (Model_program.State.Attention_binding.cache_layer binding);
+      List.iter (Binary.Writer.string writer)
+        [ Model_program.State.Attention_binding.key_input binding;
+          Model_program.State.Attention_binding.value_input binding;
+          Model_program.State.Attention_binding.key_output binding;
+          Model_program.State.Attention_binding.value_output binding ])
+    attentions;
+  let recurrents = Model_program.State.recurrents state in
+  Binary.Writer.u16 writer (List.length recurrents);
+  List.iter
+    (fun binding ->
+      Binary.Writer.u16 writer
+        (Model_program.State.Recurrent_binding.cache_layer binding);
+      Binary.Writer.string writer
+        (Model_program.State.Recurrent_binding.state_input binding);
+      Binary.Writer.string writer
+        (Model_program.State.Recurrent_binding.state_output binding))
+    recurrents;
+  let specialization = Model_program.specialization program in
+  Binary.Writer.u32 writer
+    (Model_program.Specialization.min_prefill_tokens specialization);
+  write_option (Binary.Writer.string writer)
+    (Model_program.Specialization.rope_cosine_input specialization);
+  write_option (Binary.Writer.string writer)
+    (Model_program.Specialization.rope_sine_input specialization);
+  write_option (Binary.Writer.string writer)
+    (Model_program.Specialization.paged_slots_input specialization);
+  Binary.Writer.contents writer
+
 let contains_substring source needle =
   let source_length = String.length source in
   let needle_length = String.length needle in
@@ -2860,6 +2961,15 @@ let () =
   (* Round-trip serialization *)
   let program_bytes = Model_program.to_bytes program in
   let restored = expect_ok (Model_program.of_bytes program_bytes) in
+  let restored_v2 =
+    program |> legacy_model_program_v2_bytes |> Model_program.of_bytes
+    |> expect_ok
+  in
+  expect
+    (Model_program.State.Cache_layout.uniform_attention
+       (Model_program.State.layout (Model_program.state restored_v2))
+    = Some (4, 64))
+    "reads the ABI-v2 uniform cache layout into per-layer geometry";
   let obsolete_program = Bytes.copy program_bytes in
   let version_offset = String.length "LLMOPT-MODEL\000" in
   Bytes.set obsolete_program version_offset '\001';
@@ -3052,6 +3162,133 @@ let () =
   expect (Kv_cache.Layout.attention_layers tf_kv_layout = 2) "transformer cache layout has 2 attention layers";
   expect (Kv_cache.Layout.recurrent_layers tf_kv_layout = 0) "transformer cache layout has 0 recurrent layers";
   expect (Kv_cache.Layout.bytes_per_checkpoint tf_kv_layout = 0) "transformer cache layout has 0 checkpoint bytes";
+
+  (* Gemma 4 target cache: five sliding layers followed by one global layer,
+     repeated eight times. Geometry and Q8 physical regions are per-layer. *)
+  let gemma_attention_layouts =
+    List.init 48 (fun layer ->
+        if (layer + 1) mod 6 = 0 then
+          Model_program.State.Cache_layout.Attention_layer.create ~kv_heads:1
+            ~head_dim:512 ()
+          |> Result.get_ok
+        else
+          Model_program.State.Cache_layout.Attention_layer.create ~kv_heads:8
+            ~head_dim:256 ()
+          |> Result.get_ok)
+  in
+  let gemma_bindings =
+    List.init 48 (fun layer ->
+        Model_program.State.Attention_binding.create ~cache_layer:layer
+          ~key_input:(Printf.sprintf "gemma_k_%d" layer)
+          ~value_input:(Printf.sprintf "gemma_v_%d" layer)
+          ~key_output:(Printf.sprintf "gemma_k_out_%d" layer)
+          ~value_output:(Printf.sprintf "gemma_v_out_%d" layer)
+        |> Result.get_ok)
+  in
+  let gemma_layout =
+    Model_program.State.Cache_layout.create_heterogeneous
+      ~attentions:gemma_attention_layouts ~recurrent_layers:0
+      ~recurrent_dim:0 ~recurrent_window:0
+    |> Result.get_ok
+  in
+  expect
+    (Model_program.State.Cache_layout.uniform_attention gemma_layout = None)
+    "Gemma mixed sliding/global layout is heterogeneous";
+  let gemma_state =
+    Model_program.State.create ~layout:gemma_layout
+      ~attentions:gemma_bindings ~recurrents:[]
+    |> Result.get_ok
+  in
+  let gemma_program =
+    Model_program.create ~identity ~processor ~prefill:prefill_entry
+      ~decode:decode_entry ~generation ~state:gemma_state ~specialization
+    |> Result.get_ok
+    |> Model_program.to_bytes |> Model_program.of_bytes |> Result.get_ok
+  in
+  let restored_gemma_layout =
+    Model_program.state gemma_program |> Model_program.State.layout
+  in
+  let restored_global =
+    Model_program.State.Cache_layout.attention restored_gemma_layout
+      ~cache_layer:5
+    |> Option.get
+  in
+  expect
+    (Model_program.State.Cache_layout.Attention_layer.kv_heads restored_global
+       = 1
+    && Model_program.State.Cache_layout.Attention_layer.head_dim
+         restored_global
+       = 512)
+    "ABI-v3 round-trip preserves the first Gemma global layer geometry";
+  let restored_sliding =
+    Model_program.State.Cache_layout.attention restored_gemma_layout
+      ~cache_layer:6
+    |> Option.get
+  in
+  expect
+    (Model_program.State.Cache_layout.Attention_layer.kv_heads restored_sliding
+       = 8
+    && Model_program.State.Cache_layout.Attention_layer.head_dim
+         restored_sliding
+       = 256)
+    "ABI-v3 round-trip preserves Gemma sliding geometry after a global layer";
+  let gemma_cache_cfg =
+    Serving_cache.Config.of_state_plan ~state:gemma_state ~token_capacity:8
+      ~checkpoint_capacity:1 ~page_size:16 ()
+    |> Result.get_ok
+  in
+  let gemma_kv_layout =
+    Serving_cache.Config.kv gemma_cache_cfg |> Kv_cache.Config.layout
+  in
+  expect (Kv_cache.Layout.token_elements gemma_kv_layout = 172_032)
+    "Gemma heterogeneous cache counts exact logical token elements";
+  expect (Kv_cache.Layout.bytes_per_token gemma_kv_layout = 177_408)
+    "Gemma heterogeneous cache counts exact Q8 token bytes";
+  expect
+    (Kv_cache.Layout.attention_key_offset gemma_kv_layout ~layer:5
+       = Some 20_480
+    && Kv_cache.Layout.attention_value_offset gemma_kv_layout ~layer:5
+       = Some 20_992
+    && Kv_cache.Layout.attention_key_offset gemma_kv_layout ~layer:6
+       = Some 21_504)
+    "Gemma global layer occupies its exact physical value offsets";
+  expect
+    (Kv_cache.Config.token_pool_bytes
+       (Serving_cache.Config.kv gemma_cache_cfg)
+    = 1_419_264)
+    "Gemma cache allocates exact heterogeneous token-pool bytes";
+  let gemma_cache = Serving_cache.create gemma_cache_cfg in
+  let gemma_rollback_slots =
+    Serving_cache.reserve_tokens gemma_cache 4 |> Result.get_ok
+  in
+  let gemma_rollback =
+    Serving_cache.Speculative.create ~tokens:[| 1; 2; 3; 4 |]
+      ~slots:gemma_rollback_slots ()
+  in
+  expect
+    (Serving_cache.rollback_speculative gemma_cache
+       ~reservation:gemma_rollback
+    = Ok ())
+    "Gemma heterogeneous speculative reservation rolls back";
+  let gemma_commit_slots =
+    Serving_cache.reserve_tokens gemma_cache 4 |> Result.get_ok
+  in
+  let gemma_commit =
+    Serving_cache.Speculative.create ~tokens:[| 5; 6; 7; 8 |]
+      ~slots:gemma_commit_slots ()
+  in
+  expect
+    (Serving_cache.commit_speculative gemma_cache ~reservation:gemma_commit
+       ~accepted_count:3
+    = Ok 3)
+    "Gemma heterogeneous speculative reservation commits its accepted prefix";
+  expect
+    ((Serving_cache.stats gemma_cache).kv.allocated_bytes = 3 * 177_408)
+    "Gemma partial commit accounts for accepted physical cache bytes";
+  Serving_cache.release_tokens gemma_cache (Array.sub gemma_commit_slots 0 3)
+  |> Result.get_ok;
+  expect (Result.is_ok (Serving_cache.validate gemma_cache))
+    "Gemma heterogeneous cache remains valid after commit and rollback";
 
   (* Speculative slot reservation and rollback test *)
   let spec_cache = Serving_cache.create tf_cache_cfg in

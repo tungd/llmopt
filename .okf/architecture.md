@@ -230,8 +230,9 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
 
 ## 3.6. Serving Engine, Cache Hierarchy, and Speculative Primitives
 
-* **Model Program ABI v2 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
-  - Encapsulates compiled prefill schedules, decode schedules, state plans (KV cache and recurrent dimensions), tokenizer metadata, and chat templates into a self-contained root artifact (`model.llmopt`).
+* **Model Program ABI v3 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
+  - Encapsulates compiled prefill schedules, decode schedules, state plans, tokenizer metadata, and chat templates into a self-contained root artifact (`model.llmopt`). ABI v3 records storage format, KV-head count, and head dimension per attention layer and continues to read uniform ABI-v2 programs.
+  - The Q8 physical cache stores heterogeneous key/value regions through explicit logical offsets. The cache pack/unpack and paged-attention kernels consume those offsets, so 64-, 256-, and 512-wide attention heads do not alter the generic cache contract.
 * **Speculative Tree-Mask Attention ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
   - Registers fused tree-attention megakernels (`llmopt_attention_tree_speculative_f16`) for compact bitmask causal adjacency topologies. No current target Model Program invokes them for end-to-end verification.
 * **Compressed Radix Cache & Optimistic Rollback ([`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml))**:

@@ -446,50 +446,80 @@ module Paged_attention_q8 = struct
   type t = {
     scale : float;
     cache_layer : int;
-    attention_layers : int;
     kv_heads : int;
+    head_dim : int;
+    token_elements : int;
+    key_offset : int;
+    value_offset : int;
     group_size : int;
     token_stride : int;
   }
 
-  let create ~scale ~cache_layer ~attention_layers ~kv_heads ~group_size
-      ~token_stride =
+  let create ~scale ~cache_layer ~kv_heads ~head_dim ~token_elements
+      ~key_offset ~value_offset ~group_size ~token_stride =
     if not (Float.is_finite scale) then Error "paged Q8 attention scale must be finite"
-    else if attention_layers <= 0 then
-      Error "paged Q8 attention requires at least one attention layer"
-    else if cache_layer < 0 || cache_layer >= attention_layers then
-      Error "paged Q8 attention cache layer is outside the attention layout"
+    else if cache_layer < 0 then
+      Error "paged Q8 attention cache layer cannot be negative"
     else if kv_heads <= 0 then Error "paged Q8 attention requires positive KV heads"
+    else if head_dim <= 0 then
+      Error "paged Q8 attention requires a positive head dimension"
     else if group_size <> 64 then
       Error "paged Q8 attention group size must be 64"
-    else if
-      token_stride <> 2 * attention_layers * kv_heads * (64 + 2)
-    then
-      Error
-        "paged Q8 attention token stride disagrees with the fixed head-64 layout"
+    else if head_dim mod group_size <> 0 then
+      Error "paged Q8 attention group size must divide the head dimension"
+    else if token_elements <= 0 || token_elements mod group_size <> 0 then
+      Error "paged Q8 attention token elements must be positive and group-aligned"
+    else if key_offset < 0 || value_offset < 0 then
+      Error "paged Q8 attention region offsets cannot be negative"
+    else if kv_heads > max_int / head_dim then
+      Error "paged Q8 attention segment size overflows"
     else
-      Ok
-        {
-          scale;
-          cache_layer;
-          attention_layers;
-          kv_heads;
-          group_size;
-          token_stride;
-        }
+      let segment_elements = kv_heads * head_dim in
+      if
+        key_offset > token_elements - segment_elements
+        || value_offset > token_elements - segment_elements
+      then Error "paged Q8 attention region exceeds the token layout"
+      else if
+        key_offset < value_offset + segment_elements
+        && value_offset < key_offset + segment_elements
+      then
+        Error "paged Q8 attention key and value regions overlap"
+      else if
+        token_elements > max_int - (2 * (token_elements / group_size))
+        || token_stride
+           <> token_elements + (2 * (token_elements / group_size))
+      then
+      Error
+        "paged Q8 attention token stride disagrees with the Q8 token layout"
+      else
+        Ok
+          {
+            scale;
+            cache_layer;
+            kv_heads;
+            head_dim;
+            token_elements;
+            key_offset;
+            value_offset;
+            group_size;
+            token_stride;
+          }
 
   let scale config = config.scale
   let cache_layer config = config.cache_layer
-  let attention_layers config = config.attention_layers
   let kv_heads config = config.kv_heads
+  let head_dim config = config.head_dim
+  let token_elements config = config.token_elements
+  let key_offset config = config.key_offset
+  let value_offset config = config.value_offset
   let group_size config = config.group_size
   let token_stride config = config.token_stride
 
   let to_string config =
     Printf.sprintf
-      "paged-attention-q8(scale=%.9g,layer=%d/%d,kv-heads=%d,group=%d,stride=%d)"
-      config.scale config.cache_layer config.attention_layers config.kv_heads
-      config.group_size config.token_stride
+      "paged-attention-q8(scale=%.9g,layer=%d,kv-heads=%d,head-dim=%d,key=%d,value=%d,group=%d,stride=%d)"
+      config.scale config.cache_layer config.kv_heads config.head_dim
+      config.key_offset config.value_offset config.group_size config.token_stride
 end
 
 module Arange = struct

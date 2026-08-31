@@ -172,7 +172,7 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
   - `test/test.ml`: Mixed sliding/global layer layout, allocation, commit, and rollback tests.
 - `IMPORTANT SYMBOLS`: `Model_program.State.Cache_layout`, `Kv_cache.Layout`, `Serving_cache.Config`
 - `WHY`: Gemma 4 mixes 40 sliding layers (`8x256`) and 8 global layers (`1x512`);
-  the current ABI stores one uniform `kv_heads/head_dim` and rejects non-64 heads.
+  ABI v2 stored one uniform `kv_heads/head_dim` and rejected non-64 heads.
 - `FIX`: Represent per-layer attention geometry and storage format, preserve ABI-v2
   reads, and allocate exact per-layer physical regions.
 - `QUALITY`: Byte accounting and partial speculative commit/rollback must remain exact.
@@ -180,6 +180,16 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `VERIFY`: `ninja -f ninja.build test all`
 - `DONE WHEN`: A mixed 48-layer cache layout round-trips, allocates, validates,
   and supports speculative slot transactions.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Model Program ABI v3 stores Q8 format, KV-head count, and head
+    dimension per attention layer while retaining ABI-v2 reads. The physical
+    cache assigns explicit key/value offsets in one Q8 token record, and cache
+    pack/unpack plus paged-attention kernels consume those offsets.
+  - `MEASUREMENT`: The 40x `8x256` plus 8x `1x512` fixture contains `172,032`
+    logical elements and `177,408` Q8 bytes per cached token. Partial commit
+    accounts for exactly the accepted slots; rollback releases every slot.
+  - `VERIFICATION`: `ninja -f ninja.build test all`; native-schedule Metal
+    compilation and package validation.
 
 ---
 

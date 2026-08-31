@@ -580,12 +580,13 @@ module Parameters = struct
     Ok bytes
 
   let paged_attention_q8 ~batches ~query_heads ~kv_heads ~past_length
-      ~head_dimension ~mask_batches ~mask_heads ~cache_layer ~attention_layers
-      ~group_size ~token_stride ~scale ?(query_length = 1) () =
-    let bytes = Bytes.make 52 '\000' in
+      ~head_dimension ~mask_batches ~mask_heads ~token_elements ~key_offset
+      ~value_offset ~group_size ~token_stride ~scale ?(query_length = 1) () =
+    let bytes = Bytes.make 56 '\000' in
     let values =
       [ batches; query_heads; kv_heads; past_length; head_dimension; mask_batches;
-        mask_heads; cache_layer; attention_layers; group_size; token_stride ]
+        mask_heads; token_elements; key_offset; value_offset; group_size;
+        token_stride ]
     in
     let rec write offset = function
       | [] -> Ok ()
@@ -594,8 +595,8 @@ module Parameters = struct
           write (offset + 4) rest
     in
     let* () = write 0 values in
-    Bytes.set_int32_le bytes 44 (Int32.bits_of_float scale);
-    let* () = set_u32 bytes 48 query_length in
+    Bytes.set_int32_le bytes 48 (Int32.bits_of_float scale);
+    let* () = set_u32 bytes 52 query_length in
     Ok bytes
 
   let speculative_attention ~batches ~heads ~query_length ~key_length
@@ -1146,29 +1147,40 @@ module Cache = struct
   let attention_parameters cache ~layer ~kind ~items ~source_items
       ~source_offset =
     let layout = cache.layout in
-    let heads = Kv_cache.Layout.kv_heads layout in
-    let head_dim = Kv_cache.Layout.head_dim layout in
+    let* geometry =
+      match Kv_cache.Layout.attention layout ~layer with
+      | Some geometry -> Ok geometry
+      | None -> Error "physical cache attention layer is outside the layout"
+    in
+    let heads = Kv_cache.Layout.Attention_layer.kv_heads geometry in
+    let head_dim = Kv_cache.Layout.Attention_layer.head_dim geometry in
     let group_size = group_size (format cache) in
-    let token_elements =
-      2 * Kv_cache.Layout.attention_layers layout * heads * head_dim
+    let token_elements = Kv_cache.Layout.token_elements layout in
+    let segment_offset =
+      match kind with
+      | Attention.Key -> Kv_cache.Layout.attention_key_offset layout ~layer
+      | Attention.Value -> Kv_cache.Layout.attention_value_offset layout ~layer
+    in
+    let* segment_offset =
+      match segment_offset with
+      | Some offset -> Ok offset
+      | None -> Error "physical cache attention region is missing"
     in
     let token_groups =
       Kv_cache.Format.groups_for_elements (format cache)
         ~elements:token_elements
     in
-    let segment =
-      (2 * layer)
-      + match kind with Attention.Key -> 0 | Attention.Value -> 1
-    in
     Parameters.u32s
-      [ items; segment; heads; head_dim; group_size; token_elements; token_groups;
+      [ items; segment_offset; heads; head_dim; group_size; token_elements;
+        token_groups;
         Kv_cache.Layout.bytes_per_token layout; source_items; source_offset ]
 
-  let attention_counts cache items =
+  let attention_counts cache ~layer items =
     let layout = cache.layout in
     let* segment_elements =
-      checked_product (Kv_cache.Layout.kv_heads layout)
-        (Kv_cache.Layout.head_dim layout) "attention segment size"
+      match Kv_cache.Layout.attention_segment_elements layout ~layer with
+      | Some elements -> Ok elements
+      | None -> Error "physical cache attention layer is outside the layout"
     in
     let* elements =
       checked_product items segment_elements "attention transfer size"
@@ -1183,7 +1195,7 @@ module Cache = struct
         "attention"
     in
     let items = Array.length slots in
-    let* elements, groups = attention_counts cache items in
+    let* elements, groups = attention_counts cache ~layer items in
     let* expected_elements =
       if pack then
         if source_items <= 0 then
@@ -1191,10 +1203,16 @@ module Cache = struct
         else if source_offset < 0 || source_offset > source_items - items then
           Error "physical attention cache source slice is out of range"
         else
+          let* segment_elements =
+            match
+              Kv_cache.Layout.attention_segment_elements cache.layout ~layer
+            with
+            | Some elements -> Ok elements
+            | None ->
+                Error "physical cache attention layer is outside the layout"
+          in
           let* source_elements =
-            checked_product source_items
-              (Kv_cache.Layout.kv_heads cache.layout
-              * Kv_cache.Layout.head_dim cache.layout)
+            checked_product source_items segment_elements
               "attention source size"
           in
           Ok source_elements
@@ -3603,9 +3621,10 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* parameters =
               Parameters.paged_attention_q8 ~batches ~query_heads ~kv_heads
                 ~past_length ~head_dimension ~mask_batches ~mask_heads
-                ~cache_layer:(Ir.Paged_attention_q8.cache_layer config)
-                ~attention_layers:
-                  (Ir.Paged_attention_q8.attention_layers config)
+                ~token_elements:
+                  (Ir.Paged_attention_q8.token_elements config)
+                ~key_offset:(Ir.Paged_attention_q8.key_offset config)
+                ~value_offset:(Ir.Paged_attention_q8.value_offset config)
                 ~group_size:(Ir.Paged_attention_q8.group_size config)
                 ~token_stride:(Ir.Paged_attention_q8.token_stride config)
                 ~scale:(Ir.Paged_attention_q8.scale config)

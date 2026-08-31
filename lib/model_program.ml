@@ -242,35 +242,43 @@ module State = struct
   end
 
   module Cache_layout = struct
+    module Attention_layer = struct
+      type storage = Q8_group_64
+
+      type t = {
+        storage : storage;
+        kv_heads : int;
+        head_dim : int;
+      }
+
+      let create ?(storage = Q8_group_64) ~kv_heads ~head_dim () =
+        if kv_heads <= 0 then
+          Error "cache attention layer requires positive kv_heads"
+        else if head_dim <= 0 then
+          Error "cache attention layer requires positive head_dim"
+        else Ok { storage; kv_heads; head_dim }
+
+      let storage layer = layer.storage
+      let storage_to_string Q8_group_64 = "q8-group-64"
+      let kv_heads layer = layer.kv_heads
+      let head_dim layer = layer.head_dim
+    end
+
     type t = {
-      attention_layers : int;
-      kv_heads : int;
-      head_dim : int;
+      attentions : Attention_layer.t array;
       recurrent_layers : int;
       recurrent_dim : int;
       recurrent_window : int;
     }
 
-    let create ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
-        ~recurrent_dim ~recurrent_window =
-      if attention_layers < 0 then
-        Error "cache layout attention_layers cannot be negative"
-      else if kv_heads < 0 then
-        Error "cache layout kv_heads cannot be negative"
-      else if head_dim < 0 then
-        Error "cache layout head_dim cannot be negative"
-      else if recurrent_layers < 0 then
+    let create_heterogeneous ~attentions ~recurrent_layers ~recurrent_dim
+        ~recurrent_window =
+      if recurrent_layers < 0 then
         Error "cache layout recurrent_layers cannot be negative"
       else if recurrent_dim < 0 then
         Error "cache layout recurrent_dim cannot be negative"
       else if recurrent_window < 0 then
         Error "cache layout recurrent_window cannot be negative"
-      else if attention_layers > 0 && kv_heads <= 0 then
-        Error "cache layout with attention layers requires positive kv_heads"
-      else if attention_layers > 0 && head_dim <= 0 then
-        Error "cache layout with attention layers requires positive head_dim"
-      else if attention_layers = 0 && (kv_heads <> 0 || head_dim <> 0) then
-        Error "cache layout with zero attention layers must have zero kv_heads and head_dim"
       else if
         recurrent_layers > 0
         && (recurrent_dim <= 0 || recurrent_window <= 0)
@@ -286,17 +294,63 @@ module State = struct
       else
         Ok
           {
-            attention_layers;
-            kv_heads;
-            head_dim;
+            attentions = Array.of_list attentions;
             recurrent_layers;
             recurrent_dim;
             recurrent_window;
           }
 
-    let attention_layers layout = layout.attention_layers
-    let kv_heads layout = layout.kv_heads
-    let head_dim layout = layout.head_dim
+    let create ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
+        ~recurrent_dim ~recurrent_window =
+      if attention_layers < 0 then
+        Error "cache layout attention_layers cannot be negative"
+      else if kv_heads < 0 then
+        Error "cache layout kv_heads cannot be negative"
+      else if head_dim < 0 then
+        Error "cache layout head_dim cannot be negative"
+      else if attention_layers = 0 && (kv_heads <> 0 || head_dim <> 0) then
+        Error
+          "cache layout with zero attention layers must have zero kv_heads and head_dim"
+      else
+        let* attentions =
+          if attention_layers = 0 then Ok []
+          else
+            let* layer = Attention_layer.create ~kv_heads ~head_dim () in
+            Ok (List.init attention_layers (Fun.const layer))
+        in
+        create_heterogeneous ~attentions ~recurrent_layers ~recurrent_dim
+          ~recurrent_window
+
+    let attention_layers layout = Array.length layout.attentions
+    let attentions layout = Array.to_list layout.attentions
+
+    let attention layout ~cache_layer =
+      if cache_layer < 0 || cache_layer >= Array.length layout.attentions then
+        None
+      else Some layout.attentions.(cache_layer)
+
+    let uniform_attention layout =
+      match Array.to_list layout.attentions with
+      | [] -> Some (0, 0)
+      | first :: rest ->
+          let geometry layer =
+            (Attention_layer.kv_heads layer, Attention_layer.head_dim layer)
+          in
+          let expected = geometry first in
+          if List.for_all (fun layer -> geometry layer = expected) rest then
+            Some expected
+          else None
+
+    let kv_heads layout =
+      match attention layout ~cache_layer:0 with
+      | None -> 0
+      | Some layer -> Attention_layer.kv_heads layer
+
+    let head_dim layout =
+      match attention layout ~cache_layer:0 with
+      | None -> 0
+      | Some layer -> Attention_layer.head_dim layer
+
     let recurrent_layers layout = layout.recurrent_layers
     let recurrent_dim layout = layout.recurrent_dim
     let recurrent_window layout = layout.recurrent_window
@@ -311,11 +365,11 @@ module State = struct
   let create ~layout ~attentions ~recurrents =
     let num_att = List.length attentions in
     let num_rec = List.length recurrents in
-    if num_att <> layout.Cache_layout.attention_layers then
+    if num_att <> Cache_layout.attention_layers layout then
       Error
         (Printf.sprintf
            "state attention binding count (%d) disagrees with cache layout attention layers (%d)"
-           num_att layout.Cache_layout.attention_layers)
+           num_att (Cache_layout.attention_layers layout))
     else if num_rec <> layout.Cache_layout.recurrent_layers then
       Error
         (Printf.sprintf
@@ -334,9 +388,16 @@ module State = struct
       let* () = check_unique_indices [] att_indices in
       let* () = check_unique_indices [] rec_indices in
       let* () =
-        match List.find_opt (fun idx -> idx < 0 || idx >= layout.Cache_layout.attention_layers) att_indices with
+        match
+          List.find_opt
+            (fun idx -> idx < 0 || idx >= Cache_layout.attention_layers layout)
+            att_indices
+        with
         | Some bad ->
-            Error (Printf.sprintf "attention binding layer %d is out of range [0, %d)" bad layout.Cache_layout.attention_layers)
+            Error
+              (Printf.sprintf
+                 "attention binding layer %d is out of range [0, %d)" bad
+                 (Cache_layout.attention_layers layout))
         | None -> Ok ()
       in
       let* () =
@@ -414,7 +475,8 @@ type t = {
   specialization : Specialization.t;
 }
 
-let current_abi_version = 2
+let current_abi_version = 3
+let legacy_uniform_cache_abi_version = 2
 
 let validate program =
   if program.prefill.Entrypoint.kind <> Entrypoint.Prefill then
@@ -534,9 +596,18 @@ let to_bytes program =
 
   (* State *)
   let layout = State.layout program.state in
-  Binary.Writer.u16 writer (State.Cache_layout.attention_layers layout);
-  Binary.Writer.u16 writer (State.Cache_layout.kv_heads layout);
-  Binary.Writer.u16 writer (State.Cache_layout.head_dim layout);
+  let attention_layouts = State.Cache_layout.attentions layout in
+  Binary.Writer.u16 writer (List.length attention_layouts);
+  List.iter
+    (fun layer ->
+      Binary.Writer.u8 writer
+        (match State.Cache_layout.Attention_layer.storage layer with
+        | State.Cache_layout.Attention_layer.Q8_group_64 -> 1);
+      Binary.Writer.u16 writer
+        (State.Cache_layout.Attention_layer.kv_heads layer);
+      Binary.Writer.u16 writer
+        (State.Cache_layout.Attention_layer.head_dim layer))
+    attention_layouts;
   Binary.Writer.u16 writer (State.Cache_layout.recurrent_layers layout);
   Binary.Writer.u16 writer (State.Cache_layout.recurrent_dim layout);
   Binary.Writer.u16 writer (State.Cache_layout.recurrent_window layout);
@@ -577,7 +648,10 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid model-program magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> current_abi_version then
+    if
+      version <> current_abi_version
+      && version <> legacy_uniform_cache_abi_version
+    then
       Error (Printf.sprintf "unsupported model-program version: %d" version)
     else
       let* model = Binary.Reader.string reader in
@@ -613,14 +687,51 @@ let of_bytes bytes =
       let* bos_token_id = read_option reader Binary.Reader.i64 in
       let* generation = Generation.create ~vocab_size ~max_positions ?eos_token_id ?bos_token_id () in
 
-      let* attention_layers = Binary.Reader.u16 reader in
-      let* kv_heads = Binary.Reader.u16 reader in
-      let* head_dim = Binary.Reader.u16 reader in
+      let* attentions_layout =
+        if version = legacy_uniform_cache_abi_version then
+          let* attention_layers = Binary.Reader.u16 reader in
+          let* kv_heads = Binary.Reader.u16 reader in
+          let* head_dim = Binary.Reader.u16 reader in
+          if attention_layers = 0 then
+            if kv_heads = 0 && head_dim = 0 then Ok []
+            else
+              Error
+                "cache layout with zero attention layers must have zero kv_heads and head_dim"
+          else
+            let* layer =
+              State.Cache_layout.Attention_layer.create ~kv_heads ~head_dim ()
+            in
+            Ok (List.init attention_layers (Fun.const layer))
+        else
+          let* attention_layers = Binary.Reader.u16 reader in
+          let rec read_layers acc remaining =
+            if remaining = 0 then Ok (List.rev acc)
+            else
+              let* storage_tag = Binary.Reader.u8 reader in
+              let* storage =
+                match storage_tag with
+                | 1 ->
+                    Ok State.Cache_layout.Attention_layer.Q8_group_64
+                | tag ->
+                    Error
+                      (Printf.sprintf
+                         "unsupported cache attention storage tag: %d" tag)
+              in
+              let* kv_heads = Binary.Reader.u16 reader in
+              let* head_dim = Binary.Reader.u16 reader in
+              let* layer =
+                State.Cache_layout.Attention_layer.create ~storage ~kv_heads
+                  ~head_dim ()
+              in
+              read_layers (layer :: acc) (remaining - 1)
+          in
+          read_layers [] attention_layers
+      in
       let* recurrent_layers = Binary.Reader.u16 reader in
       let* recurrent_dim = Binary.Reader.u16 reader in
       let* recurrent_window = Binary.Reader.u16 reader in
       let* layout =
-        State.Cache_layout.create ~attention_layers ~kv_heads ~head_dim
+        State.Cache_layout.create_heterogeneous ~attentions:attentions_layout
           ~recurrent_layers ~recurrent_dim ~recurrent_window
       in
 

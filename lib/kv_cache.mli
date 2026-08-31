@@ -12,10 +12,19 @@ module Format : sig
 end
 
 module Layout : sig
+  module Attention_layer : sig
+    type t
+
+    val create : kv_heads:int -> head_dim:int -> (t, string) result
+    val kv_heads : t -> int
+    val head_dim : t -> int
+  end
+
   type t
 
-  (** The fixed attention head dimension for the Q8 KV path. *)
+  (** The head dimension used by the legacy uniform LFM cache path. *)
   val q8_head_dim : int
+
   val create :
     format:Format.t ->
     attention_layers:int ->
@@ -26,13 +35,32 @@ module Layout : sig
     recurrent_window:int ->
     (t, string) result
 
+  val create_heterogeneous :
+    format:Format.t ->
+    attentions:Attention_layer.t list ->
+    recurrent_layers:int ->
+    recurrent_width:int ->
+    recurrent_window:int ->
+    (t, string) result
+
   val format : t -> Format.t
   val attention_layers : t -> int
+  val attentions : t -> Attention_layer.t list
+  val attention : t -> layer:int -> Attention_layer.t option
+  val attention_key_offset : t -> layer:int -> int option
+  val attention_value_offset : t -> layer:int -> int option
+  val attention_segment_elements : t -> layer:int -> int option
+  val attention_segment_bytes : t -> layer:int -> int option
+  val uniform_attention : t -> (int * int) option
+
+  (** Legacy accessors return the first layer geometry, or zero when there
+      are no attention layers. New code should use [attention]. *)
   val kv_heads : t -> int
   val head_dim : t -> int
   val recurrent_layers : t -> int
   val recurrent_width : t -> int
   val recurrent_window : t -> int
+  val token_elements : t -> int
   val bytes_per_token : t -> int
   val bytes_per_checkpoint : t -> int
 end

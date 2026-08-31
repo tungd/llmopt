@@ -144,23 +144,49 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
     expect_value decode_inputs ~name:input_ids ~dtype:Ir.Dtype.Int64
       ~shape:[ 1; 1 ] "decode runtime input"
   in
-  let* heads, head_dim, past_tokens =
-    match attentions with
-    | [] -> Ok (0, 0, prefill_tokens)
-    | first :: _ ->
-        (match String_map.find_opt (Model_program.State.Attention_binding.key_input first) decode_inputs with
+  let rec discover_attentions acc = function
+    | [] -> Ok (List.rev acc)
+    | binding :: rest ->
+        let name =
+          Model_program.State.Attention_binding.key_input binding
+        in
+        (match String_map.find_opt name decode_inputs with
         | Some value ->
             (match dimensions value with
-            | [ 1; actual_heads; tokens; actual_head_dim ]
-              when Ir.Value.dtype value = Ir.Dtype.Float16
-                   && actual_heads > 0 && actual_head_dim > 0
-                   && tokens > 0 ->
-                Ok (actual_heads, actual_head_dim, tokens)
+            | [ 1; kv_heads; tokens; head_dim ]
+              when Ir.Value.dtype value = Ir.Dtype.Float16 && kv_heads > 0
+                   && head_dim > 0 && tokens > 0 ->
+                let* geometry =
+                  Model_program.State.Cache_layout.Attention_layer.create
+                    ~kv_heads ~head_dim ()
+                in
+                discover_attentions
+                  ((binding, geometry, tokens) :: acc)
+                  rest
             | shape ->
                 Error
-                  (Printf.sprintf "decode attention input has shape [%s]"
-                     (shape_string shape)))
-        | None -> Error "decode package is missing its first attention key")
+                  (Printf.sprintf "decode attention input %s has shape [%s]"
+                     name (shape_string shape)))
+        | None ->
+            Error ("decode package is missing attention key " ^ name))
+  in
+  let* discovered_attentions = discover_attentions [] attentions in
+  let* past_tokens =
+    match discovered_attentions with
+    | [] -> Ok prefill_tokens
+    | (_, _, first_tokens) :: rest ->
+        (match
+           List.find_opt
+             (fun (_, _, tokens) -> tokens <> first_tokens)
+             rest
+         with
+        | None -> Ok first_tokens
+        | Some (binding, _, tokens) ->
+            Error
+              (Printf.sprintf
+                 "decode attention layer %d has past length %d; expected %d"
+                 (Model_program.State.Attention_binding.cache_layer binding)
+                 tokens first_tokens))
   in
   let* recurrent_dim, recurrent_cache =
     match recurrents with
@@ -184,7 +210,13 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
   else
     let rec validate_attention = function
       | [] -> Ok ()
-      | binding :: rest ->
+      | (binding, geometry, _) :: rest ->
+          let heads =
+            Model_program.State.Cache_layout.Attention_layer.kv_heads geometry
+          in
+          let head_dim =
+            Model_program.State.Cache_layout.Attention_layer.head_dim geometry
+          in
           let prefill_shape = [ 1; heads; prefill_tokens; head_dim ] in
           let decode_input_shape = [ 1; heads; past_tokens; head_dim ] in
           let decode_output_shape = [ 1; heads; past_tokens + 1; head_dim ] in
@@ -238,7 +270,7 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
           in
           validate_recurrent rest
     in
-    let* () = validate_attention attentions in
+    let* () = validate_attention discovered_attentions in
     let* () = validate_recurrent recurrents in
     let* prefill_head =
       validate_head prefill_outputs ~tokens:prefill_tokens
@@ -299,6 +331,14 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
     let* () =
       expect_names decode_outputs expected_decode_outputs "decode output"
     in
+    let attention_layouts =
+      discovered_attentions
+      |> List.sort (fun (left, _, _) (right, _, _) ->
+             Int.compare
+               (Model_program.State.Attention_binding.cache_layer left)
+               (Model_program.State.Attention_binding.cache_layer right))
+      |> List.map (fun (_, geometry, _) -> geometry)
+    in
     Ok
       ( input_ids,
         prefill_tokens,
@@ -307,14 +347,12 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
         decode_head,
         attentions,
         recurrents,
-        heads,
-        head_dim,
+        attention_layouts,
         recurrent_dim,
         recurrent_cache )
 
 let validate_entrypoints ~profile ~attentions ~recurrents ~prefill ~decode =
-  let* _, prefill_tokens, past_tokens, prefill_head, decode_head, _, _, _, _, _,
-       _ =
+  let* _, prefill_tokens, past_tokens, prefill_head, decode_head, _, _, _, _, _ =
     validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode
   in
   Ok (prefill_tokens, past_tokens, prefill_head, decode_head)
@@ -322,7 +360,8 @@ let validate_entrypoints ~profile ~attentions ~recurrents ~prefill ~decode =
 let of_packages ~profile ~attentions ~recurrents ?tokenizer ~prefill_path
     ~prefill ~decode_path ~decode () =
   let* input_ids, _prefill_tokens, _past_tokens, prefill_head, decode_head,
-       attentions, recurrents, heads, head_dim, recurrent_dim, recurrent_cache =
+       attentions, recurrents, attention_layouts, recurrent_dim,
+       recurrent_cache =
     validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode
   in
   let identity = Model_profile.identity profile in
@@ -343,15 +382,12 @@ let of_packages ~profile ~attentions ~recurrents ?tokenizer ~prefill_path
       ~package:decode_path ~input_ids ~head:decode_head
   in
   let generation = Model_profile.generation profile in
-  let num_attention = List.length attentions in
   let num_recurrent = List.length recurrents in
   let recurrent_dim = if num_recurrent = 0 then 0 else recurrent_dim in
   let* layout =
-    Model_program.State.Cache_layout.create ~attention_layers:num_attention
-      ~kv_heads:heads
-      ~head_dim:head_dim
-      ~recurrent_layers:num_recurrent ~recurrent_dim:recurrent_dim
-      ~recurrent_window:recurrent_cache
+    Model_program.State.Cache_layout.create_heterogeneous
+      ~attentions:attention_layouts ~recurrent_layers:num_recurrent
+      ~recurrent_dim:recurrent_dim ~recurrent_window:recurrent_cache
   in
   let* state = Model_program.State.create ~layout ~attentions ~recurrents in
   let* specialization =

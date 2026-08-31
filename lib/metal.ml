@@ -1492,7 +1492,7 @@ let cache_source =
 
 struct AttentionCacheParams {
   uint items;
-  uint segment;
+  uint segment_offset;
   uint heads;
   uint head_dim;
   uint group_size;
@@ -1540,14 +1540,14 @@ kernel void llmopt_cache_pack_attention_q8(
   device half* scales = reinterpret_cast<device half*>(
       pool + slot_base + params.token_elements);
   const uint value_base =
-      params.segment * params.heads * params.head_dim
+      params.segment_offset
       + head * params.head_dim + group_in_head * params.group_size;
   for (uint index = 0; index < params.group_size; ++index) {
     const int quantized = clamp(
         int(rint(float(source[source_base + index]) / scale)), -127, 127);
     values[value_base + index] = char(quantized);
   }
-  scales[params.segment * segment_groups + local_group] = stored_scale;
+  scales[params.segment_offset / params.group_size + local_group] = stored_scale;
 }
 
 kernel void llmopt_cache_pack_attention_q8_simd(
@@ -1580,7 +1580,7 @@ kernel void llmopt_cache_pack_attention_q8_simd(
   device half* scales = reinterpret_cast<device half*>(
       pool + slot_base + params.token_elements);
   const uint value_base =
-      params.segment * params.heads * params.head_dim
+      params.segment_offset
       + head * params.head_dim + group_in_head * params.group_size;
   for (uint index = lane; index < params.group_size; index += 32) {
     const int quantized = clamp(
@@ -1588,7 +1588,7 @@ kernel void llmopt_cache_pack_attention_q8_simd(
     values[value_base + index] = char(quantized);
   }
   if (lane == 0)
-    scales[params.segment * segment_groups + local_group] = stored_scale;
+    scales[params.segment_offset / params.group_size + local_group] = stored_scale;
 }
 
 kernel void llmopt_cache_unpack_attention_q8(
@@ -1604,7 +1604,6 @@ kernel void llmopt_cache_unpack_attention_q8(
   const uint head = local / params.head_dim;
   const uint within_head = local - head * params.head_dim;
   const uint groups_per_head = params.head_dim / params.group_size;
-  const uint segment_groups = params.heads * groups_per_head;
   const uint local_group = head * groups_per_head
       + within_head / params.group_size;
   const uint slot_base = slots[item] * params.token_stride;
@@ -1612,12 +1611,12 @@ kernel void llmopt_cache_unpack_attention_q8(
       reinterpret_cast<device const char*>(pool + slot_base);
   device const half* scales = reinterpret_cast<device const half*>(
       pool + slot_base + params.token_elements);
-  const uint value_index = params.segment * segment_elements + local;
+  const uint value_index = params.segment_offset + local;
   const uint destination_index =
       (head * params.items + item) * params.head_dim + within_head;
   destination[destination_index] = half(
       float(values[value_index])
-      * float(scales[params.segment * segment_groups + local_group]));
+      * float(scales[params.segment_offset / params.group_size + local_group]));
 }
 
 kernel void llmopt_cache_unpack_attention_q8_vec4(
@@ -1635,7 +1634,6 @@ kernel void llmopt_cache_unpack_attention_q8_vec4(
   const uint head = local / params.head_dim;
   const uint within_head = local - head * params.head_dim;
   const uint groups_per_head = params.head_dim / params.group_size;
-  const uint segment_groups = params.heads * groups_per_head;
   const uint local_group = head * groups_per_head
       + within_head / params.group_size;
   const uint slot_base = slots[item] * params.token_stride;
@@ -1643,13 +1641,13 @@ kernel void llmopt_cache_unpack_attention_q8_vec4(
       reinterpret_cast<device const char*>(pool + slot_base);
   device const half* scales = reinterpret_cast<device const half*>(
       pool + slot_base + params.token_elements);
-  const uint value_index = params.segment * segment_elements + local;
+  const uint value_index = params.segment_offset + local;
   const uint destination_index =
       (head * params.items + item) * params.head_dim + within_head;
   const char4 quantized =
       *reinterpret_cast<device const char4*>(values + value_index);
   const float scale =
-      float(scales[params.segment * segment_groups + local_group]);
+      float(scales[params.segment_offset / params.group_size + local_group]);
   *reinterpret_cast<device half4*>(destination + destination_index) =
       half4(float4(quantized) * scale);
 }
@@ -1769,8 +1767,9 @@ struct Q8PagedAttentionParams {
   uint head_dim;
   uint mask_batches;
   uint mask_heads;
-  uint cache_layer;
-  uint attention_layers;
+  uint token_elements;
+  uint key_offset;
+  uint value_offset;
   uint group_size;
   uint token_stride;
   float scale;
@@ -1782,21 +1781,18 @@ inline float llmopt_q8_paged_value(
     device const uint* slots,
     constant Q8PagedAttentionParams& params,
     uint key_position,
-    uint segment,
+    uint segment_offset,
     uint kv_head,
     uint dimension) {
-  const uint token_elements =
-      2 * params.attention_layers * params.kv_heads * params.head_dim;
   const uint groups_per_head = params.head_dim / params.group_size;
-  const uint segment_groups = params.kv_heads * groups_per_head;
   const uint slot_base = slots[key_position] * params.token_stride;
   device const char* values =
       reinterpret_cast<device const char*>(pool + slot_base);
   device const half* scales = reinterpret_cast<device const half*>(
-      pool + slot_base + token_elements);
-  const uint value_index = segment * params.kv_heads * params.head_dim
+      pool + slot_base + params.token_elements);
+  const uint value_index = segment_offset
       + kv_head * params.head_dim + dimension;
-  const uint scale_index = segment * segment_groups
+  const uint scale_index = segment_offset / params.group_size
       + kv_head * groups_per_head + (dimension / params.group_size);
   return float(values[value_index]) * float(scales[scale_index]);
 }
@@ -1828,8 +1824,8 @@ kernel void llmopt_attention_q8_paged_simd_h64(
   const uint current_base =
       (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
   const uint key_length = params.past_length + q_pos + 1;
-  const uint key_segment = params.cache_layer * 2;
-  const uint value_segment = key_segment + 1;
+  const uint key_segment = params.key_offset;
+  const uint value_segment = params.value_offset;
   float maximum = -INFINITY;
   float denominator = 0.0f;
   float result_low = 0.0f;

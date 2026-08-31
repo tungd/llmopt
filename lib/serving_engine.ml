@@ -202,7 +202,7 @@ let of_state_recurrent (b : Model_program.State.Recurrent_binding.t) : recurrent
     state_output = Model_program.State.Recurrent_binding.state_output b;
   }
 
-let contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
+let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
     ~recurrent_shape ~vocab_size ~prefill ~decode =
   let prefill_inputs = runtime_inputs prefill in
   let decode_inputs = runtime_inputs decode in
@@ -226,6 +226,20 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
     expect_value decode_inputs ~name:input_ids ~dtype:Ir.Dtype.Int64
       ~shape:[ 1; 1 ] "decode runtime input"
   in
+  let attention_geometry (binding : attention_binding) =
+    match
+      Model_program.State.Cache_layout.attention attention_layout
+        ~cache_layer:binding.cache_layer
+    with
+    | None ->
+        Error
+          (Printf.sprintf "attention cache layer %d has no geometry"
+             binding.cache_layer)
+    | Some layer ->
+        Ok
+          ( Model_program.State.Cache_layout.Attention_layer.kv_heads layer,
+            Model_program.State.Cache_layout.Attention_layer.head_dim layer )
+  in
   let* past_tokens =
     match attentions with
     | [] ->
@@ -235,7 +249,8 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
             (match String_map.find_opt first.state_input decode_inputs with
             | Some value when Ir.Value.dtype value = Ir.Dtype.Float16 -> Ok prefill_tokens
             | _ -> Error "decode package is missing recurrent state input"))
-    | first :: _ ->
+    | (first : attention_binding) :: _ ->
+        let* kv_heads, head_dim = attention_geometry first in
         (match String_map.find_opt first.key_input decode_inputs with
         | Some value ->
             (match dimensions value with
@@ -257,7 +272,8 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
   else
     let rec validate_attention = function
       | [] -> Ok ()
-      | binding :: rest ->
+      | (binding : attention_binding) :: rest ->
+          let* kv_heads, head_dim = attention_geometry binding in
           let prefill_shape = [ 1; kv_heads; prefill_tokens; head_dim ] in
           let decode_input_shape = [ 1; kv_heads; past_tokens; head_dim ] in
           let decode_output_shape = [ 1; kv_heads; past_tokens + 1; head_dim ] in
@@ -369,8 +385,6 @@ let contract ?program ~config ~prefill ~decode () =
   let recurrents =
     List.map of_state_recurrent (Model_program.State.recurrents state)
   in
-  let kv_heads = Model_program.State.Cache_layout.kv_heads layout in
-  let head_dim = Model_program.State.Cache_layout.head_dim layout in
   let input_ids =
     match program with
     | Some p -> Model_program.Entrypoint.input_ids (Model_program.prefill p)
@@ -401,8 +415,8 @@ let contract ?program ~config ~prefill ~decode () =
       [ 1; dim; window ]
     else [ 1; 0; 0 ]
   in
-  contract_of_parts ~input_ids ~attentions ~recurrents ~kv_heads ~head_dim
-    ~recurrent_shape ~vocab_size ~prefill ~decode
+  contract_of_parts ~input_ids ~attentions ~recurrents
+    ~attention_layout:layout ~recurrent_shape ~vocab_size ~prefill ~decode
 
 let validate_packages ?program ~config ~prefill ~decode () =
   let* () = validate_package prefill "prefill" in

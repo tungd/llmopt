@@ -233,16 +233,22 @@ module Paged_attention_q8 : sig
   val create :
     scale:float ->
     cache_layer:int ->
-    attention_layers:int ->
     kv_heads:int ->
+    head_dim:int ->
+    token_elements:int ->
+    key_offset:int ->
+    value_offset:int ->
     group_size:int ->
     token_stride:int ->
     (t, string) result
 
   val scale : t -> float
   val cache_layer : t -> int
-  val attention_layers : t -> int
   val kv_heads : t -> int
+  val head_dim : t -> int
+  val token_elements : t -> int
+  val key_offset : t -> int
+  val value_offset : t -> int
   val group_size : t -> int
   val token_stride : t -> int
   val to_string : t -> string

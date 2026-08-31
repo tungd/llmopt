@@ -126,8 +126,23 @@ module State : sig
   end
 
   module Cache_layout : sig
+    module Attention_layer : sig
+      type storage = Q8_group_64
+      type t
+
+      val create :
+        ?storage:storage -> kv_heads:int -> head_dim:int -> unit ->
+        (t, string) result
+
+      val storage : t -> storage
+      val storage_to_string : storage -> string
+      val kv_heads : t -> int
+      val head_dim : t -> int
+    end
+
     type t
 
+    (** Construct the legacy uniform attention layout. *)
     val create :
       attention_layers:int ->
       kv_heads:int ->
@@ -137,7 +152,20 @@ module State : sig
       recurrent_window:int ->
       (t, string) result
 
+    val create_heterogeneous :
+      attentions:Attention_layer.t list ->
+      recurrent_layers:int ->
+      recurrent_dim:int ->
+      recurrent_window:int ->
+      (t, string) result
+
     val attention_layers : t -> int
+    val attentions : t -> Attention_layer.t list
+    val attention : t -> cache_layer:int -> Attention_layer.t option
+    val uniform_attention : t -> (int * int) option
+
+    (** Legacy accessors return the first layer geometry, or zero when there
+        are no attention layers. New code should use [attention]. *)
     val kv_heads : t -> int
     val head_dim : t -> int
     val recurrent_layers : t -> int

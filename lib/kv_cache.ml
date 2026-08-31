@@ -24,14 +24,38 @@ end
 module Layout = struct
   let q8_head_dim = 64
 
+  module Attention_layer = struct
+    type t = {
+      kv_heads : int;
+      head_dim : int;
+    }
+
+    let create ~kv_heads ~head_dim =
+      if kv_heads <= 0 then
+        Error "attention KV layer requires positive kv_heads"
+      else if head_dim <= 0 then
+        Error "attention KV layer requires positive head_dim"
+      else Ok { kv_heads; head_dim }
+
+    let kv_heads layer = layer.kv_heads
+    let head_dim layer = layer.head_dim
+  end
+
+  type attention_region = {
+    geometry : Attention_layer.t;
+    key_offset : int;
+    value_offset : int;
+    segment_elements : int;
+    segment_bytes : int;
+  }
+
   type t = {
     format : Format.t;
-    attention_layers : int;
-    kv_heads : int;
-    head_dim : int;
+    attentions : attention_region array;
     recurrent_layers : int;
     recurrent_width : int;
     recurrent_window : int;
+    token_elements : int;
     bytes_per_token : int;
     bytes_per_checkpoint : int;
   }
@@ -46,22 +70,23 @@ module Layout = struct
     in
     multiply 1 factors
 
+  let checked_sum label left right =
+    if right > max_int - left then Error (label ^ " overflows")
+    else Ok (left + right)
+
   let checked_bytes format ~elements label =
     try Ok (Format.bytes_for_elements format ~elements)
     with Invalid_argument _ -> Error (label ^ " byte length overflows")
 
-  let create ~format ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
+  let create_heterogeneous ~format ~attentions ~recurrent_layers
       ~recurrent_width ~recurrent_window =
     let dimensions =
-      [ ("attention_layers", attention_layers); ("kv_heads", kv_heads);
-        ("head_dim", head_dim); ("recurrent_layers", recurrent_layers);
+      [ ("recurrent_layers", recurrent_layers);
         ("recurrent_width", recurrent_width);
         ("recurrent_window", recurrent_window) ]
     in
     match List.find_opt (fun (_, value) -> value < 0) dimensions with
     | Some (name, _) -> Error (name ^ " cannot be negative")
-    | None when attention_layers > 0 && (kv_heads = 0 || head_dim = 0) ->
-        Error "attention KV layout requires positive kv_heads and head_dim"
     | None when recurrent_layers > 0 &&
         (recurrent_width = 0 || recurrent_window = 0) ->
         Error
@@ -69,10 +94,6 @@ module Layout = struct
     | None ->
         let open Result.Syntax in
         let* () = Format.validate format in
-        let* token_elements =
-          checked_product "attention KV element count"
-            [ 2; attention_layers; kv_heads; head_dim ]
-        in
         let* recurrent_layer_elements =
           checked_product "recurrent layer checkpoint element count"
             [ recurrent_width; recurrent_window ]
@@ -84,12 +105,14 @@ module Layout = struct
         let incompatible_segment =
           match Format.group_size format with
           | None -> None
-          | Some _
-            when attention_layers > 0 && head_dim <> q8_head_dim ->
-              Some "Q8 KV attention head_dim must be 64"
           | Some group_size
-            when attention_layers > 0 && head_dim mod group_size <> 0 ->
-              Some "Q8 KV group_size must divide attention head_dim"
+            when
+              List.exists
+                (fun layer ->
+                  Attention_layer.head_dim layer mod group_size <> 0)
+                attentions ->
+              Some
+                "Q8 KV group_size must divide each attention head dimension"
           | Some group_size
             when recurrent_layers > 0
                  && recurrent_layer_elements mod group_size <> 0 ->
@@ -100,6 +123,40 @@ module Layout = struct
         (match incompatible_segment with
         | Some message -> Error message
         | None ->
+            let add_region (element_offset, regions) geometry =
+              let* elements =
+                checked_product "attention KV layer element count"
+                  [ Attention_layer.kv_heads geometry;
+                    Attention_layer.head_dim geometry ]
+              in
+              let* segment_bytes =
+                checked_bytes format ~elements "attention KV segment"
+              in
+              let key_offset = element_offset in
+              let* value_offset =
+                checked_sum "KV token element count" key_offset elements
+              in
+              let* next_element_offset =
+                checked_sum "KV token element count" value_offset elements
+              in
+              Ok
+                ( next_element_offset,
+                  {
+                    geometry;
+                    key_offset;
+                    value_offset;
+                    segment_elements = elements;
+                    segment_bytes;
+                  }
+                  :: regions )
+            in
+            let* token_elements, reverse_regions =
+              List.fold_left
+                (fun result geometry ->
+                  let* state = result in
+                  add_region state geometry)
+                (Ok (0, [])) attentions
+            in
             let* bytes_per_token =
               checked_bytes format ~elements:token_elements "KV token"
             in
@@ -110,23 +167,86 @@ module Layout = struct
             Ok
               {
                 format;
-                attention_layers;
-                kv_heads;
-                head_dim;
+                attentions = Array.of_list (List.rev reverse_regions);
                 recurrent_layers;
                 recurrent_width;
                 recurrent_window;
+                token_elements;
                 bytes_per_token;
                 bytes_per_checkpoint;
               })
 
+  let create ~format ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
+      ~recurrent_width ~recurrent_window =
+    let open Result.Syntax in
+    if attention_layers < 0 then Error "attention_layers cannot be negative"
+    else if kv_heads < 0 then Error "kv_heads cannot be negative"
+    else if head_dim < 0 then Error "head_dim cannot be negative"
+    else
+      let* attentions =
+        if attention_layers = 0 then
+          if kv_heads = 0 && head_dim = 0 then Ok []
+          else
+            Error
+              "attention KV layout with zero layers requires zero kv_heads and head_dim"
+        else
+          let* layer = Attention_layer.create ~kv_heads ~head_dim in
+          Ok (List.init attention_layers (Fun.const layer))
+      in
+      create_heterogeneous ~format ~attentions ~recurrent_layers
+        ~recurrent_width ~recurrent_window
+
   let format layout = layout.format
-  let attention_layers layout = layout.attention_layers
-  let kv_heads layout = layout.kv_heads
-  let head_dim layout = layout.head_dim
+  let attention_layers layout = Array.length layout.attentions
+
+  let attentions layout =
+    Array.to_list layout.attentions |> List.map (fun region -> region.geometry)
+
+  let region layout layer =
+    if layer < 0 || layer >= Array.length layout.attentions then None
+    else Some layout.attentions.(layer)
+
+  let attention layout ~layer =
+    region layout layer |> Option.map (fun region -> region.geometry)
+
+  let attention_key_offset layout ~layer =
+    region layout layer |> Option.map (fun region -> region.key_offset)
+
+  let attention_value_offset layout ~layer =
+    region layout layer |> Option.map (fun region -> region.value_offset)
+
+  let attention_segment_elements layout ~layer =
+    region layout layer |> Option.map (fun region -> region.segment_elements)
+
+  let attention_segment_bytes layout ~layer =
+    region layout layer |> Option.map (fun region -> region.segment_bytes)
+
+  let uniform_attention layout =
+    match attentions layout with
+    | [] -> Some (0, 0)
+    | first :: rest ->
+        let geometry layer =
+          (Attention_layer.kv_heads layer, Attention_layer.head_dim layer)
+        in
+        let expected = geometry first in
+        if List.for_all (fun layer -> geometry layer = expected) rest then
+          Some expected
+        else None
+
+  let kv_heads layout =
+    match attention layout ~layer:0 with
+    | None -> 0
+    | Some layer -> Attention_layer.kv_heads layer
+
+  let head_dim layout =
+    match attention layout ~layer:0 with
+    | None -> 0
+    | Some layer -> Attention_layer.head_dim layer
+
   let recurrent_layers layout = layout.recurrent_layers
   let recurrent_width layout = layout.recurrent_width
   let recurrent_window layout = layout.recurrent_window
+  let token_elements layout = layout.token_elements
   let bytes_per_token layout = layout.bytes_per_token
   let bytes_per_checkpoint layout = layout.bytes_per_checkpoint
 end

@@ -159,10 +159,22 @@ let run root =
   Printf.printf "  Generation: vocab_size=%d, max_positions=%d\n"
     (Model_program.Generation.vocab_size gen)
     (Model_program.Generation.max_positions gen);
-  Printf.printf "  State: %d attention layers (%d kv_heads x %d head_dim), %d recurrent layers (%d dim x %d window)\n"
-    (Model_program.State.Cache_layout.attention_layers layout)
-    (Model_program.State.Cache_layout.kv_heads layout)
-    (Model_program.State.Cache_layout.head_dim layout)
+  let attention_summary =
+    match Model_program.State.Cache_layout.uniform_attention layout with
+    | Some (kv_heads, head_dim) ->
+        Printf.sprintf "uniform %d kv_heads x %d head_dim" kv_heads head_dim
+    | None ->
+        Model_program.State.Cache_layout.attentions layout
+        |> List.mapi (fun layer geometry ->
+               Printf.sprintf "%d:%dx%d" layer
+                 (Model_program.State.Cache_layout.Attention_layer.kv_heads
+                    geometry)
+                 (Model_program.State.Cache_layout.Attention_layer.head_dim
+                    geometry))
+        |> String.concat ","
+  in
+  Printf.printf "  State: %d attention layers (%s), %d recurrent layers (%d dim x %d window)\n"
+    (Model_program.State.Cache_layout.attention_layers layout) attention_summary
     (Model_program.State.Cache_layout.recurrent_layers layout)
     (Model_program.State.Cache_layout.recurrent_dim layout)
     (Model_program.State.Cache_layout.recurrent_window layout);

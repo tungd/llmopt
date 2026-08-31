@@ -11,11 +11,27 @@ module Config = struct
     if page_size <= 0 then Error "serving radix page_size must be positive"
     else
       let layout = Model_program.State.layout state in
-      let attention_layers =
-        Model_program.State.Cache_layout.attention_layers layout
+      let rec convert_attentions acc = function
+        | [] -> Ok (List.rev acc)
+        | layer :: rest ->
+            let module Attention =
+              Model_program.State.Cache_layout.Attention_layer
+            in
+            let* () =
+              match Attention.storage layer with
+              | Attention.Q8_group_64 -> Ok ()
+            in
+            let* physical =
+              Kv_cache.Layout.Attention_layer.create
+                ~kv_heads:(Attention.kv_heads layer)
+                ~head_dim:(Attention.head_dim layer)
+            in
+            convert_attentions (physical :: acc) rest
       in
-      let kv_heads = Model_program.State.Cache_layout.kv_heads layout in
-      let head_dim = Model_program.State.Cache_layout.head_dim layout in
+      let* attentions =
+        Model_program.State.Cache_layout.attentions layout
+        |> convert_attentions []
+      in
       let recurrent_layers =
         Model_program.State.Cache_layout.recurrent_layers layout
       in
@@ -25,15 +41,12 @@ module Config = struct
       let recurrent_window =
         Model_program.State.Cache_layout.recurrent_window layout
       in
-      if attention_layers > 0 && head_dim <> Kv_cache.Layout.q8_head_dim then
-        Error "serving Q8 KV requires attention head_dim=64"
-      else
-        let recurrent_width =
-          if recurrent_layers = 0 then 0 else recurrent_dim
-        in
-        match
-          Kv_cache.Layout.create ~format:Kv_cache.Format.default
-            ~attention_layers ~kv_heads ~head_dim ~recurrent_layers
+      let recurrent_width =
+        if recurrent_layers = 0 then 0 else recurrent_dim
+      in
+      match
+          Kv_cache.Layout.create_heterogeneous
+            ~format:Kv_cache.Format.default ~attentions ~recurrent_layers
             ~recurrent_width ~recurrent_window
         with
         | Error message -> Error message

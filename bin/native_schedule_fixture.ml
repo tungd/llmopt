@@ -253,7 +253,8 @@ let graph () =
   let paged_attention =
     expect_ok
       (Ir.Paged_attention_q8.create ~scale:1.0 ~cache_layer:0
-         ~attention_layers:1 ~kv_heads:1 ~group_size:64 ~token_stride:132)
+         ~kv_heads:1 ~head_dim:64 ~token_elements:128 ~key_offset:0
+         ~value_offset:64 ~group_size:64 ~token_stride:132)
   in
   primitive graph (Ir.Primitive.Paged_attention_q8 paged_attention)
     [ paged_query; paged_key; paged_value; paged_pool; paged_slots; paged_mask ]

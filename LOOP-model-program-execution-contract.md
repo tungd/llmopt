@@ -5,9 +5,10 @@
 > `Chat_template`, `Serving_schedule.Sequence`, `bin/pipeline.ml`,
 > `bin/generate.ml`, and `bin/serve.ml`. LFM2.5 metadata remains only in the
 > explicit `Lfm25_probe` fixture, probe binaries, tests, and historical
-> receipts; `model.llmopt` ABI v2 declares recurrent-window width. The checked
-> items below retain their implementation-time symbol names as historical
-> evidence.
+> receipts; `model.llmopt` ABI v2 declared recurrent-window width at this
+> milestone. ABI v3 now adds per-layer attention cache geometry while retaining
+> ABI-v2 reads. The checked items below retain their implementation-time symbol
+> names as historical evidence.
 
 ## GOAL
 
