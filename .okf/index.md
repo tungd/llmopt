@@ -40,11 +40,13 @@ configuration.
 * [Corrected hardware and speculative primitive inventory](decisions/speculative-pipelining-hardware-acceleration.md) - implemented bitfield, Split-K, tree-attention, and cache primitives; unsupported end-to-end pipelining claims are retracted.
 * [Gemma 4 target-coupled MTP runtime contract](decisions/gemma4-mtp-runtime-contract.md) - linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance semantics.
 * [Gemma 4 12B QAT and MTP llama.cpp benchmark](decisions/gemma-12b-qat-mtp-speculative-benchmark.md) - same-prompt sequential and MTP measurement protocol without an assumed result threshold.
+* [Parametric Epilogue Inlining and Hardware Prefill Tiling](decisions/parametric-epilogues-and-hardware-tiling.md) - algebraic epilogue fusion replacing 2,500 lines of AST matchers, plus bank-swizzled simdgroup_matrix staging for prefill GEMM.
 
 ## Prior art
 
 * [TensorRT-LLM](prior-art/tensorrt-llm.md) - the same AOT-engine bet, industrialized: build-time measured autotuning, AOT shape profiles, and hand-written per-architecture hot kernels.
 * [Modular MAX and Mojo](prior-art/modular-max-mojo.md) - the same portability goal solved in the language: parametric kernel bodies specialized at compile time across CUDA, ROCm, and Metal.
+* [Ahrefs OCANNL & arrayjit](prior-art/ocannl-arrayjit.md) - loop-nest optimization, tiling, and multi-backend compiler analysis.
 
 ## Experiments and benchmarks
 

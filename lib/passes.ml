@@ -6,6 +6,7 @@ module Short_conv_step_fused = Pass_fuse_short_conv_step
 module Gated_delta = Pass_fuse_gated_delta
 module Lm_head_argmax = Pass_fuse_lm_head_argmax
 module Co_schedule = Pass_co_schedule
+module Epilogues = Pass_fuse_epilogues
 
 let ( let* ) = Result.bind
 
@@ -13,17 +14,19 @@ let fuse_linear_bias = Pass_fuse_linear_bias.run
 let fuse_rms_norm = Pass_fuse_rms_norm.run
 let fuse_rms_rope = Pass_fuse_rms_rope.run
 let fuse_short_conv = Pass_fuse_short_conv.run
-let discover_swiglu_ffn = Pass_fuse_swiglu_ffn.discover
+let discover_swiglu_ffn _ = Ok []
 let recover_scans = Kernel_ir.Scan.recover
-let fuse_swiglu_ffn = Pass_fuse_swiglu_ffn.run
+let fuse_swiglu_ffn graph = Ok (Pass_fuse_epilogues.run graph)
 let fuse_short_conv_step = Pass_fuse_short_conv_step.run
 let fuse_gated_delta = Pass_fuse_gated_delta.run
 let fuse_lm_head_argmax = Pass_fuse_lm_head_argmax.run
+let fuse_epilogues = Pass_fuse_epilogues.run
 let co_schedule = Pass_co_schedule.run
 let co_schedule_plan = Pass_co_schedule.run_plan
 
 let semantic_passes =
   [
+    Pass_fuse_epilogues.pass;
     Pass_fuse_linear_bias.pass;
     Pass_fuse_rms_norm.pass;
     Pass_fuse_rms_rope.pass;
@@ -59,7 +62,7 @@ end
 let optimize ?(target = Target_hardware.default) graph =
   let semantic_graph = Pass.Pipeline.run default_pipeline graph in
   let* plan = Compute_plan.of_graph semantic_graph in
-  let* fusion_regions = Pass_fuse_swiglu_ffn.discover semantic_graph in
+  let fusion_regions = [] in
   let scan_regions = Kernel_ir.Scan.recover semantic_graph in
   let max_scan_width =
     let capacity = target.memory.sram_capacity_bytes / 4 in
@@ -79,7 +82,7 @@ let optimize ?(target = Target_hardware.default) graph =
       semantic_graph
   in
   let gated_delta_graph = Pass_fuse_gated_delta.run scan_lowered_graph in
-  let* fused_graph = Pass_fuse_swiglu_ffn.run gated_delta_graph in
+  let fused_graph = Pass_fuse_epilogues.run gated_delta_graph in
   let qkv_fused_graph = Pass_fuse_linear_bias.fuse_w4a16_qkv fused_graph in
   let gqa_elim_graph =
     Pass_fuse_linear_bias.eliminate_gqa_expansion qkv_fused_graph

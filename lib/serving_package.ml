@@ -309,7 +309,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving-package magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> current_abi_version then
+    if version < 25 || version > current_abi_version then
       Error (Printf.sprintf "unsupported serving-package version: %d" version)
 
 

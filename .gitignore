@@ -6,3 +6,4 @@ _artifacts/
 *.air
 *.metallib
 __pycache__/
+tags

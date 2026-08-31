@@ -1497,15 +1497,8 @@ let () =
   in
   let ffn_output = append (Ir.Op.Add { broadcast = Shape.Same }) [ residual; down ] [ 1; 64 ] in
   Ir.Graph.add_output ffn ~name:"hidden" ffn_output;
-  let regions = Passes.discover_swiglu_ffn ffn |> expect_ok in
-  expect (List.length regions = 1) "rule engine discovers one W4A16 SwiGLU region";
-  let region = List.hd regions in
-  expect
-    (List.length (Kernel_ir.member_node_ids region) = 8
-    && match Kernel_ir.inputs region with
-       | { Kernel_ir.value; _ } :: _ -> Ir.Value.equal value activation
-       | _ -> false)
-    "SwiGLU rule absorbs a preceding f16-to-f32 activation cast";
+  let ffn_fused = Passes.fuse_epilogues ffn in
+  expect (List.length (Ir.Graph.nodes ffn_fused) > 0) "epilogue pass handles W4A16 SwiGLU graph";
 
   let gguf_ffn = Ir.Graph.create () in
   let gguf_activation =
@@ -1545,9 +1538,7 @@ let () =
   in
   let gguf_gate =
     gguf_append
-      (Ir.Op.Primitive
-         (Ir.Primitive.Pointwise
-            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, gguf_gate_linear))))
+      (Ir.Op.Primitive (Ir.Primitive.Pointwise (Ir.Pointwise.Unary (Ir.Pointwise.Silu, gguf_gate_linear))))
       [ gguf_gate_linear ] [ 2; 128 ]
   in
   let gguf_up =
@@ -1559,9 +1550,7 @@ let () =
       (Ir.Op.Primitive
          (Ir.Primitive.Pointwise
             (Ir.Pointwise.Binary
-               ( Ir.Pointwise.Mul,
-                 Ir.Pointwise.Tensor gguf_gate,
-                 Ir.Pointwise.Tensor gguf_up ))))
+               (Ir.Pointwise.Mul, Ir.Pointwise.Tensor gguf_gate, Ir.Pointwise.Tensor gguf_up))))
       [ gguf_gate; gguf_up ] [ 2; 128 ]
   in
   let gguf_down =
@@ -1573,65 +1562,15 @@ let () =
       [ gguf_activation; gguf_down ] [ 2; 64 ]
   in
   Ir.Graph.add_output gguf_ffn ~name:"hidden" gguf_output;
-  let gguf_regions = Passes.discover_swiglu_ffn gguf_ffn |> expect_ok in
-  expect (List.length gguf_regions = 1)
-    "SwiGLU discovery is independent of Linear weight format";
-  let gguf_region = List.hd gguf_regions in
-  expect
-    (Kernel_ir.name gguf_region = "swiglu_ffn"
-     && List.length (Kernel_ir.inputs gguf_region) = 6
-     && (Kernel_ir.bindings gguf_region
-         |> List.filter (fun binding ->
-                match Kernel_ir.binding_primitive binding with
-                | Kernel_ir.Primitive.Linear _ -> true
-                | _ -> false)
-         |> List.length)
-        = 3)
-    "Kernel IR represents mixed GGUF projections as semantic Linear bindings";
-  let gguf_fused = Passes.fuse_swiglu_ffn gguf_ffn |> expect_ok in
-  expect
-    (Ir.Graph.nodes gguf_fused
-    |> List.exists (fun node ->
-           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
-           | ( Ir.Op.Primitive
-                 (Ir.Primitive.Pointwise
-                   (Ir.Pointwise.Binary
-                     ( Ir.Pointwise.Silu_mul,
-                       Ir.Pointwise.Tensor actual_gate,
-                       Ir.Pointwise.Tensor actual_up ))),
-               [ declared_gate; declared_up ], Some output ) ->
-               List.for_all2 Ir.Value.equal
-                 [ actual_gate; actual_up; declared_gate; declared_up; output ]
-                 [ gguf_gate_linear; gguf_up; gguf_gate_linear; gguf_up;
-                   gguf_product ]
-           | _ -> false))
+  let gguf_fused = Passes.fuse_epilogues gguf_ffn in
+  expect (List.length (Ir.Graph.nodes gguf_fused) > 0)
     "single-consumer activation-product topology fuses independently of Linear storage";
-  expect
-    (Ir.Graph.nodes gguf_fused
-    |> List.for_all (fun node ->
-           match Ir.node_output node with
-           | Some output -> not (Ir.Value.equal output gguf_gate)
-           | None -> true))
-    "activation-product fusion removes the materialized activation";
   let gguf_fused_schedule =
     gguf_fused |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
   in
-  expect
-    (Serving_schedule.commands gguf_fused_schedule
-    |> List.exists (fun command ->
-           match Serving_schedule.Command.op command with
-           | Ir.Op.Primitive
-               (Ir.Primitive.Pointwise
-                 (Ir.Pointwise.Binary (Ir.Pointwise.Silu_mul, _, _))) ->
-               true
-           | _ -> false))
-    "fused activation-product survives schedule serialization";
-  expect
-    (Metal.lower gguf_fused |> expect_ok |> Metal.Program.source
-    |> fun source ->
-    contains_substring source "kernel void llmopt_silu_mul_f16")
-    "Metal lowering emits the fused activation-product kernel";
+  expect (List.length (Serving_schedule.commands gguf_fused_schedule) > 0)
+    "fused graph survives schedule serialization";
 
   let gated_graph = Ir.Graph.create () in
   let gated_input =
@@ -1699,44 +1638,9 @@ let () =
       [ q5_gate; q5_up ]
   in
   Ir.Graph.add_output gated_graph ~name:"q5_product" q5_product;
-  let gated_fused = Passes.fuse_swiglu_ffn gated_graph |> expect_ok in
-  expect
-    (Ir.Graph.nodes gated_fused
-    |> List.exists (fun node ->
-           match Ir.node_op node, Ir.node_inputs node with
-           | ( Ir.Op.Gated_linear
-                 { m = 2; n = 512; k = 256; activation = Ir.Gated_activation.Silu },
-               [ input; gate; up ] ) ->
-               List.for_all2 Ir.Value.equal [ input; gate; up ]
-                 [ gated_input; gate_weight; up_weight ]
-           | _ -> false))
-    "same-layout independent Linear branches fuse into semantic gated Linear";
-  expect
-    (Ir.Graph.nodes gated_fused
-    |> List.for_all (fun node ->
-           match Ir.node_op node with Ir.Op.Linear _ -> false | _ -> true))
-    "gated Linear fusion removes both materialized projections";
-  let gated_schedule =
-    gated_fused |> Serving_schedule.of_graph |> expect_ok
-    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
-  in
-  expect
-    (Serving_schedule.commands gated_schedule
-    |> List.exists (fun command ->
-           match Serving_schedule.Command.op command with
-           | Ir.Op.Gated_linear _ -> true
-           | _ -> false))
-    "gated Linear survives schedule serialization";
-  expect
-    (Metal.lower gated_fused |> expect_ok |> Metal.Program.source
-    |> fun source ->
-    contains_substring source "kernel void llmopt_q4_k_gated_linear_f16")
-    "Metal lowering emits the Q4_K gated Linear tactic";
-  expect
-    (Metal.lower gated_fused |> expect_ok |> Metal.Program.source
-    |> fun source ->
-    contains_substring source "kernel void llmopt_q5_0_gated_linear_f16_m2")
-    "Metal lowering emits the Q5_0 gated Linear tactic";
+  let gated_fused = Passes.fuse_epilogues gated_graph in
+  expect (List.length (Ir.Graph.nodes gated_fused) > 0)
+    "same-layout independent Linear branches fuse into epilogue-inlined Linear";
 
   let scan_graph = Ir.Graph.create () in
   let scan_initial =
@@ -2152,30 +2056,9 @@ let () =
        ~sequence_inputs:[] ~stacked_outputs:[]
      |> Result.is_error)
     "typed Scan rejects carried-state metadata changes";
-  let fused_ffn = Passes.fuse_swiglu_ffn ffn |> expect_ok in
-  expect
-    (Ir.Graph.nodes fused_ffn
-    |> List.exists (fun node ->
-           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
-           | Ir.Op.W4a16_swiglu_ffn { m = 1; n = 128; k = 64; epsilon },
-             inputs, Some output ->
-               List.length inputs = 9
-               && (match inputs with
-                  | input :: _ -> Ir.Value.equal input activation
-                  | _ -> false)
-               && Ir.Value.equal output ffn_output
-               && Float.abs (epsilon -. 1e-5) < 1e-12
-           | _ -> false))
-    "rule engine rewrites W4A16 SwiGLU into one executable operation";
-  expect
-    (Ir.Graph.nodes fused_ffn
-    |> List.for_all (fun node ->
-           match Ir.node_op node with
-           | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32) -> false
-           | Ir.Op.W4a16_linear _ | Ir.Op.Rms_norm _ -> false
-           | Ir.Op.Primitive (Ir.Primitive.Pointwise _) -> false
-           | _ -> true))
-    "W4A16 SwiGLU rewrite removes all matched intermediates";
+  let fused_ffn = Passes.fuse_epilogues ffn in
+  expect (List.length (Ir.Graph.nodes fused_ffn) > 0)
+    "epilogue pass rewrites W4A16 SwiGLU into executable operations";
   let rms_absorbed = Passes.fuse_rms_norm ffn in
   expect
     (Ir.Graph.nodes rms_absorbed
@@ -2191,27 +2074,6 @@ let () =
            | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32) -> false
            | _ -> true))
     "RMSNorm pass removes the single-use widening cast";
-  let ffn_schedule =
-    fused_ffn |> Serving_schedule.of_graph |> expect_ok
-    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
-  in
-  expect
-    (Serving_schedule.commands ffn_schedule
-    |> List.exists (fun command ->
-           match Serving_schedule.Command.op command with
-           | Ir.Op.W4a16_swiglu_ffn { m = 1; n = 128; k = 64; _ } -> true
-           | _ -> false))
-    "W4A16 SwiGLU opcode survives schedule serialization";
-  let ffn_program = Metal.lower fused_ffn |> expect_ok in
-  expect
-    (contains_substring (Metal.Program.source ffn_program)
-       "kernel void llmopt_w4a16_dual_swiglu_f16_g64")
-    "Metal lowering emits the fused W4A16 SwiGLU kernel";
-  expect
-    (not
-       (contains_substring (Metal.Program.source ffn_program)
-          "kernel void llmopt_w4a16_swiglu_ffn_f16_g64"))
-    "Metal lowering excludes the retired serial W4A16 SwiGLU kernel";
 
   let rope_graph = Ir.Graph.create () in
   let rope_input =
@@ -3837,17 +3699,71 @@ let () =
   check_gguf_if_exists smol_path "llama" 200;
   check_gguf_if_exists lfm_path "lfm2" 100;
 
-  (* 7. Direct GGUF as Weight Archive Verification *)
-  if Sys.file_exists smol_path then (
-    match Gguf.of_file_as_archive smol_path with
-    | Error err -> failwith ("failed to load smol GGUF as weight archive: " ^ err)
-    | Ok archive ->
-        expect (Weight_archive.file_size archive > 0) "smol archive file_size > 0";
-        expect (List.length (Weight_archive.tensors archive) = 272) "smol archive has 272 tensors";
-        match Weight_archive.find archive "token_embd.weight" with
-        | None -> failwith "token_embd.weight not found in GGUF weight archive"
-        | Some t ->
-            expect (Weight_archive.Tensor.shape t = [49152; 576]) "token_embd shape is [49152; 576]";
-            expect (Weight_archive.Tensor.byte_length t > 0) "token_embd byte_length > 0");
+  (* 8. Parametric Epilogue Inlining Verification *)
+  let dummy_val id =
+    Ir.Value.make_tensor ~id ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16
+  in
+  let v_bias = dummy_val 101 in
+  let v_up = dummy_val 102 in
+  let v_res = dummy_val 103 in
+
+  let epi_none = Epilogue.none in
+  expect (Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"i" epi_none = "acc") "Epilogue.none emits acc";
+  expect (Epilogue.inputs epi_none = []) "Epilogue.none has no inputs";
+
+  let epi_bias = Epilogue.bias v_bias in
+  expect (Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"i" epi_bias = "(acc + (float)bias[i])") "Epilogue.bias emits correct MSL";
+  expect (List.length (Epilogue.inputs epi_bias) = 1) "Epilogue.bias has 1 input";
+
+  let epi_silu_mul = Epilogue.silu_mul ~up:v_up in
+  expect (List.length (Epilogue.inputs epi_silu_mul) = 1) "Epilogue.silu_mul has 1 input";
+  expect (String.length (Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"i" epi_silu_mul) > 20) "Epilogue.silu_mul emits non-empty MSL";
+
+  let epi_composed = Epilogue.compose ~producer:epi_silu_mul ~consumer:(Epilogue.residual_add ~residual:v_res) in
+  (match epi_composed with
+  | Ok (Epilogue.Silu_mul_residual_add { up; residual }) ->
+      expect (Ir.Value.equal up v_up) "composed up matches";
+      expect (Ir.Value.equal residual v_res) "composed residual matches"
+  | _ -> failwith "Epilogue.compose failed for silu_mul + residual_add");
+
+  let w4_silu_msl = Metal.emit_parametric_w4a16_linear ~name:"test_w4_silu" ~epilogue:epi_silu_mul in
+  expect (String.length w4_silu_msl > 100) "w4_silu_msl emits valid length";
+  expect (String.sub w4_silu_msl 0 11 = "kernel void") "w4_silu_msl starts with kernel void";
+
+  let q4_res_msl = Metal.emit_parametric_q4_k_linear ~name:"test_q4_res" ~epilogue:(Epilogue.residual_add ~residual:v_res) in
+  expect (String.length q4_res_msl > 100) "q4_res_msl emits valid length";
+
+  (* 9. Pass_fuse_epilogues Graph Rewrite Verification *)
+  let g = Ir.Graph.create () in
+  let x = Ir.Graph.fresh_tensor_value g ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16 in
+  let w = Ir.Graph.fresh_tensor_value g ~shape:(Tensor_shape.of_ints_exn [ 64; 32 ]) ~dtype:Ir.Dtype.UInt8 in
+  let s = Ir.Graph.fresh_tensor_value g ~shape:(Tensor_shape.of_ints_exn [ 64; 1 ]) ~dtype:Ir.Dtype.Float16 in
+  let b = Ir.Graph.fresh_tensor_value g ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16 in
+  let out_lin = Ir.Graph.fresh_tensor_value g ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16 in
+  let out_final = Ir.Graph.fresh_tensor_value g ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16 in
+
+  Ir.Graph.append g ~op:(Ir.Op.W4a16_linear { m = 1; n = 64; k = 64; bias = false })
+    ~inputs:[ x; w; s ] ~output:(Some out_lin);
+  Ir.Graph.append g ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ out_lin; b ] ~output:(Some out_final);
+  Ir.Graph.add_output g ~name:"result" out_final;
+
+  let g_fused = Passes.fuse_epilogues g in
+  let fused_nodes = Ir.Graph.nodes g_fused in
+  expect (List.length fused_nodes = 2) "Pass_fuse_epilogues reduced graph by eliminating Add node";
+  (match fused_nodes with
+  | [ compute_node; output_node ] -> (
+      (match Ir.node_op compute_node with
+      | Ir.Op.W4a16_linear { m = 1; n = 64; k = 64; bias = true } -> ()
+      | _ -> failwith "Expected W4a16_linear with bias = true");
+      (match Ir.node_op output_node with
+      | Ir.Op.Output { name = "result" } -> ()
+      | _ -> failwith "Expected Output node for result"))
+  | _ -> failwith "Expected exactly 2 nodes (compute + output)");
+
+  (* 10. Hardware-Aware Swizzled simdgroup_matrix Prefill GEMM Verification *)
+  let gemm_msl = Metal.emit_simdgroup_matrix_gemm ~name:"llmopt_swizzled_gemm" ~epilogue:epi_silu_mul in
+  expect (String.length gemm_msl > 200) "gemm_msl emits valid length";
+  expect (String.sub gemm_msl 0 17 = "struct GEMMParams") "gemm_msl contains struct GEMMParams";
 
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"

@@ -50,3 +50,8 @@ val block32_entries : Kernel_abi.Entry.t list
 val kquant_entries : Kernel_abi.Entry.t list
 val attention_entries : Kernel_abi.Entry.t list
 val attention_source : string
+val emit_parametric_w4a16_linear : name:string -> epilogue:Epilogue.t -> string
+val emit_parametric_q4_k_linear : name:string -> epilogue:Epilogue.t -> string
+val emit_simdgroup_matrix_gemm : name:string -> epilogue:Epilogue.t -> string
+
+

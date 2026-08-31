@@ -6,6 +6,7 @@ module Short_conv_step_fused = Pass_fuse_short_conv_step
 module Gated_delta = Pass_fuse_gated_delta
 module Lm_head_argmax = Pass_fuse_lm_head_argmax
 module Co_schedule = Pass_co_schedule
+module Epilogues = Pass_fuse_epilogues
 
 val fuse_linear_bias : Ir.Graph.t -> Ir.Graph.t
 val fuse_rms_norm : Ir.Graph.t -> Ir.Graph.t
@@ -17,6 +18,7 @@ val fuse_swiglu_ffn : Ir.Graph.t -> (Ir.Graph.t, string) result
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
 val fuse_gated_delta : Ir.Graph.t -> Ir.Graph.t
 val fuse_lm_head_argmax : Ir.Graph.t -> Ir.Graph.t
+val fuse_epilogues : Ir.Graph.t -> Ir.Graph.t
 val co_schedule : Ir.Graph.t -> Ir.Graph.t
 val co_schedule_plan : Compute_plan.t -> Ir.Graph.t
 
