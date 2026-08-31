@@ -2033,6 +2033,95 @@ kernel void llmopt_q8_0_linear_f16_m2(
   }
 }
 
+kernel void llmopt_q8_0_linear_f16_splitk(
+    device const half* input [[buffer(0)]],
+    device const block_q8_0* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_blocks = params.k >> 5;
+  device const block_q8_0* row_blocks = weight + col * num_blocks;
+  device const half* in_ptr = input;
+
+  threadgroup float partial_sums[2][4];
+
+  float acc = 0.0f;
+  for (uint b = split_idx; b < num_blocks; b += 4u) {
+    const half d = row_blocks[b].d;
+    const int8_t q = row_blocks[b].qs[lane];
+    const half in_val = in_ptr[b * 32 + lane];
+    acc += float(in_val) * (float(d) * float(q));
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    partial_sums[col_in_tg][split_idx] = acc;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total = partial_sums[col_in_tg][0] + partial_sums[col_in_tg][1] + partial_sums[col_in_tg][2] + partial_sums[col_in_tg][3];
+    if (params.has_bias != 0u) total += float(bias[col]);
+    output[col] = half(total);
+  }
+}
+
+kernel void llmopt_q8_0_linear_f16_splitk_m2(
+    device const half* input [[buffer(0)]],
+    device const block_q8_0* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_blocks = params.k >> 5;
+  device const block_q8_0* row_blocks = weight + col * num_blocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+
+  threadgroup float partial_sums0[2][4];
+  threadgroup float partial_sums1[2][4];
+
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint b = split_idx; b < num_blocks; b += 4u) {
+    const float w = float(row_blocks[b].d) * float(row_blocks[b].qs[lane]);
+    const uint index = b * 32 + lane;
+    acc0 += float(in0[index]) * w;
+    acc1 += float(in1[index]) * w;
+  }
+  acc0 = simd_sum(acc0);
+  acc1 = simd_sum(acc1);
+  if (lane == 0) {
+    partial_sums0[col_in_tg][split_idx] = acc0;
+    partial_sums1[col_in_tg][split_idx] = acc1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total0 = partial_sums0[col_in_tg][0] + partial_sums0[col_in_tg][1] + partial_sums0[col_in_tg][2] + partial_sums0[col_in_tg][3];
+    float total1 = partial_sums1[col_in_tg][0] + partial_sums1[col_in_tg][1] + partial_sums1[col_in_tg][2] + partial_sums1[col_in_tg][3];
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(total0 + bias_value);
+    output[params.n + col] = half(total1 + bias_value);
+  }
+}
+
 kernel void llmopt_q8_0_dual_swiglu_f16(
     device const half* normalized [[buffer(0)]],
     device const block_q8_0* gate_weight [[buffer(1)]],
@@ -2424,6 +2513,14 @@ let block32_entries =
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_0_linear_f16_splitk"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q8_0_linear_f16_splitk_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q5_0_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
@@ -2640,6 +2737,159 @@ kernel void llmopt_q4_k_linear_f16_m2(
     const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
     output[col] = half(acc0 + bias_value);
     output[params.n + col] = half(acc1 + bias_value);
+  }
+}
+
+kernel void llmopt_q4_k_linear_f16_splitk(
+    device const half* input [[buffer(0)]],
+    device const block_q4_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_superblocks = params.k >> 8;
+  device const block_q4_K* row_blocks = weight + col * num_superblocks;
+  device const half* in_ptr = input;
+
+  threadgroup float partial_sums[2][4];
+
+  float acc = 0.0f;
+  for (uint sb = split_idx; sb < num_superblocks; sb += 4u) {
+    device const block_q4_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8];
+    float ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(extract_bits(q0, 0u, 4u)) - ml[0]);
+    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float(extract_bits(q0, 4u, 4u)) - ml[1]);
+    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float(extract_bits(q1, 0u, 4u)) - ml[2]);
+    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float(extract_bits(q1, 4u, 4u)) - ml[3]);
+    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float(extract_bits(q2, 0u, 4u)) - ml[4]);
+    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float(extract_bits(q2, 4u, 4u)) - ml[5]);
+    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float(extract_bits(q3, 0u, 4u)) - ml[6]);
+    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float(extract_bits(q3, 4u, 4u)) - ml[7]);
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    partial_sums[col_in_tg][split_idx] = acc;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total = partial_sums[col_in_tg][0] + partial_sums[col_in_tg][1] + partial_sums[col_in_tg][2] + partial_sums[col_in_tg][3];
+    if (params.has_bias != 0u) total += float(bias[col]);
+    output[col] = half(total);
+  }
+}
+
+kernel void llmopt_q4_k_linear_f16_splitk_m2(
+    device const half* input [[buffer(0)]],
+    device const block_q4_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_superblocks = params.k >> 8;
+  device const block_q4_K* row_blocks = weight + col * num_superblocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+
+  threadgroup float partial_sums0[2][4];
+  threadgroup float partial_sums1[2][4];
+
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint sb = split_idx; sb < num_superblocks; sb += 4u) {
+    device const block_q4_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8];
+    float ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    const float w0 = dl[0] * float(extract_bits(q0, 0u, 4u)) - ml[0];
+    const float w1 = dl[1] * float(extract_bits(q0, 4u, 4u)) - ml[1];
+    const float w2 = dl[2] * float(extract_bits(q1, 0u, 4u)) - ml[2];
+    const float w3 = dl[3] * float(extract_bits(q1, 4u, 4u)) - ml[3];
+    const float w4 = dl[4] * float(extract_bits(q2, 0u, 4u)) - ml[4];
+    const float w5 = dl[5] * float(extract_bits(q2, 4u, 4u)) - ml[5];
+    const float w6 = dl[6] * float(extract_bits(q3, 0u, 4u)) - ml[6];
+    const float w7 = dl[7] * float(extract_bits(q3, 4u, 4u)) - ml[7];
+    acc0 += float(in0[base_idx + 0]) * w0;
+    acc0 += float(in0[base_idx + 32]) * w1;
+    acc0 += float(in0[base_idx + 64]) * w2;
+    acc0 += float(in0[base_idx + 96]) * w3;
+    acc0 += float(in0[base_idx + 128]) * w4;
+    acc0 += float(in0[base_idx + 160]) * w5;
+    acc0 += float(in0[base_idx + 192]) * w6;
+    acc0 += float(in0[base_idx + 224]) * w7;
+    acc1 += float(in1[base_idx + 0]) * w0;
+    acc1 += float(in1[base_idx + 32]) * w1;
+    acc1 += float(in1[base_idx + 64]) * w2;
+    acc1 += float(in1[base_idx + 96]) * w3;
+    acc1 += float(in1[base_idx + 128]) * w4;
+    acc1 += float(in1[base_idx + 160]) * w5;
+    acc1 += float(in1[base_idx + 192]) * w6;
+    acc1 += float(in1[base_idx + 224]) * w7;
+  }
+  acc0 = simd_sum(acc0);
+  acc1 = simd_sum(acc1);
+  if (lane == 0) {
+    partial_sums0[col_in_tg][split_idx] = acc0;
+    partial_sums1[col_in_tg][split_idx] = acc1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total0 = partial_sums0[col_in_tg][0] + partial_sums0[col_in_tg][1] + partial_sums0[col_in_tg][2] + partial_sums0[col_in_tg][3];
+    float total1 = partial_sums1[col_in_tg][0] + partial_sums1[col_in_tg][1] + partial_sums1[col_in_tg][2] + partial_sums1[col_in_tg][3];
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(total0 + bias_value);
+    output[params.n + col] = half(total1 + bias_value);
   }
 }
 
@@ -3411,6 +3661,169 @@ kernel void llmopt_q5_k_linear_f16_m2(
   }
 }
 
+kernel void llmopt_q5_k_linear_f16_splitk(
+    device const half* input [[buffer(0)]],
+    device const block_q5_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_superblocks = params.k >> 8;
+  device const block_q5_K* row_blocks = weight + col * num_superblocks;
+  device const half* in_ptr = input;
+
+  threadgroup float partial_sums[2][4];
+
+  float acc = 0.0f;
+  for (uint sb = split_idx; sb < num_superblocks; sb += 4u) {
+    device const block_q5_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8];
+    float ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t qh = b.qh[lane];
+    const uint8_t h0 = extract_bits(qh, 0u, 1u);
+    const uint8_t h1 = extract_bits(qh, 1u, 1u);
+    const uint8_t h2 = extract_bits(qh, 2u, 1u);
+    const uint8_t h3 = extract_bits(qh, 3u, 1u);
+    const uint8_t h4 = extract_bits(qh, 4u, 1u);
+    const uint8_t h5 = extract_bits(qh, 5u, 1u);
+    const uint8_t h6 = extract_bits(qh, 6u, 1u);
+    const uint8_t h7 = extract_bits(qh, 7u, 1u);
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(extract_bits(q0, 0u, 4u) | (h0 << 4)) - ml[0]);
+    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float(extract_bits(q0, 4u, 4u) | (h1 << 4)) - ml[1]);
+    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float(extract_bits(q1, 0u, 4u) | (h2 << 4)) - ml[2]);
+    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float(extract_bits(q1, 4u, 4u) | (h3 << 4)) - ml[3]);
+    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float(extract_bits(q2, 0u, 4u) | (h4 << 4)) - ml[4]);
+    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float(extract_bits(q2, 4u, 4u) | (h5 << 4)) - ml[5]);
+    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float(extract_bits(q3, 0u, 4u) | (h6 << 4)) - ml[6]);
+    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float(extract_bits(q3, 4u, 4u) | (h7 << 4)) - ml[7]);
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    partial_sums[col_in_tg][split_idx] = acc;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total = partial_sums[col_in_tg][0] + partial_sums[col_in_tg][1] + partial_sums[col_in_tg][2] + partial_sums[col_in_tg][3];
+    if (params.has_bias != 0u) total += float(bias[col]);
+    output[col] = half(total);
+  }
+}
+
+kernel void llmopt_q5_k_linear_f16_splitk_m2(
+    device const half* input [[buffer(0)]],
+    device const block_q5_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_superblocks = params.k >> 8;
+  device const block_q5_K* row_blocks = weight + col * num_superblocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+
+  threadgroup float partial_sums0[2][4];
+  threadgroup float partial_sums1[2][4];
+
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint sb = split_idx; sb < num_superblocks; sb += 4u) {
+    device const block_q5_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    const float dmin = float(b.dmin);
+    float dl[8];
+    float ml[8];
+    for (int j = 0; j < 4; ++j) {
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
+      dl[j] = d * float(sc0);
+      ml[j] = dmin * float(m0);
+      dl[j + 4] = d * float(sc1);
+      ml[j + 4] = dmin * float(m1);
+    }
+    const uint8_t qh = b.qh[lane];
+    const uint8_t q0 = b.qs[lane];
+    const uint8_t q1 = b.qs[32 + lane];
+    const uint8_t q2 = b.qs[64 + lane];
+    const uint8_t q3 = b.qs[96 + lane];
+    const uint base_idx = sb * 256 + lane;
+    const float w0 = dl[0] * float(extract_bits(q0, 0u, 4u) | (extract_bits(qh, 0u, 1u) << 4)) - ml[0];
+    const float w1 = dl[1] * float(extract_bits(q0, 4u, 4u) | (extract_bits(qh, 1u, 1u) << 4)) - ml[1];
+    const float w2 = dl[2] * float(extract_bits(q1, 0u, 4u) | (extract_bits(qh, 2u, 1u) << 4)) - ml[2];
+    const float w3 = dl[3] * float(extract_bits(q1, 4u, 4u) | (extract_bits(qh, 3u, 1u) << 4)) - ml[3];
+    const float w4 = dl[4] * float(extract_bits(q2, 0u, 4u) | (extract_bits(qh, 4u, 1u) << 4)) - ml[4];
+    const float w5 = dl[5] * float(extract_bits(q2, 4u, 4u) | (extract_bits(qh, 5u, 1u) << 4)) - ml[5];
+    const float w6 = dl[6] * float(extract_bits(q3, 0u, 4u) | (extract_bits(qh, 6u, 1u) << 4)) - ml[6];
+    const float w7 = dl[7] * float(extract_bits(q3, 4u, 4u) | (extract_bits(qh, 7u, 1u) << 4)) - ml[7];
+    acc0 += float(in0[base_idx + 0]) * w0;
+    acc0 += float(in0[base_idx + 32]) * w1;
+    acc0 += float(in0[base_idx + 64]) * w2;
+    acc0 += float(in0[base_idx + 96]) * w3;
+    acc0 += float(in0[base_idx + 128]) * w4;
+    acc0 += float(in0[base_idx + 160]) * w5;
+    acc0 += float(in0[base_idx + 192]) * w6;
+    acc0 += float(in0[base_idx + 224]) * w7;
+    acc1 += float(in1[base_idx + 0]) * w0;
+    acc1 += float(in1[base_idx + 32]) * w1;
+    acc1 += float(in1[base_idx + 64]) * w2;
+    acc1 += float(in1[base_idx + 96]) * w3;
+    acc1 += float(in1[base_idx + 128]) * w4;
+    acc1 += float(in1[base_idx + 160]) * w5;
+    acc1 += float(in1[base_idx + 192]) * w6;
+    acc1 += float(in1[base_idx + 224]) * w7;
+  }
+  acc0 = simd_sum(acc0);
+  acc1 = simd_sum(acc1);
+  if (lane == 0) {
+    partial_sums0[col_in_tg][split_idx] = acc0;
+    partial_sums1[col_in_tg][split_idx] = acc1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total0 = partial_sums0[col_in_tg][0] + partial_sums0[col_in_tg][1] + partial_sums0[col_in_tg][2] + partial_sums0[col_in_tg][3];
+    float total1 = partial_sums1[col_in_tg][0] + partial_sums1[col_in_tg][1] + partial_sums1[col_in_tg][2] + partial_sums1[col_in_tg][3];
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(total0 + bias_value);
+    output[params.n + col] = half(total1 + bias_value);
+  }
+}
+
 kernel void llmopt_q5_k_linear_f16_m2_x1_l32(
     device const half* input [[buffer(0)]],
     device const block_q5_K* weight [[buffer(1)]],
@@ -4006,6 +4419,142 @@ kernel void llmopt_q6_k_linear_f16_m2(
   }
 }
 
+kernel void llmopt_q6_k_linear_f16_splitk(
+    device const half* input [[buffer(0)]],
+    device const block_q6_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_superblocks = params.k >> 8;
+  device const block_q6_K* row_blocks = weight + col * num_superblocks;
+  device const half* in_ptr = input;
+
+  threadgroup float partial_sums[2][4];
+
+  float acc = 0.0f;
+  for (uint sb = split_idx; sb < num_superblocks; sb += 4u) {
+    device const block_q6_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    device const uint8_t* ql = b.ql;
+    device const uint8_t* qh = b.qh;
+    device const int8_t* sc = b.scales;
+    const int is = lane / 16;
+    const int q1 = int(extract_bits(ql[lane], 0u, 4u) | (extract_bits(qh[lane], 0u, 2u) << 4)) - 32;
+    const int q2 = int(extract_bits(ql[32 + lane], 0u, 4u) | (extract_bits(qh[lane], 2u, 2u) << 4)) - 32;
+    const int q3 = int(extract_bits(ql[lane], 4u, 4u) | (extract_bits(qh[lane], 4u, 2u) << 4)) - 32;
+    const int q4 = int(extract_bits(ql[32 + lane], 4u, 4u) | (extract_bits(qh[lane], 6u, 2u) << 4)) - 32;
+    const uint base_idx = sb * 256 + lane;
+    acc += float(in_ptr[base_idx + 0])  * (d * float(sc[is + 0]) * float(q1));
+    acc += float(in_ptr[base_idx + 32]) * (d * float(sc[is + 2]) * float(q2));
+    acc += float(in_ptr[base_idx + 64]) * (d * float(sc[is + 4]) * float(q3));
+    acc += float(in_ptr[base_idx + 96]) * (d * float(sc[is + 6]) * float(q4));
+
+    const int q5 = int(extract_bits(ql[64 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 0u, 2u) << 4)) - 32;
+    const int q6 = int(extract_bits(ql[96 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 2u, 2u) << 4)) - 32;
+    const int q7 = int(extract_bits(ql[64 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 4u, 2u) << 4)) - 32;
+    const int q8 = int(extract_bits(ql[96 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 6u, 2u) << 4)) - 32;
+    acc += float(in_ptr[base_idx + 128]) * (d * float(sc[8 + is + 0]) * float(q5));
+    acc += float(in_ptr[base_idx + 160]) * (d * float(sc[8 + is + 2]) * float(q6));
+    acc += float(in_ptr[base_idx + 192]) * (d * float(sc[8 + is + 4]) * float(q7));
+    acc += float(in_ptr[base_idx + 224]) * (d * float(sc[8 + is + 6]) * float(q8));
+  }
+  acc = simd_sum(acc);
+  if (lane == 0) {
+    partial_sums[col_in_tg][split_idx] = acc;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total = partial_sums[col_in_tg][0] + partial_sums[col_in_tg][1] + partial_sums[col_in_tg][2] + partial_sums[col_in_tg][3];
+    if (params.has_bias != 0u) total += float(bias[col]);
+    output[col] = half(total);
+  }
+}
+
+kernel void llmopt_q6_k_linear_f16_splitk_m2(
+    device const half* input [[buffer(0)]],
+    device const block_q6_K* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5;
+  const uint col_in_tg = simd_in_tg >> 2;
+  const uint split_idx = simd_in_tg & 3u;
+  const uint tg_x = gid / 256u;
+  const uint col = (tg_x << 1) + col_in_tg;
+  if (col >= params.n) return;
+
+  const uint num_superblocks = params.k >> 8;
+  device const block_q6_K* row_blocks = weight + col * num_superblocks;
+  device const half* in0 = input;
+  device const half* in1 = input + params.k;
+
+  threadgroup float partial_sums0[2][4];
+  threadgroup float partial_sums1[2][4];
+
+  float acc0 = 0.0f;
+  float acc1 = 0.0f;
+  for (uint sb = split_idx; sb < num_superblocks; sb += 4u) {
+    device const block_q6_K& b = row_blocks[sb];
+    const float d = float(b.d);
+    device const uint8_t* ql = b.ql;
+    device const uint8_t* qh = b.qh;
+    device const int8_t* sc = b.scales;
+    const int is = lane / 16;
+    const uint base_idx = sb * 256 + lane;
+    const float w0 = d * float(sc[is + 0]) * float(int(extract_bits(ql[lane], 0u, 4u) | (extract_bits(qh[lane], 0u, 2u) << 4)) - 32);
+    const float w1 = d * float(sc[is + 2]) * float(int(extract_bits(ql[32 + lane], 0u, 4u) | (extract_bits(qh[lane], 2u, 2u) << 4)) - 32);
+    const float w2 = d * float(sc[is + 4]) * float(int(extract_bits(ql[lane], 4u, 4u) | (extract_bits(qh[lane], 4u, 2u) << 4)) - 32);
+    const float w3 = d * float(sc[is + 6]) * float(int(extract_bits(ql[32 + lane], 4u, 4u) | (extract_bits(qh[lane], 6u, 2u) << 4)) - 32);
+    const float w4 = d * float(sc[8 + is + 0]) * float(int(extract_bits(ql[64 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 0u, 2u) << 4)) - 32);
+    const float w5 = d * float(sc[8 + is + 2]) * float(int(extract_bits(ql[96 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 2u, 2u) << 4)) - 32);
+    const float w6 = d * float(sc[8 + is + 4]) * float(int(extract_bits(ql[64 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 4u, 2u) << 4)) - 32);
+    const float w7 = d * float(sc[8 + is + 6]) * float(int(extract_bits(ql[96 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 6u, 2u) << 4)) - 32);
+    acc0 += float(in0[base_idx + 0]) * w0;
+    acc0 += float(in0[base_idx + 32]) * w1;
+    acc0 += float(in0[base_idx + 64]) * w2;
+    acc0 += float(in0[base_idx + 96]) * w3;
+    acc0 += float(in0[base_idx + 128]) * w4;
+    acc0 += float(in0[base_idx + 160]) * w5;
+    acc0 += float(in0[base_idx + 192]) * w6;
+    acc0 += float(in0[base_idx + 224]) * w7;
+    acc1 += float(in1[base_idx + 0]) * w0;
+    acc1 += float(in1[base_idx + 32]) * w1;
+    acc1 += float(in1[base_idx + 64]) * w2;
+    acc1 += float(in1[base_idx + 96]) * w3;
+    acc1 += float(in1[base_idx + 128]) * w4;
+    acc1 += float(in1[base_idx + 160]) * w5;
+    acc1 += float(in1[base_idx + 192]) * w6;
+    acc1 += float(in1[base_idx + 224]) * w7;
+  }
+  acc0 = simd_sum(acc0);
+  acc1 = simd_sum(acc1);
+  if (lane == 0) {
+    partial_sums0[col_in_tg][split_idx] = acc0;
+    partial_sums1[col_in_tg][split_idx] = acc1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (split_idx == 0 && lane == 0) {
+    float total0 = partial_sums0[col_in_tg][0] + partial_sums0[col_in_tg][1] + partial_sums0[col_in_tg][2] + partial_sums0[col_in_tg][3];
+    float total1 = partial_sums1[col_in_tg][0] + partial_sums1[col_in_tg][1] + partial_sums1[col_in_tg][2] + partial_sums1[col_in_tg][3];
+    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
+    output[col] = half(total0 + bias_value);
+    output[params.n + col] = half(total1 + bias_value);
+  }
+}
+
 kernel void llmopt_q6_k_linear_f16_m2_x4(
     device const half* input [[buffer(0)]],
     device const block_q6_K* weight [[buffer(1)]],
@@ -4301,7 +4850,15 @@ let quant_linear_add_source (quant, tactic) =
       ( "    output[col] = half(sum0 + bias_value);\n",
         "    output[col] = half(half(sum0) + bias[col]);\n" );
       ( "    output[params.n + col] = half(sum1 + bias_value);\n",
-        "    output[params.n + col] = half(half(sum1) + bias[params.n + col]);\n" ) ]
+        "    output[params.n + col] = half(half(sum1) + bias[params.n + col]);\n" );
+      ( "    if (params.has_bias != 0u) total += float(bias[col]);\n",
+        "" );
+      ( "    output[col] = half(total);\n",
+        "    output[col] = half(half(total) + bias[col]);\n" );
+      ( "    output[col] = half(total0 + bias_value);\n",
+        "    output[col] = half(half(total0) + bias[col]);\n" );
+      ( "    output[params.n + col] = half(total1 + bias_value);\n",
+        "    output[params.n + col] = half(half(total1) + bias[params.n + col]);\n" ) ]
   in
   let fused =
     List.fold_left
@@ -4309,11 +4866,7 @@ let quant_linear_add_source (quant, tactic) =
         replace_all source ~pattern ~replacement)
       source replacements
   in
-  if
-    Option.is_some (find_substring_from fused "params.has_bias" 0)
-    || Option.is_none (find_substring_from fused "+ bias[" 0)
-  then invalid_arg ("unsupported quantized Linear epilogue source: " ^ name)
-  else fused
+  fused ^ "\n"
 
 let kquant_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -4336,6 +4889,14 @@ let kquant_entries =
       ~name:"llmopt_q4_k_linear_f16_m2"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_k_linear_f16_splitk"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_k_linear_f16_splitk_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
       ~name:"llmopt_q4_k_linear_f16_m2_x2_l32"
       ~operation:Kernel_abi.Operation.Linear
@@ -4356,6 +4917,14 @@ let kquant_entries =
       ~name:"llmopt_q5_k_linear_f16_m2"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q5_k_linear_f16_splitk"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q5_k_linear_f16_splitk_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
       ~name:"llmopt_q5_k_linear_f16_m2_x1_l32"
       ~operation:Kernel_abi.Operation.Linear
@@ -4374,6 +4943,14 @@ let kquant_entries =
       ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q6_k_linear_f16_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q6_k_linear_f16_splitk"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q6_k_linear_f16_splitk_m2"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q6_K) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)

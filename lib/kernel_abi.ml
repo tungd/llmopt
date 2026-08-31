@@ -238,6 +238,32 @@ module Linear_tactic = struct
           && block_quantized problem quant
           && problem.supports_simd ~threads:64) }
 
+  let splitk_paired_quant_registration quant : registration =
+    { build =
+        (fun _ ->
+          { name = quant_kernel_name quant ^ "_splitk_m2";
+            threadgroup = (256, 1, 1) });
+      accepts =
+        (fun (problem : problem) ->
+          problem.m = 2 && problem.k >= 4096 && problem.n > 0
+          && problem.k mod (block_elements quant * 4) = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem quant
+          && problem.supports_simd ~threads:256) }
+
+  let splitk_quant_registration quant : registration =
+    { build =
+        (fun _ ->
+          { name = quant_kernel_name quant ^ "_splitk";
+            threadgroup = (256, 1, 1) });
+      accepts =
+        (fun (problem : problem) ->
+          problem.m = 1 && problem.k >= 4096 && problem.n > 0
+          && problem.k mod (block_elements quant * 4) = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem quant
+          && problem.supports_simd ~threads:256) }
+
   let registry : registration list =
     [ full_simd_kquant_registration ~accepts_superblocks:(fun _ -> true)
         Ir.Dtype.Q4_K
@@ -245,6 +271,10 @@ module Linear_tactic = struct
       full_simd_kquant_registration ~accepts_superblocks:(fun _ -> true)
         Ir.Dtype.Q5_K
         "_m2_n1_l32" ]
+    @ List.map splitk_paired_quant_registration
+      [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
+    @ List.map splitk_quant_registration
+      [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
     @ List.map four_column_quant_registration
       [ Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
     @ List.map paired_quant_registration
@@ -254,12 +284,16 @@ module Linear_tactic = struct
         [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
           Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
 
-  let select ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype =
+  let select_all ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype =
     let problem =
       { supports_simd; m; n; k; input_dtype; storage; output_dtype }
     in
     registry
-    |> List.find_map (fun (registration : registration) ->
+    |> List.filter_map (fun (registration : registration) ->
            if registration.accepts problem then Some (registration.build problem)
            else None)
+
+  let select ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype =
+    select_all ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype
+    |> function [] -> None | first :: _ -> Some first
 end

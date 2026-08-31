@@ -79,6 +79,16 @@ module Linear_tactic : sig
     output_dtype:Ir.Dtype.t ->
     t option
 
+  val select_all :
+    supports_simd:(threads:int -> bool) ->
+    m:int ->
+    n:int ->
+    k:int ->
+    input_dtype:Ir.Dtype.t ->
+    storage:Ir.Linear_storage.layout ->
+    output_dtype:Ir.Dtype.t ->
+    t list
+
   val name : t -> string
   val threadgroup : t -> int * int * int
 end

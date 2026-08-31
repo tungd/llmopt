@@ -76,6 +76,9 @@ Break past the physical single-token memory bandwidth ceiling on Apple Silicon b
 - `VERIFY`: `ninja -f ninja.build test all && python3 -c "import subprocess; subprocess.run(['ninja', '-f', 'ninja.build', 'test'], check=True)"`
 - `DONE WHEN`: Split-K kernels compile cleanly, pass unit tests with exact output match, and select on qualifying wide layers.
 - `ESCALATE IF`: Atomic float additions cause non-deterministic logit drift.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Implemented 4-way SIMDgroup intra-threadgroup Split-K parallel reductions for `Q4_K`, `Q5_K`, `Q6_K`, and `Q8_0` with `_splitk` and `_splitk_m2` variants in `lib/metal.ml`. Updated tactic selection and candidate fallback in `lib/kernel_abi.ml`, `lib/kernel_abi.mli`, and `lib/metal_runtime.ml`. Added unit test coverage in `test/test.ml`.
+  - `VERIFICATION`: `ninja -f ninja.build test all` (49/49 passed); Gemma (1.0310x), Qwen (0.9208x), SmolLM (0.8992x) bit-exact reproduction verified.
 
 ---
 

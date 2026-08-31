@@ -940,6 +940,21 @@ let () =
   expect
     (Metal.Tactic.name q4_m1_tactic = "llmopt_q4_k_linear_f16")
     "Metal tactics retain the generic Q4_K Linear outside the paired-row shape";
+  [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_splitk";
+    Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_splitk";
+    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_splitk";
+    Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_splitk" ]
+  |> List.iter (fun (quant, expected_name) ->
+         let splitk_tactic =
+           Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:64
+             ~k:4096 ~input_dtype:Ir.Dtype.Float16
+             ~storage:(Ir.Linear_storage.Block_quantized quant)
+             ~output_dtype:Ir.Dtype.Float16
+           |> Option.get
+         in
+         expect
+           (Metal.Tactic.name splitk_tactic = expected_name)
+           "Metal tactics select Split-K parallel reductions for wide K >= 4096 Linear layers");
   let q5_unbalanced_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:2 ~n:64
       ~k:1536 ~input_dtype:Ir.Dtype.Float16

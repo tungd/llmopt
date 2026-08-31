@@ -1642,22 +1642,35 @@ let validate_linear_shapes ~m ~n ~k input weight output =
 let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
     quant =
   let input_dtype = Ir.Dtype.Quant quant in
-  let* tactic =
-    match
-      Kernel_abi.Linear_tactic.select
-        ~supports_simd:(fun ~threads:_ -> true) ~m ~n ~k
-        ~input_dtype:Ir.Dtype.Float16
-        ~storage:(Ir.Linear_storage.Block_quantized quant) ~output_dtype
-    with
-    | Some tactic -> Ok tactic
-    | None ->
+  let candidates =
+    Kernel_abi.Linear_tactic.select_all
+      ~supports_simd:(fun ~threads:_ -> true) ~m ~n ~k
+      ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized quant) ~output_dtype
+  in
+  let rec try_candidates = function
+    | [] ->
         Error
           (Printf.sprintf
-             "no registered quantized Linear tactic for m=%d n=%d k=%d %s"
-             m n k (Ir.Dtype.to_string input_dtype))
+             "serving package has no linear kernel for %s -> %s (m=%d n=%d k=%d)"
+             (Ir.Dtype.to_string input_dtype)
+             (Ir.Dtype.to_string output_dtype) m n k)
+    | tactic :: rest -> (
+        let name = Kernel_abi.Linear_tactic.name tactic ^ suffix in
+        match
+          kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Linear
+            ~input_dtype ~output_dtype
+        with
+        | Ok entry -> Ok entry
+        | Error _ -> try_candidates rest)
   in
-  kernel_entry ~name:(Kernel_abi.Linear_tactic.name tactic ^ suffix) runtime
-    ~operation:Kernel_abi.Operation.Linear ~input_dtype ~output_dtype
+  match candidates with
+  | [] ->
+      Error
+        (Printf.sprintf
+           "no registered quantized Linear tactic for m=%d n=%d k=%d %s"
+           m n k (Ir.Dtype.to_string input_dtype))
+  | _ -> try_candidates candidates
 
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
@@ -2064,6 +2077,8 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
       m * ((n + 1) / 2)
     else if String.ends_with ~suffix:"_m2_x1_l32" tactic_name then m * n
     else if String.ends_with ~suffix:"_m2_x4" tactic_name then (n + 3) / 4
+    else if String.ends_with ~suffix:"_splitk_m2" tactic_name then (n + 1) / 2
+    else if String.ends_with ~suffix:"_splitk" tactic_name then (n + 1) / 2
     else if String.ends_with ~suffix:"_m2" tactic_name then n
     else m * n
   in
@@ -2075,6 +2090,10 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
       || String.ends_with ~suffix:"_m2_x1_l32" tactic_name
       || String.ends_with ~suffix:"_m2_x4" tactic_name
     then short_row_quant_grid columns
+    else if
+      String.ends_with ~suffix:"_splitk_m2" tactic_name
+      || String.ends_with ~suffix:"_splitk" tactic_name
+    then Ok (columns * 256)
     else linear_f16_grid columns
   in
   dispatch_output ~name ?batch runtime state output
