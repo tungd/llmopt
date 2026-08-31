@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-31
+* **Architecture specification rewrite**: Comprehensively rewrote `.okf/architecture.md` to reflect the current state of `llmopt`: model-neutral Model Program ABI v2 execution, GGUF/UD direct ingestion, modular compiler pass fusions (SwiGLU, rotary QK, wide RMSNorm, Linear residuals, ShortConv), shared tactic registry, static memory liveness planning, continuous batching (SRPT queueing), compressed radix caching, and NEON SIMD stochastic sampling.
 * **OKF bundle maintenance**: Updated experiments index to include slices exp-0118 through exp-0133, repaired frontmatter actor conventions and lifecycle statuses across decisions and experiments, and verified full OKF v0.2 strict conformance.
 
 ## 2026-08-30

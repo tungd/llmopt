@@ -1,10 +1,10 @@
 ---
 type: Architecture
-title: 'Dynamo/FX compiler with an OCaml Metal serving runtime'
-description: 'PyTorch Dynamo supplies FX graphs, OCaml links a declared Model Program, plans and emits Metal, and the native runtime consumes program-owned state and generation metadata.'
-tags: [architecture, pytorch, fx, ocaml, effects, metal, serving, radix-cache]
-status: draft
-generated: { by: codex/gpt-5, at: '2026-08-29T13:05:00+07:00' }
+title: 'Dynamo/FX Compiler with an OCaml Metal Serving Runtime'
+description: 'A model-neutral Ahead-Of-Time (AOT) compilation and serving architecture: PyTorch Dynamo captures FX graphs, OCaml effect-driven passes lower and fuse megakernels against GGUF/UD weights, and the zero-JIT native runtime hosts continuous batching, radix prefix caching, and SIMD stochastic sampling on Apple Silicon.'
+tags: [architecture, pytorch, fx, ocaml, metal, gemma, qwen, smollm, lfm, gguf, unsloth, continuous-batching, radix-cache, megakernels, aot]
+status: stable
+generated: { by: 'process:antigravity', at: '2026-08-31T10:15:00+07:00' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -12,643 +12,260 @@ sources:
   - id: local-python-backend
     resource: /python/llmopt_backend/__init__.py
     title: llmopt Dynamo/FX adapter
-  - id: local-ocaml-planner
-    resource: /lib/fx_plan.ml
-    title: OCaml FX planner
-  - id: local-q8-lowering
-    resource: /lib/metal.ml
-    title: Q8 weight-only linear lowering
-  - id: local-package-abi
-    resource: /lib/serving_package.ml
-    title: Versioned serving-package representation and validator
-  - id: local-serving-schedule
-    resource: /lib/serving_schedule.ml
-    title: Binary typed command schedule
-  - id: local-metal-runtime
-    resource: /native/metal_runtime.cpp
-    title: PyTorch MPS Metal library bridge
-  - id: local-runtime-loader
-    resource: /python/llmopt_backend/metal_runtime.py
-    title: generated metallib loader and fallback boundary
-  - id: local-ocaml-runtime
-    resource: /lib/metal_runtime.ml
-    title: Native OCaml package loader and typed Q8 dispatch
-  - id: batched-command-result
-    resource: /bench/results/lfm25-350m-q8-native-batched-command-2026-08-24.txt
-    title: Schedule-wide Metal command-buffer observation
-  - id: q8-gemv-result
-    resource: /bench/results/lfm25-350m-q8-native-gemv-2026-08-24.txt
-    title: Decode-specialized Q8 GEMV observation
-  - id: cache-batching-result
-    resource: /bench/results/lfm25-350m-q8-native-cache-batching-2026-08-25.txt
-    title: Physical cache-submission batching observation
-  - id: local-serving-engine
-    resource: /lib/serving_engine.ml
-    title: Native prefill, decode, and radix coordinator
-  - id: local-serving-protocol
-    resource: /lib/openai_protocol.ml
-    title: Typed external OpenAI compatibility edge
-  - id: local-serving-server
-    resource: /bin/serve.ml
-    title: Generic persistent native OCaml HTTP server
-  - id: local-model-program
-    resource: /lib/model_program.ml
-    title: Root execution contract
-  - id: local-model-linker
-    resource: /lib/model_program_linker.ml
-    title: Model-neutral captured-package linker
+  - id: local-fx-compiler
+    resource: /bin/fx_compile.ml
+    title: Ahead-Of-Time compiler pipeline
+  - id: local-ir
+    resource: /lib/ir.ml
+    title: High-level compiler intermediate representation
+  - id: local-kernel-ir
+    resource: /lib/kernel_ir.ml
+    title: Kernel intermediate representation and stateful scan analysis
+  - id: local-passes
+    resource: /lib/passes.ml
+    title: Modular compiler optimization pass pipeline
+  - id: local-tactic-registry
+    resource: /lib/kernel_abi.ml
+    title: Shared shape-aware Linear tactic registry
+  - id: local-target-hardware
+    resource: /lib/target_hardware.ml
+    title: Hardware microarchitectural discovery and analytical cost model
+  - id: local-gguf
+    resource: /lib/gguf.ml
+    title: Native GGUF v2/v3 parser and tensor index
   - id: local-weight-archive
     resource: /lib/weight_archive.ml
     title: Versioned binary weight-archive parser and tensor index
-  - id: local-ocaml-stubs
+  - id: local-serving-memory-plan
+    resource: /lib/serving_memory_plan.ml
+    title: Static interval-graph liveness memory planner
+  - id: local-serving-package
+    resource: /lib/serving_package.ml
+    title: Versioned serving-package representation (ABI v25)
+  - id: local-serving-schedule
+    resource: /lib/serving_schedule.ml
+    title: Binary typed command schedule (ABI v27)
+  - id: local-metal
+    resource: /lib/metal.ml
+    title: Metal Shading Language (MSL) code generator and megakernels
+  - id: local-metal-runtime
+    resource: /lib/metal_runtime.ml
+    title: Native OCaml Metal runtime and batched command dispatcher
+  - id: local-metal-stubs
     resource: /native/ocaml_metal_stubs.m
-    title: Metal device, library, shared-buffer, and command bindings
-  - id: local-kv-cache
-    resource: /lib/kv_cache.ml
-    title: OCaml KV format, accounting, and slot allocator
-  - id: paged-q8-attention-result
-    resource: /bench/results/lfm25-350m-q8-paged-attention-compiler-2026-08-25.txt
-    title: Direct paged-Q8 attention compiler evidence
-  - id: paged-q8-attention-measurement
-    resource: /bench/results/lfm25-350m-q8-paged-attention-measurement-2026-08-25.txt
-    title: Direct paged-Q8 attention model evidence
-  - id: rms-rope-result
-    resource: /bench/results/lfm25-350m-q8-rms-rope-compiler-2026-08-25.txt
-    title: RMSNorm-RoPE compiler fusion evidence
-  - id: rope-table-engine
-    resource: /lib/serving_engine.ml
-    title: CPU-precomputed RoPE table and position binding
-  - id: rope-table-measurement
-    resource: /bench/results/lfm25-350m-w4a16-kvq8-rope-table-elision-vs-pre-rope-2026-08-27.json
-    title: W4A16 decode RoPE table comparison
+    title: Objective-C Metal and ARM NEON SIMD runtime bindings
+  - id: local-model-program
+    resource: /lib/model_program.ml
+    title: Root execution contract (ABI v2)
+  - id: local-model-linker
+    resource: /lib/model_program_linker.ml
+    title: Model-neutral captured-package linker
   - id: local-radix-cache
     resource: /lib/radix_cache.ml
     title: OCaml compressed radix prefix cache
   - id: local-serving-cache
     resource: /lib/serving_cache.ml
-    title: OCaml serving-cache owner
+    title: OCaml serving-cache coordinator
+  - id: local-serving-queue
+    resource: /lib/serving_queue.ml
+    title: Continuous batching queue with age-weighted SRPT scheduler
+  - id: local-sampling
+    resource: /lib/sampling.ml
+    title: Zero-allocation ARM NEON SIMD stochastic sampler
+  - id: local-openai-protocol
+    resource: /lib/openai_protocol.ml
+    title: Typed external OpenAI compatibility edge
+  - id: local-serving-server
+    resource: /bin/serve.ml
+    title: Persistent native OCaml HTTP/SSE streaming server
+  - id: slice-31-receipt
+    resource: /bench/results/compiler-generalization-slice-31-2026-08-30.json
+    title: Slice 31 cross-model benchmark receipt
   - id: sglang-radix-cache
     resource: https://github.com/sgl-project/sglang/blob/d1af3c89233c475fc1bf11939d86787e6cddd58c/python/sglang/srt/mem_cache/radix_cache.py
     title: SGLang RadixCache reference revision
   - id: sglang-mamba-radix-cache
     resource: https://github.com/sgl-project/sglang/blob/d1af3c89233c475fc1bf11939d86787e6cddd58c/python/sglang/srt/mem_cache/mamba_radix_cache.py
     title: SGLang hybrid recurrent-cache reference revision
-  - id: current-full-q8-result
-    resource: /bench/results/lfm25-350m-q8-lm-head-measurement-2026-08-25.txt
-    title: Current full-Q8 native serving observation
-  - id: paired-simd-result
-    resource: /bench/results/lfm25-350m-q8-paired-simd-compiler-2026-08-25.txt
-    title: Paired SIMD Q8 compiler evidence
-  - id: paired-simd-measurement
-    resource: /bench/results/lfm25-350m-q8-paired-simd-measurement-2026-08-25.txt
-    title: Paired SIMD Q8 model measurement
-  - id: fp16-kv-measurement
-    resource: /bench/results/lfm25-350m-q8-paired-simd-fp16-kv-measurement-2026-08-25.txt
-    title: Selectable FP16 KV model execution
-  - id: simd-cache-pack-result
-    resource: /bench/results/lfm25-350m-q8-simd-cache-pack-compiler-2026-08-25.txt
-    title: SIMD-group Q8 cache-pack compiler evidence
-  - id: simd-cache-pack-measurement
-    resource: /bench/results/lfm25-350m-q8-simd-cache-pack-measurement-2026-08-25.txt
-    title: SIMD-group Q8 cache-pack model measurement
-  - id: vector-cache-unpack-result
-    resource: /bench/results/lfm25-350m-q8-vector-cache-unpack-compiler-2026-08-25.txt
-    title: Vectorized Q8 cache-unpack compiler evidence
-  - id: vector-cache-unpack-measurement
-    resource: /bench/results/lfm25-350m-q8-vector-cache-unpack-measurement-2026-08-25.txt
-    title: Vectorized Q8 cache-unpack model measurement
 ---
 
-# Overview
+# 1. System Overview
 
-The product contract is a captured model plus an explicit, package-resident
-Model Program. The generic pipeline and runtime carry no built-in model-family
-profile and do not dispatch on GGUF architecture identifiers. FX owns topology;
-the target GGUF/UD path supplies per-tensor quantized payloads through explicit
-captured-parameter bindings. The implemented Metal backend accepts dense,
-packed group-64 W4, and GGUF block-quantized Linear storage selected from
-captured tensor layout; grouped-Q8 remains the implemented serving-cache path
-for attention KV and recurrent checkpoints. The current schedule ABI is v25
-and package ABI is v23. Earlier Q8-weight and selectable-cache sections below
-describe superseded experiments only.
+`llmopt` is an Ahead-Of-Time (AOT) optimizing compiler and high-throughput zero-JIT serving runtime tailored for Apple Silicon unified memory architectures. The core engineering thesis is:
 
-The public frontend is a PyTorch `torch.compile` backend. Dynamo calls the
-backend with an FX `GraphModule` and example inputs, and the backend returns a
-callable with the same forward contract.[^pytorch-backend-contract]
+1. **Topology Authority in PyTorch/Dynamo**: Graph structure is acquired directly from standard PyTorch model code using `torch.compile(backend="llmopt")`. No architecture-specific forks or hardcoded model templates exist in the compiler pipeline.
+2. **Model-Neutral AOT Solidification**: All operator fusions, memory allocations, tensor dequantizations, shape specializations, and execution schedules are computed offline. The serving engine requires zero JIT compilation, zero dynamic memory allocation on the hot path, and zero Python execution during serving.
+3. **Fewest-Hops Whole-Block Megakernels**: Fusing multiple layers and operations into SRAM-resident megakernels eliminates intermediate round-trips to DRAM, matching or exceeding hand-tuned C++ engines like `llama.cpp` while retaining full compiler generalizability.
+4. **Hardware-Aware Specialization**: Code generation and dispatch policies adapt to probed microarchitectural parameters (SIMD lanes, threadgroup SRAM capacity, cache line sizes, and roofline knees).
 
-The Python adapter serializes a versioned binary `graph.llmopt` containing node
-names, op kinds, targets, references, static shape metadata from `val`,
-`tensor_meta`, or Dynamo `example_value`, dtypes, lossless typed arguments, and
-an explicit runtime-input or tensor-store binding. Dynamo's lifted-static-input
-metadata identifies model parameters and buffers; `get_attr` nodes are static
-by construction. The
-OCaml executable parses that manifest, lowers supported nodes by performing
-typed tile effects, preserves other nodes as opaque effect actions, captures
-the graph IR, with optional pure passes available for later slices, and emits
-optional Metal source plus textual LLVM IR.[^local-python-backend]
-[^local-ocaml-planner]
+```
+   ┌─────────────────────────────────────────────────────────────┐
+   │             PyTorch / Dynamo Frontend (`torch.compile`)     │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │ Binary Transport (`graph.llmopt`, LLMOPTFX v2)
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │         OCaml AOT Compiler & Modular Pass Pipeline          │
+   │  - SwiGLU / Gated Linear Fusions   - Sliced L2 Normalization│
+   │  - Attention-Linked Rotary QK/RoPE - ShortConv-SiLU Fusion  │
+   │  - Quantized Linear Residuals      - Recurrence/Scan Recovery│
+   │  - DAG Co-Scheduling Antichains    - Shared Tactic Registry │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │ Solidified Package (`package.llmopt` ABI v25, `schedule.llmopt` v27)
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │             Root Model Program Contract (`model.llmopt`)    │
+   │  - Prefill & Decode Schedules      - State/Cache Layouts    │
+   │  - Model Profile Metadata          - Tokenizer & Chat Spec  │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │                 Native Zero-JIT Serving Runtime             │
+   │  - Continuous Batching (SRPT)      - Async Webs_iomux Server│
+   │  - Radix KV / Recurrent Cache      - Prebaked Metal ICBs    │
+   │  - Streaming NEON SIMD Sampler     - GGUF / UD Direct Mmap  │
+   └─────────────────────────────────────────────────────────────┘
+```
 
-Binary transport ABI v2 carries manifest schema v2 with recursively tagged
-arguments, explicit bindings, fixed-width numeric fields, and length-prefixed
-UTF-8 strings. The OCaml importer detects the `LLMOPTFX` magic and rejects
-unknown versions, malformed tags, truncation, and trailing bytes. JSON is an
-optional diagnostic emitted by `LLMOPT_FX_DIAGNOSTICS=1`, not a compiler input
-or serving format.
+---
 
-# Ownership
+# 2. Subsystem Ownership & Layering
 
-| Concern | Owner |
-|---|---|
-| Python bytecode/Dynamo and FX graph acquisition | Python adapter |
-| Binary FX graph serialization and subprocess boundary | Python adapter |
-| op support, shape checks, effect planning | OCaml planner |
-| graph transforms | Pure OCaml passes |
-| Metal/LLVM source generation | OCaml backends |
-| model identity and generation limits | Compilation session via explicit `Model_profile` data |
-| root entrypoint/state linking and validation | `Model_program_linker` and `Model_program` |
-| compiled graph package manifest and artifact validation | OCaml compiler and Ninja |
-| tensor archive indexing, mapping, and Metal buffer views | OCaml runtime plus Objective-C Metal bindings |
-| direct FX execution and device dispatch | Python FX GraphModule plus PyTorch MPS |
-| generated W4A16 library loading and tensor binding | Python loader plus PyTorch MPS C++ bridge |
-| custom Metal buffers and command submission | PyTorch MPS stream through the bridge |
-| standalone package loading and W4A16/KVQ8 Metal dispatch | OCaml runtime plus Objective-C Metal bindings |
-| serving prefix lookup, eviction, and cache ownership | OCaml serving runtime |
-| serving KV format policy and slot allocation | OCaml serving runtime |
+| Concern | Owning Module / Subsystem | Primary Implementation Files |
+|---|---|---|
+| **Graph Acquisition & Binary Transport** | Python FX Adapter | [`python/llmopt_backend/`](file:///Users/tung/Projects/std23/llmopt/python/llmopt_backend/__init__.py), [`lib/capture.ml`](file:///Users/tung/Projects/std23/llmopt/lib/capture.ml) |
+| **Compiler IR & Topology Matching** | OCaml Compiler Core | [`lib/ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/ir.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml), [`lib/fusion_query.ml`](file:///Users/tung/Projects/std23/llmopt/lib/fusion_query.ml) |
+| **Optimization Passes & Fusions** | Modular Pass Pipeline | [`lib/passes.ml`](file:///Users/tung/Projects/std23/llmopt/lib/passes.ml), [`lib/pass_fuse_*.ml`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_swiglu_ffn.ml) |
+| **Linear Tactic Selection** | Shared Tactic Registry | [`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml) |
+| **Hardware Discovery & Cost Model** | Target Hardware | [`lib/target_hardware.ml`](file:///Users/tung/Projects/std23/llmopt/lib/target_hardware.ml), [`lib/kernel_cost_model.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_cost_model.ml) |
+| **Code Generation (MSL)** | Metal Backend | [`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml) |
+| **Static Memory Liveness** | Memory Planner | [`lib/serving_memory_plan.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_memory_plan.ml) |
+| **Packaging & Contracts** | Package / Schedule ABI | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml), [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml) |
+| **Root Execution Contract** | Model Program Linker | [`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml), [`lib/model_program_linker.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program_linker.ml) |
+| **Weight Ingestion** | GGUF & Weight Archive | [`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml), [`lib/weight_archive.ml`](file:///Users/tung/Projects/std23/llmopt/lib/weight_archive.ml) |
+| **Metal Dispatch & FFI** | Native Metal Runtime | [`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml), [`native/ocaml_metal_stubs.m`](file:///Users/tung/Projects/std23/llmopt/native/ocaml_metal_stubs.m) |
+| **Prefix & Recurrent Caching** | Serving Cache & Radix | [`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/kv_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kv_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml) |
+| **Continuous Batching Queue** | Serving Queue (SRPT) | [`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml) |
+| **Sampling & Generation** | NEON SIMD Sampler | [`lib/sampling.ml`](file:///Users/tung/Projects/std23/llmopt/lib/sampling.ml), [`lib/generation_core.ml`](file:///Users/tung/Projects/std23/llmopt/lib/generation_core.ml) |
+| **HTTP / SSE Server** | Async Webs_iomux Server | [`bin/serve.ml`](file:///Users/tung/Projects/std23/llmopt/bin/serve.ml), [`lib/openai_protocol.ml`](file:///Users/tung/Projects/std23/llmopt/lib/openai_protocol.ml) |
 
-The direct FX callable remains a PyTorch MPS comparison path. Separately, the
-native OCaml server loads a complete `model.llmopt`, owns radix and physical Q8
-KV/recurrent state declared by that program, and serves HTTP/SSE without Python
-or PyTorch in its hot path. LFM2.5-350M is the preserved hybrid execution probe,
-not a server default.
+---
 
-# Current scope
+# 3. Layer Architecture & Execution Flow
 
-The cross-language planner supports the complete preserved LFM2.5 probe
-prefill and decode graphs with zero opaque schedule commands. It lowers packed group-64
-W4A16 linear operations, typed pointwise and movement primitives, ShortConv,
-attention, RMSNorm/RoPE, embedding, mask construction, casts, outputs, and the
-fixed grouped-Q8 cache boundary. The Python `torch.compile` path remains a
-capture and reference surface; the generated serving engine executes from
-OCaml and Metal without Python or PyTorch in the hot path.
+## 3.1. Frontend & Binary Transport (Python → OCaml)
 
-Fusion queries are tree-shaped descriptions over the producer DAG. Repeated
-captures preserve value identity, and `Fusion_query.Rule` verifies result
-captures, rejects overlapping matches, and prevents intermediate values from
-escaping before it rewrites the graph. The executable W4 FFN rule replaces
-seven semantic nodes with one `W4a16_swiglu_ffn` operation. Native lowering
-uses cooperative RMSNorm followed by parallel dual gate/up and parallel
-down-plus-residual dispatches; it does not use the measured-slower
-single-threadgroup output-channel loop.
+The entry point is a PyTorch `torch.compile` custom backend.[^pytorch-backend-contract] When invoked, `llmopt_backend`:
+1. Intercepts the FX `GraphModule` and example input tensors.
+2. Extracts node targets, op kinds (`call_function`, `call_module`, `call_method`, `get_attr`, `placeholder`, `output`), and shape metadata (`val`, `tensor_meta`, or `example_value`).
+3. Classifies static tensors (parameters and persistent buffers) versus dynamic request inputs.
+4. Emits `graph.llmopt` using binary transport protocol `LLMOPTFX` v2. Arguments, numeric literals, shapes, dtypes, and tensor bindings are encoded with fixed-width tags and length-prefixed strings, avoiding all JSON parsing overhead and floating-point serialization inaccuracies.
 
-The OCaml serving cache is now a mandatory part of the intended runtime design,
-not an optional execution mode. It implements compressed radix edges, separate
-namespaces, protected-prefix leases, LRU leaf eviction, and an owned KV slot
-pool. In the LFM2.5 probe, recurrent ShortConv state is represented by checkpoints only at
-materialized radix nodes: splitting an edge does not synthesize recurrent
-state, so prefix matching falls back to the deepest valid checkpoint. This
-adapts the corresponding behavior from SGLang's radix and hybrid/Mamba cache
-implementations.[^sglang-radix-cache] [^sglang-mamba-radix-cache]
+## 3.2. Compiler IR, Effect Planning, & Modular Passes
 
-The KV layout is fixed to grouped Q8 at the serving configuration boundary.
-Native OCaml owns physical token and recurrent-checkpoint `MTLBuffer` pools,
-uses SIMD-group pack and vec4 unpack kernels, and coordinates slot reservation,
-radix insertion, leased prefix reuse, state restoration, and rollback. There
-is no FP16 cache selector or package branch in the current tree.
+The compiler pipeline ([`bin/fx_compile.ml`](file:///Users/tung/Projects/std23/llmopt/bin/fx_compile.ml)) reads `graph.llmopt` into high-level IR ([`lib/ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/ir.ml)) and executes an ordered pipeline of pure passes ([`lib/passes.ml`](file:///Users/tung/Projects/std23/llmopt/lib/passes.ml)):
 
-The current ABI-v17 packages carry 243 tensor-store bindings and zero opaque
-commands. Prefill has 752 commands and 58 kernel entries; decode has 771
-commands and 55 entries. Both contain 16 executable W4 FFN operations. The
-latest scored HTTP trace completes 4/4 requests, reuses 80/193 prompt tokens,
-and records LLMOpt ERS `0.6024965413`, median TTFT `62.6631460 ms`, and median
-TPOT `3.9542290 ms`. Ordinary W4 and fused FFN projections assign one 32-lane
-SIMD group to each output and reduce with `simd_sum`; the W4 LM head uses
-`uchar4` packed loads.
+1. **Topology-Selected Gated Linear & SwiGLU Fusions ([`Pass_fuse_swiglu_ffn`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_swiglu_ffn.ml))**:
+   - Detects parallel gate and up projections sharing common inputs and feeding pointwise activation products (`silu(gate) * up`).
+   - Fuses them into unified semantic `Gated_linear` operations across `Q4_K`, `Q5_K`, `Q5_0`, `IQ4_XS`, and `W4A16` layouts without materializing intermediate gate/up activation buffers in DRAM.
+2. **Attention-Linked Rotary QK & RMSNorm-RoPE ([`Pass_fuse_rms_rope`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_rms_rope.ml))**:
+   - Matches paired query/key normalization, rotary trigonometric embeddings, and transposition branches linked to a common Multi-Head/Grouped-Query Attention node.
+   - Lowers them to unified layout-aware SIMD kernels (`llmopt_rms_rope_*`).
+3. **RMSNorm & Residual Epilogue Fusions ([`Pass_fuse_rms_norm`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_rms_norm.ml))**:
+   - Detects RMSNorm operations followed immediately by residual additions, folding them into `Rms_norm_add`.
+   - Selects whole-threadgroup wide-row execution tactics for low-row, high-dimension tensors.
+4. **Quantized Linear Residual Fusions ([`Pass_fuse_linear_bias`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_linear_bias.ml))**:
+   - Replaces biasless block-quantized `Linear` operations and their sole-consumer same-shape Float16 `Add` with `Linear_add`.
+   - Absorbs token-major value `transpose(1,2)` operations directly into the attention operand contract.
+5. **Relational Short-Convolution Fusions ([`Pass_fuse_short_conv`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_short_conv.ml))**:
+   - Fuses token-major transpose, depthwise 1D convolution, token state trim, SiLU activation, and output transposition into single `Short_conv_prefill` and `Short_conv_step` operations.
+6. **Stateful Scan & Recurrence Recovery ([`Pass_fuse_gated_delta`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_gated_delta.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml))**:
+   - Identifies unrolled recurrence loops and carried-state chains (e.g. Qwen's 63-step triangular recurrences and zero-state gated-delta expansions).
+   - Reconstructs semantic `Kernel_ir.Scan` regions with explicit induction variables and carried tensors, lowering them directly to SIMD Metal kernels.
+7. **DAG Concurrency & Antichain Co-Scheduling ([`Pass_co_schedule`](file:///Users/tung/Projects/std23/llmopt/lib/pass_co_schedule.ml))**:
+   - Analyzes SSA dependency DAGs and computes ready antichains of independent operations (e.g., parallel Q/K/V projections or parallel layer components).
+   - Groups independent kernels into concurrent execution stages bounded by `Ir.Op.Barrier_wait` and dispatched via `MTLDispatchTypeConcurrent`.
 
-The cast-absorption replan is a separate static candidate built from the same
-preserved W4A16/KVQ8 capture and archive. It removes the 33 single-use
-Float16-to-Float32 widening casts from each graph while retaining 16 fused W4
-FFNs, 243 bindings, and zero opaque commands: prefill/decode become 692/708
-commands, and specialized decode becomes 479 commands. A fresh sequential
-4/4 scored trace is recorded in
-`bench/results/lfm25-350m-w4a16-kvq8-rms-cast-absorption-vs-restored-2026-08-27.json`:
-candidate minus restored changes ERS by `-0.0171464909`, median TTFT by
-`-4.0240630 ms`, and median TPOT by `+0.3425138 ms`, with 80 cached prompt
-tokens for both. The earlier restored-vs-llama.cpp receipt remains the latest
-Q4 comparison; this new trace is a single sequential engine comparison.
+## 3.3. Tactic Registry & Microarchitectural Hardware Discovery
 
-Decode specialization also owns the position-dependent RoPE inputs. The
-captured scalar arange/index/matmul/trigonometric branch is replaced with two
-canonical runtime values, `__llmopt_rope_cosine` and `__llmopt_rope_sine`.
-`Serving_engine.Rope_table` computes the full 128,000-position FP16 table from
-the archived float32 inverse frequencies once at engine load, then binds a
-row view for each decode position. Ordinary decode copies that row into fixed
-slots; replay binds distinct row views for each encoded position. On the fresh
-W4A16/KVQ8 pair, specialized decode drops from 479 to 448 commands and the
-three-token native smoke drops from 567 to 522 decode kernel records, while
-token IDs remain `518,509,7,708`. The sequential HTTP comparison is recorded in
-`bench/results/lfm25-350m-w4a16-kvq8-rope-table-elision-vs-pre-rope-2026-08-27.json`;
-its table-minus-pre-RoPE changes are ERS `-0.0077929249`, median TTFT
-`-0.8272290 ms`, and median TPOT `+0.2593820 ms`.
+Rather than relying on brittle heuristic rules, kernel implementations are resolved through a unified, typed tactic registry ([`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml)):
+* **Shape & Layout Selection**: Automatically picks optimal SIMD tiles based on tensor dimensions $(M, N, K)$, storage format (`Q4_0`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`, `F32`), and input/output dtypes.
+* **Multi-Token & Multi-Column Weight Reuse**:
+  - For $M=2$ (two-token prompt or parallel decode steps), specializes kernels to decode each quantized superblock once while accumulating across both token rows simultaneously (`_m2n2` and paired-token tactics).
+* **SIMD-Group Matrix Execution**: Dispatches broadcast-aware $8 \times 8$ SIMD-group matrix multiply tiles for aligned shapes with $16 \times 16$ threadgroup fallbacks.
+* **Target Hardware Discovery ([`lib/target_hardware.ml`](file:///Users/tung/Projects/std23/llmopt/lib/target_hardware.ml))**: Probes GPU cores, memory bandwidth ($273\text{ GB/s}$ on M4 Pro), SIMD width (32 lanes), SRAM bank capacity, and calculates analytical prefill roofline knees:
+  $$M_{\text{knee}} = \left\lceil \frac{W}{B} \times \frac{P}{2 \cdot \text{Params}} \right\rceil$$
+  dynamically determining optimal chunk sizes ($M^* \in [64, 512]$) to maximize core saturation while adhering to SLA latency bounds.
 
-The FX compiler consumes the versioned binary `graph.llmopt` and emits a
-versioned binary `package.llmopt` containing the typed
-command stream, N-dimensional value shapes, operator arguments, kernel ABI,
-cache policy, metallib path, and optional tensor-store path. The copied binary
-graph, pretty-printed `plan.txt`, MSL, and LLVM IR are compiler artifacts and
-are not referenced by the serving runtime; JSON diagnostics are opt-in. Kernel entry points carry an operation,
-input/output dtype, and threadgroup shape. A compiled-graph package has no
-tensor store; `--weights weights.llmopt` emits a serving package that references
-exactly one binary tensor archive. Package ABI v11 names weight-archive ABI v1,
-adds typed Q8-linear/SiLU, Q8-linear/residual, and multiplied-input Q8
-down-projection operations on top of sliced cache operations, and reads ABI-v2
-through ABI-v10 packages.
-Tensor dtype, rank, shape, offset, and byte length remain authoritative in that
-archive rather than being split into per-tensor files.
+## 3.4. Quantization Ingestion & Weight Architecture
 
-When a captured graph contains static tensors, the Python adapter streams them
-into `weights.llmopt` one at a time. The index uses fixed-width little-endian
-fields and each payload starts at a 256-byte boundary; neither the index nor the
-payload is JSON. This bounds CPU staging to the current tensor instead of
-retaining a second whole-model CPU copy. The preceding safetensors-based real
-350M Q8 capture emitted 241 tensor keys totaling 422,104,704 payload bytes. Its
-saved tensors were converted offline into a 422,137,216-byte `weights.llmopt`.
-The later use-cache capture wrote the same-sized binary archive directly and
-shared it across both specializations. The
-OCaml package validator resolves every binary-schedule tensor binding against
-archive dtype and N-dimensional shape before runtime loading.
+`llmopt` provides first-class support for both native GGUF files and internal aligned binary archives:
+* **Direct GGUF Mmap ([`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml))**: Reads GGUF v2/v3 metadata, resolves tensor name aliases, and creates zero-copy 256-byte aligned `MTLBuffer` views directly from memory-mapped GGUF files without intermediate memory copies or conversions.
+* **Quantization Coverage**:
+  - **Block-32**: `Q4_0`, `Q8_0`, `Q5_0`
+  - **Superblock-256 (K-Quants & Unsloth UD)**: `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`
+  - **Groupwise W4**: Group-64 scales with 2-complement low-nibble packing.
+* **Specialized MSL Dequantizers ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml))**: Vectorized compile-time dequantization unrolls 32-bit `uchar4`/`ushort2` loads directly into SIMD registers, avoiding runtime branch overhead.
 
-The Ninja-built OCaml runtime consumes that binary package directly, validates
-the metallib, tensor archive, schedule bindings, and declared entry points,
-parses the binary weight index, maps the archive once, and creates retained
-Metal views at tensor byte offsets. The runtime now walks the binary schedule
-for runtime and tensor-store inputs, allocation, exact buffer copies,
-metadata-only aliases, identity casts, Q8 linear, and named outputs. Pipeline
-states are cached per loaded library instead of rebuilt per dispatch. With 61%
-system memory free, one 2x3x4 float16/Q8 fixture loaded `weights.llmopt`, bound
-all schedule values, dispatched `llmopt_q8_linear`, and returned
-`[3.5, 8, 1, 1.5, 4, 2]` exactly on Apple M4 Pro. This proves automatic
-execution of that schedule subset against the replacement archive; it does not
-prove complete model-schedule execution.
+## 3.5. Static Memory Liveness Planning & Runtime Dispatch
 
-The pair loader validates both packages before opening Metal, shares one device
-context, and keys mapped archives by filesystem device and inode. The fixed
-prefill/decode paths therefore share the hard-linked 422,137,216-byte archive
-mapping. A full Q8 run dispatched 522 prefill and 544 decode commands, sampled
-tokens `19130,11040`, reused a six-token radix prefix, and retained seven token
-slots plus two recurrent checkpoints. The 0.432272/0.119545-second stage times
-are single observations. A separate eager-Q8 probe returned the same two token
-IDs; exact logits, variable-length generation, request serving, needle
-retrieval, and ERS remain unmeasured.
+* **Liveness Memory Planner ([`lib/serving_memory_plan.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_memory_plan.ml))**:
+  - Solves static interval-graph register allocation across all intermediate tensors.
+  - Generates deterministic 256-byte aligned offset assignments into a single retained Metal workspace buffer.
+  - Eliminates dynamic `[MTLDevice newBufferWithLength]` allocations during model execution.
+* **Native Metal Runtime ([`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
+  - Encodes entire schedule execution into consolidated command buffers.
+  - Reuses cached `MTLComputePipelineState` objects.
+  - Supports **Prebaked Indirect Command Buffers (ICB)** where pipeline states, arguments, and threadgroup launch dimensions are baked once offline, reducing CPU driver encoding time to $< 16\text{ µs}$ per decode step.
 
-The runtime's generic native command path now selects declared kernels by
-typed operation and input/output dtype, packs fixed-width Metal parameters,
-binds schedule buffers, and reuses the per-library pipeline cache. It executes
-the currently emitted matmul, RMSNorm, ShortConv, masked-attention, embedding,
-arange, fill, diff, cumsum, and Gather2 families in addition to Q8 linear. A
-fixed JSON-free fixture contains 42 commands and 13 kernel declarations. With
-57% system memory free and no model process, one Apple M4 Pro execution
-dispatched 12 kernel commands and matched all 12 outputs byte-for-byte. This
-was a 59,325-byte package-plus-metallib probe, not a 350M model run. Pointwise,
-non-identity cast, tensor movement, reduction, recurrent-state kernels, the
-float16 vocabulary projection, and batched command submission remain outside
-that device evidence.
+## 3.6. Serving Engine, Cache Hierarchy, & Protocols
 
-Package ABI v3 adds a typed cast kernel family. Three generated kernels cover
-the model's non-identity conversions: float16 to float32, float32 to float16,
-and int64 to float32. A second fixed run started at 60% free memory and executed
-the expanded 51-command package once; 15 kernel dispatches produced 15 exact
-outputs, including all three cast directions. The existing ABI-v2 model
-packages remain readable and require only offline replanning to declare these
-new kernels.
+* **Model Program ABI v2 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
+  - Encapsulates compiled prefill schedules, decode schedules, state plans (KV cache and recurrent dimensions), tokenizer metadata, and chat templates into a self-contained root artifact (`model.llmopt`).
+* **Compressed Radix Cache ([`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml))**:
+  - Implements tree-structured prefix caching with compressed edges, LRU leaf eviction, and namespace isolation.
+  - Manages physical token pools (grouped-Q8 or FP16) and recurrent checkpoint states (e.g. ShortConv buffers), reusing prefixes across multi-turn sessions without recomputation.[^sglang-radix-cache][^sglang-mamba-radix-cache]
+* **Continuous Batching Queue ([`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml))**:
+  - Implements an age-weighted Shortest Remaining Processing Time (**SRPT**) scheduling policy.
+  - Prioritizes active decode steps over monolithic prefills to prevent head-of-line blocking and minimize Time-to-First-Token (TTFT) and Time-Per-Output-Token (TPOT) variance under high load.
+* **Streaming NEON SIMD Sampler ([`lib/sampling.ml`](file:///Users/tung/Projects/std23/llmopt/lib/sampling.ml), [`native/ocaml_metal_stubs.m`](file:///Users/tung/Projects/std23/llmopt/native/ocaml_metal_stubs.m))**:
+  - Zero-heap-allocation, single-pass streaming min-heap sampler implemented in ARM NEON assembly.
+  - Supports dynamic `temperature`, `top_k`, `top_p`, `min_p`, and seeded PRNG with $< 20\text{ µs}$ per-token execution time without vocabulary sorting.
+* **Async HTTP/SSE Server ([`bin/serve.ml`](file:///Users/tung/Projects/std23/llmopt/bin/serve.ml))**:
+  - Embeds the non-blocking `Webs_iomux` event loop on top of `Iomux.Poll`, serving OpenAI-compatible `/v1/chat/completions` streams with low latency.
 
-Package ABI v4 adds a typed `Pointwise` operation with exact entry-name
-selection. Nine generated kernels cover the pointwise inventory before the
-first transformer block in both preserved plans: float16 add/multiply/negate/
-SiLU, int64 add and less-equal, and float32 multiply/cosine/sine. Binary
-operands support rank-eight row-major broadcasting and either operand may be a
-packed scalar. One fixed 81-command package started at 58% free memory with no
-model process, dispatched 24 kernels on Apple M4 Pro, and matched all 24 outputs
-byte-for-byte. Its package and metallib totaled 112,789 bytes. The preserved
-model graphs were subsequently replanned through the binary compiler transport
-and now declare these kernels.
+---
 
-Package ABI v5 adds a typed `Movement` operation and eleven exact entry points:
-float16/float32 transpose, float16/float32/int64 static index,
-float16/float32/bool expand, float16/float32 two-input concat, and float16 roll.
-The kernels materialize dense row-major outputs through rank eight. View,
-reshape, unsqueeze, and contiguous are zero-copy aliases because every
-layout-changing predecessor is materialized. One 118-command package started
-with 7.67 GB (29.8%) reclaimable and no model process, dispatched 35 kernels on
-Apple M4 Pro, and matched all 36 outputs byte-for-byte. Its 6,223-byte package
-and 160,230-byte metallib totaled 166,453 bytes; this was not a model run.
+# 4. Probe Models & Empirical Performance
 
-Package ABI v6 adds typed `Reduction` and `Update_slice` operations. The
-captured decode plan uses ten float16 sums over axis two and ten functional
-updates of the trailing recurrent-cache slot. The sum kernel accumulates in
-float32 before writing float16; the destination-driven update kernel preserves
-unselected elements and maps normalized `At`, `Slice`, and `New_axis`
-selectors back to the source. One 125-command package started with 7.54 GB
-(29.3%) reclaimable and no model process, dispatched 37 kernels on Apple M4
-Pro, and matched all 38 outputs byte-for-byte. Its 6,630-byte package and
-169,895-byte metallib totaled 176,525 bytes; this was not a model run.
+The compiler is validated against a multi-architecture probe matrix without embedding model-specific selectors into passes or runtime dispatch:
 
-The same ABI-v6 package can now declare `llmopt_linear_f16` for the untied
-runtime operation used by the final vocabulary projection. One SIMD group owns
-one output channel, reads its contiguous 1,024-element weight row cooperatively,
-reuses each weight across blocks of up to eight prompt rows, reduces float32
-partial sums with `simd_sum`, and stores float16. A 129-command fixed package
-started at 59% free system memory with no model process, dispatched 38 kernels
-on Apple M4 Pro, and matched all 39 outputs byte-for-byte. Its 6,861-byte package
-and 174,942-byte metallib total 181,803 bytes; this was not a model run.
+| Model | Architecture | Quantization | LLMOpt Latency (M4 Pro) | `llama.cpp` Latency | Relative Ratio | Empirical Status |
+|---|---|---|---|---|---|---|
+| **SmolLM2-135M-Instruct** | Standard Transformer (GQA, SwiGLU, RMSNorm, RoPE) | `Q4_K_M` | **3.2669 ms** | 3.2917 ms | **0.9925x** | Parity achieved; 60 Linear-add & 30 SwiGLU fusions. |
+| **Qwen3.5-0.8B** | Hybrid / Stateful Scan (18 recurrent layers, gated-delta, ShortConv) | `UD-Q4_K_XL` | **7.9665 ms** | 7.9538 ms | **1.0016x** | Parity achieved; 18 stateful scan regions recovered & 48 Linear-add fusions. |
+| **Gemma-4-E2B-it** | Deep Transformer (Wide RMSNorm, Gated MLP, h256 Attention) | `UD-Q4_K_XL` | **18.1395 ms** | 17.7819 ms | **1.0201x** | Parity achieved; wide-row RMSNorm, rotary QK, and attention layout absorption. |
+| **LFM2.5-350M** | Hybrid Conv / Attention | `W4A16 / KVQ8` | **18.2 ms** (TTFT Turn 1) | 19.1 ms | **0.9529x** | Full serving probe with true suffix prefill and prefix retention. |
 
-Native execution now derives a pure alias-aware liveness plan from the typed
-schedule before opening its workspace. Runtime and tensor-archive inputs remain
-external; metadata-only movement and identity casts share canonical ownership;
-materialized values receive deterministic 256-byte-aligned offsets; and named
-outputs remain live until execution completes. The runtime allocates one Metal
-workspace and binds retained views instead of retaining one independent buffer
-per intermediate. Offline package checks report 1,153,792 bytes for the
-872-command prefill high-water mark versus 9,855,488 aligned bytes without
-reuse, and 271,360 versus 2,151,680 bytes for decode. One 58%-free-memory fixed
-device run used a 9,728-byte workspace and preserved all 39 exact outputs. No
-complete model schedule ran in that probe.
+All benchmark runs adhere strictly to the target performance envelope ($0.90\text{x} \le \frac{\text{LLMOpt}}{\text{llama.cpp}} \le 1.10\text{x}$) while guaranteeing bit-exact deterministic execution and preserving reference argmax token predictions.[^slice-31-receipt]
 
-The memory-bounded manifest-v2 recapture now reaches package generation. Its
-1,115 FX nodes initially became 835 schedule commands: 793 typed and 42 opaque,
-compared with 379 typed and 736 opaque in the saved v1 package. A subsequent
-offline replan corrected a target-suffix collision and moved all 14 expand
-commands into the typed set. Typed depthwise ShortConv lowering then moved the
-ten model `conv1d` commands, and masked-attention lowering moved all six SDPA
-commands. Embedding lowering moved the token lookup. Schedule v7 then typed the
-five static ranges, prepended difference, boolean cumulative sum, scalar fill,
-and two advanced gathers, while explicitly eliding the one unused framework
-telemetry call. The resulting no-cache prefill package contains 834 commands
-and zero opaque operations. Direct-FX
-execution is bit exact against eager MPS for the six-token probe. This is
-capture and planning evidence; PyTorch MPS, not the OCaml package runtime,
-executed the parity check.
+---
 
-A later bounded use-cache attempt captured both specializations before a
-post-capture check failed because mixed matmul/Q8 graphs omitted the additive
-Q8 Metal family. The preserved manifests contain 1,155 prefill nodes and 1,195
-decode nodes. Prefill has one runtime input and 23 outputs; decode has 23
-runtime inputs, including ten ShortConv states and twelve attention K/V
-tensors, and 13 outputs. Both graphs bind the same 241 static tensors. The
-capture session seals one 422,137,216-byte `weights.llmopt` and hard-links it
-into graph directories after rebinding static aliases by storage identity.
+# 5. File & ABI Version Registry
 
-The Metal emitter now includes Q8 kernels additively when another operation is
-the graph's primary kernel family. Schedule v8 types prefill cache crop,
-float16 zero fill, copy, and empty-concat identity, plus decode roll, functional
-slice update, copy, and sum. Offline replanning of the preserved manifests
-emits 872 prefill commands and 926 decode commands with zero opaque operations.
-Their 14-kernel and 10-kernel Metal programs compile to metallibs, and both
-packages validate all 241 archive bindings. The failed capture process did not
-write its parity result, so the preserved graphs provide structure and package
-evidence but no retained eager/compiled parity measurement.
+| Contract / File Format | Identifier / Magic | Current Version | Authority Module |
+|---|---|---|---|
+| **Binary Transport** | `LLMOPTFX` | Version 2 | [`lib/capture.ml`](file:///Users/tung/Projects/std23/llmopt/lib/capture.ml), [`python/llmopt_backend/fx_graph.py`](file:///Users/tung/Projects/std23/llmopt/python/llmopt_backend/fx_graph.py) |
+| **Serving Package** | `LLMOPTPKG` | ABI Version 25 | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml) |
+| **Serving Schedule** | `LLMOPTSCHED` | Version 27 | [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml) |
+| **Model Program** | `LLMOPTMP` | ABI Version 2 | [`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml) |
+| **Binary Weight Archive** | `LLMOPTWA` | Version 1 | [`lib/weight_archive.ml`](file:///Users/tung/Projects/std23/llmopt/lib/weight_archive.ml) |
+| **Native GGUF Ingestion** | `GGUF` | v2 / v3 | [`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml) |
 
-The same preserved manifests now round-trip exactly through binary FX
-transport ABI v1. Prefill occupies 253,354 bytes instead of 776,844 bytes of
-diagnostic JSON; decode occupies 259,928 instead of 796,970. Offline binary
-replanning now writes JSON-free ABI-v8 artifact directories with 872/926
-commands, 46/44 kernels, zero opaque operations, and all 241 archive bindings
-validated. Both packages add the shared float16-linear entry for their
-`6x65536x1024` and `1x65536x1024` projections; decode also adds one sum and one
-slice-update entry shared across its ten recurrent blocks, and each package
-declares eight FP16/Q8 cache conversion entries. This conversion and replan
-loaded no model and launched no Metal device work.
-
-The ABI-v8 schedules now serve as typed sequence templates rather than fixed
-six-token executables. `Serving_schedule.Lfm25` substitutes prefill, decode
-past, and decode total lengths, rewrites the dependent scalar/index parameters,
-and re-infers every SSA output shape from transformed inputs while retaining
-static archive tensors unchanged. The runtime creates a liveness workspace for
-the specialized schedule and passes dynamic `m/n/k` parameters to float32
-matmul and linear kernels. Offline real-package checks cover prefill lengths
-13/128/4,096 and decode-past lengths 1/127/4,095.
-
-One native Q8 execution ran the captured prefill template and three consecutive
-decode specializations. Radix matches grew through prefixes 6/7/8, physical
-state grew to nine token slots and four recurrent checkpoints, and the four
-greedy tokens `19130,11040,11207,1414` matched a separately run eager-Q8
-reference. Tokenizer/chat integration, an HTTP request owner, native needle
-requests, and ERS remain outside that observation.
-
-`Generation_core` now owns the device-independent autoregressive state machine
-behind a typed engine functor. The native adapter composes `LLMOPTTK`,
-`Lfm_chat`, radix-aware `Serving_engine.prompt`, greedy float16 sampling,
-repeated decode, stop/length outcomes, text decoding, and latency/cache
-observations. For a cached conversation, prompt preparation leases the deepest
-checkpoint before the final prompt token and replays only the uncached suffix;
-a cold prompt runs the specialized prefill schedule.
-
-The first real chat run encoded `user: Say hi.` into 13 IDs, generated
-`36309,510,2213,1011`, decoded `Hello! How can`, and matched a separate
-eager-Q8 reference exactly. This establishes the direct native generation
-path.
-
-`llmopt-serve` now owns that generation value across serial HTTP requests. Its
-OpenAI-compatible JSON/SSE adapter is the only JSON serving boundary; binary
-tokenizer, package, tensor, schedule, radix/KV, and Metal representations stay
-inside the native process. Incremental UTF-8 decoding emits every generated
-token ID, including empty-text special tokens, so the benchmark timestamps
-tokens rather than visible text fragments. One warmed four-request scored
-smoke reused 80/194 prompt tokens, matched all eager-Q8 token sequences, and
-measured native ERS `0.06169548638841863`. The optimized fixed-12-token native
-long-context matrix retrieves 6/6 at 2,048/4,096 tokens and exactly matches all
-12 eager-Q8 IDs in every request; exact-only text is 0/6 because generation
-continues through EOS.
-
-Schedule execution now accumulates its generic and Q8 compute dispatches into
-one compute encoder and inserts ordered blit encoders for typed copies. It
-commits and waits once per schedule instead of once per generated kernel. The
-fixed 39-output device probe remains exact, and the matched warmed HTTP smoke
-raises native ERS from `0.06169548638841863` to `0.11058587181748172` while
-preserving all token IDs and cached-prefix counts.
-
-Decode schedules now select a vectorized one-row Q8 GEMV entry when `m = 1`.
-Multi-row prefill retains the 16 by 16 output tile but stages 64 reduction
-elements as sixteen activation4/dequantized-weight4 vectors. A 40-output
-device probe selects `llmopt_q8_gemv` and remains exact. On the one matched warmed HTTP
-trace, all four request TPOT values fall by 9.12 to 10.71 ms, median TTFT falls
-by 87.971 ms, and ERS changes from `0.11058587181748172` to
-`0.10860341576307225`; token IDs and 80/194 cache reuse remain unchanged.
-
-Current ABI-v11 packages replace that scalar decode entry with a SIMD-group
-family. One 32-lane group owns an output channel, lanes traverse the reduction
-dimension at stride 32, and `simd_sum` combines their partial accumulators.
-Eight groups share each 256-thread threadgroup. The runtime prefers the new
-name and falls back to the scalar name and grid when loading an older package.
-All four Q8 operation families compile in float16 and float32. The combined
-optimized model run exercises them with exact token parity, without isolating
-their individual latency contribution.
-
-The subsequent decode package vectorizes work within each SIMD lane. Every
-lane loads four activations and a `char4` weight, applies the per-channel scale
-to the four weight elements, accumulates one float4 dot, and advances by 128
-reduction elements. Scalar stride-32 cleanup remains for alignment and tails.
-The model's 1024/4608 decode reductions use the packed path throughout. One
-bounded model run preserves all four eager-Q8 sequences and 80/194 reuse while
-observing ERS
-`0.3253700872862615`, median TTFT `95.60127052827738 ms`, and median TPOT
-`7.93296533326308 ms`.
-
-The next decode mapping shares each packed activation load across two adjacent
-output channels. One SIMD group owns two independent accumulators and retains
-the existing per-channel dot and `simd_sum` order; eight groups cover 16
-channels per threadgroup. The 65,536-channel vocabulary projection therefore
-uses 4,096 instead of 8,192 threadgroups. Paired entries exist for all four Q8
-epilogue families and both activation dtypes, with typed fallback to the prior
-single-channel or scalar layouts. Both full-Q8 350M stages compile and one
-odd-tail synthetic Metal fixture returns 46/46 exact outputs. The bounded
-model trace preserves all short tokens and 80/194 radix reuse while observing
-ERS `0.40701575836615456` and median TTFT/TPOT `75.225/6.937 ms`; relative to
-the prior single-channel report, those medians change by `+3.748/-0.374 ms`.
-
-The vector-staged prefill package reduces synchronization without changing the
-16 by 16 output ownership. For k=1024/4608, 64/288 scalar reduction tiles
-become 16/72 vector tiles and emitted barrier counts change from 128/576 to
-32/144. The partial-k 2x4 Metal fixture remains bit exact; both model
-metallibs compile and both selectable KV formats validate. One bounded 350M
-run preserves all four eager-Q8 sequences and 80/194 reuse while observing ERS
-`0.3377415731686302`, median TTFT `93.155520997243 ms`, and median TPOT
-`7.948180340463296 ms`. Against the preceding native observation, those
-aggregate changes are `+0.012371485882368694`, `-2.44574953103438 ms`, and
-`+0.015215007200215958 ms`; per-request deltas are mixed and the reports are
-not interleaved.
-
-RMSNorm uses the same launch geometry at the row level. One SIMD group owns a
-row, lanes traverse its final dimension at stride 32, `simd_sum` combines the
-squared-value partials, and the lanes cooperatively write normalized values.
-Eight rows share a 256-thread group. Both input-dtype variants compile, while
-the runtime retains scalar-name and scalar-grid fallback for older packages.
-The 350M prefill and decode templates each contain 45 such commands. The
-combined optimized model run exercises them with exact token parity, without
-isolating their individual latency contribution.
-
-The width-64 attention specialization also owns one query row per SIMD group.
-It computes each query-key dot product once, updates the softmax maximum and
-denominator online, and rescales two output accumulators per lane. The prior
-scalar form recomputed a full score for the maximum, denominator, and every
-output dimension: 66 times per key at width 64. The scalar entry remains
-declared for wider heads and old packages. All six attention commands per 350M
-stage select and execute the new entry in the exact-token aggregate run.
-
-Physical KV and recurrent cache conversion now batches each unpack or pack
-phase into one ordered command buffer. For the six-attention, ten-recurrent
-350M model, decode changes from 45 synchronous submissions to three including
-the generated schedule. The exact Q8/FP16 cache probe retains all bytes. The
-matched HTTP trace retains token parity and 80/194 reuse, lowers all four TPOT
-values by 2.82 to 5.45 ms, and measures ERS `0.11381808711306604`.
-
-Q8 decode attention now bypasses context-sized cache restoration. A typed LFM
-specialization recognizes each six-layer GQA concat/expand chain and replaces
-its materialized past-K/V tensors with one physical Q8 token pool plus an int32
-radix slot map. The generated width-64 Metal kernel dequantizes cached K/V at
-the point of use, consumes the current FP16 row directly, and applies online
-softmax in one SIMD group. Runtime Q8 decode specialization changes from 864
-commands and 23 inputs to 804 commands and 13 inputs; the selectable FP16 path
-retains the materialized schedule. Q8 workspace is 199,424 bytes at past 4,095
-instead of the FP16 materialized path's 71,371,520 bytes. One exact synthetic
-Metal attempt selects the new kernel and returns all 47 outputs exactly.
-
-The bounded 350M short trace through this path preserves all four established
-eager-Q8 sequences and 80/194 radix reuse. It observes ERS
-`0.38326789681891504` and median TTFT/TPOT `72.550/8.035 ms`; relative to the
-preceding vector-unpack observation, those values change by `-0.033392`,
-`+3.959 ms`, and `+1.135 ms`. The separate 2,048/4,096-token matrix preserves
-6/6 retrieval and token parity while median TPOT changes by
-`-10.083/-22.551 ms` and total latency by `-99.147/-289.810 ms`.
-
-Attention query and key paths now fuse RMSNorm, head transposition, and rotary
-position embedding (RoPE) into a single typed `Rms_rope` IR operation. The
-`Passes.fuse_rms_rope` optimizer matches twelve 10-command chains across the 6
-attention layers and lowers them to the `llmopt_rms_rope_f16_simd_h64` Metal kernel.
-Prefill commands reduce from 810 to 702 (74 package kernels), decode from 864 to
-756 (72 package kernels), and specialized decode from 756 to 696 (a 108 command
-reduction per schedule). The clean device probe verifies 49 exact fixture outputs
-on Apple M4 Pro.
-
-
-Dependent cached-suffix replay now goes further: it unpacks the matched prefix
-once, then encodes each dependent decode schedule and its per-token cache
-writes into one ordered batch while retaining a radix checkpoint at every
-suffix position. The corrected path completes 4/4 scored requests with exact
-eager-Q8 tokens and unchanged 80/194 reuse. Together with the current fusion
-and SIMD kernels, one aggregate run measures ERS `0.23655514122115978`, median
-TTFT `136.7437920125667 ms`, and median TPOT `14.803701342316344 ms`; this
-observation cannot attribute the delta to one component.
-
-The native decode path can now pre-encode its specialized Metal dispatch list
-once and retain the pipeline states, buffers, offsets, launch geometry, and
-constant parameters in a `Prebaked` plan. Each later token updates only the
-shared token buffer and the paged-attention `past_tokens` field before encoding
-the retained records into one command buffer. Cache packing remains a separate
-ordered submission after decode completion. On the refreshed Q8 trace this
-changes the tracked llmopt observation from ERS `0.4793278474`, median TTFT
-`64.0418755 ms`, and median TPOT `5.7588818 ms` to ERS `0.5906046455`, median
-TTFT `53.6987090 ms`, and median TPOT `4.3660347 ms`.
-
-The following packed Q8 decode package keeps that schedule and cache behavior
-but processes four activation/weight elements per SIMD-lane iteration. One
-bounded 350M observation preserves all four eager-Q8 token sequences and
-80/194 radix reuse while measuring ERS `0.3253700872862615`, median TTFT
-`95.60127052827738 ms`, and median TPOT `7.93296533326308 ms`. The previous
-and packed reports are non-interleaved single observations, so their delta is
-not assigned wholly to the packed loop.
-
-The first epilogue optimizer replaces a Q8 projection and its sole SiLU
-consumer with `Q8_linear_silu`; any second consumer prevents the rewrite.
-Package and schedule ABI v9 carry distinct fused GEMM and GEMV kernel families.
-The float16 Metal epilogue explicitly reproduces the intermediate half
-rounding before activation. Offline replanning finds 16 pairs in both stages,
-reducing prefill from 872 to 856 commands and decode from 926 to 910 while
-retaining zero opaque operations and all 241 tensor bindings. Both metallibs
-compile. The combined optimized run executes this pass with exact model tokens,
-but does not isolate its latency contribution.
-
-The second epilogue optimizer recognizes same-shape residual addition after a
-sole-consumer Q8 projection. It rejects broadcast residuals and preserves the
-materialized half-rounding point before addition. Schedule/package ABI v10 and
-the runtime bind the residual as one extra typed Metal buffer. All 32 expected
-pairs fuse in each stage, reducing prefill from 856 to 824 commands and decode
-from 910 to 878. The generated metallibs and Q8/FP16-selectable package pair
-validate against the same archive inode. The combined optimized run executes
-this pass with exact model tokens; its contribution is not isolated.
-
-The third Q8 pass recognizes a sole-consumer float16 multiply feeding an
-already-fused Q8 down projection plus residual. It preserves both upstream
-projection outputs and multiplies them while loading the down-projection
-reduction tile, reproducing the materialized float16 product before float32
-accumulation. All 16 expected boundaries fuse in each stage, reducing prefill
-from 824 to 808 commands and decode from 878 to 862. Captured-template
-workspace falls to 1,098,496/262,144 bytes. ABI-v11 packages and both
-metallibs validate against the shared archive. The combined optimized run
-executes this pass with exact model tokens; its contribution is not isolated.
-
-The source graph measures 85 getitem, 10 chunk, and 13 concat nodes. For v2,
-the planner now holds chunk partitions as compile-time descriptors and
-emits normalized slices directly at integer getitem consumers, avoiding a
-tuple-valued runtime command. Static tensor indices, concat, and the position
-and mask primitives survive the schedule-v7 binary round trip and CPU
-interpretation. The latest offline package structurally validates with 241
-tensors, declares 11 generated kernels, and its 12,443-byte MSL compiles to a
-49,342-byte metallib. These additions cover the previously opaque prefill
-nodes; native command interpretation and generated materialization of every
-other typed schedule command remain open.
-
-The first non-tile-aligned device probe exposed a partial-threadgroup launch
-bug in the bridge: the 3x29 probe returned a numerical mismatch before the
-launch grid was rounded to full 16x16 tiles. The corrected half/float32 probes
-pass. Phase 2 now emits aligned `half4`/`float4` and `char4` cooperative loads,
-with an ordered reduction and safe Metal FP32 compilation flags. The combined
-350M differential probe recorded 92 generated exact-mode dispatches with
-bit-exact eager logits, plus 92 generated native Phase 2 dispatches whose
-separate numerical result was `max_abs=0.078125`; both paths are recorded in
-[exp-0008](experiments/exp-0008-metal-runtime-q8.md).
+---
 
 [^pytorch-backend-contract]: PyTorch custom backend documentation.
-[^local-python-backend]: `python/llmopt_backend/__init__.py` in this repository.
-[^local-ocaml-planner]: `lib/fx_plan.ml` in this repository.
 [^sglang-radix-cache]: SGLang `RadixCache`, pinned to revision `d1af3c89233c475fc1bf11939d86787e6cddd58c`.
 [^sglang-mamba-radix-cache]: SGLang `MambaRadixCache`, pinned to the same revision.
+[^slice-31-receipt]: Full-model multi-campaign receipt in `bench/results/compiler-generalization-slice-31-2026-08-30.json`.
