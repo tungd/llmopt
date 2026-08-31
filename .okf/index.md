@@ -41,7 +41,8 @@ configuration.
 * [Corrected hardware and speculative primitive inventory](decisions/speculative-pipelining-hardware-acceleration.md) - implemented bitfield, Split-K, tree-attention, and cache primitives; unsupported end-to-end pipelining claims are retracted.
 * [Gemma 4 target-coupled MTP runtime contract](decisions/gemma4-mtp-runtime-contract.md) - linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance semantics.
 * [Gemma 4 12B QAT and MTP llama.cpp benchmark](decisions/gemma-12b-qat-mtp-speculative-benchmark.md) - same-prompt sequential and MTP measurement protocol without an assumed result threshold.
-* [Weightless prompt-lookup speculative decoding](decisions/prompt-lookup-tree-speculative-decoding.md) - linked ABI-v5 verifier, real runtime benchmark, and recorded token-parity defect.
+* [Weightless prompt-lookup speculative decoding](decisions/prompt-lookup-tree-speculative-decoding.md) - linked ABI-v5 verifier, exact sequential parity, and real LLMOpt/llama.cpp measurements.
+* [Experimental Vulkan portability backend](decisions/vulkan-portability-backend.md) - portable SPIR-V compute runtime and paired MoltenVK/Metal device measurement, with the model-serving boundary stated explicitly.
 * [Parametric Epilogue Inlining and Hardware Prefill Tiling](decisions/parametric-epilogues-and-hardware-tiling.md) - algebraic epilogue fusion replacing 2,500 lines of AST matchers, plus bank-swizzled simdgroup_matrix staging for prefill GEMM.
 
 ## Prior art
@@ -57,6 +58,7 @@ configuration.
 * [llama.cpp comparison benchmark](benchmarks/llama-cpp.md) - native llama-bench, llama-server ERS, and optional llmopt side replay.
 * [MPS ERS benchsuite](benchmarks/bench-suite.md) - retained PyTorch reference trace scoring, warmup artifacts, and needle validation.
 * [Semantic 5x3 result](experiments/exp-0004-lfm25-semantic-5x3.md) - isolated long-context comparison and raw latency evidence.
+* [MoltenVK and Metal streaming-copy comparison](experiments/exp-0137-vulkan-moltenvk-metal-2026-09-01.md) - one paired M4 Pro run over identical working sets with validated Vulkan output.
 * [Superseded SmolLM2 cross-model claim](experiments/exp-0096-cross-model-smollm2-validation.md) - retracts unsupported full-model and performance claims and points to reproducible replacement evidence.
 * [Architecture-neutral GGUF FX native Linear parity](experiments/exp-0099-gguf-fx-native-linear-parity-2026-08-29.md) - bounded SmolLM, Qwen, and Gemma GGUF-backed Linear execution plus full-capture inventories.
 * [Current LFM Model Program comparison with llama.cpp](experiments/exp-0100-model-program-v2-llama-cpp-comparison-2026-08-29.md) - four paired same-text runs for the current ABI-v2 LFM serving engine and llama.cpp Q4_0.

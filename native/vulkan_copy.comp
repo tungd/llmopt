@@ -1,0 +1,23 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Source {
+  uvec4 values[];
+} source_buffer;
+
+layout(set = 0, binding = 1, std430) writeonly buffer Destination {
+  uvec4 values[];
+} destination_buffer;
+
+layout(push_constant) uniform Parameters {
+  uint vector_count;
+} parameters;
+
+void main() {
+  uint row_width = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+  uint index = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * row_width;
+  if (index < parameters.vector_count) {
+    destination_buffer.values[index] = source_buffer.values[index];
+  }
+}

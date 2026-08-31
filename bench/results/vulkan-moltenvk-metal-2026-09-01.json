@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "experiment": "vulkan-moltenvk-metal-streaming-copy",
+  "recorded_at": "2026-08-31T21:19:09.484154+00:00",
+  "host": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "measurement_contract": {
+    "timing": "backend device-time intervals around one compute dispatch; Metal uses command GPU timestamps when exposed",
+    "bandwidth": "effective read-plus-write bytes per GPU second",
+    "working_sets_bytes": [
+      16777216,
+      67108864,
+      268435456
+    ],
+    "warmup": 5,
+    "repeats": 21
+  },
+  "metal": {
+    "schema_version": 1,
+    "backend": "metal",
+    "target": {
+      "device_name": "Apple M4 Pro",
+      "memory": {
+        "simd_lanes": 32,
+        "sram_banks": 32,
+        "sram_bank_width_bytes": 4,
+        "sram_capacity_bytes": 32768,
+        "l1_cache_line_bytes": 128,
+        "l1_cache_capacity_bytes": 131072
+      },
+      "execution": {
+        "gpu_cores": 16,
+        "max_threads_per_threadgroup": 1024,
+        "memory_bandwidth_gbps": 212.3068322696309,
+        "fp16_tflops": 18.7,
+        "dispatch_overhead_seconds": 2.500019036233425e-06
+      }
+    },
+    "measurement": {
+      "warmup": 5,
+      "repeats": 21,
+      "max_threads_per_threadgroup": 1024,
+      "dispatch_overhead_seconds": 2.500019036233425e-06,
+      "memory_bandwidth_gbps": 212.3068322696309,
+      "memory_bandwidth_stream_bytes": 268435456,
+      "streaming_copy_sweep": [
+        {
+          "stream_bytes": 16777216,
+          "dispatch_overhead_seconds": 4.791654646396637e-06,
+          "effective_bandwidth_gbps": 259.6087689803925
+        },
+        {
+          "stream_bytes": 67108864,
+          "dispatch_overhead_seconds": 2.500019036233425e-06,
+          "effective_bandwidth_gbps": 242.92803301324847
+        },
+        {
+          "stream_bytes": 268435456,
+          "dispatch_overhead_seconds": 2.374988980591297e-06,
+          "effective_bandwidth_gbps": 212.3068322696309
+        }
+      ]
+    }
+  },
+  "vulkan": {
+    "schema_version": 1,
+    "backend": "vulkan",
+    "implementation": "moltenvk",
+    "device_name": "Apple M4 Pro",
+    "api_version": "1.1.357",
+    "measurement": {
+      "warmup": 5,
+      "repeats": 21,
+      "dispatch_overhead_seconds": 7.875e-06,
+      "memory_bandwidth_gbps": 249.01721785989434,
+      "memory_bandwidth_stream_bytes": 268435456,
+      "copy_sample_validated": true,
+      "streaming_copy_sweep": [
+        {
+          "stream_bytes": 16777216,
+          "gpu_seconds": 0.000127584,
+          "effective_bandwidth_gbps": 262.9987459242538
+        },
+        {
+          "stream_bytes": 67108864,
+          "gpu_seconds": 0.0005387090000000001,
+          "effective_bandwidth_gbps": 249.14699401717806
+        },
+        {
+          "stream_bytes": 268435456,
+          "gpu_seconds": 0.0021559590000000003,
+          "effective_bandwidth_gbps": 249.01721785989434
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "dispatch": {
+      "metal_seconds": 2.500019036233425e-06,
+      "vulkan_seconds": 7.875e-06,
+      "vulkan_over_metal": 3.1499760145285216,
+      "vulkan_minus_metal_seconds": 5.374980963766575e-06
+    },
+    "streaming_copy_sweep": [
+      {
+        "stream_bytes": 16777216,
+        "metal_effective_bandwidth_gbps": 259.6087689803925,
+        "vulkan_effective_bandwidth_gbps": 262.9987459242538,
+        "vulkan_over_metal": 1.0130580217192793,
+        "vulkan_minus_metal_gbps": 3.3899769438613134
+      },
+      {
+        "stream_bytes": 67108864,
+        "metal_effective_bandwidth_gbps": 242.92803301324847,
+        "vulkan_effective_bandwidth_gbps": 249.14699401717806,
+        "vulkan_over_metal": 1.0256000138262777,
+        "vulkan_minus_metal_gbps": 6.218961003929593
+      },
+      {
+        "stream_bytes": 268435456,
+        "metal_effective_bandwidth_gbps": 212.3068322696309,
+        "vulkan_effective_bandwidth_gbps": 249.01721785989434,
+        "vulkan_over_metal": 1.1729119369255203,
+        "vulkan_minus_metal_gbps": 36.710385590263456
+      }
+    ]
+  }
+}

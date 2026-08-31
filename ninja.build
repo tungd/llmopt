@@ -133,6 +133,16 @@ rule native_runtime
   description = build PyTorch MPS runtime bridge
   pool = console
 
+rule vulkan_probe_build
+  command = python3 native/build_vulkan_probe.py --build-dir _build/vulkan
+  description = build portable Vulkan probe with MoltenVK bootstrap on macOS
+  pool = console
+
+rule vulkan_metal_compare
+  command = PYTHONPATH=bench python3 bench/vulkan_metal_compare.py --metal-probe _build/bin/llmopt-hardware-probe --vulkan-probe _build/vulkan/llmopt-vulkan-probe --shader-dir _build/vulkan --output $out
+  description = measure paired Metal and Vulkan streaming copy
+  pool = console
+
 rule metal_runtime_smoke
   command = PYTHONPATH=python python3.13 python/examples/metal_runtime_smoke.py --library _build/w4a16-fx-example/kernel.metallib
   description = dispatch fixed W4A16 Metal runtime smoke
@@ -440,6 +450,12 @@ build _build/native-schedule-fixture/device-smoke.txt: run_ocaml_metal_primitive
   runner = _build/bin/llmopt-ocaml-metal-primitives-smoke
   directory = _build/native-schedule-fixture
 build _build/native/metal-runtime.stamp: native_runtime native/metal_runtime.cpp native/build_metal_runtime.py
+
+build _build/vulkan/llmopt-vulkan-probe: vulkan_probe_build native/build_vulkan_probe.py native/vulkan_probe.cpp native/vulkan_copy.comp native/vulkan_empty.comp
+
+build bench/results/vulkan-moltenvk-metal-2026-09-01.json: vulkan_metal_compare _build/vulkan/llmopt-vulkan-probe _build/bin/llmopt-hardware-probe bench/vulkan_metal_compare.py
+
+build probe-vulkan-moltenvk-compare: phony bench/results/vulkan-moltenvk-metal-2026-09-01.json
 build w4a16-fx-smoke: phony _build/w4a16-fx-example/kernel.air _build/w4a16-fx-example/kernel.metallib _build/w4a16-fx-example/package.ok
 build w4a16-serving-smoke: phony _build/w4a16-serving-example/kernel.air _build/w4a16-serving-example/kernel.metallib _build/w4a16-serving-example/package.ok
 build metal-runtime: phony _build/native/metal-runtime.stamp

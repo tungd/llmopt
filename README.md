@@ -102,6 +102,28 @@ The profile records the actual device name, maximum threads per threadgroup,
 median dispatch time, and measured streaming bandwidth. Structural device
 facts that Metal does not expose remain explicit target-profile fields.
 
+## Experimental Vulkan portability probe
+
+The `exp/vulkan-moltenvk` branch contains a separate Vulkan compute path for
+cross-backend measurement:
+
+```sh
+ninja -f ninja.build probe-vulkan-moltenvk-compare
+```
+
+On macOS the build downloads checksum-pinned MoltenVK and glslang releases into
+the ignored `_build/vulkan/deps` directory; it does not install system packages.
+On Linux it uses `VULKAN_SDK` or `LLMOPT_VULKAN_SDK`, falling back to the system
+Vulkan loader and shader compiler. The probe creates a Vulkan instance, compute
+queue, SPIR-V pipelines, storage buffers, descriptor sets, timestamp queries,
+and validated GPU copy dispatches. It records the same 16, 64, and 256 MiB
+effective read-plus-write sweep as the Metal probe.
+
+This experimental path proves native Vulkan compute and measurement through
+MoltenVK. Model Program package execution and the operator kernel catalog remain
+Metal-only; those runtime and lowering layers are not represented by the copy
+probe.
+
 ## Link a Model Program
 
 The current low-level pipeline links already captured packages. Model metadata

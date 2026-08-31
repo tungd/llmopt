@@ -9,6 +9,7 @@
 * [DAG Concurrency Analysis and Complementary Co-Scheduling Optimizer Pass](dag-co-scheduling-optimizer-pass.md) - Staged concurrent execution plan generation and resource co-scheduling on Apple Silicon.
 * [Retired XGBoost kernel cost model](xgboost-kernel-cost-model.md) - Historical learned-selector experiments superseded by measured hardware probing.
 * [Measured hardware probing for AOT target costs](measured-hardware-probing.md) - Native Metal measurements become an explicit compiler input.
+* [Experimental Vulkan portability backend](vulkan-portability-backend.md) - Native SPIR-V compute through MoltenVK or a system Vulkan loader, with the Model Program serving boundary kept explicit.
 * [Fewest-Hops Whole-Block Megakernel Compiler Architecture](fewest-hops-megakernel-compiler.md) - Whole-block megakernels (SwiGLU FFN, ShortConv, Attention) executing in ~40 hops with zero DRAM activation round-trips.
 * [Macro-Operator Fusions: Dual-Linear, QKV, ShortConv Step, Residual-Norm, and On-GPU Argmax](macro-operator-fusions.md) - High-impact compiler fusions eliminating intermediate DRAM roundtrips.
 * [Model Program boundary](model-program-boundary.md) - An explicit, model-neutral profile and captured packages produce one root execution contract consumed by shared serving modules.
@@ -18,4 +19,4 @@
 * [Corrected hardware and speculative primitive inventory](speculative-pipelining-hardware-acceleration.md) - Retains implemented bitfield, Split-K, tree-attention, and cache primitives while retracting unsupported end-to-end claims.
 * [Gemma 4 target-coupled MTP runtime contract](gemma4-mtp-runtime-contract.md) - Defines linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance.
 * [Sustained Speculative Decoding Benchmark with Gemma 4 12B QAT and MTP](gemma-12b-qat-mtp-speculative-benchmark.md) - Multi-campaign sustained benchmark protocol comparing LLMOpt sequential, MTP, and Medusa tree decoding against llama.cpp.
-* [Weightless Prompt-Lookup Speculative Decoding](prompt-lookup-tree-speculative-decoding.md) - Linked target verification with measured LLMOpt and llama.cpp comparisons and an explicit parity defect.
+* [Weightless Prompt-Lookup Speculative Decoding](prompt-lookup-tree-speculative-decoding.md) - Linked target verification with exact sequential parity and measured LLMOpt and llama.cpp comparisons.
