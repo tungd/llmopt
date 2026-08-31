@@ -60,3 +60,24 @@ val evict :
 
 val stats : ('slot, 'checkpoint) t -> Stats.t
 val validate : ('slot, 'checkpoint) t -> (unit, string) result
+
+module Speculative : sig
+  type ('slot, 'checkpoint) reservation
+
+  val create :
+    ?checkpoint:'checkpoint ->
+    key:Key.t ->
+    slots:'slot array ->
+    unit ->
+    ('slot, 'checkpoint) reservation
+
+  val key : ('slot, 'checkpoint) reservation -> Key.t
+  val slots : ('slot, 'checkpoint) reservation -> 'slot array
+  val checkpoint : ('slot, 'checkpoint) reservation -> 'checkpoint option
+end
+
+val commit_speculative :
+  ('slot, 'checkpoint) t ->
+  reservation:('slot, 'checkpoint) Speculative.reservation ->
+  accepted_count:int ->
+  (('slot, 'checkpoint) insert_result option * 'slot array, string) result

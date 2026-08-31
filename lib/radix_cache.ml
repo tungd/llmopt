@@ -415,3 +415,52 @@ let validate cache =
   if !tokens <> cache.cached_tokens then
     error := Some "radix cached token accounting mismatch";
   match !error with None -> Ok () | Some message -> Error message
+
+module Speculative = struct
+  type ('slot, 'checkpoint) reservation = {
+    key : Key.t;
+    slots : 'slot array;
+    checkpoint : 'checkpoint option;
+  }
+
+  let create ?checkpoint ~key ~slots () =
+    { key; slots; checkpoint }
+
+  let key res = res.key
+  let slots res = Array.copy res.slots
+  let checkpoint res = res.checkpoint
+end
+
+let commit_speculative cache ~reservation ~accepted_count =
+  if accepted_count < 0 || accepted_count > Array.length reservation.Speculative.slots then
+    Error "accepted_count out of speculative reservation bounds"
+  else
+    let total = Array.length reservation.Speculative.slots in
+    let rejected_slots =
+      sub reservation.Speculative.slots accepted_count (total - accepted_count)
+    in
+    if accepted_count = 0 then
+      Ok (None, rejected_slots)
+    else
+      let accepted_tokens =
+        sub (Key.tokens reservation.Speculative.key) 0 accepted_count
+      in
+      let accepted_slots =
+        sub reservation.Speculative.slots 0 accepted_count
+      in
+      let insertable_length = aligned cache accepted_count in
+      if insertable_length = 0 then
+        Ok (None, rejected_slots)
+      else
+        let page_tokens = sub accepted_tokens 0 insertable_length in
+        let page_slots = sub accepted_slots 0 insertable_length in
+        let key =
+          Key.create ?namespace:(Key.namespace reservation.Speculative.key)
+            page_tokens
+        in
+        match reservation.Speculative.checkpoint with
+        | Some cp -> (
+            match insert cache ~key ~values:page_slots ~checkpoint:cp with
+            | Ok result -> Ok (Some result, rejected_slots)
+            | Error err -> Error err)
+        | None -> Ok (None, rejected_slots)

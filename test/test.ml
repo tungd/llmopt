@@ -3025,6 +3025,57 @@ let () =
   expect (Kv_cache.Layout.recurrent_layers tf_kv_layout = 0) "transformer cache layout has 0 recurrent layers";
   expect (Kv_cache.Layout.bytes_per_checkpoint tf_kv_layout = 0) "transformer cache layout has 0 checkpoint bytes";
 
+  (* Speculative slot reservation and rollback test *)
+  let spec_cache = Serving_cache.create tf_cache_cfg in
+  let initial_stats = Serving_cache.stats spec_cache in
+  expect (initial_stats.kv.used_tokens = 0) "initial cache has 0 used tokens";
+
+  (* 1. Full rollback test *)
+  let tentative_slots = Serving_cache.reserve_tokens spec_cache 4 |> Result.get_ok in
+  expect (Array.length tentative_slots = 4) "reserved 4 speculative slots";
+  let after_reserve_stats = Serving_cache.stats spec_cache in
+  expect (after_reserve_stats.kv.used_tokens = 4) "4 slots used after reservation";
+
+  let reservation =
+    Serving_cache.Speculative.create
+      ~tokens:[| 101; 102; 103; 104 |]
+      ~slots:tentative_slots ()
+  in
+  let rollback_res = Serving_cache.rollback_speculative spec_cache ~reservation in
+  expect (Result.is_ok rollback_res) "speculative rollback succeeds";
+  let after_rollback_stats = Serving_cache.stats spec_cache in
+  expect (after_rollback_stats.kv.used_tokens = 0) "0 slots used after full rollback";
+
+  (* 2. Partial acceptance test (accept 2 of 4) *)
+  let tentative_slots2 = Serving_cache.reserve_tokens spec_cache 4 |> Result.get_ok in
+  let reservation2 =
+    Serving_cache.Speculative.create
+      ~tokens:[| 201; 202; 203; 204 |]
+      ~slots:tentative_slots2 ()
+  in
+  let commit_res = Serving_cache.commit_speculative spec_cache ~reservation:reservation2 ~accepted_count:2 in
+  expect (commit_res = Ok 2) "committed 2 accepted speculative tokens";
+  let after_commit_stats = Serving_cache.stats spec_cache in
+  expect (after_commit_stats.kv.used_tokens = 2) "2 slots used and 2 released after partial acceptance";
+  (* Clean up the 2 accepted slots *)
+  let _ = Serving_cache.release_tokens spec_cache (Array.sub tentative_slots2 0 2) in
+
+  (* 3. 100 random speculative draft/verify cycles *)
+  for cycle = 1 to 100 do
+    let draft_count = 1 + (cycle mod 5) in
+    let slots = Serving_cache.reserve_tokens spec_cache draft_count |> Result.get_ok in
+    let tokens = Array.init draft_count (fun i -> 1000 * cycle + i) in
+    let res = Serving_cache.Speculative.create ~tokens ~slots () in
+    let accepted = cycle mod (draft_count + 1) in
+    let commit_res = Serving_cache.commit_speculative spec_cache ~reservation:res ~accepted_count:accepted in
+    expect (commit_res = Ok accepted) "random speculative cycle matches accepted count";
+    if accepted > 0 then
+      let _ = Serving_cache.release_tokens spec_cache (Array.sub slots 0 accepted) in ()
+  done;
+  let final_stats = Serving_cache.stats spec_cache in
+  expect (final_stats.kv.used_tokens = 0) "zero leaked slots after 100 speculative cycles";
+  expect (Result.is_ok (Serving_cache.validate spec_cache)) "serving cache remains valid after 100 speculative cycles";
+
   (* Serving specialization tests *)
   let spec =
     Model_program.Specialization.create ~min_prefill_tokens:3

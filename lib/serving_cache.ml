@@ -174,3 +174,64 @@ let validate cache =
   | Ok () when radix.checkpoints <> kv.used_checkpoints ->
       Error "serving cache radix/KV checkpoint ownership mismatch"
   | Ok () -> Ok ()
+
+module Speculative = struct
+  type reservation = {
+    tokens : int array;
+    slots : Kv_cache.Slot.t array;
+    checkpoint : Kv_cache.Checkpoint.t option;
+    namespace : string option;
+  }
+
+  let create ?namespace ?checkpoint ~tokens ~slots () =
+    if Array.length tokens <> Array.length slots then
+      invalid_arg "Speculative.reservation token and slot counts must match";
+    { tokens; slots; checkpoint; namespace }
+
+  let tokens res = Array.copy res.tokens
+  let slots res = Array.copy res.slots
+  let checkpoint res = res.checkpoint
+  let namespace res = res.namespace
+  let total_tokens res = Array.length res.tokens
+end
+
+let commit_speculative cache ~reservation ~accepted_count =
+  let total = Speculative.total_tokens reservation in
+  if accepted_count < 0 || accepted_count > total then
+    Error "accepted_count out of speculative reservation bounds"
+  else
+    let key =
+      Radix_cache.Key.create ?namespace:reservation.Speculative.namespace
+        reservation.Speculative.tokens
+    in
+    let radix_res =
+      Radix_cache.Speculative.create ?checkpoint:reservation.Speculative.checkpoint
+        ~key ~slots:reservation.Speculative.slots ()
+    in
+    match
+      Radix_cache.commit_speculative cache.radix ~reservation:radix_res
+        ~accepted_count
+    with
+    | Error err -> Error err
+    | Ok (insert_result_opt, rejected_slots) ->
+        let* () =
+          if Array.length rejected_slots > 0 then
+            release_tokens cache rejected_slots
+          else Ok ()
+        in
+        (match insert_result_opt with
+        | Some result ->
+            let* () = release_redundant cache result in
+            Ok accepted_count
+        | None ->
+            if accepted_count = 0 then
+              match reservation.Speculative.checkpoint with
+              | Some cp ->
+                  let* () = release_checkpoint cache cp in
+                  Ok 0
+              | None -> Ok 0
+            else Ok accepted_count)
+
+let rollback_speculative cache ~reservation =
+  commit_speculative cache ~reservation ~accepted_count:0
+  |> Result.map ignore

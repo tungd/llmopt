@@ -61,3 +61,32 @@ val insert :
 
 val validate : t -> (unit, string) result
 val stats : t -> Stats.t
+
+module Speculative : sig
+  type reservation
+
+  val create :
+    ?namespace:string ->
+    ?checkpoint:Kv_cache.Checkpoint.t ->
+    tokens:int array ->
+    slots:Kv_cache.Slot.t array ->
+    unit ->
+    reservation
+
+  val tokens : reservation -> int array
+  val slots : reservation -> Kv_cache.Slot.t array
+  val checkpoint : reservation -> Kv_cache.Checkpoint.t option
+  val namespace : reservation -> string option
+  val total_tokens : reservation -> int
+end
+
+val commit_speculative :
+  t ->
+  reservation:Speculative.reservation ->
+  accepted_count:int ->
+  (int, string) result
+
+val rollback_speculative :
+  t ->
+  reservation:Speculative.reservation ->
+  (unit, string) result

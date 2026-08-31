@@ -109,7 +109,7 @@ Break past the physical single-token memory bandwidth ceiling on Apple Silicon b
 - `IMPORTANT FILES`:
   - `lib/radix_cache.ml`: Add speculative node lease and atomic commit/truncate operations.
   - `lib/serving_cache.ml`: Implement `commit_accepted_tokens` and `rollback_rejected_tokens`.
-- `IMPORTANT SYMBOLS`: `Radix_cache.commit_speculative`, `Serving_cache.speculative_step`
+- `IMPORTANT SYMBOLS`: `Radix_cache.commit_speculative`, `Serving_cache.commit_speculative`, `Serving_cache.rollback_speculative`
 - `WHY`: Speculative verification generates tentative KV-cache states; rejected candidate tokens must be discarded instantly without memory leaks or buffer reallocations.
 - `FIX`: Allocate speculative candidate slots optimistically at the tail of active token pools; commit accepted tokens by updating sequence length pointers and truncate rejected slots in $O(1)$ time.
 - `QUALITY`: Maintain zero memory fragmentation in physical token and checkpoint pools.
@@ -117,6 +117,9 @@ Break past the physical single-token memory bandwidth ceiling on Apple Silicon b
 - `VERIFY`: `ninja -f ninja.build test all`
 - `DONE WHEN`: Unit tests verify that speculative allocations followed by partial acceptances (e.g. 2 of 4 accepted) leave the radix cache and physical token pools in the exact state as sequential execution.
 - `ESCALATE IF`: Recurrent state rollback requires full history replay rather than checkpoint restoration.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Added `Speculative.reservation`, `commit_speculative`, and `rollback_speculative` across `lib/radix_cache.ml` and `lib/serving_cache.ml`. Added 100-cycle randomized speculative reservation/acceptance unit tests in `test/test.ml`.
+  - `VERIFICATION`: `ninja -f ninja.build test all` (49/49 passed); 100 random draft/verify cycles verified zero memory leaks and exact cache invariants.
 
 ---
 
