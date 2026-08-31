@@ -806,7 +806,29 @@ let validate_command seen_values command =
               && Ir.Value.dtype query = Ir.Dtype.Float16
               && Ir.Value.dtype key = Ir.Dtype.Float16
               && Ir.Value.dtype value = Ir.Dtype.Float16
-              && Ir.Value.dtype mask = Ir.Dtype.Bool
+              && (Ir.Value.dtype mask = Ir.Dtype.Bool || Ir.Value.dtype mask = Ir.Dtype.Float16)
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d attention metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Primitive (Ir.Primitive.Attention _),
+            [ query; key; value ],
+            Some output ) ->
+            let valid_shape =
+              Tensor_shape.equal (Ir.Value.logical_shape query) (Ir.Value.logical_shape output)
+              || match Tensor_shape.dimensions (Ir.Value.logical_shape query), Tensor_shape.dimensions (Ir.Value.logical_shape output) with
+                 | [ b; h; q; d ], [ b_out; q_out; hidden ] ->
+                     b = b_out && q = q_out && hidden = h * d
+                 | _ -> false
+            in
+            if
+              valid_shape
+              && Ir.Value.dtype query = Ir.Dtype.Float16
+              && Ir.Value.dtype key = Ir.Dtype.Float16
+              && Ir.Value.dtype value = Ir.Dtype.Float16
               && Ir.Value.dtype output = Ir.Dtype.Float16
             then Ok ()
             else
@@ -1556,6 +1578,8 @@ module Sequence = struct
           (Ir.Value.logical_shape query) (Ir.Value.logical_shape key)
           value_shape (Ir.Value.logical_shape mask)
         |> shape_error
+    | Ir.Primitive.Attention _, [ query; _; _ ] ->
+        Ok (Ir.Value.logical_shape query)
     | Ir.Primitive.Paged_attention_q8 _, query :: _ ->
         Ok (Ir.Value.logical_shape query)
     | Ir.Primitive.Embedding, [ indices; weight ] ->

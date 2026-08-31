@@ -68,12 +68,12 @@ def models() -> tuple[Any, Any, tuple[Any, ...]]:
     )
 
     target_config, _ = _load_target_config(local_only=True)
-    target_config._attn_implementation = "eager"
+    target_config._attn_implementation = "sdpa"
     geometry = target_layer_geometry(target_config)
     if geometry != expected_target_geometry():
         raise RuntimeError("pinned Gemma target geometry differs from the receipt")
     assistant_text_config = build_assistant_text_config(target_config)
-    assistant_text_config._attn_implementation = "eager"
+    assistant_text_config._attn_implementation = "sdpa"
     assistant_config = Gemma4AssistantConfig(
         text_config=assistant_text_config,
         backbone_hidden_size=target_config.hidden_size,

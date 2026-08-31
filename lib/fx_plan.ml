@@ -761,8 +761,10 @@ let plan fx_graph =
                || Ir.Value.dtype key <> Ir.Dtype.Float16
                || Ir.Value.dtype value <> Ir.Dtype.Float16
             then Error "attention query, key, and value must be float16"
-            else if Ir.Value.dtype mask <> Ir.Dtype.Bool then
-              Error "attention mask must be boolean"
+            else if
+              Ir.Value.dtype mask <> Ir.Dtype.Bool
+              && Ir.Value.dtype mask <> Ir.Dtype.Float16
+            then Error "attention mask must be boolean or float16"
             else
               let dropout =
                 match keyword "dropout_p" node with
@@ -807,7 +809,48 @@ let plan fx_graph =
                 let* logical_shape = declared_or_inferred node inferred in
                 emit_primitive node ~operation:(Ir.Primitive.Attention config)
                   ~inputs ~logical_shape
-        | _ -> Error "attention requires query, key, value, and mask"
+        | [ query; key; value ] ->
+            if Ir.Value.dtype query <> Ir.Dtype.Float16
+               || Ir.Value.dtype key <> Ir.Dtype.Float16
+               || Ir.Value.dtype value <> Ir.Dtype.Float16
+            then Error "attention query, key, and value must be float16"
+            else
+              let dropout =
+                match keyword "dropout_p" node with
+                | None -> Ok 0.0
+                | Some argument -> finite_float_argument argument
+              in
+              let causal =
+                match keyword "is_causal" node with
+                | None -> Ok false
+                | Some argument -> bool_argument argument
+              in
+              let scale =
+                match keyword "scale" node with
+                | Some argument -> finite_float_argument argument
+                | None ->
+                    (match
+                       List.rev
+                         (Tensor_shape.dimensions
+                            (Ir.Value.logical_shape query))
+                     with
+                    | head_dimension :: _ when head_dimension > 0 ->
+                        Ok (1.0 /. sqrt (Float.of_int head_dimension))
+                    | _ -> Error "attention has no positive head width")
+              in
+              let* dropout = dropout in
+              let* causal = causal in
+              let* scale = scale in
+              if dropout <> 0.0 then
+                Error "inference attention requires zero dropout"
+              else
+                let* config = Ir.Attention.create ~scale ~causal in
+                let* logical_shape =
+                  declared_or_inferred node (Ir.Value.logical_shape query)
+                in
+                emit_primitive node ~operation:(Ir.Primitive.Attention config)
+                  ~inputs ~logical_shape
+        | _ -> Error "attention requires query, key, and value"
       in
       let lower_embedding inputs =
         match inputs, Fx.Node.arguments node with
@@ -1094,15 +1137,16 @@ let plan fx_graph =
       let lower_batched_matmul inputs =
         match inputs with
         | [ lhs; rhs ]
-          when Ir.Value.dtype lhs = Ir.Dtype.Float32
-               && Ir.Value.dtype rhs = Ir.Dtype.Float32
-               && Fx.Node.dtype node = Ir.Dtype.Float32
+          when (Ir.Value.dtype lhs = Ir.Dtype.Float32
+               || Ir.Value.dtype lhs = Ir.Dtype.Float16)
+               && (Ir.Value.dtype rhs = Ir.Dtype.Float32
+                  || Ir.Value.dtype rhs = Ir.Dtype.Float16)
                && Tensor_shape.rank (Ir.Value.logical_shape lhs) >= 2
                && Tensor_shape.rank (Ir.Value.logical_shape rhs) >= 2 ->
             let* logical_shape = logical_shape_for node in
             emit_primitive node ~operation:Ir.Primitive.Batched_matmul ~inputs
               ~logical_shape
-        | _ -> Error "batched matmul requires float32 matrix tensors"
+        | _ -> Error "batched matmul requires float matrix tensors"
       in
       let lower_new_ones inputs =
         match inputs, Fx.Node.arguments node with
@@ -1335,27 +1379,32 @@ let plan fx_graph =
       in
       match Fx.Node.op node with
       | "placeholder" | "get_attr" ->
-          (match node |> Fx.Node.binding |> Fx.Binding.input_source with
-          | None ->
-              Error ("FX input has a computed binding: " ^ Fx.Node.name node)
-          | Some source ->
-          match shapes_for node with
-          | Error _ ->
-              let shape = Shape.of_ints_exn ~rows:1 ~cols:1 in
-              let logical_shape = Tensor_shape.of_matrix shape in
-              let value =
-                Tile_effect.tensor_input ~name ~source ~shape:logical_shape
-                  ~dtype:(Fx.Node.dtype node)
-              in
-              Hashtbl.replace env name value;
+          (match Fx.Node.shape node with
+          | Some dims when List.exists (( = ) 0) dims ->
+              Hashtbl.replace empty_tensors name (Fx.Node.dtype node);
               Ok ()
-          | Ok (logical_shape, shape) ->
-              let value =
-                Tile_effect.tensor_input ~name ~source ~shape:logical_shape
-                  ~dtype:(Fx.Node.dtype node)
-              in
-              Hashtbl.replace env name value;
-              Ok ())
+          | _ ->
+              (match node |> Fx.Node.binding |> Fx.Binding.input_source with
+              | None ->
+                  Error ("FX input has a computed binding: " ^ Fx.Node.name node)
+              | Some source ->
+              match shapes_for node with
+              | Error _ ->
+                  let shape = Shape.of_ints_exn ~rows:1 ~cols:1 in
+                  let logical_shape = Tensor_shape.of_matrix shape in
+                  let value =
+                    Tile_effect.tensor_input ~name ~source ~shape:logical_shape
+                      ~dtype:(Fx.Node.dtype node)
+                  in
+                  Hashtbl.replace env name value;
+                  Ok ()
+              | Ok (logical_shape, shape) ->
+                  let value =
+                    Tile_effect.tensor_input ~name ~source ~shape:logical_shape
+                      ~dtype:(Fx.Node.dtype node)
+                  in
+                  Hashtbl.replace env name value;
+                  Ok ()))
       | "output" -> Ok ()
       | "call_function" | "call_method" ->
           let target = String.lowercase_ascii (Fx.Node.target node) in
@@ -1665,6 +1714,16 @@ let plan fx_graph =
                      [ "torch.nn.functional.embedding";
                        "aten.embedding.default" ]
               then lower_embedding inputs |> lower_or_opaque inputs
+              else if
+                target_is target
+                  [ "dropout"; "torch.nn.functional.dropout";
+                    "aten.dropout.default"; "aten.dropout" ]
+              then
+                (match inputs with
+                | input :: _ ->
+                    Hashtbl.replace env name input;
+                    Ok ()
+                | _ -> lower_opaque inputs)
               else if target_is target [ "contiguous"; "aten.contiguous.default" ] then
                 (match inputs with
                 | [ input ] ->

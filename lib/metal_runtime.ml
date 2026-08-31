@@ -3586,6 +3586,68 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~parameters ~grid:(grid_x, 1, 1)
             in
             dispatched (Ok (bind_value state output output_buffer, kernel))
+        | ( Ir.Op.Primitive (Ir.Primitive.Attention config),
+            [ query; key; value ],
+            Some output ) ->
+            let* batches, heads, query_length, head_dimension =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
+              | [ batches; heads; query_length; head_dimension ] ->
+                  Ok (batches, heads, query_length, head_dimension)
+              | _ -> Error "attention query must have rank four"
+            in
+            let* kv_heads, key_length =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape key) with
+              | [ _batches; kv_heads; key_length; _dimension ] ->
+                  Ok (kv_heads, key_length)
+              | _ -> Error "attention key must have rank four"
+            in
+            let* token_first_value =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
+              | [ b; h; k; d ]
+                when b = batches && h = kv_heads && k = key_length
+                     && d = head_dimension ->
+                  Ok 0
+              | [ b; k; h; d ]
+                when b = batches && h = kv_heads && k = key_length
+                     && d = head_dimension ->
+                  Ok 1
+              | _ ->
+                  Error
+                    "attention value must match key in head-major or token-major layout"
+            in
+            let mask_batches, mask_heads = 0, 0 in
+            let token_first_output =
+              match Tensor_shape.dimensions (Ir.Value.logical_shape output) with
+              | [ b; q; hidden ]
+                when b = batches && q = query_length && hidden = heads * head_dimension ->
+                  1
+              | [ b; q; h; d ]
+                when b = batches && q = query_length && h = heads && d = head_dimension ->
+                  1
+              | _ -> 0
+            in
+            let* buffers = find_values state [ query; key; value; query ] in
+            let past_length = max 0 (key_length - query_length) in
+            let* parameters =
+              Parameters.attention ~batches ~heads ~query_length ~key_length
+                ~head_dimension ~mask_batches ~mask_heads
+                ~causal:(Ir.Attention.causal config)
+                ~scale:(Ir.Attention.scale config)
+                ~kv_heads ~token_first_output ~past_length ~token_first_value ()
+            in
+            let rows = batches * heads * query_length in
+            let input_dtype = Ir.Value.dtype query in
+            let* entry, simd =
+              select_attention_kernel runtime input_dtype (Ir.Value.dtype output)
+                head_dimension
+            in
+            let* grid_x = if simd then simd_rows_grid rows else Ok rows in
+            let* output_buffer = workspace_buffer state output in
+            let* kernel =
+              dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
+                ~parameters ~grid:(grid_x, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buffer, kernel))
         | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config),
             [ query; current_key; current_value; pool; slots; mask ],
             Some output ) ->

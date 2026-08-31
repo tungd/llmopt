@@ -7,19 +7,14 @@
   "stages": [
     {
       "stage": "target-prefill",
-      "fx_nodes": 6423,
-      "ir_nodes": 5223,
+      "fx_nodes": 6087,
+      "ir_nodes": 3492,
       "static_tensors": 669,
       "runtime_inputs": 100,
-      "kernels": 67,
-      "commands": 5223,
-      "opaque_commands": 288,
-      "opaque_by_target": {
-        "torch._VariableFunctionsClass.cat": 96,
-        "torch._VariableFunctionsClass.matmul": 96,
-        "torch.nn.functional.dropout": 48,
-        "torch.nn.functional.softmax": 48
-      },
+      "kernels": 69,
+      "commands": 3492,
+      "opaque_commands": 0,
+      "opaque_by_target": {},
       "lowering_exit_code": 0,
       "metal_compile_exit_code": 0,
       "metallib_exit_code": 0,
@@ -29,18 +24,14 @@
     },
     {
       "stage": "target-decode",
-      "fx_nodes": 6423,
-      "ir_nodes": 5128,
+      "fx_nodes": 6087,
+      "ir_nodes": 3732,
       "static_tensors": 669,
       "runtime_inputs": 100,
-      "kernels": 67,
-      "commands": 5128,
-      "opaque_commands": 192,
-      "opaque_by_target": {
-        "torch._VariableFunctionsClass.matmul": 96,
-        "torch.nn.functional.dropout": 48,
-        "torch.nn.functional.softmax": 48
-      },
+      "kernels": 69,
+      "commands": 3732,
+      "opaque_commands": 0,
+      "opaque_by_target": {},
       "lowering_exit_code": 0,
       "metal_compile_exit_code": 0,
       "metallib_exit_code": 0,
@@ -51,15 +42,13 @@
     {
       "stage": "assistant-step",
       "fx_nodes": 424,
-      "ir_nodes": 309,
+      "ir_nodes": 261,
       "static_tensors": 50,
       "runtime_inputs": 8,
-      "kernels": 57,
-      "commands": 309,
-      "opaque_commands": 4,
-      "opaque_by_target": {
-        "torch._C._nn.scaled_dot_product_attention": 4
-      },
+      "kernels": 59,
+      "commands": 261,
+      "opaque_commands": 0,
+      "opaque_by_target": {},
       "lowering_exit_code": 0,
       "metal_compile_exit_code": 0,
       "metallib_exit_code": 0,
@@ -68,5 +57,5 @@
       "tensor_store": "none"
     }
   ],
-  "outcome": "The native compiler and Metal toolchain accepted all meta graphs, but every required entrypoint retains opaque commands. ITEM-04D therefore reaches its explicit opaque-fallback escalation before linked target/drafter execution."
+  "outcome": "All target prefill, target decode, and MTP assistant entrypoints compile into native Metal compiled-graph packages with zero opaque commands and pass validation checks."
 }

@@ -6185,7 +6185,9 @@ kernel void __ATTENTION_KERNEL__(
         ? 0.0f : results[chunk] / denominator);
   }
 }
+|}
 
+let attention_tree_speculative_source = {|
 struct SpeculativeAttentionParams {
   uint batches; uint heads; uint query_length; uint key_length;
   uint head_dimension; uint kv_heads; uint past_length;

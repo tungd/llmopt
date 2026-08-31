@@ -510,13 +510,13 @@ def build_receipt(*, local_only: bool) -> dict[str, Any]:
     target_path = _resolve_file(TARGET_FILENAME, local_only=local_only)
     assistant_path = _resolve_file(ASSISTANT_FILENAME, local_only=local_only)
     target_config, config_path = _load_target_config(local_only=local_only)
-    target_config._attn_implementation = "eager"
+    target_config._attn_implementation = "sdpa"
     geometry = target_layer_geometry(target_config)
     if geometry != expected_target_geometry():
         raise ValueError("pinned Gemma target geometry differs from the audited 40 sliding/8 global layout")
 
     assistant_text_config = build_assistant_text_config(target_config)
-    assistant_text_config._attn_implementation = "eager"
+    assistant_text_config._attn_implementation = "sdpa"
     assistant_config = Gemma4AssistantConfig(
         text_config=assistant_text_config,
         backbone_hidden_size=target_config.hidden_size,
