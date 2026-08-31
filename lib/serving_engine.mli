@@ -132,3 +132,29 @@ module Medusa : sig
   val emitted_tokens : t -> int array
   val accepted_depth : t -> int
 end
+
+module Prompt_lookup : sig
+  val find_candidate_ngram :
+    ?min_ngram:int ->
+    ?max_ngram:int ->
+    max_draft_tokens:int ->
+    tokens:int array ->
+    unit ->
+    int array
+
+  val propose_linear :
+    ?min_ngram:int ->
+    ?max_ngram:int ->
+    max_draft_tokens:int ->
+    tokens:int array ->
+    unit ->
+    int array
+
+  val propose_tree :
+    ?min_ngram:int ->
+    ?max_ngram:int ->
+    max_draft_tokens:int ->
+    tokens:int array ->
+    unit ->
+    Medusa.tree option
+end

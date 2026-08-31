@@ -447,6 +447,57 @@ let () =
     && medusa_state = "medusa-after"
     && !medusa_commit_depths = [ 2 ])
     "Medusa tree accepts matching candidate prefix and bonus target token";
+
+  (* Prompt-lookup weightless speculative decoding tests *)
+  let context_tokens = [| 10; 20; 30; 40; 50; 60; 70; 10; 20; 30 |] in
+  let prompt_candidates =
+    Serving_engine.Prompt_lookup.find_candidate_ngram ~min_ngram:2 ~max_ngram:3
+      ~max_draft_tokens:3 ~tokens:context_tokens ()
+  in
+  expect (prompt_candidates = [| 40; 50; 60 |])
+    "Prompt lookup matches exact 3-gram suffix [10; 20; 30] and proposes [40; 50; 60]";
+
+  let prompt_tree_opt =
+    Serving_engine.Prompt_lookup.propose_tree ~min_ngram:2 ~max_ngram:3
+      ~max_draft_tokens:3 ~tokens:context_tokens ()
+  in
+  expect (Option.is_some prompt_tree_opt)
+    "Prompt lookup builds a valid Medusa candidate tree from matched tokens";
+
+  let prompt_tree = Option.get prompt_tree_opt in
+  expect (Serving_engine.Medusa.tree_tokens_array prompt_tree = [| 40; 50; 60 |])
+    "Prompt lookup tree tokens match candidate array";
+
+  let no_match_tokens = [| 1; 2; 3; 4; 5; 6; 7; 8; 9 |] in
+  let no_candidates =
+    Serving_engine.Prompt_lookup.find_candidate_ngram ~min_ngram:2 ~max_ngram:3
+      ~max_draft_tokens:3 ~tokens:no_match_tokens ()
+  in
+  expect (no_candidates = [||])
+    "Prompt lookup returns empty array when no n-gram match exists in history";
+
+  let no_tree_opt =
+    Serving_engine.Prompt_lookup.propose_tree ~min_ngram:2 ~max_ngram:3
+      ~max_draft_tokens:3 ~tokens:no_match_tokens ()
+  in
+  expect (Option.is_none no_tree_opt)
+    "Prompt lookup returns None when no candidate tree can be formed";
+
+  let end_to_end_result, end_to_end_state =
+    Serving_engine.Medusa.run ~tree:prompt_tree ~state:"lookup-state"
+      ~verify:(fun state _tree ->
+        if state = "lookup-state" then Ok ([| 40; 50; 999; 0 |], `Verified)
+        else Error "invalid state")
+      ~commit:(fun `Verified ~accepted_depth ->
+        if accepted_depth = 2 then Ok "lookup-committed"
+        else Error "unexpected depth")
+    |> Result.get_ok
+  in
+  expect
+    (Serving_engine.Medusa.accepted_depth end_to_end_result = 2
+    && Serving_engine.Medusa.emitted_tokens end_to_end_result = [| 40; 50; 999 |]
+    && end_to_end_state = "lookup-committed")
+    "Prompt-lookup tree executes and commits through Medusa tree engine";
   let capacity_queue =
     Serving_queue.create ~token_capacity:1000 ~high_watermark_ratio:0.90
       ~low_watermark_ratio:0.75 ()

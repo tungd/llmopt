@@ -1801,3 +1801,43 @@ module Medusa = struct
   let emitted_tokens result = Array.copy result.emitted_tokens
   let accepted_depth result = result.accepted_depth
 end
+
+module Prompt_lookup = struct
+  let find_candidate_ngram ?(min_ngram = 1) ?(max_ngram = 3) ~max_draft_tokens ~tokens () =
+    let total = Array.length tokens in
+    if total <= min_ngram || max_draft_tokens <= 0 then [||]
+    else
+      let max_n = min max_ngram (total - 1) in
+      let rec try_ngram_len n =
+        if n < min_ngram then [||]
+        else
+          let suffix_start = total - n in
+          let rec scan_history pos =
+            if pos < 0 then try_ngram_len (n - 1)
+            else
+              let rec check_match i =
+                if i = n then true
+                else if tokens.(pos + i) = tokens.(suffix_start + i) then
+                  check_match (i + 1)
+                else false
+              in
+              if check_match 0 then
+                let candidate_start = pos + n in
+                let available = total - candidate_start in
+                let draft_count = min max_draft_tokens available in
+                if draft_count <= 0 then scan_history (pos - 1)
+                else Array.sub tokens candidate_start draft_count
+              else scan_history (pos - 1)
+          in
+          scan_history (suffix_start - 1)
+      in
+      try_ngram_len max_n
+
+  let propose_linear ?min_ngram ?max_ngram ~max_draft_tokens ~tokens () =
+    find_candidate_ngram ?min_ngram ?max_ngram ~max_draft_tokens ~tokens ()
+
+  let propose_tree ?min_ngram ?max_ngram ~max_draft_tokens ~tokens () =
+    let candidates = find_candidate_ngram ?min_ngram ?max_ngram ~max_draft_tokens ~tokens () in
+    if Array.length candidates = 0 then None
+    else Some (Medusa.create_linear_tree ~head_predictions:candidates)
+end
