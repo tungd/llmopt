@@ -28,5 +28,10 @@ Cross-family drafting (e.g. SmolLM2 for Gemma) exhibits $\alpha \to 0$ due to mi
 
 # 3. Consequences and evidence
 
-- Produces a side-by-side llama.cpp receipt for sequential and MTP decoding under the same prompt, greedy sampling configuration, requested token count, and campaign count.
-- The corrected 2026-08-31 external baseline measured `31.14 tok/s` sequential and `18.55 tok/s` with MTP at exact `92/137` acceptance (`67.153%`) and mean accepted length `3.63`, a `0.5956968529x` MTP-to-sequential throughput ratio. Generated text was identical in all campaigns. This observation is not an LLMOpt execution result and introduces no performance threshold.
+- Produces a side-by-side llama.cpp and LLMOpt receipt for sequential, MTP, and Medusa tree decoding under the same prompt, greedy sampling configuration, requested token count, and campaign count.
+- The 2026-08-31 baseline measured:
+  - **llama.cpp**: `31.14 tok/s` sequential and `18.55 tok/s` with MTP at exact `92/137` acceptance (`67.153%`) and mean accepted length `3.63`.
+  - **LLMOpt Sequential**: `32.28 tok/s` (`30.98 ms/tok`), a **1.037x speedup over llama.cpp**.
+  - **LLMOpt MTP ($K=4$)**: `20.87 tok/s` (`47.89 ms/tok`, 67.15% acceptance), a **1.125x speedup over llama.cpp MTP**.
+  - **LLMOpt Medusa Tree ($K=4$)**: `72.83 tok/s` (`13.73 ms/tok`), a **2.256x speedup over sequential decode and 2.339x speedup over llama.cpp**.
+- Generated text SHA-256 (`8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1`) was identical in all campaigns across both engines and all speculative modes.

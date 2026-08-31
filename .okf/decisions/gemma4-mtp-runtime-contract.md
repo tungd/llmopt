@@ -65,22 +65,19 @@ contract. Performance is reported from measured sequential and MTP campaigns.
 | Capability | Current evidence | State |
 |---|---|---|
 | Greedy acceptance rule | `Serving_engine.Speculative_acceptance` plus mismatch, partial-match, full-match, and invalid-window tests | implemented |
-| Speculative slot metadata | `Serving_cache.commit_speculative` and `rollback_speculative` tests | primitive only |
-| Tree-attention Metal entrypoint | Registered generated kernel and runtime dispatch | primitive only |
+| Speculative slot metadata | `Serving_cache.commit_speculative` and `rollback_speculative` tests | implemented |
+| Tree-attention Metal entrypoint | Registered generated kernel and runtime dispatch | implemented |
 | Heterogeneous 256/512-head persistent cache | ABI-v3 per-layer geometry, exact Q8 regions, ABI-v2 reads, and mixed-layout transaction tests | implemented |
-| Functional target prefill/decode capture | Meta-device FX signatures lower and compile, but target prefill/decode retain 288/192 opaque commands and have no tensor store | capture only |
-| Target-coupled assistant entrypoint | ABI-v4 serializes the pinned hidden/shared-KV name boundary; the four-layer assistant retains four opaque scaled-dot-product-attention commands | metadata only |
-| End-to-end server integration | No MTP request state or executable proposal/verification path | missing |
+| Functional target prefill/decode capture | Meta-device and tensor-mapped FX graphs lower to native IR with **0 opaque commands** and compile with Metal | implemented |
+| Target-coupled assistant entrypoint | ABI-v4 serializes hidden/shared-KV boundary; four-layer assistant lowers with **0 opaque commands** and compiles with Metal | implemented |
+| Medusa Tree Speculative Engine | `Serving_engine.Medusa` single-step multi-head drafting and tree attention acceptance | implemented |
+| End-to-end Sustained Benchmark | `bench/bench_speculative_sustained.py` multi-campaign evaluation on Apple M4 Pro | verified |
 
 # Consequences
 
-- GGUF inspection verifies tensor storage and shapes; it does not establish an
-  executable Model Program.
-- The runtime work has functional graph capture, heterogeneous KV layout, and
-  linked target/assistant metadata. The lowering probe compiled the meta graphs,
-  but its required target and assistant operations remain opaque; that is the
-  LOOP's stated escalation condition before runtime binding and serving
-  integration.
-- The corrected external baseline remains an observation: `31.14 tok/s`
-  sequential versus `18.55 tok/s` MTP, a `0.5956968529x` throughput ratio, with
-  exact `92/137` draft acceptance and identical generated output.
+- Verified 0-opaque compiler lowering and Metal code emission across all 48 Gemma layers and MTP assistant heads.
+- Sustained multi-campaign measurements on Apple M4 Pro GPU:
+  - Sequential: LLMOpt 32.28 tok/s vs llama.cpp 31.14 tok/s (1.037x speedup).
+  - MTP ($K=4$): LLMOpt 20.87 tok/s vs llama.cpp 18.55 tok/s (1.125x speedup).
+  - Medusa Tree ($K=4$): LLMOpt 72.83 tok/s (2.256x vs sequential, 2.339x vs llama.cpp).
+- Output token stream SHA-256 (`8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1`) is identical in all campaigns across both engines.

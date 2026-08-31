@@ -16,3 +16,4 @@
 * [GGUF and Unsloth Dynamic (UD) Quantization Support with AOT Code Specialization](gguf-unsloth-dynamic-quantization.md) - Adopt GGUF and Unsloth Dynamic mixed quantization with specialized AOT Metal megakernels.
 * [Corrected hardware and speculative primitive inventory](speculative-pipelining-hardware-acceleration.md) - Retains implemented bitfield, Split-K, tree-attention, and cache primitives while retracting unsupported end-to-end claims.
 * [Gemma 4 target-coupled MTP runtime contract](gemma4-mtp-runtime-contract.md) - Defines linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance.
+* [Sustained Speculative Decoding Benchmark with Gemma 4 12B QAT and MTP](gemma-12b-qat-mtp-speculative-benchmark.md) - Multi-campaign sustained benchmark protocol comparing LLMOpt sequential, MTP, and Medusa tree decoding against llama.cpp.
