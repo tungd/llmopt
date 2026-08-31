@@ -307,6 +307,8 @@ let serve service options =
                               match req.state with
                               | Serving_queue.Active_decode d -> d.sampling_params
                               | Serving_queue.Pending_prefill p -> p.sampling_params
+                              | Serving_queue.Speculative_drafting s -> s.sampling_params
+                              | Serving_queue.Speculative_verifying s -> s.sampling_params
                             in
                             req.state <- Serving_queue.Active_decode {
                               prompt_length = Array.length active_req.prompt_tokens;

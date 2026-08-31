@@ -76,3 +76,29 @@ val step_batch :
 
 val stats : t -> Serving_cache.Stats.t
 val validate : t -> (unit, string) result
+
+module Speculative_pipeline : sig
+  type pipeline
+
+  val create :
+    target:t ->
+    ?draft:t ->
+    ?max_draft_tokens:int ->
+    unit ->
+    pipeline
+
+  val target : pipeline -> t
+  val draft : pipeline -> t option
+  val max_draft_tokens : pipeline -> int
+
+  val verify_draft :
+    target:t ->
+    prefix:int array ->
+    draft_tokens:int array ->
+    (int array * int, string) result
+
+  val step :
+    pipeline ->
+    prefix:int array ->
+    (int array * int, string) result
+end

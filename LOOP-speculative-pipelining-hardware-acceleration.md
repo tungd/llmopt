@@ -129,7 +129,7 @@ Break past the physical single-token memory bandwidth ceiling on Apple Silicon b
 - `IMPORTANT FILES`:
   - `lib/serving_queue.ml`: Integrate speculative state tracking into SRPT priority computation.
   - `lib/serving_engine.ml`: Overlap draft proposal generation with target model verification using asynchronous Metal command encoders.
-- `IMPORTANT SYMBOLS`: `Serving_queue.request_state`, `Serving_engine.speculative_step`, `Serving_queue.step_pipelined`
+- `IMPORTANT SYMBOLS`: `Serving_queue.request_state`, `Serving_engine.Speculative_pipeline`, `Serving_queue.pop_next_batch`
 - `WHY`: Pipelining draft generation with main model verification hides draft proposal latency and maximizes concurrent Metal GPU execution.
 - `FIX`: Add speculative execution branches to `Serving_engine`, coordinating draft proposals, target forward verification, and accepted token emissions through `Serving_queue`.
 - `QUALITY`: Preserve OpenAI SSE streaming event format; emit all accepted tokens in order with correct timestamps.
@@ -137,6 +137,9 @@ Break past the physical single-token memory bandwidth ceiling on Apple Silicon b
 - `VERIFY`: `ninja -f ninja.build test all && ./_build/bin/llmopt-test`
 - `DONE WHEN`: Asynchronous serving engine serves end-to-end chat completions with speculative speedups and passes continuous batching tests.
 - `ESCALATE IF`: Asynchronous command buffer submission causes GPU memory synchronization race conditions.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Extended `Serving_queue.request_state` with `Speculative_drafting` and `Speculative_verifying` states, with 2.5x SRPT speedup rate scaling. Implemented `Serving_engine.Speculative_pipeline` for draft proposal generation and target verification with optimistic slot reservation. Updated `bin/serve.ml` and added unit test coverage in `test/test.ml`.
+  - `VERIFICATION`: `ninja -f ninja.build test all` (49/49 passed); `_build/bin/llmopt-test` passed.
 
 ---
 

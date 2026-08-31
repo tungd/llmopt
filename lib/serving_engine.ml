@@ -1627,3 +1627,113 @@ let step_batch engine ~decodes ~prefill:prefill_slice_opt =
         Some res
   in
   Ok { Batch_result.decodes = decodes_results; prefill = prefill_result }
+
+module Speculative_pipeline = struct
+  type pipeline = {
+    target : t;
+    draft : t option;
+    max_draft_tokens : int;
+  }
+
+  let create ~target ?draft ?(max_draft_tokens = 4) () =
+    { target; draft; max_draft_tokens }
+
+  let target p = p.target
+  let draft p = p.draft
+  let max_draft_tokens p = p.max_draft_tokens
+
+  let verify_draft ~target ~prefix ~draft_tokens =
+    let draft_count = Array.length draft_tokens in
+    if draft_count = 0 then Ok (prefix, 0)
+    else
+      let* tentative_slots =
+        Serving_cache.reserve_tokens target.logical_cache draft_count
+        |> Result.map_error Kv_cache.error_to_string
+      in
+      let reservation =
+        Serving_cache.Speculative.create ~tokens:draft_tokens
+          ~slots:tentative_slots ()
+      in
+      let rec verify idx accepted =
+        if idx >= draft_count then Ok (accepted, draft_count)
+        else
+          let current_prefix =
+            Array.append prefix (Array.sub draft_tokens 0 idx)
+          in
+          match decode target ~prefix:current_prefix ~token:draft_tokens.(idx) with
+          | Error err -> Error err
+          | Ok step ->
+              let sampled_token =
+                match Step.tokens step with
+                | [| tok |] -> tok
+                | arr when Array.length arr > 0 -> arr.(Array.length arr - 1)
+                | _ -> draft_tokens.(idx)
+              in
+              if idx + 1 < draft_count && sampled_token = draft_tokens.(idx + 1)
+              then
+                verify (idx + 1)
+                  (Array.append accepted [| draft_tokens.(idx) |])
+              else
+                let final_accepted =
+                  Array.append
+                    (Array.sub draft_tokens 0 (idx + 1))
+                    [| sampled_token |]
+                in
+                Ok (final_accepted, idx + 1)
+      in
+      match verify 0 [||] with
+      | Error err ->
+          let _ =
+            Serving_cache.rollback_speculative target.logical_cache ~reservation
+          in
+          Error err
+      | Ok (accepted_tokens, accepted_draft_count) ->
+          let* _ =
+            Serving_cache.commit_speculative target.logical_cache
+              ~reservation ~accepted_count:accepted_draft_count
+          in
+          Ok (accepted_tokens, accepted_draft_count)
+
+  let step pipeline ~prefix =
+    match pipeline.draft with
+    | None ->
+        let last_token =
+          if Array.length prefix > 0 then prefix.(Array.length prefix - 1)
+          else 0
+        in
+        let* step = decode pipeline.target ~prefix ~token:last_token in
+        let next_tok =
+          match Step.tokens step with
+          | [| tok |] -> tok
+          | arr when Array.length arr > 0 -> arr.(Array.length arr - 1)
+          | _ -> 0
+        in
+        Ok ([| next_tok |], 1)
+    | Some draft_engine ->
+        let rec draft_loop count acc_tokens cur_prefix =
+          if count >= pipeline.max_draft_tokens then
+            Ok (Array.of_list (List.rev acc_tokens))
+          else
+            let cur_token =
+              match acc_tokens with
+              | [] ->
+                  if Array.length cur_prefix > 0 then
+                    cur_prefix.(Array.length cur_prefix - 1)
+                  else 0
+              | t :: _ -> t
+            in
+            match decode draft_engine ~prefix:cur_prefix ~token:cur_token with
+            | Error err -> Error err
+            | Ok step ->
+                let drafted =
+                  match Step.tokens step with
+                  | [| tok |] -> tok
+                  | arr when Array.length arr > 0 -> arr.(Array.length arr - 1)
+                  | _ -> 0
+                in
+                draft_loop (count + 1) (drafted :: acc_tokens)
+                  (Array.append cur_prefix [| drafted |])
+        in
+        let* draft_tokens = draft_loop 0 [] prefix in
+        verify_draft ~target:pipeline.target ~prefix ~draft_tokens
+end

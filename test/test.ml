@@ -246,6 +246,52 @@ let () =
         && Serving_queue.Request_id.equal third long_id
     | _ -> false)
     "serving queue pops decode, short prefill, then long prefill";
+
+  (* Speculative queue priority tests *)
+  let spec_draft_id = Serving_queue.Request_id.create () in
+  let spec_draft_req : Serving_queue.request =
+    {
+      id = spec_draft_id;
+      arrival_time = 0.0;
+      state =
+        Serving_queue.Speculative_drafting
+          {
+            prompt_length = 10;
+            verified_tokens = [ 1; 2; 3 ];
+            drafted_tokens = [ 4; 5 ];
+            max_new_tokens = 5;
+            ignore_eos = false;
+            sampling_params = Sampling.Params.greedy;
+          };
+      priority_score = 0.0;
+    }
+  in
+  let slow_decode_req : Serving_queue.request =
+    {
+      id = Serving_queue.Request_id.create ();
+      arrival_time = 0.0;
+      state =
+        Serving_queue.Active_decode
+          {
+            prompt_length = 10;
+            generated_tokens = [ 1; 2; 3 ];
+            max_new_tokens = 5;
+            ignore_eos = false;
+            sampling_params = Sampling.Params.greedy;
+          };
+      priority_score = 0.0;
+    }
+  in
+  let spec_score =
+    Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
+      ~current_time:0.0 ~arrival_time:0.0 spec_draft_req.state
+  in
+  let slow_decode_score =
+    Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
+      ~current_time:0.0 ~arrival_time:0.0 slow_decode_req.state
+  in
+  expect (spec_score > slow_decode_score)
+    "Speculative drafting achieves higher SRPT score due to 2.5x effective decoding rate";
   let capacity_queue =
     Serving_queue.create ~token_capacity:1000 ~high_watermark_ratio:0.90
       ~low_watermark_ratio:0.75 ()
