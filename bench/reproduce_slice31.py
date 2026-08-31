@@ -55,7 +55,7 @@ PROBES = {
         "package": REPO_ROOT / "_artifacts/full-model-probe/qwen/package-slice31-quant-linear-add",
         "input_name": "l_kwargs_input_ids_",
         "input_path": REPO_ROOT / "_artifacts/full-model-probe/qwen/package-run4/input.i64",
-        "output_name": "logits_3",
+        "output_name": "logits",
         "output_shape": (1, 2, 248320),
         "expected_sha256": "11a29d5594e1a73dacf6011f2348757b02418df3a06ade6be16161df60763a31",
         "expected_argmax": [760, 16],

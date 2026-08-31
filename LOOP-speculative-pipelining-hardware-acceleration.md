@@ -53,6 +53,12 @@ Break past the physical single-token memory bandwidth ceiling on Apple Silicon b
 - `VERIFY`: `ninja -f ninja.build test all && python3 bench/reproduce_slice31.py --model all`
 - `DONE WHEN`: All K-quant unit tests and reproduction benchmarks produce bit-identical SHA256 hashes and row argmax IDs.
 - `ESCALATE IF`: Metal compiler rejects `metal::extract_bits` on the target MSL version.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Replaced manual shift/mask unpacking with `metal::extract_bits` across `q4_k_source`, `q5_k_source`, `q6_k_source`, `llmopt_swiglu_q4_k_f16`, `llmopt_down_q4_k_linear_f16`, and embedding blocks in `lib/metal.ml`.
+  - `VERIFICATION`: `ninja -f ninja.build test all` (49/49 passed); `bench/reproduce_slice31.py --model all` passed on all 3 models:
+    - Gemma-4-E2B: 1.0298x | SHA256 match = True | argmax = [84904, 148465]
+    - SmolLM2-135M: 1.0311x | SHA256 match = True | argmax = [198, 198]
+    - Qwen3.5-0.8B: 1.0433x | SHA256 match = True | argmax = [760, 16]
 
 ---
 

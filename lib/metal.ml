@@ -2495,10 +2495,10 @@ kernel void llmopt_dequant_q4_k(
   float dl[8];
   float ml[8];
   for (int j = 0; j < 4; ++j) {
-    const uint8_t sc0 = b.scales[j] & 63;
-    const uint8_t m0 = b.scales[j + 4] & 63;
-    const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
-    const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+    const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+    const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+    const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+    const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
     dl[j] = d * float(sc0);
     ml[j] = dmin * float(m0);
     dl[j + 4] = d * float(sc1);
@@ -2508,14 +2508,14 @@ kernel void llmopt_dequant_q4_k(
   const uint8_t q1 = b.qs[32 + lane];
   const uint8_t q2 = b.qs[64 + lane];
   const uint8_t q3 = b.qs[96 + lane];
-  output[sb_idx * 256 + 0 + lane]   = half(dl[0] * float(q0 & 0x0Fu) - ml[0]);
-  output[sb_idx * 256 + 32 + lane]  = half(dl[1] * float(q0 >> 4)    - ml[1]);
-  output[sb_idx * 256 + 64 + lane]  = half(dl[2] * float(q1 & 0x0Fu) - ml[2]);
-  output[sb_idx * 256 + 96 + lane]  = half(dl[3] * float(q1 >> 4)    - ml[3]);
-  output[sb_idx * 256 + 128 + lane] = half(dl[4] * float(q2 & 0x0Fu) - ml[4]);
-  output[sb_idx * 256 + 160 + lane] = half(dl[5] * float(q2 >> 4)    - ml[5]);
-  output[sb_idx * 256 + 192 + lane] = half(dl[6] * float(q3 & 0x0Fu) - ml[6]);
-  output[sb_idx * 256 + 224 + lane] = half(dl[7] * float(q3 >> 4)    - ml[7]);
+  output[sb_idx * 256 + 0 + lane]   = half(dl[0] * float(extract_bits(q0, 0u, 4u)) - ml[0]);
+  output[sb_idx * 256 + 32 + lane]  = half(dl[1] * float(extract_bits(q0, 4u, 4u)) - ml[1]);
+  output[sb_idx * 256 + 64 + lane]  = half(dl[2] * float(extract_bits(q1, 0u, 4u)) - ml[2]);
+  output[sb_idx * 256 + 96 + lane]  = half(dl[3] * float(extract_bits(q1, 4u, 4u)) - ml[3]);
+  output[sb_idx * 256 + 128 + lane] = half(dl[4] * float(extract_bits(q2, 0u, 4u)) - ml[4]);
+  output[sb_idx * 256 + 160 + lane] = half(dl[5] * float(extract_bits(q2, 4u, 4u)) - ml[5]);
+  output[sb_idx * 256 + 192 + lane] = half(dl[6] * float(extract_bits(q3, 0u, 4u)) - ml[6]);
+  output[sb_idx * 256 + 224 + lane] = half(dl[7] * float(extract_bits(q3, 4u, 4u)) - ml[7]);
 }
 
 kernel void llmopt_q4_k_linear_f16(
@@ -2542,10 +2542,10 @@ kernel void llmopt_q4_k_linear_f16(
     float dl[8];
     float ml[8];
     for (int j = 0; j < 4; ++j) {
-      const uint8_t sc0 = b.scales[j] & 63;
-      const uint8_t m0 = b.scales[j + 4] & 63;
-      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
-      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
       dl[j] = d * float(sc0);
       ml[j] = dmin * float(m0);
       dl[j + 4] = d * float(sc1);
@@ -2556,14 +2556,14 @@ kernel void llmopt_q4_k_linear_f16(
     const uint8_t q2 = b.qs[64 + lane];
     const uint8_t q3 = b.qs[96 + lane];
     const uint base_idx = sb * 256 + lane;
-    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(q0 & 0x0Fu) - ml[0]);
-    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float(q0 >> 4)    - ml[1]);
-    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float(q1 & 0x0Fu) - ml[2]);
-    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float(q1 >> 4)    - ml[3]);
-    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float(q2 & 0x0Fu) - ml[4]);
-    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float(q2 >> 4)    - ml[5]);
-    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float(q3 & 0x0Fu) - ml[6]);
-    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float(q3 >> 4)    - ml[7]);
+    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(extract_bits(q0, 0u, 4u)) - ml[0]);
+    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float(extract_bits(q0, 4u, 4u)) - ml[1]);
+    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float(extract_bits(q1, 0u, 4u)) - ml[2]);
+    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float(extract_bits(q1, 4u, 4u)) - ml[3]);
+    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float(extract_bits(q2, 0u, 4u)) - ml[4]);
+    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float(extract_bits(q2, 4u, 4u)) - ml[5]);
+    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float(extract_bits(q3, 0u, 4u)) - ml[6]);
+    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float(extract_bits(q3, 4u, 4u)) - ml[7]);
   }
   acc = simd_sum(acc);
   if (lane == 0) {
@@ -2595,10 +2595,10 @@ kernel void llmopt_q4_k_linear_f16_m2(
     float dl[8];
     float ml[8];
     for (int j = 0; j < 4; ++j) {
-      const uint8_t sc0 = b.scales[j] & 63;
-      const uint8_t m0 = b.scales[j + 4] & 63;
-      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
-      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
       dl[j] = d * float(sc0);
       ml[j] = dmin * float(m0);
       dl[j + 4] = d * float(sc1);
@@ -2609,14 +2609,14 @@ kernel void llmopt_q4_k_linear_f16_m2(
     const uint8_t q2 = b.qs[64 + lane];
     const uint8_t q3 = b.qs[96 + lane];
     const uint base_idx = sb * 256 + lane;
-    const float w0 = dl[0] * float(q0 & 0x0Fu) - ml[0];
-    const float w1 = dl[1] * float(q0 >> 4) - ml[1];
-    const float w2 = dl[2] * float(q1 & 0x0Fu) - ml[2];
-    const float w3 = dl[3] * float(q1 >> 4) - ml[3];
-    const float w4 = dl[4] * float(q2 & 0x0Fu) - ml[4];
-    const float w5 = dl[5] * float(q2 >> 4) - ml[5];
-    const float w6 = dl[6] * float(q3 & 0x0Fu) - ml[6];
-    const float w7 = dl[7] * float(q3 >> 4) - ml[7];
+    const float w0 = dl[0] * float(extract_bits(q0, 0u, 4u)) - ml[0];
+    const float w1 = dl[1] * float(extract_bits(q0, 4u, 4u)) - ml[1];
+    const float w2 = dl[2] * float(extract_bits(q1, 0u, 4u)) - ml[2];
+    const float w3 = dl[3] * float(extract_bits(q1, 4u, 4u)) - ml[3];
+    const float w4 = dl[4] * float(extract_bits(q2, 0u, 4u)) - ml[4];
+    const float w5 = dl[5] * float(extract_bits(q2, 4u, 4u)) - ml[5];
+    const float w6 = dl[6] * float(extract_bits(q3, 0u, 4u)) - ml[6];
+    const float w7 = dl[7] * float(extract_bits(q3, 4u, 4u)) - ml[7];
     acc0 += float(in0[base_idx + 0]) * w0;
     acc0 += float(in0[base_idx + 32]) * w1;
     acc0 += float(in0[base_idx + 64]) * w2;
@@ -3000,19 +3000,19 @@ kernel void llmopt_q4_k_gated_linear_f16(
     const float udmin = float(ub.dmin);
     float g_dl[8], g_ml[8], u_dl[8], u_ml[8];
     for (int j = 0; j < 4; ++j) {
-      const uint8_t g_sc0 = gb.scales[j] & 63;
-      const uint8_t g_m0 = gb.scales[j + 4] & 63;
-      const uint8_t g_sc1 = (gb.scales[j + 8] & 0x0F) | ((gb.scales[j] >> 6) << 4);
-      const uint8_t g_m1 = (gb.scales[j + 8] >> 4) | ((gb.scales[j + 4] >> 6) << 4);
+      const uint8_t g_sc0 = extract_bits(gb.scales[j], 0u, 6u);
+      const uint8_t g_m0 = extract_bits(gb.scales[j + 4], 0u, 6u);
+      const uint8_t g_sc1 = extract_bits(gb.scales[j + 8], 0u, 4u) | (extract_bits(gb.scales[j], 6u, 2u) << 4);
+      const uint8_t g_m1 = extract_bits(gb.scales[j + 8], 4u, 4u) | (extract_bits(gb.scales[j + 4], 6u, 2u) << 4);
       g_dl[j] = gd * float(g_sc0);
       g_ml[j] = gdmin * float(g_m0);
       g_dl[j + 4] = gd * float(g_sc1);
       g_ml[j + 4] = gdmin * float(g_m1);
 
-      const uint8_t u_sc0 = ub.scales[j] & 63;
-      const uint8_t u_m0 = ub.scales[j + 4] & 63;
-      const uint8_t u_sc1 = (ub.scales[j + 8] & 0x0F) | ((ub.scales[j] >> 6) << 4);
-      const uint8_t u_m1 = (ub.scales[j + 8] >> 4) | ((ub.scales[j + 4] >> 6) << 4);
+      const uint8_t u_sc0 = extract_bits(ub.scales[j], 0u, 6u);
+      const uint8_t u_m0 = extract_bits(ub.scales[j + 4], 0u, 6u);
+      const uint8_t u_sc1 = extract_bits(ub.scales[j + 8], 0u, 4u) | (extract_bits(ub.scales[j], 6u, 2u) << 4);
+      const uint8_t u_m1 = extract_bits(ub.scales[j + 8], 4u, 4u) | (extract_bits(ub.scales[j + 4], 6u, 2u) << 4);
       u_dl[j] = ud * float(u_sc0);
       u_ml[j] = udmin * float(u_m0);
       u_dl[j + 4] = ud * float(u_sc1);
@@ -3038,23 +3038,23 @@ kernel void llmopt_q4_k_gated_linear_f16(
     const float in6 = float(in_ptr[base_idx + 192]);
     const float in7 = float(in_ptr[base_idx + 224]);
 
-    gate_acc += in0 * (g_dl[0] * float(g_q0 & 0x0Fu) - g_ml[0])
-              + in1 * (g_dl[1] * float(g_q0 >> 4)    - g_ml[1])
-              + in2 * (g_dl[2] * float(g_q1 & 0x0Fu) - g_ml[2])
-              + in3 * (g_dl[3] * float(g_q1 >> 4)    - g_ml[3])
-              + in4 * (g_dl[4] * float(g_q2 & 0x0Fu) - g_ml[4])
-              + in5 * (g_dl[5] * float(g_q2 >> 4)    - g_ml[5])
-              + in6 * (g_dl[6] * float(g_q3 & 0x0Fu) - g_ml[6])
-              + in7 * (g_dl[7] * float(g_q3 >> 4)    - g_ml[7]);
+    gate_acc += in0 * (g_dl[0] * float(extract_bits(g_q0, 0u, 4u)) - g_ml[0])
+              + in1 * (g_dl[1] * float(extract_bits(g_q0, 4u, 4u)) - g_ml[1])
+              + in2 * (g_dl[2] * float(extract_bits(g_q1, 0u, 4u)) - g_ml[2])
+              + in3 * (g_dl[3] * float(extract_bits(g_q1, 4u, 4u)) - g_ml[3])
+              + in4 * (g_dl[4] * float(extract_bits(g_q2, 0u, 4u)) - g_ml[4])
+              + in5 * (g_dl[5] * float(extract_bits(g_q2, 4u, 4u)) - g_ml[5])
+              + in6 * (g_dl[6] * float(extract_bits(g_q3, 0u, 4u)) - g_ml[6])
+              + in7 * (g_dl[7] * float(extract_bits(g_q3, 4u, 4u)) - g_ml[7]);
 
-    up_acc   += in0 * (u_dl[0] * float(u_q0 & 0x0Fu) - u_ml[0])
-              + in1 * (u_dl[1] * float(u_q0 >> 4)    - u_ml[1])
-              + in2 * (u_dl[2] * float(u_q1 & 0x0Fu) - u_ml[2])
-              + in3 * (u_dl[3] * float(u_q1 >> 4)    - u_ml[3])
-              + in4 * (u_dl[4] * float(u_q2 & 0x0Fu) - u_ml[4])
-              + in5 * (u_dl[5] * float(u_q2 >> 4)    - u_ml[5])
-              + in6 * (u_dl[6] * float(u_q3 & 0x0Fu) - u_ml[6])
-              + in7 * (u_dl[7] * float(u_q3 >> 4)    - u_ml[7]);
+    up_acc   += in0 * (u_dl[0] * float(extract_bits(u_q0, 0u, 4u)) - u_ml[0])
+              + in1 * (u_dl[1] * float(extract_bits(u_q0, 4u, 4u)) - u_ml[1])
+              + in2 * (u_dl[2] * float(extract_bits(u_q1, 0u, 4u)) - u_ml[2])
+              + in3 * (u_dl[3] * float(extract_bits(u_q1, 4u, 4u)) - u_ml[3])
+              + in4 * (u_dl[4] * float(extract_bits(u_q2, 0u, 4u)) - u_ml[4])
+              + in5 * (u_dl[5] * float(extract_bits(u_q2, 4u, 4u)) - u_ml[5])
+              + in6 * (u_dl[6] * float(extract_bits(u_q3, 0u, 4u)) - u_ml[6])
+              + in7 * (u_dl[7] * float(extract_bits(u_q3, 4u, 4u)) - u_ml[7]);
   }
   gate_acc = simd_sum(gate_acc);
   up_acc = simd_sum(up_acc);
@@ -3191,10 +3191,10 @@ kernel void llmopt_q4_k_down_add_f16(
     const float dmin = float(b.dmin);
     float dl[8], ml[8];
     for (int j = 0; j < 4; ++j) {
-      const uint8_t sc0 = b.scales[j] & 63;
-      const uint8_t m0 = b.scales[j + 4] & 63;
-      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
-      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
       dl[j] = d * float(sc0);
       ml[j] = dmin * float(m0);
       dl[j + 4] = d * float(sc1);
@@ -3205,14 +3205,14 @@ kernel void llmopt_q4_k_down_add_f16(
     const uint8_t q2 = b.qs[64 + lane];
     const uint8_t q3 = b.qs[96 + lane];
     const uint base_idx = sb * 256 + lane;
-    down_acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(q0 & 0x0Fu) - ml[0])
-              + float(in_ptr[base_idx + 32])  * (dl[1] * float(q0 >> 4)    - ml[1])
-              + float(in_ptr[base_idx + 64])  * (dl[2] * float(q1 & 0x0Fu) - ml[2])
-              + float(in_ptr[base_idx + 96])  * (dl[3] * float(q1 >> 4)    - ml[3])
-              + float(in_ptr[base_idx + 128]) * (dl[4] * float(q2 & 0x0Fu) - ml[4])
-              + float(in_ptr[base_idx + 160]) * (dl[5] * float(q2 >> 4)    - ml[5])
-              + float(in_ptr[base_idx + 192]) * (dl[6] * float(q3 & 0x0Fu) - ml[6])
-              + float(in_ptr[base_idx + 224]) * (dl[7] * float(q3 >> 4)    - ml[7]);
+    down_acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(extract_bits(q0, 0u, 4u)) - ml[0])
+              + float(in_ptr[base_idx + 32])  * (dl[1] * float(extract_bits(q0, 4u, 4u)) - ml[1])
+              + float(in_ptr[base_idx + 64])  * (dl[2] * float(extract_bits(q1, 0u, 4u)) - ml[2])
+              + float(in_ptr[base_idx + 96])  * (dl[3] * float(extract_bits(q1, 4u, 4u)) - ml[3])
+              + float(in_ptr[base_idx + 128]) * (dl[4] * float(extract_bits(q2, 0u, 4u)) - ml[4])
+              + float(in_ptr[base_idx + 160]) * (dl[5] * float(extract_bits(q2, 4u, 4u)) - ml[5])
+              + float(in_ptr[base_idx + 192]) * (dl[6] * float(extract_bits(q3, 0u, 4u)) - ml[6])
+              + float(in_ptr[base_idx + 224]) * (dl[7] * float(extract_bits(q3, 4u, 4u)) - ml[7]);
   }
   down_acc = simd_sum(down_acc);
   if (lane == 0) {
@@ -3244,36 +3244,36 @@ kernel void llmopt_dequant_q5_k(
   float dl[8];
   float ml[8];
   for (int j = 0; j < 4; ++j) {
-    const uint8_t sc0 = b.scales[j] & 63;
-    const uint8_t m0 = b.scales[j + 4] & 63;
-    const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
-    const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+    const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+    const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+    const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+    const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
     dl[j] = d * float(sc0);
     ml[j] = dmin * float(m0);
     dl[j + 4] = d * float(sc1);
     ml[j + 4] = dmin * float(m1);
   }
   const uint8_t qh = b.qh[lane];
-  const uint8_t h0 = (qh >> 0) & 1u;
-  const uint8_t h1 = (qh >> 1) & 1u;
-  const uint8_t h2 = (qh >> 2) & 1u;
-  const uint8_t h3 = (qh >> 3) & 1u;
-  const uint8_t h4 = (qh >> 4) & 1u;
-  const uint8_t h5 = (qh >> 5) & 1u;
-  const uint8_t h6 = (qh >> 6) & 1u;
-  const uint8_t h7 = (qh >> 7) & 1u;
+  const uint8_t h0 = extract_bits(qh, 0u, 1u);
+  const uint8_t h1 = extract_bits(qh, 1u, 1u);
+  const uint8_t h2 = extract_bits(qh, 2u, 1u);
+  const uint8_t h3 = extract_bits(qh, 3u, 1u);
+  const uint8_t h4 = extract_bits(qh, 4u, 1u);
+  const uint8_t h5 = extract_bits(qh, 5u, 1u);
+  const uint8_t h6 = extract_bits(qh, 6u, 1u);
+  const uint8_t h7 = extract_bits(qh, 7u, 1u);
   const uint8_t q0 = b.qs[lane];
   const uint8_t q1 = b.qs[32 + lane];
   const uint8_t q2 = b.qs[64 + lane];
   const uint8_t q3 = b.qs[96 + lane];
-  output[sb_idx * 256 + 0 + lane]   = half(dl[0] * float((q0 & 0x0Fu) | (h0 << 4)) - ml[0]);
-  output[sb_idx * 256 + 32 + lane]  = half(dl[1] * float((q0 >> 4)    | (h1 << 4)) - ml[1]);
-  output[sb_idx * 256 + 64 + lane]  = half(dl[2] * float((q1 & 0x0Fu) | (h2 << 4)) - ml[2]);
-  output[sb_idx * 256 + 96 + lane]  = half(dl[3] * float((q1 >> 4)    | (h3 << 4)) - ml[3]);
-  output[sb_idx * 256 + 128 + lane] = half(dl[4] * float((q2 & 0x0Fu) | (h4 << 4)) - ml[4]);
-  output[sb_idx * 256 + 160 + lane] = half(dl[5] * float((q2 >> 4)    | (h5 << 4)) - ml[5]);
-  output[sb_idx * 256 + 192 + lane] = half(dl[6] * float((q3 & 0x0Fu) | (h6 << 4)) - ml[6]);
-  output[sb_idx * 256 + 224 + lane] = half(dl[7] * float((q3 >> 4)    | (h7 << 4)) - ml[7]);
+  output[sb_idx * 256 + 0 + lane]   = half(dl[0] * float(extract_bits(q0, 0u, 4u) | (h0 << 4)) - ml[0]);
+  output[sb_idx * 256 + 32 + lane]  = half(dl[1] * float(extract_bits(q0, 4u, 4u) | (h1 << 4)) - ml[1]);
+  output[sb_idx * 256 + 64 + lane]  = half(dl[2] * float(extract_bits(q1, 0u, 4u) | (h2 << 4)) - ml[2]);
+  output[sb_idx * 256 + 96 + lane]  = half(dl[3] * float(extract_bits(q1, 4u, 4u) | (h3 << 4)) - ml[3]);
+  output[sb_idx * 256 + 128 + lane] = half(dl[4] * float(extract_bits(q2, 0u, 4u) | (h4 << 4)) - ml[4]);
+  output[sb_idx * 256 + 160 + lane] = half(dl[5] * float(extract_bits(q2, 4u, 4u) | (h5 << 4)) - ml[5]);
+  output[sb_idx * 256 + 192 + lane] = half(dl[6] * float(extract_bits(q3, 0u, 4u) | (h6 << 4)) - ml[6]);
+  output[sb_idx * 256 + 224 + lane] = half(dl[7] * float(extract_bits(q3, 4u, 4u) | (h7 << 4)) - ml[7]);
 }
 
 kernel void llmopt_q5_k_linear_f16(
@@ -3300,37 +3300,37 @@ kernel void llmopt_q5_k_linear_f16(
     float dl[8];
     float ml[8];
     for (int j = 0; j < 4; ++j) {
-      const uint8_t sc0 = b.scales[j] & 63;
-      const uint8_t m0 = b.scales[j + 4] & 63;
-      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
-      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
       dl[j] = d * float(sc0);
       ml[j] = dmin * float(m0);
       dl[j + 4] = d * float(sc1);
       ml[j + 4] = dmin * float(m1);
     }
     const uint8_t qh = b.qh[lane];
-    const uint8_t h0 = (qh >> 0) & 1u;
-    const uint8_t h1 = (qh >> 1) & 1u;
-    const uint8_t h2 = (qh >> 2) & 1u;
-    const uint8_t h3 = (qh >> 3) & 1u;
-    const uint8_t h4 = (qh >> 4) & 1u;
-    const uint8_t h5 = (qh >> 5) & 1u;
-    const uint8_t h6 = (qh >> 6) & 1u;
-    const uint8_t h7 = (qh >> 7) & 1u;
+    const uint8_t h0 = extract_bits(qh, 0u, 1u);
+    const uint8_t h1 = extract_bits(qh, 1u, 1u);
+    const uint8_t h2 = extract_bits(qh, 2u, 1u);
+    const uint8_t h3 = extract_bits(qh, 3u, 1u);
+    const uint8_t h4 = extract_bits(qh, 4u, 1u);
+    const uint8_t h5 = extract_bits(qh, 5u, 1u);
+    const uint8_t h6 = extract_bits(qh, 6u, 1u);
+    const uint8_t h7 = extract_bits(qh, 7u, 1u);
     const uint8_t q0 = b.qs[lane];
     const uint8_t q1 = b.qs[32 + lane];
     const uint8_t q2 = b.qs[64 + lane];
     const uint8_t q3 = b.qs[96 + lane];
     const uint base_idx = sb * 256 + lane;
-    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float((q0 & 0x0Fu) | (h0 << 4)) - ml[0]);
-    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float((q0 >> 4)    | (h1 << 4)) - ml[1]);
-    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float((q1 & 0x0Fu) | (h2 << 4)) - ml[2]);
-    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float((q1 >> 4)    | (h3 << 4)) - ml[3]);
-    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float((q2 & 0x0Fu) | (h4 << 4)) - ml[4]);
-    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float((q2 >> 4)    | (h5 << 4)) - ml[5]);
-    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float((q3 & 0x0Fu) | (h6 << 4)) - ml[6]);
-    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float((q3 >> 4)    | (h7 << 4)) - ml[7]);
+    acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(extract_bits(q0, 0u, 4u) | (h0 << 4)) - ml[0]);
+    acc += float(in_ptr[base_idx + 32])  * (dl[1] * float(extract_bits(q0, 4u, 4u) | (h1 << 4)) - ml[1]);
+    acc += float(in_ptr[base_idx + 64])  * (dl[2] * float(extract_bits(q1, 0u, 4u) | (h2 << 4)) - ml[2]);
+    acc += float(in_ptr[base_idx + 96])  * (dl[3] * float(extract_bits(q1, 4u, 4u) | (h3 << 4)) - ml[3]);
+    acc += float(in_ptr[base_idx + 128]) * (dl[4] * float(extract_bits(q2, 0u, 4u) | (h4 << 4)) - ml[4]);
+    acc += float(in_ptr[base_idx + 160]) * (dl[5] * float(extract_bits(q2, 4u, 4u) | (h5 << 4)) - ml[5]);
+    acc += float(in_ptr[base_idx + 192]) * (dl[6] * float(extract_bits(q3, 0u, 4u) | (h6 << 4)) - ml[6]);
+    acc += float(in_ptr[base_idx + 224]) * (dl[7] * float(extract_bits(q3, 4u, 4u) | (h7 << 4)) - ml[7]);
   }
   acc = simd_sum(acc);
   if (lane == 0) {
@@ -3362,10 +3362,10 @@ kernel void llmopt_q5_k_linear_f16_m2(
     float dl[8];
     float ml[8];
     for (int j = 0; j < 4; ++j) {
-      const uint8_t sc0 = b.scales[j] & 63;
-      const uint8_t m0 = b.scales[j + 4] & 63;
-      const uint8_t sc1 = (b.scales[j + 8] & 0x0F) | ((b.scales[j] >> 6) << 4);
-      const uint8_t m1 = (b.scales[j + 8] >> 4) | ((b.scales[j + 4] >> 6) << 4);
+      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
+      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
+      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
+      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
       dl[j] = d * float(sc0);
       ml[j] = dmin * float(m0);
       dl[j + 4] = d * float(sc1);
@@ -3377,14 +3377,14 @@ kernel void llmopt_q5_k_linear_f16_m2(
     const uint8_t q2 = b.qs[64 + lane];
     const uint8_t q3 = b.qs[96 + lane];
     const uint base_idx = sb * 256 + lane;
-    const float w0 = dl[0] * float((q0 & 0x0Fu) | (((qh >> 0) & 1u) << 4)) - ml[0];
-    const float w1 = dl[1] * float((q0 >> 4) | (((qh >> 1) & 1u) << 4)) - ml[1];
-    const float w2 = dl[2] * float((q1 & 0x0Fu) | (((qh >> 2) & 1u) << 4)) - ml[2];
-    const float w3 = dl[3] * float((q1 >> 4) | (((qh >> 3) & 1u) << 4)) - ml[3];
-    const float w4 = dl[4] * float((q2 & 0x0Fu) | (((qh >> 4) & 1u) << 4)) - ml[4];
-    const float w5 = dl[5] * float((q2 >> 4) | (((qh >> 5) & 1u) << 4)) - ml[5];
-    const float w6 = dl[6] * float((q3 & 0x0Fu) | (((qh >> 6) & 1u) << 4)) - ml[6];
-    const float w7 = dl[7] * float((q3 >> 4) | (((qh >> 7) & 1u) << 4)) - ml[7];
+    const float w0 = dl[0] * float(extract_bits(q0, 0u, 4u) | (extract_bits(qh, 0u, 1u) << 4)) - ml[0];
+    const float w1 = dl[1] * float(extract_bits(q0, 4u, 4u) | (extract_bits(qh, 1u, 1u) << 4)) - ml[1];
+    const float w2 = dl[2] * float(extract_bits(q1, 0u, 4u) | (extract_bits(qh, 2u, 1u) << 4)) - ml[2];
+    const float w3 = dl[3] * float(extract_bits(q1, 4u, 4u) | (extract_bits(qh, 3u, 1u) << 4)) - ml[3];
+    const float w4 = dl[4] * float(extract_bits(q2, 0u, 4u) | (extract_bits(qh, 4u, 1u) << 4)) - ml[4];
+    const float w5 = dl[5] * float(extract_bits(q2, 4u, 4u) | (extract_bits(qh, 5u, 1u) << 4)) - ml[5];
+    const float w6 = dl[6] * float(extract_bits(q3, 0u, 4u) | (extract_bits(qh, 6u, 1u) << 4)) - ml[6];
+    const float w7 = dl[7] * float(extract_bits(q3, 4u, 4u) | (extract_bits(qh, 7u, 1u) << 4)) - ml[7];
     acc0 += float(in0[base_idx + 0]) * w0;
     acc0 += float(in0[base_idx + 32]) * w1;
     acc0 += float(in0[base_idx + 64]) * w2;
@@ -3879,19 +3879,19 @@ kernel void llmopt_dequant_q6_k(
   device const uint8_t* qh = b.qh;
   device const int8_t* sc = b.scales;
   const int is = lane / 16;
-  const int q1 = int((ql[lane] & 0x0Fu) | (((qh[lane] >> 0) & 3u) << 4)) - 32;
-  const int q2 = int((ql[32 + lane] & 0x0Fu) | (((qh[lane] >> 2) & 3u) << 4)) - 32;
-  const int q3 = int((ql[lane] >> 4) | (((qh[lane] >> 4) & 3u) << 4)) - 32;
-  const int q4 = int((ql[32 + lane] >> 4) | (((qh[lane] >> 6) & 3u) << 4)) - 32;
+  const int q1 = int(extract_bits(ql[lane], 0u, 4u) | (extract_bits(qh[lane], 0u, 2u) << 4)) - 32;
+  const int q2 = int(extract_bits(ql[32 + lane], 0u, 4u) | (extract_bits(qh[lane], 2u, 2u) << 4)) - 32;
+  const int q3 = int(extract_bits(ql[lane], 4u, 4u) | (extract_bits(qh[lane], 4u, 2u) << 4)) - 32;
+  const int q4 = int(extract_bits(ql[32 + lane], 4u, 4u) | (extract_bits(qh[lane], 6u, 2u) << 4)) - 32;
   output[sb_idx * 256 + 0 + lane]  = half(d * float(sc[is + 0]) * float(q1));
   output[sb_idx * 256 + 32 + lane] = half(d * float(sc[is + 2]) * float(q2));
   output[sb_idx * 256 + 64 + lane] = half(d * float(sc[is + 4]) * float(q3));
   output[sb_idx * 256 + 96 + lane] = half(d * float(sc[is + 6]) * float(q4));
 
-  const int q5 = int((ql[64 + lane] & 0x0Fu) | (((qh[32 + lane] >> 0) & 3u) << 4)) - 32;
-  const int q6 = int((ql[96 + lane] & 0x0Fu) | (((qh[32 + lane] >> 2) & 3u) << 4)) - 32;
-  const int q7 = int((ql[64 + lane] >> 4) | (((qh[32 + lane] >> 4) & 3u) << 4)) - 32;
-  const int q8 = int((ql[96 + lane] >> 4) | (((qh[32 + lane] >> 6) & 3u) << 4)) - 32;
+  const int q5 = int(extract_bits(ql[64 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 0u, 2u) << 4)) - 32;
+  const int q6 = int(extract_bits(ql[96 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 2u, 2u) << 4)) - 32;
+  const int q7 = int(extract_bits(ql[64 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 4u, 2u) << 4)) - 32;
+  const int q8 = int(extract_bits(ql[96 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 6u, 2u) << 4)) - 32;
   output[sb_idx * 256 + 128 + lane] = half(d * float(sc[8 + is + 0]) * float(q5));
   output[sb_idx * 256 + 160 + lane] = half(d * float(sc[8 + is + 2]) * float(q6));
   output[sb_idx * 256 + 192 + lane] = half(d * float(sc[8 + is + 4]) * float(q7));
@@ -3922,20 +3922,20 @@ kernel void llmopt_q6_k_linear_f16(
     device const uint8_t* qh = b.qh;
     device const int8_t* sc = b.scales;
     const int is = lane / 16;
-    const int q1 = int((ql[lane] & 0x0Fu) | (((qh[lane] >> 0) & 3u) << 4)) - 32;
-    const int q2 = int((ql[32 + lane] & 0x0Fu) | (((qh[lane] >> 2) & 3u) << 4)) - 32;
-    const int q3 = int((ql[lane] >> 4) | (((qh[lane] >> 4) & 3u) << 4)) - 32;
-    const int q4 = int((ql[32 + lane] >> 4) | (((qh[lane] >> 6) & 3u) << 4)) - 32;
+    const int q1 = int(extract_bits(ql[lane], 0u, 4u) | (extract_bits(qh[lane], 0u, 2u) << 4)) - 32;
+    const int q2 = int(extract_bits(ql[32 + lane], 0u, 4u) | (extract_bits(qh[lane], 2u, 2u) << 4)) - 32;
+    const int q3 = int(extract_bits(ql[lane], 4u, 4u) | (extract_bits(qh[lane], 4u, 2u) << 4)) - 32;
+    const int q4 = int(extract_bits(ql[32 + lane], 4u, 4u) | (extract_bits(qh[lane], 6u, 2u) << 4)) - 32;
     const uint base_idx = sb * 256 + lane;
     acc += float(in_ptr[base_idx + 0])  * (d * float(sc[is + 0]) * float(q1));
     acc += float(in_ptr[base_idx + 32]) * (d * float(sc[is + 2]) * float(q2));
     acc += float(in_ptr[base_idx + 64]) * (d * float(sc[is + 4]) * float(q3));
     acc += float(in_ptr[base_idx + 96]) * (d * float(sc[is + 6]) * float(q4));
 
-    const int q5 = int((ql[64 + lane] & 0x0Fu) | (((qh[32 + lane] >> 0) & 3u) << 4)) - 32;
-    const int q6 = int((ql[96 + lane] & 0x0Fu) | (((qh[32 + lane] >> 2) & 3u) << 4)) - 32;
-    const int q7 = int((ql[64 + lane] >> 4) | (((qh[32 + lane] >> 4) & 3u) << 4)) - 32;
-    const int q8 = int((ql[96 + lane] >> 4) | (((qh[32 + lane] >> 6) & 3u) << 4)) - 32;
+    const int q5 = int(extract_bits(ql[64 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 0u, 2u) << 4)) - 32;
+    const int q6 = int(extract_bits(ql[96 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 2u, 2u) << 4)) - 32;
+    const int q7 = int(extract_bits(ql[64 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 4u, 2u) << 4)) - 32;
+    const int q8 = int(extract_bits(ql[96 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 6u, 2u) << 4)) - 32;
     acc += float(in_ptr[base_idx + 128]) * (d * float(sc[8 + is + 0]) * float(q5));
     acc += float(in_ptr[base_idx + 160]) * (d * float(sc[8 + is + 2]) * float(q6));
     acc += float(in_ptr[base_idx + 192]) * (d * float(sc[8 + is + 4]) * float(q7));
@@ -3972,14 +3972,14 @@ kernel void llmopt_q6_k_linear_f16_m2(
     device const int8_t* sc = b.scales;
     const int is = lane / 16;
     const uint base_idx = sb * 256 + lane;
-    const float w0 = d * float(sc[is + 0]) * float(int((ql[lane] & 0x0Fu) | (((qh[lane] >> 0) & 3u) << 4)) - 32);
-    const float w1 = d * float(sc[is + 2]) * float(int((ql[32 + lane] & 0x0Fu) | (((qh[lane] >> 2) & 3u) << 4)) - 32);
-    const float w2 = d * float(sc[is + 4]) * float(int((ql[lane] >> 4) | (((qh[lane] >> 4) & 3u) << 4)) - 32);
-    const float w3 = d * float(sc[is + 6]) * float(int((ql[32 + lane] >> 4) | (((qh[lane] >> 6) & 3u) << 4)) - 32);
-    const float w4 = d * float(sc[8 + is + 0]) * float(int((ql[64 + lane] & 0x0Fu) | (((qh[32 + lane] >> 0) & 3u) << 4)) - 32);
-    const float w5 = d * float(sc[8 + is + 2]) * float(int((ql[96 + lane] & 0x0Fu) | (((qh[32 + lane] >> 2) & 3u) << 4)) - 32);
-    const float w6 = d * float(sc[8 + is + 4]) * float(int((ql[64 + lane] >> 4) | (((qh[32 + lane] >> 4) & 3u) << 4)) - 32);
-    const float w7 = d * float(sc[8 + is + 6]) * float(int((ql[96 + lane] >> 4) | (((qh[32 + lane] >> 6) & 3u) << 4)) - 32);
+    const float w0 = d * float(sc[is + 0]) * float(int(extract_bits(ql[lane], 0u, 4u) | (extract_bits(qh[lane], 0u, 2u) << 4)) - 32);
+    const float w1 = d * float(sc[is + 2]) * float(int(extract_bits(ql[32 + lane], 0u, 4u) | (extract_bits(qh[lane], 2u, 2u) << 4)) - 32);
+    const float w2 = d * float(sc[is + 4]) * float(int(extract_bits(ql[lane], 4u, 4u) | (extract_bits(qh[lane], 4u, 2u) << 4)) - 32);
+    const float w3 = d * float(sc[is + 6]) * float(int(extract_bits(ql[32 + lane], 4u, 4u) | (extract_bits(qh[lane], 6u, 2u) << 4)) - 32);
+    const float w4 = d * float(sc[8 + is + 0]) * float(int(extract_bits(ql[64 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 0u, 2u) << 4)) - 32);
+    const float w5 = d * float(sc[8 + is + 2]) * float(int(extract_bits(ql[96 + lane], 0u, 4u) | (extract_bits(qh[32 + lane], 2u, 2u) << 4)) - 32);
+    const float w6 = d * float(sc[8 + is + 4]) * float(int(extract_bits(ql[64 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 4u, 2u) << 4)) - 32);
+    const float w7 = d * float(sc[8 + is + 6]) * float(int(extract_bits(ql[96 + lane], 4u, 4u) | (extract_bits(qh[32 + lane], 6u, 2u) << 4)) - 32);
     acc0 += float(in0[base_idx + 0]) * w0;
     acc0 += float(in0[base_idx + 32]) * w1;
     acc0 += float(in0[base_idx + 64]) * w2;
@@ -5664,13 +5664,13 @@ inline half llmopt_embedding_q4_k_value(
   const uint lane = within & 31u;
   const uint j = segment & 3u;
   const uint scale = segment < 4u
-      ? uint(block.scales[j] & 63u)
-      : uint((block.scales[j + 8u] & 15u) | ((block.scales[j] >> 6) << 4));
+      ? uint(extract_bits(block.scales[j], 0u, 6u))
+      : uint(extract_bits(block.scales[j + 8u], 0u, 4u) | (extract_bits(block.scales[j], 6u, 2u) << 4));
   const uint minimum = segment < 4u
-      ? uint(block.scales[j + 4u] & 63u)
-      : uint((block.scales[j + 8u] >> 4) | ((block.scales[j + 4u] >> 6) << 4));
+      ? uint(extract_bits(block.scales[j + 4u], 0u, 6u))
+      : uint(extract_bits(block.scales[j + 8u], 4u, 4u) | (extract_bits(block.scales[j + 4u], 6u, 2u) << 4));
   const uint packed = block.qs[(segment >> 1) * 32u + lane];
-  const uint q = (segment & 1u) == 0u ? packed & 15u : packed >> 4;
+  const uint q = (segment & 1u) == 0u ? extract_bits(packed, 0u, 4u) : extract_bits(packed, 4u, 4u);
   return half(float(block.d) * float(scale) * float(q)
       - float(block.dmin) * float(minimum));
 }
@@ -5681,14 +5681,14 @@ inline half llmopt_embedding_q5_k_value(
   const uint lane = within & 31u;
   const uint j = segment & 3u;
   const uint scale = segment < 4u
-      ? uint(block.scales[j] & 63u)
-      : uint((block.scales[j + 8u] & 15u) | ((block.scales[j] >> 6) << 4));
+      ? uint(extract_bits(block.scales[j], 0u, 6u))
+      : uint(extract_bits(block.scales[j + 8u], 0u, 4u) | (extract_bits(block.scales[j], 6u, 2u) << 4));
   const uint minimum = segment < 4u
-      ? uint(block.scales[j + 4u] & 63u)
-      : uint((block.scales[j + 8u] >> 4) | ((block.scales[j + 4u] >> 6) << 4));
+      ? uint(extract_bits(block.scales[j + 4u], 0u, 6u))
+      : uint(extract_bits(block.scales[j + 8u], 4u, 4u) | (extract_bits(block.scales[j + 4u], 6u, 2u) << 4));
   const uint packed = block.qs[(segment >> 1) * 32u + lane];
-  const uint low = (segment & 1u) == 0u ? packed & 15u : packed >> 4;
-  const uint q = low | (((block.qh[lane] >> segment) & 1u) << 4);
+  const uint low = (segment & 1u) == 0u ? extract_bits(packed, 0u, 4u) : extract_bits(packed, 4u, 4u);
+  const uint q = low | (extract_bits(uint(block.qh[lane]), segment, 1u) << 4);
   return half(float(block.d) * float(scale) * float(q)
       - float(block.dmin) * float(minimum));
 }
@@ -5702,9 +5702,9 @@ inline half llmopt_embedding_q6_k_value(
   const uint ql_base = half_index * 64u + ((local & 1u) * 32u);
   const uint qh_base = half_index * 32u;
   const uint low = (local < 2u)
-      ? uint(block.ql[ql_base + lane] & 15u)
-      : uint(block.ql[ql_base + lane] >> 4);
-  const uint high = (uint(block.qh[qh_base + lane]) >> (local * 2u)) & 3u;
+      ? extract_bits(uint(block.ql[ql_base + lane]), 0u, 4u)
+      : extract_bits(uint(block.ql[ql_base + lane]), 4u, 4u);
+  const uint high = extract_bits(uint(block.qh[qh_base + lane]), local * 2u, 2u);
   const int q = int(low | (high << 4)) - 32;
   const uint scale_index = half_index * 8u + (lane >> 4) + (local * 2u);
   return half(float(block.d) * float(block.scales[scale_index]) * float(q));
