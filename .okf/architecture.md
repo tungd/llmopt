@@ -206,7 +206,16 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   - **Block-32**: `Q4_0`, `Q8_0`, `Q5_0`
   - **Superblock-256 (K-Quants & Unsloth UD)**: `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`
   - **Groupwise W4**: Group-64 scales with 2-complement low-nibble packing.
-* **Specialized MSL Dequantizers ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml))**: Vectorized compile-time dequantization unrolls 32-bit `uchar4`/`ushort2` loads directly into SIMD registers, avoiding runtime branch overhead.
+## 3.4. Quantization Ingestion & Weight Architecture
+
+`llmopt` provides first-class support for both native GGUF files and internal aligned binary archives:
+* **Direct GGUF Mmap ([`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml))**: Reads GGUF v2/v3 metadata, resolves tensor name aliases, and creates zero-copy 256-byte aligned `MTLBuffer` views directly from memory-mapped GGUF files without intermediate memory copies or conversions.
+* **Quantization Coverage**:
+  - **Block-32**: `Q4_0`, `Q8_0`, `Q5_0`
+  - **Superblock-256 (K-Quants & Unsloth UD)**: `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`
+  - **Groupwise W4**: Group-64 scales with 2-complement low-nibble packing.
+* **Hardware Bitfield Acceleration ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml))**: Replaced manual shift/mask sequences in Superblock-256 unpacking with native `metal::extract_bits(src, offset, count)` hardware bitfield extraction instructions across all quantized compute and embedding paths.
+* **Split-K Intra-Threadgroup Parallel Reductions ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml))**: For wide reduction dimensions ($K \ge 4096$), partitions inner dimension across 4 SIMDgroups per column in 256-thread threadgroups, reducing partial sums across SIMD groups via threadgroup shared memory in deterministic FP32/FP16 order without global atomics.
 
 ## 3.5. Static Memory Liveness Planning & Runtime Dispatch
 
@@ -216,19 +225,21 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   - Eliminates dynamic `[MTLDevice newBufferWithLength]` allocations during model execution.
 * **Native Metal Runtime ([`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
   - Encodes entire schedule execution into consolidated command buffers.
-  - Reuses cached `MTLComputePipelineState` objects.
+  - Reuses cached `MTLComputePipelineState` objects with automatic tactic candidate fallback.
   - Supports **Prebaked Indirect Command Buffers (ICB)** where pipeline states, arguments, and threadgroup launch dimensions are baked once offline, reducing CPU driver encoding time to $< 16\text{ µs}$ per decode step.
 
-## 3.6. Serving Engine, Cache Hierarchy, & Protocols
+## 3.6. Serving Engine, Cache Hierarchy, & Speculative Pipelining
 
 * **Model Program ABI v2 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
   - Encapsulates compiled prefill schedules, decode schedules, state plans (KV cache and recurrent dimensions), tokenizer metadata, and chat templates into a self-contained root artifact (`model.llmopt`).
-* **Compressed Radix Cache ([`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml))**:
-  - Implements tree-structured prefix caching with compressed edges, LRU leaf eviction, and namespace isolation.
-  - Manages physical token pools (grouped-Q8 or FP16) and recurrent checkpoint states (e.g. ShortConv buffers), reusing prefixes across multi-turn sessions without recomputation.[^sglang-radix-cache][^sglang-mamba-radix-cache]
-* **Continuous Batching Queue ([`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml))**:
-  - Implements an age-weighted Shortest Remaining Processing Time (**SRPT**) scheduling policy.
-  - Prioritizes active decode steps over monolithic prefills to prevent head-of-line blocking and minimize Time-to-First-Token (TTFT) and Time-Per-Output-Token (TPOT) variance under high load.
+* **Speculative Tree-Mask Attention ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
+  - Implements fused tree-attention megakernels (`llmopt_attention_tree_speculative_f16`) evaluating up to 8 candidate draft tokens in 1 forward pass using dynamic bitmask causal adjacency topologies, amortizing weight-streaming memory bandwidth.
+* **Compressed Radix Cache & Optimistic Rollback ([`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml))**:
+  - Implements tree-structured prefix caching with compressed edges, LRU leaf eviction, and namespace isolation.[^sglang-radix-cache][^sglang-mamba-radix-cache]
+  - Supports optimistic speculative slot reservations with $O(1)$ rollback for rejected draft tokens, ensuring zero memory leaks and preserving exact LRU invariants.
+* **Continuous Batching Queue & Asynchronous Pipeline ([`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml), [`lib/serving_engine.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine.ml))**:
+  - Implements age-weighted Shortest Remaining Processing Time (**SRPT**) scheduling with 2.5x rate-scaling for speculative decoding states (`Speculative_drafting`, `Speculative_verifying`).
+  - Supports `Speculative_pipeline` orchestrating draft proposals and target model verification with non-blocking Metal execution.
 * **Streaming NEON SIMD Sampler ([`lib/sampling.ml`](file:///Users/tung/Projects/std23/llmopt/lib/sampling.ml), [`native/ocaml_metal_stubs.m`](file:///Users/tung/Projects/std23/llmopt/native/ocaml_metal_stubs.m))**:
   - Zero-heap-allocation, single-pass streaming min-heap sampler implemented in ARM NEON assembly.
   - Supports dynamic `temperature`, `top_k`, `top_p`, `min_p`, and seeded PRNG with $< 20\text{ µs}$ per-token execution time without vocabulary sorting.
@@ -243,9 +254,9 @@ The compiler is validated against a multi-architecture probe matrix without embe
 
 | Model | Architecture | Quantization | LLMOpt Latency (M4 Pro) | `llama.cpp` Latency | Relative Ratio | Empirical Status |
 |---|---|---|---|---|---|---|
-| **SmolLM2-135M-Instruct** | Standard Transformer (GQA, SwiGLU, RMSNorm, RoPE) | `Q4_K_M` | **3.2669 ms** | 3.2917 ms | **0.9925x** | Parity achieved; 60 Linear-add & 30 SwiGLU fusions. |
-| **Qwen3.5-0.8B** | Hybrid / Stateful Scan (18 recurrent layers, gated-delta, ShortConv) | `UD-Q4_K_XL` | **7.9665 ms** | 7.9538 ms | **1.0016x** | Parity achieved; 18 stateful scan regions recovered & 48 Linear-add fusions. |
-| **Gemma-4-E2B-it** | Deep Transformer (Wide RMSNorm, Gated MLP, h256 Attention) | `UD-Q4_K_XL` | **18.1395 ms** | 17.7819 ms | **1.0201x** | Parity achieved; wide-row RMSNorm, rotary QK, and attention layout absorption. |
+| **SmolLM2-135M-Instruct** | Standard Transformer (GQA, SwiGLU, RMSNorm, RoPE) | `Q4_K_M` | **3.4214 ms** | 3.1178 ms | **1.0974x** | Parity achieved; 60 Linear-add & 30 SwiGLU fusions, bitfield unpack. |
+| **Qwen3.5-0.8B** | Hybrid / Stateful Scan (18 recurrent layers, gated-delta, ShortConv) | `UD-Q4_K_XL` | **8.1384 ms** | 8.0930 ms | **1.0056x** | Parity achieved; 18 stateful scan regions recovered & 48 Linear-add fusions. |
+| **Gemma-4-E2B-it** | Deep Transformer (Wide RMSNorm, Gated MLP, h256 Attention) | `UD-Q4_K_XL` | **19.4005 ms** | 18.8907 ms | **1.0270x** | Parity achieved; wide-row RMSNorm, rotary QK, Split-K parallel reductions. |
 | **LFM2.5-350M** | Hybrid Conv / Attention | `W4A16 / KVQ8` | **18.2 ms** (TTFT Turn 1) | 19.1 ms | **0.9529x** | Full serving probe with true suffix prefill and prefix retention. |
 
 All benchmark runs adhere strictly to the target performance envelope ($0.90\text{x} \le \frac{\text{LLMOpt}}{\text{llama.cpp}} \le 1.10\text{x}$) while guaranteeing bit-exact deterministic execution and preserving reference argmax token predictions.[^slice-31-receipt]

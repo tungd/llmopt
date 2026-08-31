@@ -103,14 +103,15 @@ Build an optimizing LLM compiler and zero-JIT serving system whose frontend is P
 
 ---
 
-# 3. Completed Milestones (Slices 1 to 31)
+# 3. Completed Milestones (Slices 1 to 32)
 
-Across 31 iterative compiler and runtime slices, the repository transitioned from a single-model prototype to a generalizable multi-architecture engine:
+Across 32 iterative compiler and runtime slices, the repository transitioned from a single-model prototype to a generalizable multi-architecture engine:
 
 1. **Slices 1–10 (GGUF Ingestion & Megakernel Primitives)**: Built GGUF v2/v3 parsers, Superblock-256 dequantizers, attention head specialization ($h256/h512$), and semantic Linear region recovery.
 2. **Slices 11–20 (Recurrence Recovery & Core Fusions)**: Recovered stateful triangular recurrences and zero-state gated-delta expansions in Qwen3.5; added wide-row RMSNorm, single-consumer activation products, and `Gated_linear` passes.
 3. **Slices 21–25 (Tactic Registry & Weight Reuse)**: Implemented multi-token ($M=2$) and multi-column ($N=2$) weight-reuse tactics across dense F32, Q4_K, and Q5_K; centralized policy into `Kernel_abi`; added steady-state package execution.
 4. **Slices 26–31 (Final Layout & Residual Fusions)**: Added relational ShortConv-SiLU fusion, sliced L2 normalization, attention-linked rotary QK fusion, Q5_0 gated linears, token-major attention value absorption, and quantized Linear-residual (`Linear_add`) fusions.
+5. **Slice 32 (Hardware Bitfield Acceleration & Speculative Pipelining)**: Accelerated Superblock-256 (`Q4_K`, `Q5_K`, `Q6_K`) unpack sequences using native `metal::extract_bits`; implemented 4-way SIMDgroup intra-threadgroup Split-K parallel reductions for wide Linear layers ($K \ge 4096$); implemented speculative tree-mask attention megakernels ($M \in [2, 5]$) with compact bitmask topologies; added optimistic speculative slot allocation with $O(1)$ rollback in `Radix_cache` and `Serving_cache`; implemented SRPT rate-scaled asynchronous speculative pipelining in `Serving_queue` and `Serving_engine`.
 
 ---
 
@@ -121,9 +122,9 @@ The latest measured baseline across the probe suite on Apple M4 Pro (16 cores, 2
 ```
    Model                     LLMOpt Latency    llama.cpp Latency    Speedup Ratio    Parity & Argmax
   ────────────────────────  ────────────────  ───────────────────  ───────────────  ─────────────────
-   SmolLM2-135M-Instruct       3.2669 ms          3.2917 ms            0.9925x       Bit-exact argmax
-   Qwen3.5-0.8B (Hybrid)       7.9665 ms          7.9538 ms            1.0016x       Bit-exact argmax
-   Gemma-4-E2B-it             18.1395 ms         17.7819 ms            1.0201x       Bit-exact argmax
+   SmolLM2-135M-Instruct       3.4214 ms          3.1178 ms            1.0974x       Bit-exact argmax
+   Qwen3.5-0.8B (Hybrid)       8.1384 ms          8.0930 ms            1.0056x       Bit-exact argmax
+   Gemma-4-E2B-it             19.4005 ms         18.8907 ms            1.0270x       Bit-exact argmax
    LFM2.5-350M (Turn 1 TTFT)  18.2000 ms         19.1000 ms            0.9529x       Bit-exact tokens
 ```
 

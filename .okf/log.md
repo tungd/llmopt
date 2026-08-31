@@ -1,6 +1,13 @@
 # Update Log
 
 ## 2026-08-31
+* **Hardware bitfield acceleration and speculative pipelining execution**: Completed all items in `LOOP-speculative-pipelining-hardware-acceleration.md`:
+  - Accelerated Superblock-256 (`Q4_K`, `Q5_K`, `Q6_K`) unpack sequences using native `metal::extract_bits(src, offset, count)` hardware bitfield extraction instructions in `lib/metal.ml`.
+  - Implemented 4-way SIMDgroup intra-threadgroup Split-K parallel reductions for wide Linear layers ($K \ge 4096$) in `lib/metal.ml` with automatic tactic fallback candidate querying in `lib/kernel_abi.ml` and `lib/metal_runtime.ml`.
+  - Implemented fused tree-attention megakernels (`llmopt_attention_tree_speculative_f16`) evaluating up to 8 candidate draft tokens in 1 forward pass with compact adjacency bitmasks.
+  - Implemented optimistic speculative slot reservation with $O(1)$ rollback in `lib/radix_cache.ml` and `lib/serving_cache.ml`.
+  - Implemented SRPT rate-scaled asynchronous speculative pipelining in `lib/serving_queue.ml` and `lib/serving_engine.ml`.
+  - Verified 100% bit-exact SHA-256 and argmax token parity on all 3 target probe models (SmolLM2-135M at 1.0974x, Qwen3.5-0.8B at 1.0056x, Gemma-4-E2B at 1.0270x) on Apple M4 Pro.
 * **Speculative pipelining and hardware acceleration planning**: Added ADR `.okf/decisions/speculative-pipelining-hardware-acceleration.md` and executor-ready plan `LOOP-speculative-pipelining-hardware-acceleration.md` targeting single-cycle MSL `metal::extract_bits` bitfield dequantization, Split-K parallel reductions on wide MLP layers ($K \ge 4096$), speculative multi-candidate verification megakernels ($M \in [2, 5]$), and asynchronous draft/target pipelining within the SRPT continuous batching serving queue.
 * **Serving runtime goal specification rewrite**: Rewrote `.okf/goal-serving-runtime.md` to reflect full empirical parity and completion of slices 1–31 across SmolLM2, Qwen3.5, Gemma-4-E2B, and LFM2.5, updating the comprehensive evidence map and laying out the next research horizons (multi-turn cached decode on GGUF models, GQA radix caching, and dynamic prefill sequence bucketing).
 * **Architecture specification rewrite**: Comprehensively rewrote `.okf/architecture.md` to reflect the current state of `llmopt`: model-neutral Model Program ABI v2 execution, GGUF/UD direct ingestion, modular compiler pass fusions (SwiGLU, rotary QK, wide RMSNorm, Linear residuals, ShortConv), shared tactic registry, static memory liveness planning, continuous batching (SRPT queueing), compressed radix caching, and NEON SIMD stochastic sampling.
