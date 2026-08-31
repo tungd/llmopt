@@ -116,3 +116,19 @@
 * [Attention-linked token-major RMSNorm-RoPE fusion](exp-0115-attention-linked-rms-rope-2026-08-30.md) - captured layout and common-Attention selected Q/K rotary execution.
 * [Single-consumer activation-product fusion](exp-0116-activation-product-fusion-2026-08-30.md) - producer/user-selected SiLU, GELU, and sigmoid product execution.
 * [Single-consumer RMSNorm-residual fusion](exp-0117-rmsnorm-residual-fusion-2026-08-30.md) - producer/user-selected RMSNorm plus residual execution.
+* [Shape-selected wide-row RMSNorm](exp-0118-wide-row-rmsnorm-2026-08-30.md) - assign a whole threadgroup to low-row, wide captured tensors without architecture IDs.
+* [Topology-fused Q4_K gated Linear](exp-0119-q4-k-gated-linear-2026-08-30.md) - fuse same-layout gate/up branches and their sole activation-product consumer.
+* [Gated Linear layout extension](exp-0120-gated-linear-layout-extension-2026-08-30.md) - extend the same semantic fusion through Q5_K and IQ4_XS tactics.
+* [Token-major Gated Delta input absorption](exp-0121-token-major-gated-delta-input-absorption-2026-08-30.md) - remove exclusive transpose/contiguous/cast chains around the semantic recurrence.
+* [Q4_K two-token two-output Linear tactic](exp-0122-q4-k-two-token-two-output-tactic-2026-08-30.md) - reuse two quantized output columns across both captured token rows.
+* [Float32-weight two-token two-output Linear tactic](exp-0123-f32-weight-two-token-two-output-tactic-2026-08-30.md) - reuse both captured token rows across paired dense output columns.
+* [Q5_K paired-token weight-reuse tactic](exp-0124-q5-k-paired-token-weight-reuse-2026-08-30.md) - load each Q5_K block once while recording the corrected compiler/runtime site inventory.
+* [Shared shape-aware Linear tactic registry](exp-0125-shared-shape-aware-linear-tactic-registry-2026-08-30.md) - bind each captured Linear command through the same typed tactic policy used by compiler emission.
+* [Graph-relational GQA and attention layout fusion](exp-0126-graph-relational-attention-layout-fusion-2026-08-30.md) - eliminate grouped-head expansion and token-first movement from captured topology and dimension relations.
+* [Prepared steady-state package execution](exp-0127-prepared-steady-state-package-execution-2026-08-30.md) - reuse typed memory preparation and exclude validation readback from synchronized execution timing.
+* [Graph-relational token-major ShortConv-SiLU fusion](exp-0128-graph-relational-short-conv-silu-fusion-2026-08-30.md) - fuse captured depthwise convolution trim, activation, and layout movement from topology and shape relations.
+* [Packed last-axis L2 normalization](exp-0129-packed-last-axis-l2-normalization-2026-08-30.md) - normalize captured contiguous packed slices directly without materialized indexing.
+* [Attention-linked token-major rotary QK fusion](exp-0130-attention-linked-token-major-rotary-qk-2026-08-30.md) - fuse paired captured Q/K half-rotation topology into one layout-aware semantic kernel.
+* [Q5_0 gated Linear fusion](exp-0131-q5-0-gated-linear-2026-08-30.md) - extend topology-selected gated Linear execution to captured Q5_0 weights.
+* [Token-major Attention value absorption](exp-0132-token-major-attention-value-2026-08-30.md) - let captured Attention consume exclusive token-major value tensors directly.
+* [Topology-fused quantized Linear residuals](exp-0133-quantized-linear-residual-2026-08-30.md) - fuse exclusive block-quantized Linear plus residual topology through shared tactics.

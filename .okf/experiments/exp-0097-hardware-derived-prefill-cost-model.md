@@ -3,8 +3,8 @@ type: Experiment
 title: 'Hardware-derived prefill roofline and dynamic chunking cost model'
 description: 'Derive prefill roofline arithmetic intensity knee, core saturation limits, and SLA-bounded chunk budgets dynamically from hardware discovery parameters, integrating them into the serving queue scheduler.'
 tags: [experiment, cost-model, prefill, roofline, chunking, scheduler, serving]
-status: complete
-generated: { by: antigravity, at: '2026-08-28T16:10:00Z' }
+status: stable
+generated: { by: 'process:antigravity', at: '2026-08-28T16:10:00Z' }
 sources:
   - id: target-hardware
     resource: /lib/target_hardware.ml

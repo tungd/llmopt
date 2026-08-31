@@ -1,5 +1,8 @@
 # Update Log
 
+## 2026-08-31
+* **OKF bundle maintenance**: Updated experiments index to include slices exp-0118 through exp-0133, repaired frontmatter actor conventions and lifecycle statuses across decisions and experiments, and verified full OKF v0.2 strict conformance.
+
 ## 2026-08-30
 * **Topology-fused quantized Linear residuals**: Added a semantic `Linear_add` selected from exclusive producer/user topology, exact Float16 metadata, block-quantized layout, and the shared shape-aware tactic registry without model, tensor, or architecture identifiers. SmolLM2 removes 60 dispatches and records `3.266931 ms` versus fresh llama.cpp `3.291720 ms` (`0.992469x`); Qwen removes 48 and records `7.966518 ms` versus `7.953770 ms` (`1.001603x`); Gemma has zero sites and records `18.554449 ms` versus `17.499137 ms` (`1.060307x`). All three observations are inside the user-declared interval and preserve both row argmax IDs.
 * **Token-major Attention value absorption**: Removed exclusive value `transpose(1,2)` nodes using captured Attention operand role and typed shape relations, with a layout-aware address parameter in the existing kernels and no model, tensor, or architecture identifiers. SmolLM2 removes 30 dispatches and records `3.543377 ms` versus fresh llama.cpp `2.8817705 ms` (`1.229583x`); Gemma removes 13 materialized dispatches and records `19.249439 ms` versus `17.1486045 ms` (`1.122508x`); both outputs are byte exact, while Qwen replans with zero matching sites and unchanged command count.

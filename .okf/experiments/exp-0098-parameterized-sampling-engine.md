@@ -3,8 +3,8 @@ type: Experiment
 title: 'Zero-overhead parameterized sampling: temperature, top-k, top-p, min-p, and seeded PRNG'
 description: 'Implement a zero-allocation, streaming min-heap native ARM NEON SIMD sampler and OpenAI HTTP protocol parameters to support per-request stochastic sampling with sub-20-microsecond latency.'
 tags: [experiment, sampling, temperature, top-k, top-p, min-p, neon, simd, serving]
-status: complete
-generated: { by: antigravity, at: '2026-08-29T00:18:00Z' }
+status: stable
+generated: { by: 'process:antigravity', at: '2026-08-29T00:18:00Z' }
 sources:
   - id: native-stubs
     resource: /native/ocaml_metal_stubs.m

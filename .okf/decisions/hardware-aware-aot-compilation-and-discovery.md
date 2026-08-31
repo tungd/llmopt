@@ -3,8 +3,8 @@ type: Decision
 title: 'Hardware-Aware AOT Compilation and Microarchitectural Discovery'
 description: 'Formalize hardware discovery (SIMD lanes, SRAM banks, bank width, SRAM capacity, cache line sizes, dispatch latency) as a first-class compiler phase in llmopt-fx, making graph fusion and scheduling decisions generalizable across models and hardware geometries (similar to GCC -O3 -march=native).'
 tags: [decision, compiler, aot, hardware-discovery, simd, sram-banks, bank-conflicts, cost-model, xgboost]
-status: accepted
-generated: { by: antigravity, at: '2026-08-28T09:59:00Z' }
+status: stable
+generated: { by: 'process:antigravity', at: '2026-08-28T09:59:00Z' }
 sources:
   - id: local-cost-model
     resource: /lib/kernel_cost_model.ml

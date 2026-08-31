@@ -3,8 +3,8 @@ type: Decision
 title: 'Ahead-Of-Time Decode Solidification and Zero-JIT Serving Architecture'
 description: 'Move all graph specialization, memory planning, and shape binding into the offline AOT compiler pipeline so the serving runtime is a model-agnostic, zero-JIT execution engine capable of hosting any PyTorch model trivially.'
 tags: [decision, compiler, aot, serving, zero-jit, paged-attention, fusions, portability]
-status: approved
-generated: { by: antigravity, at: '2026-08-28T02:00:00+07:00' }
+status: stable
+generated: { by: 'process:antigravity', at: '2026-08-28T02:00:00+07:00' }
 sources:
   - id: user-vision
     resource: scope:conversation:2026-08-28-aot-serving-vision
