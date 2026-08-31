@@ -37,7 +37,8 @@ configuration.
 * [Macro-Operator Fusions](decisions/macro-operator-fusions.md) - high-impact fusions for SwiGLU, RMSNorm-RoPE, QKV, ShortConv, and on-GPU Argmax.
 * [AOT Decode Solidification & Zero-JIT Serving](decisions/aot-decode-solidification-zero-jit-serving.md) - zero-overhead serving with prebaked Indirect Command Buffers (ICB).
 * [GGUF and Unsloth Dynamic (UD) Quantization Support](decisions/gguf-unsloth-dynamic-quantization.md) - GGUF ingestion, dequantization, and AOT code specialization.
-* [Hardware Bitfield Extraction, Speculative Multi-Token Verification, and Queue-Coordinated Pipelining](decisions/speculative-pipelining-hardware-acceleration.md) - single-cycle bitfield extraction, Split-K reductions, and speculative draft verification pipelined through SRPT continuous batching.
+* [Corrected hardware and speculative primitive inventory](decisions/speculative-pipelining-hardware-acceleration.md) - implemented bitfield, Split-K, tree-attention, and cache primitives; unsupported end-to-end pipelining claims are retracted.
+* [Gemma 4 target-coupled MTP runtime contract](decisions/gemma4-mtp-runtime-contract.md) - linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance semantics.
 * [Gemma 4 12B QAT and MTP llama.cpp benchmark](decisions/gemma-12b-qat-mtp-speculative-benchmark.md) - same-prompt sequential and MTP measurement protocol without an assumed result threshold.
 
 ## Prior art

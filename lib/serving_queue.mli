@@ -24,22 +24,6 @@ type request_state =
       ignore_eos : bool;
       sampling_params : Sampling.Params.t;
     }
-  | Speculative_drafting of {
-      prompt_length : int;
-      verified_tokens : int list;
-      drafted_tokens : int list;
-      max_new_tokens : int;
-      ignore_eos : bool;
-      sampling_params : Sampling.Params.t;
-    }
-  | Speculative_verifying of {
-      prompt_length : int;
-      verified_tokens : int list;
-      candidates : int array;
-      max_new_tokens : int;
-      ignore_eos : bool;
-      sampling_params : Sampling.Params.t;
-    }
 
 type request = {
   id : Request_id.t;

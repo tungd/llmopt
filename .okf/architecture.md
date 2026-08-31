@@ -228,18 +228,18 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   - Reuses cached `MTLComputePipelineState` objects with automatic tactic candidate fallback.
   - Supports **Prebaked Indirect Command Buffers (ICB)** where pipeline states, arguments, and threadgroup launch dimensions are baked once offline, reducing CPU driver encoding time to $< 16\text{ µs}$ per decode step.
 
-## 3.6. Serving Engine, Cache Hierarchy, & Speculative Pipelining
+## 3.6. Serving Engine, Cache Hierarchy, and Speculative Primitives
 
 * **Model Program ABI v2 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
   - Encapsulates compiled prefill schedules, decode schedules, state plans (KV cache and recurrent dimensions), tokenizer metadata, and chat templates into a self-contained root artifact (`model.llmopt`).
 * **Speculative Tree-Mask Attention ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
-  - Implements fused tree-attention megakernels (`llmopt_attention_tree_speculative_f16`) evaluating up to 8 candidate draft tokens in 1 forward pass using dynamic bitmask causal adjacency topologies, amortizing weight-streaming memory bandwidth.
+  - Registers fused tree-attention megakernels (`llmopt_attention_tree_speculative_f16`) for compact bitmask causal adjacency topologies. No current target Model Program invokes them for end-to-end verification.
 * **Compressed Radix Cache & Optimistic Rollback ([`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml))**:
   - Implements tree-structured prefix caching with compressed edges, LRU leaf eviction, and namespace isolation.[^sglang-radix-cache][^sglang-mamba-radix-cache]
-  - Supports optimistic speculative slot reservations with $O(1)$ rollback for rejected draft tokens, ensuring zero memory leaks and preserving exact LRU invariants.
-* **Continuous Batching Queue & Asynchronous Pipeline ([`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml), [`lib/serving_engine.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine.ml))**:
-  - Implements age-weighted Shortest Remaining Processing Time (**SRPT**) scheduling with 2.5x rate-scaling for speculative decoding states (`Speculative_drafting`, `Speculative_verifying`).
-  - Supports `Speculative_pipeline` orchestrating draft proposals and target model verification with non-blocking Metal execution.
+  - Supports tested speculative slot reservation, partial commit, and rollback metadata. These operations are not yet bound to physical Gemma verification writes.
+* **Continuous Batching Queue and Acceptance Semantics ([`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml), [`lib/serving_engine.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine.ml))**:
+  - The queue retains its measured prefill/decode SRPT model with no speculative rate multiplier.
+  - `Serving_engine.Speculative_acceptance` implements the pure greedy `K+1` rule. Target-coupled proposal and verification execution remain open under the Gemma MTP runtime contract.
 * **Streaming NEON SIMD Sampler ([`lib/sampling.ml`](file:///Users/tung/Projects/std23/llmopt/lib/sampling.ml), [`native/ocaml_metal_stubs.m`](file:///Users/tung/Projects/std23/llmopt/native/ocaml_metal_stubs.m))**:
   - Zero-heap-allocation, single-pass streaming min-heap sampler implemented in ARM NEON assembly.
   - Supports dynamic `temperature`, `top_k`, `top_p`, `min_p`, and seeded PRNG with $< 20\text{ µs}$ per-token execution time without vocabulary sorting.

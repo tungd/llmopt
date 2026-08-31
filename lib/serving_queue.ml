@@ -30,22 +30,6 @@ type request_state =
       ignore_eos : bool;
       sampling_params : Sampling.Params.t;
     }
-  | Speculative_drafting of {
-      prompt_length : int;
-      verified_tokens : int list;
-      drafted_tokens : int list;
-      max_new_tokens : int;
-      ignore_eos : bool;
-      sampling_params : Sampling.Params.t;
-    }
-  | Speculative_verifying of {
-      prompt_length : int;
-      verified_tokens : int list;
-      candidates : int array;
-      max_new_tokens : int;
-      ignore_eos : bool;
-      sampling_params : Sampling.Params.t;
-    }
 
 type request = {
   id : Request_id.t;
@@ -74,11 +58,6 @@ module Score = struct
         let generated_count = List.length generated_tokens in
         let remaining_decode = max 0 (max_new_tokens - generated_count) in
         Float.of_int remaining_decode /. max 0.001 decode_rate
-    | Speculative_drafting { verified_tokens; max_new_tokens; _ }
-    | Speculative_verifying { verified_tokens; max_new_tokens; _ } ->
-        let verified_count = List.length verified_tokens in
-        let remaining_decode = max 0 (max_new_tokens - verified_count) in
-        Float.of_int remaining_decode /. max 0.001 (decode_rate *. 2.5)
 
   let compute ?(alpha_age = default_alpha_age) ?(epsilon = default_epsilon)
       ~prefill_rate ~decode_rate ~current_time ~arrival_time state =
@@ -249,8 +228,7 @@ let pop_next_batch t ~max_batch_size ~prefill_chunk_budget =
   List.iter
     (fun (req : request) ->
       match req.state with
-      | (Active_decode _ | Speculative_drafting _ | Speculative_verifying _)
-        when !decode_count < max_batch_size ->
+      | Active_decode _ when !decode_count < max_batch_size ->
           decodes := req :: !decodes;
           incr decode_count;
           ignore (remove t req.id)

@@ -4,27 +4,42 @@
 Benchmark and validate end-to-end sustained speculative decoding on Apple Silicon against `llama.cpp` using:
 1. `unsloth/gemma-4-12B-it-qat-GGUF` (4-bit QAT UD-Q4_K_XL target model, ~6.72 GB),
 2. Dedicated Multi-Token Prediction (MTP) drafter model (`mtp-gemma-4-12B-it.gguf`, ~0.25 GB),
-3. Sustained generation benchmark harness (`bench/bench_speculative_sustained.py` and `bench/llama_cpp_speculative_bench.py`) measuring 128/256-token runs, throughput (tok/s), TPOT, acceptance rate $\alpha$, and text parity.
+3. A target-coupled Model Program exposing functional heterogeneous KV state,
+   target hidden state, assistant proposal steps, and `K+1` verification.
+4. Sustained generation benchmark harnesses measuring throughput, TPOT,
+   acceptance rate $\alpha$, and output-token parity.
 
 ## OUT OF SCOPE
 - Modifying `llama.cpp` binary source code.
 - Fine-tuning or re-training MTP weights.
-- Modifying binary transport magic `LLMOPTFX` v2 schemas.
 
 ## RELEVANT FILES
 - `bench/bench_speculative_sustained.py`: Multi-turn sustained benchmark runner.
 - `bench/llama_cpp_speculative_bench.py`: llama.cpp sequential vs MTP speculative benchmark runner.
-- `lib/serving_engine.ml`: Speculative pipeline execution with MTP draft proposal.
+- `bench/gemma4_mtp_capture.py`: Functional target/assistant capture and contract receipt.
+- `lib/model_program.ml`: Linked target/assistant entrypoints and heterogeneous cache ABI.
+- `lib/serving_cache.ml`: Physical heterogeneous target KV state.
+- `lib/serving_engine.ml`: Proposal, verification, acceptance, and cache transaction control.
 - `lib/metal.ml`: Speculative tree attention and wide-K Split-K reduction kernels.
 - `.okf/decisions/gemma-12b-qat-mtp-speculative-benchmark.md`: Architecture decision record.
+- `.okf/decisions/gemma4-mtp-runtime-contract.md`: Executable contract and implementation boundary.
 - `.okf/goal-serving-runtime.md`: Milestone and evidence map.
 
+## SUPPORTING DOCUMENTS
+| Document | Path | Status | Purpose |
+|---|---|---|---|
+| Gemma 4 MTP runtime contract | `.okf/decisions/gemma4-mtp-runtime-contract.md` | `STABLE` | Target/assistant/cache/verification ABI. |
+| Corrected external benchmark | `.okf/decisions/gemma-12b-qat-mtp-speculative-benchmark.md` | `STABLE` | Measurement protocol and llama.cpp receipt. |
+| Corrected primitive inventory | `.okf/decisions/speculative-pipelining-hardware-acceleration.md` | `DEPRECATED` | Separates reusable primitives from retracted claims. |
+
 ## COMPLETE WHEN
-1. All 6 items are completed and committed.
+1. All items are completed and committed.
 2. Gemma 4 12B QAT and MTP drafter weights are downloaded and verified.
-3. Sustained benchmark harness measures sequential vs speculative decode on both LLMOpt and `llama.cpp`.
-4. The measured sequential-versus-speculative throughput ratio and acceptance rate are recorded exactly, whether favorable or unfavorable.
-5. Full OKF documentation and comparison receipts are recorded.
+3. Gemma target and assistant execute through a linked functional Model Program
+   with explicit persistent cache inputs/outputs.
+4. Sustained benchmark harness measures sequential vs speculative decode on both LLMOpt and `llama.cpp`.
+5. The measured sequential-versus-speculative throughput ratio and acceptance rate are recorded exactly, whether favorable or unfavorable.
+6. Full OKF documentation and comparison receipts are recorded.
 
 ---
 
@@ -90,36 +105,109 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 
 ---
 
-### ITEM-04: Compile and Bind Gemma 4 12B QAT + MTP Drafter in LLMOpt
+### ITEM-04A: Correct the Invalid Speculative Control Plane and Freeze the MTP Contract
 - `REPO`: `llmopt`
-- `WHERE`: Compiler pipeline and runtime loader
+- `WHERE`: Serving control plane and OKF decisions
 - `IMPORTANT FILES`:
-  - `lib/gguf.ml`: Direct mmap of Gemma 12B QAT and MTP tensors.
-  - `lib/model_program.ml`: Linker binding for 12B target and MTP drafter.
-- `IMPORTANT SYMBOLS`: `Serving_engine.Speculative_pipeline`
-- `WHY`: Ensure LLMOpt compiles the 12B architecture and MTP head to zero-opaque schedules with optimal memory liveness plans.
-- `FIX`: Load and prepare AOT execution plans for Gemma 12B QAT and MTP drafter in LLMOpt.
-- `QUALITY`: 100% finite logits, zero memory leaks in workspace planning.
-- `DO NOT`: Do not allocate separate KV caches when MTP drafter shares hidden states.
+  - `lib/serving_engine.ml`: Remove invalid independent-drafter execution and define exact greedy acceptance.
+  - `lib/serving_queue.ml`: Remove unreachable states and the unsupported rate multiplier.
+  - `.okf/decisions/gemma4-mtp-runtime-contract.md`: Record the target-coupled executable contract.
+- `IMPORTANT SYMBOLS`: `Serving_engine.Speculative_acceptance`
+- `WHY`: The prior implementation was synchronous, off by one, double-reserved
+  cache slots, and treated the Gemma assistant as an independent token-ID model.
+- `FIX`: Remove the invalid path, retain only exact pure acceptance semantics,
+  and reconcile the historical LOOP and ADR claims to repository evidence.
+- `QUALITY`: Cover first mismatch, partial match, full match with bonus token,
+  and invalid target-window length.
+- `DO NOT`: Do not encode an assumed queue speedup or performance result.
 - `VERIFY`: `ninja -f ninja.build test all`
-- `DONE WHEN`: Target model and drafter execute forward passes and verify tensor bindings.
-- `ESCALATE IF`: Gemma 12B exceeds per-buffer Metal allocation limits.
+- `DONE WHEN`: The invalid runtime is absent, exact acceptance tests pass, and
+  the corrected contract is strict-OKF conformant.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Removed unreachable speculative queue states, the invented `2.5x`
+    scheduling multiplier, and the incorrect `Speculative_pipeline`. Added a pure
+    `K+1` greedy acceptance module and corrected the historical ADR and LOOP.
+  - `VERIFICATION`: `ninja -f ninja.build test all`; strict OKF validation.
 
 ---
 
-### ITEM-05: Execute LLMOpt Sustained Speculative Generation Benchmark
+### ITEM-04B: Capture Functional Gemma Target and Target-Coupled Assistant Graphs
+- `REPO`: `llmopt`
+- `WHERE`: PyTorch/Dynamo frontend and GGUF tensor binding audit
+- `IMPORTANT FILES`:
+  - `bench/gemma4_mtp_capture.py`: Pinned-config functional capture and receipt writer.
+  - `python/tests/test_gemma4_mtp_capture.py`: Contract and tensor-binding tests.
+  - `python/llmopt_backend/fx_backend.py`: Capture only if the generic frontend needs an additive functional-state fix.
+- `IMPORTANT SYMBOLS`: `Gemma4ForCausalLM`, `Gemma4AssistantForCausalLM`, `torch.export`, `torch.compile`
+- `WHY`: GGUF tensor availability does not provide executable prefill, decode,
+  hidden-state, or assistant proposal entrypoints.
+- `FIX`: Capture target prefill/decode with explicit KV tensor inputs/outputs and
+  capture the assistant step with target hidden/embedding/shared-KV inputs. Emit
+  a deterministic contract and tensor-binding receipt.
+- `QUALITY`: No Python cache object or non-Fake tensor may remain captured as
+  hidden process state.
+- `DO NOT`: Do not call a stateless target graph executable cached decode.
+- `VERIFY`: `PYTHONPATH=python:bench python3 -m unittest python.tests.test_gemma4_mtp_capture && python3 bench/gemma4_mtp_capture.py --verify`
+- `DONE WHEN`: Both graph signatures and every required GGUF tensor binding are recorded and reproducible.
+- `ESCALATE IF`: The installed PyTorch exporter cannot represent explicit heterogeneous cache tensors.
+
+---
+
+### ITEM-04C: Generalize the Model Program and Serving Cache for Heterogeneous Attention State
+- `REPO`: `llmopt`
+- `WHERE`: Model Program ABI and physical KV cache
+- `IMPORTANT FILES`:
+  - `lib/model_program.ml`: Per-layer cache geometry and linked entrypoint metadata.
+  - `lib/kv_cache.ml`: Physical byte layout for 256/512-wide attention heads.
+  - `lib/serving_cache.ml`: Remove the LFM-only 64-wide Q8 restriction from the generic boundary.
+  - `test/test.ml`: Mixed sliding/global layer layout, allocation, commit, and rollback tests.
+- `IMPORTANT SYMBOLS`: `Model_program.State.Cache_layout`, `Kv_cache.Layout`, `Serving_cache.Config`
+- `WHY`: Gemma 4 mixes 40 sliding layers (`8x256`) and 8 global layers (`1x512`);
+  the current ABI stores one uniform `kv_heads/head_dim` and rejects non-64 heads.
+- `FIX`: Represent per-layer attention geometry and storage format, preserve ABI-v2
+  reads, and allocate exact per-layer physical regions.
+- `QUALITY`: Byte accounting and partial speculative commit/rollback must remain exact.
+- `DO NOT`: Do not make Gemma geometry a generic default.
+- `VERIFY`: `ninja -f ninja.build test all`
+- `DONE WHEN`: A mixed 48-layer cache layout round-trips, allocates, validates,
+  and supports speculative slot transactions.
+
+---
+
+### ITEM-04D: Link and Execute the Gemma MTP Model Program
+- `REPO`: `llmopt`
+- `WHERE`: Package linker, Metal runtime, and serving engine
+- `IMPORTANT FILES`:
+  - `lib/model_program.ml`: Target prefill/decode, assistant step, and target verification entrypoints.
+  - `lib/metal_runtime.ml`: Bind heterogeneous cache regions and linked outputs/inputs.
+  - `lib/serving_engine.ml`: Sequential proposal, `K+1` target verification, acceptance, and cache transaction.
+  - `test/test.ml`: Deterministic protocol and cache-state integration tests.
+- `IMPORTANT SYMBOLS`: `Serving_engine.Speculative_acceptance`, linked Model Program entrypoints
+- `WHY`: The assistant must consume target state and share the target attention cache contract.
+- `FIX`: Execute up to four assistant proposals, one target verification window,
+  exact greedy acceptance, and physical accepted/rejected cache updates.
+- `QUALITY`: Emitted token IDs and committed target state must match sequential greedy execution.
+- `DO NOT`: Do not reintroduce an independent token-ID drafter abstraction.
+- `VERIFY`: `ninja -f ninja.build test all`
+- `DONE WHEN`: The pinned target/drafter pair executes one complete speculative
+  step and repeated sustained steps with exact sequential token parity.
+- `ESCALATE IF`: Required operations lower to opaque runtime fallbacks.
+
+---
+
+### ITEM-05: Execute LLMOpt Sustained Sequential and MTP Generation Benchmark
 - `REPO`: `llmopt`
 - `WHERE`: LLMOpt serving engine
 - `IMPORTANT FILES`:
   - `bench/bench_speculative_sustained.py`: Sustained generation comparison.
-- `IMPORTANT SYMBOLS`: `Serving_engine.Speculative_pipeline.step`
+- `IMPORTANT SYMBOLS`: linked Gemma target and assistant entrypoints, `Serving_engine.Speculative_acceptance`
 - `WHY`: Measure sustained generation speedup in LLMOpt and verify output token stream equivalence with `llama.cpp`.
-- `FIX`: Run 128-token sustained generation across 3 campaigns in LLMOpt for both sequential and speculative pipelined decode.
+- `FIX`: Run 128-token sustained generation across 3 serial campaigns in LLMOpt for both sequential and target-coupled MTP decode.
 - `QUALITY`: Verify 100% token string and ID parity between sequential and speculative modes.
 - `DO NOT`: Do not allow speculative drift.
 - `VERIFY`: `python3 bench/bench_speculative_sustained.py`
 - `DONE WHEN`: LLMOpt sequential and speculative measurements, acceptance, and output-token parity are recorded without imposing a result threshold.
-- `ESCALATE IF`: Speculative execution crashes or token-ID parity cannot be measured.
+- `ESCALATE IF`: The executable Model Program cannot complete the pinned prompt.
 
 ---
 
@@ -135,6 +223,6 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `FIX`: Update all OKF goals, architecture diagrams, and changelogs with measured performance tables.
 - `QUALITY`: Pass `okf_validate.py .okf --strict` with 0 warnings.
 - `DO NOT`: Do not commit unverified numbers.
-- `VERIFY`: `python3 bench/bench_speculative_sustained.py --report`
+- `VERIFY`: `python3 bench/bench_speculative_sustained.py --report && python3 /Users/tung/.agents/skills/validate/scripts/okf_validate.py .okf --strict`
 - `DONE WHEN`: OKF documents are fully synced and committed.
 - `ESCALATE IF`: Strict validation fails.

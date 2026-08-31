@@ -247,51 +247,33 @@ let () =
     | _ -> false)
     "serving queue pops decode, short prefill, then long prefill";
 
-  (* Speculative queue priority tests *)
-  let spec_draft_id = Serving_queue.Request_id.create () in
-  let spec_draft_req : Serving_queue.request =
-    {
-      id = spec_draft_id;
-      arrival_time = 0.0;
-      state =
-        Serving_queue.Speculative_drafting
-          {
-            prompt_length = 10;
-            verified_tokens = [ 1; 2; 3 ];
-            drafted_tokens = [ 4; 5 ];
-            max_new_tokens = 5;
-            ignore_eos = false;
-            sampling_params = Sampling.Params.greedy;
-          };
-      priority_score = 0.0;
-    }
+  (* Greedy speculative acceptance tests *)
+  let verify draft target =
+    Serving_engine.Speculative_acceptance.greedy ~draft_tokens:draft
+      ~target_predictions:target
+    |> Result.get_ok
   in
-  let slow_decode_req : Serving_queue.request =
-    {
-      id = Serving_queue.Request_id.create ();
-      arrival_time = 0.0;
-      state =
-        Serving_queue.Active_decode
-          {
-            prompt_length = 10;
-            generated_tokens = [ 1; 2; 3 ];
-            max_new_tokens = 5;
-            ignore_eos = false;
-            sampling_params = Sampling.Params.greedy;
-          };
-      priority_score = 0.0;
-    }
-  in
-  let spec_score =
-    Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
-      ~current_time:0.0 ~arrival_time:0.0 spec_draft_req.state
-  in
-  let slow_decode_score =
-    Serving_queue.Score.compute ~prefill_rate:100.0 ~decode_rate:10.0
-      ~current_time:0.0 ~arrival_time:0.0 slow_decode_req.state
-  in
-  expect (spec_score > slow_decode_score)
-    "Speculative drafting achieves higher SRPT score due to 2.5x effective decoding rate";
+  let mismatch = verify [| 11; 12; 13 |] [| 99; 12; 13; 14 |] in
+  expect
+    (Serving_engine.Speculative_acceptance.accepted_draft_tokens mismatch = 0
+    && Serving_engine.Speculative_acceptance.emitted_tokens mismatch = [| 99 |])
+    "speculative acceptance rejects a first-token mismatch";
+  let partial = verify [| 11; 12; 13 |] [| 11; 99; 13; 14 |] in
+  expect
+    (Serving_engine.Speculative_acceptance.accepted_draft_tokens partial = 1
+    && Serving_engine.Speculative_acceptance.emitted_tokens partial = [| 11; 99 |])
+    "speculative acceptance emits the matched prefix and target correction";
+  let complete = verify [| 11; 12; 13 |] [| 11; 12; 13; 14 |] in
+  expect
+    (Serving_engine.Speculative_acceptance.accepted_draft_tokens complete = 3
+    && Serving_engine.Speculative_acceptance.emitted_tokens complete
+       = [| 11; 12; 13; 14 |])
+    "speculative acceptance emits the bonus target token after a full match";
+  expect
+    (Result.is_error
+       (Serving_engine.Speculative_acceptance.greedy
+          ~draft_tokens:[| 11; 12 |] ~target_predictions:[| 11; 12 |]))
+    "speculative acceptance requires one target prediction beyond the draft";
   let capacity_queue =
     Serving_queue.create ~token_capacity:1000 ~high_watermark_ratio:0.90
       ~low_watermark_ratio:0.75 ()
