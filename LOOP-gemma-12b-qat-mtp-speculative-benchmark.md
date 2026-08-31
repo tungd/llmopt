@@ -81,11 +81,12 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `VERIFY`: `python3 bench/llama_cpp_speculative_bench.py`
 - `DONE WHEN`: Baseline sequential and MTP speculative numbers are logged with exact $\alpha$ and speedup ratios.
 - `ESCALATE IF`: `llama-cli` crashes on MTP GGUF tensor format.
-- `STATUS`: **REOPENED** (2026-08-31)
-  - `WHY REOPENED`: The earlier receipt predates publisher-prescribed Flash Attention/full-offload flags, deterministic output capture, exact accepted/generated counters, and schema-v2 reporting. It remains a historical observation; ITEM-03 must replace it with the corrected three-campaign receipt.
-  - `EVIDENCE`: Apple M4 Pro, llama.cpp build 10531 (`f20395d`), Gemma 4 12B QAT UD-Q4_K_XL target plus MTP drafter, greedy decoding, 128 requested generation tokens, three serial campaigns per mode. Sequential campaigns reported `32.30/32.38/32.36 ms` per token and `30.96/30.89/30.90 tok/s`; MTP campaigns reported `53.82/54.39/53.87 ms` per token, `18.58/18.39/18.56 tok/s`, and `67.2%` acceptance in every campaign. Medians were `32.36 ms`, `30.90 tok/s` versus `53.87 ms`, `18.56 tok/s`, `67.2%`; the measured MTP-to-sequential throughput ratio was `0.60x`.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Apple M4 Pro, llama.cpp build 10531 (`f20395d`), pinned Gemma target/drafter, Flash Attention on, full target/draft Metal offload, greedy seed `0`, 128 requested tokens, three serial campaigns per mode. Sequential campaigns measured `32.37/32.12/32.04 ms` per token and `30.89/31.14/31.21 tok/s`; MTP measured `53.94/53.91/53.81 ms`, `18.54/18.55/18.58 tok/s`, exact `92/137` acceptance (`67.153%`), and mean accepted length `3.63` in every campaign. Medians were `32.12 ms`, `31.14 tok/s` versus `53.91 ms`, `18.55 tok/s`; the measured MTP-to-sequential throughput ratio was `0.5956968529x`. All six outputs had SHA-256 `8ceaaa6423fbc7c730148decedda6c58b013937d78f8a866d6804fcc010bdba1`.
   - `RECEIPT`: `bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json` and `.okf/experiments/exp-0134-gemma12b-mtp-llama-cpp-2026-08-31.md`.
-  - `VERIFICATION`: `PYTHONPATH=bench python3 -m unittest python.tests.test_llama_cpp_speculative_bench` (7/7 passed); the exact benchmark command exited `0`; no `llama-cli` process remained afterward.
+  - `VERIFICATION`: `python3 bench/llama_cpp_speculative_bench.py --tokens 128 --campaigns 3 --output bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json` exited `0`; schema-v2 JSON parses; no `llama-cli` process remained afterward.
+  - `CORRECTION`: The original plan assumed a positive MTP speedup. Neither the model publisher's single-B200 acceptance note nor the local Metal evidence established that premise; the measured slowdown is retained exactly.
+  - `COMMIT SUBJECT`: `bench: correct Gemma 12B MTP baseline receipt`
 
 ---
 

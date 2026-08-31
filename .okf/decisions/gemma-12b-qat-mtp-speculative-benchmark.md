@@ -4,7 +4,7 @@ title: 'Sustained Speculative Decoding Benchmark with Gemma 4 12B QAT and MTP'
 description: 'Establishes a measurement protocol for sustained llama.cpp decoding with Gemma 4 12B 4-bit QAT as the target model and its dedicated Multi-Token Prediction head as the drafter.'
 tags: [decision, gemma-12b, qat, mtp, speculative-decoding, sustained-benchmark, llama-cpp]
 status: stable
-generated: { by: 'process:codex', at: '2026-08-31T12:24:43+07:00' }
+generated: { by: 'process:codex', at: '2026-08-31T12:51:32+07:00' }
 sources:
   - id: gemma-12b-qat-repo
     resource: https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF
@@ -29,4 +29,4 @@ Cross-family drafting (e.g. SmolLM2 for Gemma) exhibits $\alpha \to 0$ due to mi
 # 3. Consequences and evidence
 
 - Produces a side-by-side llama.cpp receipt for sequential and MTP decoding under the same prompt, greedy sampling configuration, requested token count, and campaign count.
-- The 2026-08-31 external baseline measured `30.90 tok/s` sequential and `18.56 tok/s` with MTP at a reported `67.2%` acceptance rate, a `0.60x` MTP-to-sequential throughput ratio. This observation is not an LLMOpt execution result and introduces no performance threshold.
+- The corrected 2026-08-31 external baseline measured `31.14 tok/s` sequential and `18.55 tok/s` with MTP at exact `92/137` acceptance (`67.153%`) and mean accepted length `3.63`, a `0.5956968529x` MTP-to-sequential throughput ratio. Generated text was identical in all campaigns. This observation is not an LLMOpt execution result and introduces no performance threshold.
