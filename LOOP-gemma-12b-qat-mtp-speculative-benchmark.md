@@ -30,18 +30,21 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 
 ### ITEM-01: Build Sustained Speculative Benchmark Harness
 - `REPO`: `llmopt`
-- `WHERE`: Benchmark harness in `bench/bench_speculative_sustained.py` and `bench/llama_cpp_speculative_bench.py`
+- `WHERE`: External baseline harness in `bench/llama_cpp_speculative_bench.py`
 - `IMPORTANT FILES`:
   - `bench/llama_cpp_speculative_bench.py`: Wrapper around `llama-cli` measuring sequential decode vs `--spec-type draft-mtp`.
-  - `bench/bench_speculative_sustained.py`: Unified comparative test script recording throughput, TPOT, $\alpha$, and output tokens.
-- `IMPORTANT SYMBOLS`: `llama_cpp_speculative_bench.py`, `bench_speculative_sustained.py`
+- `IMPORTANT SYMBOLS`: `run_llama_cli`, `summarize_campaigns`, `build_report`, `write_json_atomic`
 - `WHY`: Sustained generation requires measuring multi-token sequences (128–256 tokens), isolating TTFT from TPOT, and computing empirical draft acceptance rates $\alpha$.
-- `FIX`: Implement automated Python benchmark runners executing multi-campaign warmups and timed sustained generations on both LLMOpt and `llama.cpp`.
-- `QUALITY`: Robust regex parsing of `llama-cli` timing outputs and token logs.
+- `FIX`: Implement the bounded multi-campaign llama.cpp runner here; the LLMOpt/unified runner remains owned by ITEM-05 after the ITEM-04 executable exists.
+- `QUALITY`: Parse emitted-token timing, exact draft accepted/generated counts, mean accepted length, and deterministic output hashes; use the model publisher's `-fa on`, full target/draft offload, K=4 configuration.
 - `DO NOT`: Do not include prompt processing time inside TPOT measurements.
 - `VERIFY`: `python3 bench/llama_cpp_speculative_bench.py --help`
 - `DONE WHEN`: Script executes clean test runs and reports JSON and formatted summary tables.
 - `ESCALATE IF`: `llama-cli` lacks MTP speculative flags on the host system.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: The runner now uses build-10531 emitted-token timing, exact `draft acceptance` counters, deterministic seed `0`, publisher-prescribed Flash Attention and full target/draft offload, completion-file SHA-256 parity, atomic schema-v2 JSON receipts, a singleton lock, and process-group timeout/shutdown cleanup.
+  - `VERIFICATION`: `PYTHONPATH=bench python3 -m unittest python.tests.test_llama_cpp_speculative_bench` (8/8 passed); `python3 -m py_compile bench/llama_cpp_speculative_bench.py`; `python3 bench/llama_cpp_speculative_bench.py --help`; one real 128-token diagnostic exited `0`, wrote schema-v2 JSON, recorded exact `92/137` acceptance, and proved identical sequential/MTP output SHA-256.
+  - `COMMIT SUBJECT`: `fix(bench): correct Gemma MTP benchmark protocol`
 
 ---
 
@@ -74,7 +77,8 @@ Benchmark and validate end-to-end sustained speculative decoding on Apple Silico
 - `VERIFY`: `python3 bench/llama_cpp_speculative_bench.py`
 - `DONE WHEN`: Baseline sequential and MTP speculative numbers are logged with exact $\alpha$ and speedup ratios.
 - `ESCALATE IF`: `llama-cli` crashes on MTP GGUF tensor format.
-- `STATUS`: **DONE** (2026-08-31)
+- `STATUS`: **REOPENED** (2026-08-31)
+  - `WHY REOPENED`: The earlier receipt predates publisher-prescribed Flash Attention/full-offload flags, deterministic output capture, exact accepted/generated counters, and schema-v2 reporting. It remains a historical observation; ITEM-03 must replace it with the corrected three-campaign receipt.
   - `EVIDENCE`: Apple M4 Pro, llama.cpp build 10531 (`f20395d`), Gemma 4 12B QAT UD-Q4_K_XL target plus MTP drafter, greedy decoding, 128 requested generation tokens, three serial campaigns per mode. Sequential campaigns reported `32.30/32.38/32.36 ms` per token and `30.96/30.89/30.90 tok/s`; MTP campaigns reported `53.82/54.39/53.87 ms` per token, `18.58/18.39/18.56 tok/s`, and `67.2%` acceptance in every campaign. Medians were `32.36 ms`, `30.90 tok/s` versus `53.87 ms`, `18.56 tok/s`, `67.2%`; the measured MTP-to-sequential throughput ratio was `0.60x`.
   - `RECEIPT`: `bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json` and `.okf/experiments/exp-0134-gemma12b-mtp-llama-cpp-2026-08-31.md`.
   - `VERIFICATION`: `PYTHONPATH=bench python3 -m unittest python.tests.test_llama_cpp_speculative_bench` (7/7 passed); the exact benchmark command exited `0`; no `llama-cli` process remained afterward.
