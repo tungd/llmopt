@@ -6189,6 +6189,156 @@ kernel void __ATTENTION_KERNEL__(
         ? 0.0f : results[chunk] / denominator);
   }
 }
+
+struct SpeculativeAttentionParams {
+  uint batches; uint heads; uint query_length; uint key_length;
+  uint head_dimension; uint kv_heads; uint past_length;
+  float scale;
+  uint tree_mask_0; uint tree_mask_1; uint tree_mask_2; uint tree_mask_3;
+  uint tree_mask_4; uint tree_mask_5; uint tree_mask_6; uint tree_mask_7;
+};
+
+inline bool llmopt_speculative_tree_allowed(
+    constant SpeculativeAttentionParams& params,
+    uint query_position, uint key_position) {
+  if (key_position < params.past_length) {
+    return true;
+  }
+  const uint draft_key_idx = key_position - params.past_length;
+  if (draft_key_idx >= params.query_length) return false;
+  uint mask = 0;
+  switch (query_position) {
+    case 0: mask = params.tree_mask_0; break;
+    case 1: mask = params.tree_mask_1; break;
+    case 2: mask = params.tree_mask_2; break;
+    case 3: mask = params.tree_mask_3; break;
+    case 4: mask = params.tree_mask_4; break;
+    case 5: mask = params.tree_mask_5; break;
+    case 6: mask = params.tree_mask_6; break;
+    case 7: mask = params.tree_mask_7; break;
+    default: mask = 0; break;
+  }
+  return (mask & (1u << draft_key_idx)) != 0u;
+}
+
+kernel void llmopt_attention_tree_speculative_f16(
+    device const half* query [[buffer(0)]],
+    device const half* key [[buffer(1)]],
+    device const half* value [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant SpeculativeAttentionParams& params [[buffer(4)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x * ATTENTION_ROWS_PER_THREADGROUP + simdgroup;
+  const uint count = params.batches * params.heads * params.query_length;
+  if (row >= count) return;
+  const uint query_position = row % params.query_length;
+  const uint head = (row / params.query_length) % params.heads;
+  const uint batch = row / (params.query_length * params.heads);
+  const uint effective_kv_heads = params.kv_heads > 0 ? params.kv_heads : params.heads;
+  const uint kv_head = effective_kv_heads < params.heads
+      ? head / (params.heads / effective_kv_heads) : head;
+
+  const uint query_base = (((batch * params.heads + head)
+      * params.query_length + query_position) * params.head_dimension);
+  const uint kv_head_base = (batch * effective_kv_heads + kv_head) * params.key_length;
+
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+
+  for (uint key_position = 0; key_position < params.key_length; ++key_position) {
+    if (!llmopt_speculative_tree_allowed(params, query_position, key_position)) continue;
+    const uint key_base = (kv_head_base + key_position) * params.head_dimension;
+    float partial_score = 0.0f;
+    for (uint d = lane; d < params.head_dimension; d += 32u) {
+      partial_score += float(query[query_base + d]) * float(key[key_base + d]);
+    }
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_maximum = max(maximum, score);
+    const float prev_scale = (denominator == 0.0f) ? 0.0f : exp(maximum - next_maximum);
+    const float curr_scale = exp(score - next_maximum);
+    denominator = denominator * prev_scale + curr_scale;
+    maximum = next_maximum;
+  }
+
+  for (uint d = lane; d < params.head_dimension; d += 32u) {
+    float result = 0.0f;
+    if (denominator != 0.0f) {
+      for (uint key_position = 0; key_position < params.key_length; ++key_position) {
+        if (!llmopt_speculative_tree_allowed(params, query_position, key_position)) continue;
+        const uint key_base = (kv_head_base + key_position) * params.head_dimension;
+        float partial_score = 0.0f;
+        for (uint kd = 0; kd < params.head_dimension; ++kd) {
+          partial_score += float(query[query_base + kd]) * float(key[key_base + kd]);
+        }
+        const float score = partial_score * params.scale;
+        const float prob = exp(score - maximum) / denominator;
+        const uint value_base = (((batch * params.key_length + key_position) * effective_kv_heads
+            + kv_head) * params.head_dimension);
+        result += prob * float(value[value_base + d]);
+      }
+    }
+    const uint output_base = (((batch * params.query_length + query_position) * params.heads + head)
+        * params.head_dimension);
+    output[output_base + d] = half(result);
+  }
+}
+
+kernel void llmopt_attention_tree_speculative_f16_simd_h64(
+    device const half* query [[buffer(0)]],
+    device const half* key [[buffer(1)]],
+    device const half* value [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant SpeculativeAttentionParams& params [[buffer(4)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x * ATTENTION_ROWS_PER_THREADGROUP + simdgroup;
+  const uint count = params.batches * params.heads * params.query_length;
+  if (row >= count) return;
+  const uint query_position = row % params.query_length;
+  const uint head = (row / params.query_length) % params.heads;
+  const uint batch = row / (params.query_length * params.heads);
+  const uint effective_kv_heads = params.kv_heads > 0 ? params.kv_heads : params.heads;
+  const uint kv_head = effective_kv_heads < params.heads
+      ? head / (params.heads / effective_kv_heads) : head;
+
+  const uint query_base = (((batch * params.heads + head)
+      * params.query_length + query_position) * 64u);
+  const float query_low = float(query[query_base + lane]);
+  const float query_high = float(query[query_base + lane + 32u]);
+  const uint kv_head_base = (batch * effective_kv_heads + kv_head) * params.key_length;
+
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+  float result_low = 0.0f;
+  float result_high = 0.0f;
+
+  for (uint key_position = 0; key_position < params.key_length; ++key_position) {
+    if (!llmopt_speculative_tree_allowed(params, query_position, key_position)) continue;
+
+    const uint key_base = (kv_head_base + key_position) * 64u;
+    const uint value_base = (((batch * params.key_length + key_position) * effective_kv_heads
+        + kv_head) * 64u);
+
+    const float partial_score = query_low * float(key[key_base + lane])
+        + query_high * float(key[key_base + lane + 32u]);
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_maximum = max(maximum, score);
+    const float prev_scale = (denominator == 0.0f) ? 0.0f : exp(maximum - next_maximum);
+    const float curr_scale = exp(score - next_maximum);
+
+    result_low = result_low * prev_scale + curr_scale * float(value[value_base + lane]);
+    result_high = result_high * prev_scale + curr_scale * float(value[value_base + lane + 32u]);
+    denominator = denominator * prev_scale + curr_scale;
+    maximum = next_maximum;
+  }
+
+  const uint output_base = (((batch * params.query_length + query_position) * params.heads + head) * 64u);
+  output[output_base + lane] = half(denominator == 0.0f ? 0.0f : result_low / denominator);
+  output[output_base + lane + 32u] = half(denominator == 0.0f ? 0.0f : result_high / denominator);
+}
 |}
 
 let attention_simd_kernel_name head_dimension =
@@ -6212,6 +6362,14 @@ let attention_simd_entry head_dimension =
 let attention_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_attention_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_attention_tree_speculative_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_attention_tree_speculative_f16"
       ~operation:Kernel_abi.Operation.Attention
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)

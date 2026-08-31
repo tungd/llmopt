@@ -209,6 +209,25 @@ val precompile_decode_batch :
 val tensor :
   t -> name:string -> (Buffer.t * Weight_archive.Tensor.t, string) result
 
+val dispatch_speculative_attention :
+  ?batch:Execution_batch.t ->
+  runtime ->
+  query:Buffer.t ->
+  key:Buffer.t ->
+  value:Buffer.t ->
+  output:Buffer.t ->
+  batches:int ->
+  heads:int ->
+  query_length:int ->
+  key_length:int ->
+  head_dimension:int ->
+  past_length:int ->
+  scale:float ->
+  ?kv_heads:int ->
+  ?tree_masks:int array ->
+  unit ->
+  (string, string) result
+
 module Ring_queue : sig
   type t
 

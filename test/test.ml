@@ -997,6 +997,13 @@ let () =
   expect
     (Metal.Tactic.name portable_attention_tactic = "llmopt_attention_f16")
     "Metal tactics fall back to generic attention when the target lacks SIMD32";
+  let attention_entry_names =
+    List.map Kernel_abi.Entry.name Metal.attention_entries
+  in
+  expect
+    (List.mem "llmopt_attention_tree_speculative_f16_simd_h64" attention_entry_names
+    && List.mem "llmopt_attention_tree_speculative_f16" attention_entry_names)
+    "Metal declares speculative tree-mask attention megakernels";
 
   let q4_m2_graph = Ir.Graph.create () in
   let q4_m2_input =

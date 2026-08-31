@@ -48,3 +48,5 @@ val q5_k_source : string
 val q6_k_source : string
 val block32_entries : Kernel_abi.Entry.t list
 val kquant_entries : Kernel_abi.Entry.t list
+val attention_entries : Kernel_abi.Entry.t list
+val attention_source : string

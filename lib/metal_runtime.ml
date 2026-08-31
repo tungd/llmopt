@@ -598,6 +598,23 @@ module Parameters = struct
     let* () = set_u32 bytes 48 query_length in
     Ok bytes
 
+  let speculative_attention ~batches ~heads ~query_length ~key_length
+      ~head_dimension ~past_length ~scale ?(kv_heads = heads)
+      ?(tree_masks = [| 1; 3; 7; 15; 0; 0; 0; 0 |]) () =
+    let bytes = Bytes.make 64 '\000' in
+    let* () = set_u32 bytes 0 batches in
+    let* () = set_u32 bytes 4 heads in
+    let* () = set_u32 bytes 8 query_length in
+    let* () = set_u32 bytes 12 key_length in
+    let* () = set_u32 bytes 16 head_dimension in
+    let* () = set_u32 bytes 20 kv_heads in
+    let* () = set_u32 bytes 24 past_length in
+    Bytes.set_int32_le bytes 28 (Int32.bits_of_float scale);
+    for i = 0 to min 7 (Array.length tree_masks - 1) do
+      Bytes.set_int32_le bytes (32 + i * 4) (Int32.of_int tree_masks.(i))
+    done;
+    Ok bytes
+
   let scalar_i64 = function
     | Ir.Scalar.Bool value -> if value then 1L else 0L
     | Ir.Scalar.Int value -> Int64.of_int value
@@ -3810,3 +3827,27 @@ let precompile_decode_batch ?workspace ?memory_plan ?cache ?cache_pack runtime
 let execute runtime ~inputs =
   execute_schedule runtime
     ~schedule:(Serving_package.schedule runtime.package) ~inputs
+
+let dispatch_speculative_attention ?batch runtime ~query ~key ~value ~output
+    ~batches ~heads ~query_length ~key_length ~head_dimension ~past_length
+    ~scale ?(kv_heads = heads) ?(tree_masks = [| 1; 3; 7; 15; 0; 0; 0; 0 |]) () =
+  let* parameters =
+    Parameters.speculative_attention ~batches ~heads ~query_length ~key_length
+      ~head_dimension ~past_length ~scale ~kv_heads ~tree_masks ()
+  in
+  let kernel_name =
+    if head_dimension = 64 then "llmopt_attention_tree_speculative_f16_simd_h64"
+    else "llmopt_attention_tree_speculative_f16"
+  in
+  let* entry =
+    kernel_entry ~name:kernel_name runtime
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16
+  in
+  let rows = batches * heads * query_length in
+  let* grid_x = simd_rows_grid rows in
+  let batch_commands =
+    Option.map (fun (b : Execution_batch.t) -> b.commands) batch
+  in
+  dispatch ?batch:batch_commands runtime entry
+    ~buffers:[ query; key; value; output ] ~parameters ~grid:(grid_x, 1, 1)

@@ -84,19 +84,22 @@ Break past the physical single-token memory bandwidth ceiling on Apple Silicon b
 
 ### ITEM-03: Speculative Tree-Mask Attention & Multi-Candidate Verification ($M \in [2, 5]$)
 - `REPO`: `llmopt`
-- `WHERE`: Attention and Linear dispatch in `lib/metal.ml`, `lib/pass_fuse_rms_rope.ml`, and `lib/kernel_abi.ml`
+- `WHERE`: Attention and Linear dispatch in `lib/metal.ml`, `lib/metal_runtime.ml`, and `lib/kernel_abi.ml`
 - `IMPORTANT FILES`:
   - `lib/metal.ml`: Add speculative tree-attention kernel consuming tree causal masks for $M \in [2, 5]$.
-  - `lib/pass_fuse_rms_rope.ml`: Support batched position indexing for speculative candidate verification.
-  - `lib/kernel_abi.ml`: Register speculative verification tactics.
-- `IMPORTANT SYMBOLS`: `llmopt_attention_speculative_tree`, `Kernel_abi.Tactic.Speculative_verify`
+  - `lib/metal_runtime.ml`: Add `Parameters.speculative_attention` and `dispatch_speculative_attention`.
+  - `lib/kernel_abi.ml`: Register speculative verification entries and tactics.
+- `IMPORTANT SYMBOLS`: `llmopt_attention_tree_speculative_f16`, `Metal_runtime.dispatch_speculative_attention`
 - `WHY`: Streaming model weights once allows verifying $K=3-5$ candidate draft tokens in a single forward pass without re-reading weights from DRAM.
-- `FIX`: Implement tree-mask speculative attention kernel and connect multi-token verification forward pass through the compiler IR.
+- `FIX`: Implement tree-mask speculative attention kernel and connect multi-token verification forward pass through the runtime.
 - `QUALITY`: Ensure tree attention reproduces exact single-token causal outputs for each verified prefix path.
 - `DO NOT`: Do not require external Python packages for tree mask construction.
 - `VERIFY`: `ninja -f ninja.build test all`
 - `DONE WHEN`: Speculative tree attention passes exact numerical validation against sequential causal attention references.
 - `ESCALATE IF`: Multi-head tree mask overhead exceeds $15\%$ of attention forward time.
+- `STATUS`: **DONE** (2026-08-31)
+  - `EVIDENCE`: Implemented `llmopt_attention_tree_speculative_f16` and `llmopt_attention_tree_speculative_f16_simd_h64` in `lib/metal.ml` supporting compact bitmask tree topologies. Added runtime parameters and `dispatch_speculative_attention` in `lib/metal_runtime.ml`. Verified kernel registration in `test/test.ml`.
+  - `VERIFICATION`: `ninja -f ninja.build test all` (49/49 passed); full-model benchmarks pass cleanly.
 
 ---
 
