@@ -168,7 +168,10 @@ Out of scope:
     inlining cuts, and nonempty boundaries for every `Cut`. Structural Input and
     Output edges are excluded from fusion candidates; `Legality.Illegal` carries
     a nonempty boundary at the type level. The analyzer retains the target while
-    deriving regions and stages from immutable `Compute_plan` facts.
+    deriving regions and stages from immutable `Compute_plan` facts. It exposes
+    typed `Target_resource` boundary vocabulary for the later cost/legal
+    selection slice, but emits no fabricated resource cuts; target legality and
+    cost begin in UOC-04.
   - **Commits:** `b8bc8ab` (`feat: form constructive fusion regions`),
     `7abc781` (`fix: validate RMSNorm fusion metadata`).
 
