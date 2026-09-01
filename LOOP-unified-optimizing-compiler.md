@@ -175,7 +175,7 @@ Out of scope:
   - **Commits:** `b8bc8ab` (`feat: form constructive fusion regions`),
     `7abc781` (`fix: validate RMSNorm fusion metadata`).
 
-- [ ] **UOC-04 — Cost legal quant and launch alternatives with the probed target**
+- [x] **UOC-04 — Cost legal quant and launch alternatives with the probed target**
 
   - **Where:** `lib/kernel_abi.mli`, `lib/kernel_abi.ml`, `ninja.build`,
     `test/test.ml`.
@@ -190,7 +190,13 @@ Out of scope:
   - **Proof:** Tests use two constructed target profiles to demonstrate that
     legal alternatives and their costs are explicit and deterministic; existing
     tactic names and legacy callers remain executable.
-  - **Commit:** Record after completion.
+  - **Evidence:** `ninja -f ninja.build test` passed with 72 Python tests and
+    the OCaml suite; `git diff --check` passed. The default `ninja -f
+    ninja.build` target linked all declared binaries. Tests cover exact
+    SIMD/threadgroup/SRAM legality, schema and Metal tactic provenance,
+    Q4_K launch/reuse facts, roofline composition, target geometry, low-SRAM
+    rejection, deterministic tie-breaking, and unchanged legacy selection.
+  - **Commit:** `1a71b1b` (`feat: add costed linear tactic selection`).
 
 - [ ] **UOC-05 — Route covered fusion through constructive regions**
 
