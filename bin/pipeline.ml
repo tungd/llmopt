@@ -111,6 +111,15 @@ let compile_single_graph ~target ~weights_path ~graph_path ~output_dir ~greedy =
   let metal_program =
     Metal.add_cache_kernels metal_program
   in
+  let optimization_receipt =
+    Passes.Optimization.receipt
+      ~kernels:(Metal.Program.kernels metal_program) optimization
+  in
+  let* () =
+    Passes.Receipt.write_file
+      (Filename.concat output_dir "optimization-receipt.json")
+      optimization_receipt
+  in
   let llvm_source = Llvm_ir.emit planned |> Result.value ~default:"" in
   let* package =
     Serving_package.serving ~files:package_files

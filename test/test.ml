@@ -6193,4 +6193,165 @@ let () =
           (Block_schema.Target_tactic.primitives uoc04_q8_target_tactic)))
     "UOC-04 preserves direct-integer Metal primitive provenance";
 
+  (* UOC-06: the optimization receipt is a deterministic, typed account of
+     the analyzed region decisions and the AOT command queue.  Kernel entries
+     are supplied by the already-lowered backend adapter, so the receipt does
+     not change [Passes.optimize]'s success behavior. *)
+  let uoc06_linear_program =
+    Metal.lower
+      (Passes.Optimization.execution_graph uoc05_quant_optimization)
+    |> expect_ok
+  in
+  let uoc06_linear_receipt =
+    Passes.Optimization.receipt
+      ~kernels:(Metal.Program.kernels uoc06_linear_program)
+      uoc05_quant_optimization
+  in
+  let uoc06_json = Passes.Receipt.to_yojson uoc06_linear_receipt in
+  let uoc06_json_string = Passes.Receipt.to_json_string uoc06_linear_receipt in
+  expect
+    (String.length uoc06_json_string > 0
+    && String.get uoc06_json_string (String.length uoc06_json_string - 1) = '\n'
+    && Yojson.Basic.from_string uoc06_json_string = uoc06_json
+    && Passes.Receipt.target uoc06_linear_receipt
+       |> Target_hardware.to_json
+       = Target_hardware.to_json Target_hardware.default)
+    "UOC-06 receipt is parseable, newline-terminated, and retains the target profile";
+  expect
+    (List.exists
+       (function
+         | Constructive_lowering.Decision.Accepted _ -> true
+         | Constructive_lowering.Decision.Cut _ -> false)
+       (Passes.Receipt.decisions uoc06_linear_receipt)
+    && Passes.Receipt.accepted_count uoc06_linear_receipt > 0
+    && Passes.Receipt.cut_count uoc06_linear_receipt >= 0)
+    "UOC-06 receipt retains accepted decisions and aggregate counts";
+  expect
+    (Passes.Receipt.unified_count uoc06_linear_receipt = 1
+    && Passes.Receipt.accepted_count uoc06_linear_receipt
+       + Passes.Receipt.cut_count uoc06_linear_receipt
+       = List.length (Passes.Receipt.decisions uoc06_linear_receipt)
+    && Passes.Receipt.legacy_count uoc06_linear_receipt = 0
+    && List.length (Passes.Receipt.legacy_counts uoc06_linear_receipt) = 3
+    && List.for_all (fun (_, count) -> count = 0)
+         (Passes.Receipt.legacy_counts uoc06_linear_receipt)
+    && List.length (Passes.Receipt.events uoc06_linear_receipt) = 1
+    && List.length (Passes.Receipt.kernels uoc06_linear_receipt) > 0
+    && List.length (Passes.Receipt.dependencies uoc06_linear_receipt) > 0)
+    "UOC-06 receipt records unified source membership, kernels, and dependencies";
+  let uoc06_costed_optimization = Passes.optimize q4_m2_graph |> expect_ok in
+  let uoc06_costed_program =
+    Metal.lower (Passes.Optimization.execution_graph uoc06_costed_optimization)
+    |> expect_ok
+  in
+  let uoc06_costed_receipt =
+    Passes.Optimization.receipt
+      ~kernels:(Metal.Program.kernels uoc06_costed_program)
+      uoc06_costed_optimization
+  in
+  expect
+    (match Passes.Receipt.linear_selections uoc06_costed_receipt with
+    | [ selection ] ->
+        let candidate = Passes.Receipt.Linear_selection.chosen selection in
+        let cost = Kernel_abi.Linear_tactic.Candidate.cost candidate in
+        let total =
+          Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds cost
+        in
+        Float.compare total
+          (max
+             (Kernel_abi.Linear_tactic.Candidate.Cost.compute_seconds cost)
+             (Kernel_abi.Linear_tactic.Candidate.Cost.memory_seconds cost)
+           +. Kernel_abi.Linear_tactic.Candidate.Cost.dispatch_seconds cost)
+        = 0
+        && Passes.Receipt.Linear_selection.alternatives selection <> []
+        && Yojson.Basic.Util.(
+             uoc06_costed_receipt |> Passes.Receipt.to_yojson
+             |> member "linear-tactics" |> to_list)
+           <> []
+    | _ -> false)
+    "UOC-06 receipt retains the exact costed tactic and roofline composition";
+  let uoc06_linear_event_json =
+    uoc06_json |> Yojson.Basic.Util.member "fusion"
+    |> Yojson.Basic.Util.member "events" |> Yojson.Basic.Util.to_list
+  in
+  expect
+    (match uoc06_linear_event_json with
+    | [ event ] ->
+        Yojson.Basic.Util.(event |> member "source-member-node-ids" |> to_list)
+        |> List.length = 2
+    | _ -> false)
+    "UOC-06 receipt preserves the fused Linear/Add source membership";
+  let uoc06_qkv_program =
+    Metal.lower
+      (Passes.Optimization.execution_graph uoc05_qkv_optimization)
+    |> expect_ok
+  in
+  let uoc06_qkv_receipt =
+    Passes.Optimization.receipt
+      ~kernels:(Metal.Program.kernels uoc06_qkv_program)
+      uoc05_qkv_optimization
+  in
+  let uoc06_qkv_stage_has_three stage =
+    Passes.Queue_stage.requests stage
+    |> List.filter (fun request ->
+           match Compute_plan.Request.op request with
+           | Ir.Op.Linear _ -> true
+           | _ -> false)
+    |> List.length = 3
+  in
+  expect
+    (List.exists
+       (fun stage ->
+         Passes.Queue_stage.kind stage = Passes.Queue_stage.Concurrent
+         && uoc06_qkv_stage_has_three stage)
+       (Passes.Receipt.queue_stages uoc06_qkv_receipt)
+    && Yojson.Basic.Util.(
+         uoc06_qkv_receipt |> Passes.Receipt.to_yojson
+         |> member "aot-queue" |> member "stages" |> to_list)
+       |> List.exists (fun stage ->
+              Yojson.Basic.Util.(stage |> member "kind" |> to_string) = "concurrent"))
+    "UOC-06 keeps independent Q/K/V commands in one concurrent AOT antichain";
+  let uoc06_state_optimization = Passes.optimize state_graph |> expect_ok in
+  let uoc06_state_program =
+    Metal.lower (Passes.Optimization.execution_graph uoc06_state_optimization)
+    |> expect_ok
+  in
+  let uoc06_state_receipt =
+    Passes.Optimization.receipt
+      ~kernels:(Metal.Program.kernels uoc06_state_program)
+      uoc06_state_optimization
+  in
+  expect
+    (List.exists
+       (fun stage -> Passes.Queue_stage.kind stage = Passes.Queue_stage.Sequential)
+       (Passes.Receipt.queue_stages uoc06_state_receipt)
+    && List.exists
+         (fun barrier ->
+           Passes.Receipt.Compiler_barrier.kind barrier
+           = Passes.Receipt.Compiler_barrier.Wait)
+         (Passes.Receipt.barriers uoc06_state_receipt))
+    "UOC-06 distinguishes sequential state stages and compiler barriers";
+  expect
+    (Passes.Receipt.cut_count uoc06_state_receipt > 0
+    && List.exists
+         (function
+           | Constructive_lowering.Decision.Cut (_, legality) ->
+               Constructive_lowering.Legality.boundaries legality <> []
+           | Constructive_lowering.Decision.Accepted _ -> false)
+         (Passes.Receipt.decisions uoc06_state_receipt))
+    "UOC-06 serializes nonempty typed boundaries for cut decisions";
+  let uoc06_artifact = Filename.temp_file "llmopt-uoc06-" ".json" in
+  let uoc06_artifact_result =
+    Passes.Receipt.write_file uoc06_artifact uoc06_linear_receipt
+  in
+  let uoc06_artifact_json =
+    match uoc06_artifact_result with
+    | Ok () -> Yojson.Basic.from_file uoc06_artifact
+    | Error message -> fail message
+  in
+  Sys.remove uoc06_artifact;
+  expect
+    (uoc06_artifact_json = uoc06_json)
+    "UOC-06 writes a deterministic pipeline receipt artifact";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"

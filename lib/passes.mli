@@ -27,6 +27,77 @@ val co_schedule_plan : Compute_plan.t -> Ir.Graph.t
 val semantic_passes : Pass.t list
 val default_pipeline : Pass.Pipeline.t
 
+module Queue_stage : sig
+  type kind = Sequential | Concurrent
+  type t
+
+  (** Zero-based stage index in the AOT command queue. *)
+  val index : t -> int
+
+  (** A stage is concurrent when its independent requests share one antichain. *)
+  val kind : t -> kind
+
+  (** The immutable compute requests represented by this AOT stage. *)
+  val requests : t -> Compute_plan.Request.t list
+end
+
+module Receipt : sig
+  module Legacy_matcher : sig
+    type t = Quant_linear_add | W4a16_linear_add | Quant_gated_linear
+  end
+
+  module Dependency : sig
+    type relation = Compute_plan.Edge.relation
+    type t
+
+    val source : t -> Compute_plan.Node_id.t
+    val destination : t -> Compute_plan.Node_id.t
+    val relation : t -> relation
+  end
+
+  module Compiler_barrier : sig
+    type kind = Create | Arrive | Wait
+    type t
+
+    val node_id : t -> int
+    val id : t -> int
+    val kind : t -> kind
+  end
+
+  module Linear_selection : sig
+    type t
+
+    val node_id : t -> Compute_plan.Node_id.t
+    val operation : t -> Ir.Op.t
+    val chosen : t -> Kernel_abi.Linear_tactic.Candidate.t
+    val alternatives : t -> Kernel_abi.Linear_tactic.Candidate.t list
+  end
+
+  type t
+
+  val target : t -> Target_hardware.t
+  val decisions : t -> Constructive_lowering.Decision.t list
+  val events : t -> Constructive_lowering.Lowering.Event.t list
+  val uncovered : t -> Constructive_lowering.Lowering.Uncovered.t list
+  val unified_count : t -> int
+  val accepted_count : t -> int
+  val cut_count : t -> int
+  val legacy_count : t -> int
+  val legacy_counts : t -> (Legacy_matcher.t * int) list
+  val linear_selections : t -> Linear_selection.t list
+  val kernels : t -> Kernel_abi.Entry.t list
+  val queue_stages : t -> Queue_stage.t list
+  val dependencies : t -> Dependency.t list
+  val barriers : t -> Compiler_barrier.t list
+
+  (** Stable compact JSON; object fields and arrays are emitted in a fixed order. *)
+  val to_yojson : t -> Yojson.Basic.t
+  val to_json_string : t -> string
+
+  (** Write one deterministic JSON document with exactly one trailing newline. *)
+  val write_file : string -> t -> (unit, string) result
+end
+
 module Optimization : sig
   module Legacy_fallback : sig
     type matcher = Quant_linear_add | W4a16_linear_add | Quant_gated_linear
@@ -38,6 +109,9 @@ module Optimization : sig
   end
 
   type t
+
+  (** Hardware profile retained by this optimization snapshot. *)
+  val target : t -> Target_hardware.t
 
   (** Canonical optimized graph, before execution barriers are inserted. *)
   val semantic_graph : t -> Ir.Graph.t
@@ -62,6 +136,15 @@ module Optimization : sig
 
   (** Executable rewrite suffix followed by plan-based co-scheduling. *)
   val execution_graph : t -> Ir.Graph.t
+
+  (** The pre-barrier plan used to construct the AOT antichain queue. *)
+  val execution_plan : t -> Compute_plan.t
+
+  (** Build a receipt from the already-emitted kernel ABI entries.  The
+      pipeline supplies its cache-augmented entries; this keeps receipt
+      assembly pure and does not make optimization depend on backend lowering. *)
+  val receipt :
+    kernels:Kernel_abi.Entry.t list -> t -> Receipt.t
 end
 
 val optimize : ?target:Target_hardware.t -> Ir.Graph.t -> (Optimization.t, string) result
