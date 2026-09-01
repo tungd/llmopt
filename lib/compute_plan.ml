@@ -34,6 +34,62 @@ module Dependency = struct
   let is_state = function Data _ -> false | State _ -> true
 end
 
+module Use = struct
+  type t = {
+    value : Ir.Value.t;
+    producer : Node_id.t;
+    consumer : Node_id.t;
+  }
+
+  let value use = use.value
+  let producer use = use.producer
+  let consumer use = use.consumer
+
+  let create ~value ~producer ~consumer = { value; producer; consumer }
+end
+
+module Edge = struct
+  type relation = Data | State | Data_and_state
+
+  type t = {
+    source : Node_id.t;
+    destination : Node_id.t;
+    relation : relation;
+  }
+
+  let source edge = edge.source
+  let destination edge = edge.destination
+  let relation edge = edge.relation
+
+  let create ~source ~destination relation = { source; destination; relation }
+
+  let add_relation edge relation =
+    let relation =
+      match edge.relation with
+      | Data -> (
+          match relation with
+          | Data -> Data
+          | State | Data_and_state -> Data_and_state)
+      | State -> (
+          match relation with
+          | State -> State
+          | Data | Data_and_state -> Data_and_state)
+      | Data_and_state -> Data_and_state
+    in
+    { edge with relation }
+end
+
+module Edge_key = struct
+  type t = Node_id.t * Node_id.t
+
+  let compare (source, destination) (other_source, other_destination) =
+    match Node_id.compare source other_source with
+    | 0 -> Node_id.compare destination other_destination
+    | order -> order
+end
+
+module Edge_map = Map.Make (Edge_key)
+
 module Request = struct
   type t = {
     node : Ir.node;
@@ -70,6 +126,9 @@ type t = {
   graph : Ir.Graph.t;
   requests : Request.t list;
   request_by_id : Request.t Node_map.t;
+  producers : Node_id.t Value_id_map.t;
+  uses : Use.t list Value_id_map.t;
+  edges : Edge.t Edge_map.t;
   predecessors : Node_set.t Node_map.t;
   successors : Node_set.t Node_map.t;
   stages : Stage.t list;
@@ -197,32 +256,35 @@ let state_dependencies positions writers node =
                 && Node_map.find writer positions < node_position))
   |> sorted_unique Int.compare
 
+let add_edge edges ~source ~destination relation =
+  let key = source, destination in
+  match Edge_map.find_opt key edges with
+  | None -> Edge_map.add key (Edge.create ~source ~destination relation) edges
+  | Some edge -> Edge_map.add key (Edge.add_relation edge relation) edges
+
 let build_edges nodes producers writers positions =
-  let empty = Node_map.empty in
   List.fold_left
     (fun result node ->
-      let* predecessors, successors, requests = result in
+      let* requests, edges = result in
       let id = node_id node in
       let* data = data_dependencies producers node in
       let state = state_dependencies positions writers node in
-      let predecessor_ids = Node_set.of_list (data @ state) in
-      let predecessors = Node_map.add id predecessor_ids predecessors in
-      let successors =
-        Node_set.fold
-          (fun predecessor successors ->
-            let existing =
-              Node_map.find_opt predecessor successors
-              |> Option.value ~default:Node_set.empty
-            in
-            Node_map.add predecessor (Node_set.add id existing) successors)
-          predecessor_ids successors
+      let edges =
+        List.fold_left
+          (fun edges source -> add_edge edges ~source ~destination:id Edge.Data)
+          edges data
+      in
+      let edges =
+        List.fold_left
+          (fun edges source -> add_edge edges ~source ~destination:id Edge.State)
+          edges state
       in
       let request =
         { Request.node; data_dependencies = data; state_dependencies = state;
           effect_kind = effect_of_op (Ir.node_op node) }
       in
-      Ok (predecessors, successors, Node_map.add id request requests))
-    (Ok (empty, empty, empty)) nodes
+      Ok (Node_map.add id request requests, edges))
+    (Ok (Node_map.empty, Edge_map.empty)) nodes
 
 let complete_edges nodes predecessors successors =
   List.fold_left
@@ -235,6 +297,26 @@ let complete_edges nodes predecessors successors =
         | Some _ -> successors
         | None -> Node_map.add id Node_set.empty successors ))
     (predecessors, successors) nodes
+
+let adjacency_of_edges nodes edges =
+  let predecessors, successors =
+    Edge_map.fold
+      (fun (source, destination) _edge (predecessors, successors) ->
+        let destination_predecessors =
+          Node_map.find_opt destination predecessors
+          |> Option.value ~default:Node_set.empty
+        in
+        let source_successors =
+          Node_map.find_opt source successors
+          |> Option.value ~default:Node_set.empty
+        in
+        ( Node_map.add destination
+            (Node_set.add source destination_predecessors) predecessors,
+          Node_map.add source (Node_set.add destination source_successors)
+            successors ))
+      edges (Node_map.empty, Node_map.empty)
+  in
+  complete_edges nodes predecessors successors
 
 let topological_order nodes predecessors successors =
   let ids = List.map node_id nodes |> Node_set.of_list in
@@ -288,6 +370,43 @@ let depths_of order predecessors =
 let requests_of_ids request_by_id ids =
   List.map (fun id -> Node_map.find id request_by_id) ids
 
+let uses_of_order order request_by_id producers =
+  let add_use uses value ~producer ~consumer =
+    let key = value_id value in
+    let existing =
+      Value_id_map.find_opt key uses |> Option.value ~default:[]
+    in
+    Value_id_map.add key
+      (Use.create ~value ~producer ~consumer :: existing)
+      uses
+  in
+  let result =
+    List.fold_left
+      (fun result consumer ->
+        let* uses = result in
+        match Node_map.find_opt consumer request_by_id with
+        | None ->
+            Error
+              (Printf.sprintf "topological order references unknown node %d"
+                 consumer)
+        | Some request ->
+            List.fold_left
+              (fun result value ->
+                let* uses = result in
+                match Value_id_map.find_opt (value_id value) producers with
+                | None ->
+                    Error
+                      (Printf.sprintf
+                         "node %d reads value %d with no producer"
+                         consumer (Ir.Value_id.to_int (value_id value)))
+                | Some producer ->
+                    Ok (add_use uses value ~producer ~consumer))
+              (Ok uses)
+              (value_references (Request.node request)))
+      (Ok Value_id_map.empty) order
+  in
+  Result.map (Value_id_map.map List.rev) result
+
 let stages_of order request_by_id depths =
   let levels =
     List.fold_left
@@ -332,13 +451,12 @@ let of_graph graph =
     let* producers = producers_of nodes in
     let writers = state_writers_of nodes in
     let positions = node_positions nodes in
-    let* predecessors, successors, request_by_id =
+    let* request_by_id, edges =
       build_edges nodes producers writers positions
     in
-    let predecessors, successors =
-      complete_edges nodes predecessors successors
-    in
+    let predecessors, successors = adjacency_of_edges nodes edges in
     let* order = topological_order nodes predecessors successors in
+    let* uses = uses_of_order order request_by_id producers in
     let depths = depths_of order predecessors in
     let critical_path_length =
       List.fold_left
@@ -353,8 +471,8 @@ let of_graph graph =
       Ir.Graph.with_nodes_and_outputs graph nodes (Ir.Graph.outputs graph)
     in
     Ok
-      { graph; requests; request_by_id; predecessors; successors; stages;
-        critical_path_length }
+      { graph; requests; request_by_id; producers; uses; edges; predecessors;
+        successors; stages; critical_path_length }
 
 let graph plan = plan.graph
 let request plan id = Node_map.find_opt id plan.request_by_id
@@ -369,3 +487,33 @@ let successors plan id =
   Node_map.find_opt id plan.successors |> Option.value ~default:Node_set.empty
 
 let critical_path_length plan = plan.critical_path_length
+
+let producer plan value =
+  Value_id_map.find_opt (value_id value) plan.producers
+
+let consumers plan value =
+  Value_id_map.find_opt (value_id value) plan.uses
+  |> Option.value ~default:[]
+
+let use_count plan value = List.length (consumers plan value)
+
+let edge plan ~source ~destination =
+  Edge_map.find_opt (source, destination) plan.edges
+
+let has_path plan ~source ~destination =
+  if source = destination then false
+  else
+    match request plan source, request plan destination with
+    | None, _ | _, None -> false
+    | Some _, Some _ ->
+        let rec visit seen = function
+          | [] -> false
+          | id :: pending when id = destination -> true
+          | id :: pending when Node_set.mem id seen ->
+              visit seen pending
+          | id :: pending ->
+              let seen = Node_set.add id seen in
+              let next = successors plan id |> Node_set.elements in
+              visit seen (next @ pending)
+        in
+        visit Node_set.empty [ source ]

@@ -4792,4 +4792,185 @@ let () =
   expect (String.length gemm_msl > 200) "gemm_msl emits valid length";
   expect (String.sub gemm_msl 0 17 = "struct GEMMParams") "gemm_msl contains struct GEMMParams";
 
+  (* UOC-02 dependency/use authority: every query comes from the immutable
+     producer, use, and aggregate-edge facts captured by [of_graph]. *)
+  let uoc02_shape dimensions = Tensor_shape.of_ints_exn dimensions in
+  let uoc02_input graph name shape =
+    Ir.Graph.tensor_input graph ~name ~source:Ir.Input_source.Runtime
+      ~shape:(uoc02_shape shape) ~dtype:Ir.Dtype.Float16
+  in
+  let uoc02_output graph shape =
+    Ir.Graph.fresh_tensor_value graph ~shape:(uoc02_shape shape)
+      ~dtype:Ir.Dtype.Float16
+  in
+  let uoc02_request_ids requests =
+    List.map
+      (fun request ->
+        Compute_plan.Request.id request |> Compute_plan.Node_id.to_int)
+      requests
+  in
+  let uoc02_stage_ids plan =
+    Compute_plan.stages plan
+    |> List.map (fun stage ->
+           Compute_plan.Stage.requests stage |> uoc02_request_ids)
+  in
+  let uoc02_edge_relation plan ~source ~destination expected message =
+    match Compute_plan.edge plan ~source ~destination with
+    | Some edge ->
+        expect (Compute_plan.Edge.relation edge = expected) message
+    | None -> fail message
+  in
+
+  (* A chain has one producer and one distinct consumer at each step. *)
+  let chain_graph = Ir.Graph.create () in
+  let chain_input = uoc02_input chain_graph "chain-input" [ 1; 4 ] in
+  let chain_middle = uoc02_output chain_graph [ 1; 4 ] in
+  let chain_output = uoc02_output chain_graph [ 1; 4 ] in
+  Ir.Graph.append chain_graph ~op:Ir.Op.Relu ~inputs:[ chain_input ]
+    ~output:(Some chain_middle);
+  Ir.Graph.append chain_graph ~op:Ir.Op.Relu ~inputs:[ chain_middle ]
+    ~output:(Some chain_output);
+  let chain_plan = Compute_plan.of_graph chain_graph |> expect_ok in
+  expect
+    (Compute_plan.producer chain_plan chain_middle = Some 1)
+    "UOC-02 chain producer is the immutable output authority";
+  let chain_middle_uses = Compute_plan.consumers chain_plan chain_middle in
+  expect
+    (List.map Compute_plan.Use.consumer chain_middle_uses = [ 2 ]
+    && List.map Compute_plan.Use.producer chain_middle_uses = [ 1 ]
+    && List.for_all
+         (fun use_ -> Ir.Value.equal (Compute_plan.Use.value use_) chain_middle)
+         chain_middle_uses)
+    "UOC-02 chain consumers retain typed producer/value relationships";
+  expect
+    (Compute_plan.use_count chain_plan chain_middle = 1
+    && Compute_plan.consumers chain_plan chain_output = [])
+    "UOC-02 chain use counts are total and distinct";
+  uoc02_edge_relation chain_plan ~source:0 ~destination:1
+    Compute_plan.Edge.Data "UOC-02 chain records a data edge";
+  uoc02_edge_relation chain_plan ~source:1 ~destination:2
+    Compute_plan.Edge.Data "UOC-02 chain records the second data edge";
+  expect
+    (Compute_plan.has_path chain_plan ~source:0 ~destination:2
+    && not (Compute_plan.has_path chain_plan ~source:2 ~destination:0)
+    && not (Compute_plan.has_path chain_plan ~source:2 ~destination:2)
+    && not (Compute_plan.has_path chain_plan ~source:99 ~destination:2))
+    "UOC-02 path queries are strict and total";
+
+  (* A diamond exposes shared-producer fan-out and keeps the two branches in
+     their deterministic topological order while the join remains dependent. *)
+  let diamond_graph = Ir.Graph.create () in
+  let diamond_input = uoc02_input diamond_graph "diamond-input" [ 1; 4 ] in
+  let diamond_left = uoc02_output diamond_graph [ 1; 4 ] in
+  let diamond_right = uoc02_output diamond_graph [ 1; 4 ] in
+  let diamond_join = uoc02_output diamond_graph [ 1; 4 ] in
+  Ir.Graph.append diamond_graph ~op:Ir.Op.Relu ~inputs:[ diamond_input ]
+    ~output:(Some diamond_left);
+  Ir.Graph.append diamond_graph ~op:Ir.Op.Relu ~inputs:[ diamond_input ]
+    ~output:(Some diamond_right);
+  Ir.Graph.append diamond_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ diamond_left; diamond_right ] ~output:(Some diamond_join);
+  let diamond_plan = Compute_plan.of_graph diamond_graph |> expect_ok in
+  let diamond_uses = Compute_plan.consumers diamond_plan diamond_input in
+  expect
+    (List.map Compute_plan.Use.consumer diamond_uses = [ 1; 2 ]
+    && Compute_plan.use_count diamond_plan diamond_input = 2)
+    "UOC-02 diamond fan-out is ordered and counts each consumer once";
+  expect
+    (Compute_plan.has_path diamond_plan ~source:1 ~destination:3
+    && Compute_plan.has_path diamond_plan ~source:2 ~destination:3
+    && not (Compute_plan.has_path diamond_plan ~source:1 ~destination:2))
+    "UOC-02 diamond paths follow dependency edges only";
+  expect
+    (uoc02_stage_ids diamond_plan = [ [ 0 ]; [ 1; 2 ]; [ 3 ] ])
+    "UOC-02 diamond preserves the shared-input ready antichain";
+
+  (* Independent branches form an antichain without an artificial path. *)
+  let antichain_graph = Ir.Graph.create () in
+  let antichain_left_input =
+    uoc02_input antichain_graph "antichain-left" [ 1; 4 ]
+  in
+  let antichain_right_input =
+    uoc02_input antichain_graph "antichain-right" [ 1; 4 ]
+  in
+  let antichain_left = uoc02_output antichain_graph [ 1; 4 ] in
+  let antichain_right = uoc02_output antichain_graph [ 1; 4 ] in
+  Ir.Graph.append antichain_graph ~op:Ir.Op.Relu
+    ~inputs:[ antichain_left_input ] ~output:(Some antichain_left);
+  Ir.Graph.append antichain_graph ~op:Ir.Op.Relu
+    ~inputs:[ antichain_right_input ] ~output:(Some antichain_right);
+  let antichain_plan = Compute_plan.of_graph antichain_graph |> expect_ok in
+  expect
+    (uoc02_stage_ids antichain_plan = [ [ 0; 1 ]; [ 2; 3 ] ]
+    && not (Compute_plan.has_path antichain_plan ~source:2 ~destination:3)
+    && not (Compute_plan.has_path antichain_plan ~source:3 ~destination:2))
+    "UOC-02 independent branches remain one ready antichain";
+
+  (* Embedded and declared duplicate references are one relationship, not two
+     fan-out uses. *)
+  let duplicate_graph = Ir.Graph.create () in
+  let duplicate_input = uoc02_input duplicate_graph "duplicate-input" [ 1; 4 ] in
+  let duplicate_output = uoc02_output duplicate_graph [ 1; 4 ] in
+  Ir.Graph.append duplicate_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add,
+                 Ir.Pointwise.Tensor duplicate_input,
+                 Ir.Pointwise.Tensor duplicate_input ))))
+    ~inputs:[ duplicate_input; duplicate_input ]
+    ~output:(Some duplicate_output);
+  let duplicate_plan = Compute_plan.of_graph duplicate_graph |> expect_ok in
+  expect
+    (Compute_plan.use_count duplicate_plan duplicate_input = 1
+    && List.map Compute_plan.Use.consumer
+         (Compute_plan.consumers duplicate_plan duplicate_input)
+       = [ 1 ])
+    "UOC-02 duplicate references do not inflate use_count";
+  (match Compute_plan.request duplicate_plan 1 with
+  | Some request ->
+      expect
+        (Compute_plan.Request.data_dependencies request = [ 0 ]
+        && Compute_plan.Request.state_dependencies request = [])
+        "UOC-02 duplicate references collapse to one data dependency"
+  | None -> fail "UOC-02 duplicate request is missing");
+
+  (* A stateful producer also reads its state slot.  A later consumer that
+     reads both its output and that slot therefore has one aggregate edge with
+     both typed facts; non-pure stages remain singleton stages. *)
+  let state_graph = Ir.Graph.create () in
+  let state_input = uoc02_input state_graph "state-input" [ 1; 3; 4 ] in
+  let state_slot = uoc02_input state_graph "state-slot" [ 1; 4; 3 ] in
+  let state_output = uoc02_output state_graph [ 1; 3; 4 ] in
+  let state_config =
+    Ir.Short_conv_step.create ~channels:4 ~window:3 |> expect_ok
+  in
+  Ir.Graph.append state_graph ~op:(Ir.Op.Short_conv_step state_config)
+    ~inputs:[ state_input; state_slot ] ~output:(Some state_output);
+  let state_consumer_output = uoc02_output state_graph [ 1; 3; 4 ] in
+  Ir.Graph.append state_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ state_output; state_slot ] ~output:(Some state_consumer_output);
+  let state_plan = Compute_plan.of_graph state_graph |> expect_ok in
+  (match Compute_plan.request state_plan 2 with
+  | Some request ->
+      expect
+        (Compute_plan.Request.effect_kind request = Compute_plan.Effect.Stateful
+        && Compute_plan.Request.state_dependencies request = [])
+        "UOC-02 state producer retains its typed effect and initial ordering"
+  | None -> fail "UOC-02 state producer is missing");
+  (match Compute_plan.request state_plan 3 with
+  | Some request ->
+      expect
+        (Compute_plan.Request.data_dependencies request = [ 1; 2 ]
+        && Compute_plan.Request.state_dependencies request = [ 2 ])
+        "UOC-02 state consumer exposes data and state dependencies"
+  | None -> fail "UOC-02 state consumer is missing");
+  uoc02_edge_relation state_plan ~source:2 ~destination:3
+    Compute_plan.Edge.Data_and_state
+    "UOC-02 aggregates same-endpoint data and state facts";
+  expect
+    (uoc02_stage_ids state_plan = [ [ 0; 1 ]; [ 2 ]; [ 3 ] ])
+    "UOC-02 keeps non-pure stateful requests in singleton stages";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
