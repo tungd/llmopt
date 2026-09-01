@@ -44,7 +44,7 @@ configuration.
 * [Weightless prompt-lookup speculative decoding](decisions/prompt-lookup-tree-speculative-decoding.md) - linked ABI-v5 verifier, exact sequential parity, and real LLMOpt/llama.cpp measurements.
 * [Experimental Vulkan portability backend](decisions/vulkan-portability-backend.md) - portable SPIR-V compute runtime and paired MoltenVK/Metal device measurement, with the model-serving boundary stated explicitly.
 * [Parametric Epilogue Inlining and Hardware Prefill Tiling](decisions/parametric-epilogues-and-hardware-tiling.md) - algebraic epilogue fusion replacing 2,500 lines of AST matchers, plus bank-swizzled simdgroup_matrix staging for prefill GEMM.
-* [Constructive Primitive Assignment Lowering and GPU Queue-Aware Megakernel Compilation](decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md) - operator erasure, primitive micro-op lowering, GPU dependency & queue-driven clustering, and first-class block-quantized schemas.
+* [Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md) - one assignment/dependency/effect/cost model for separate fusion-region and antichain-stage formation, target-aware quant tactics, and AOT GPU queue solidification.
 
 ## Prior art
 

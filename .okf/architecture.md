@@ -187,6 +187,29 @@ The compiler pipeline ([`bin/fx_compile.ml`](file:///Users/tung/Projects/std23/l
    - Analyzes SSA dependency DAGs and computes ready antichains of independent operations (e.g., parallel Q/K/V projections or parallel layer components).
    - Groups independent kernels into concurrent execution stages bounded by `Ir.Op.Barrier_wait` and dispatched via `MTLDispatchTypeConcurrent`.
 
+### 3.2.1 Governing optimizing-compiler transition
+
+The pass list above describes the current executable baseline. The governing
+replacement architecture is
+[Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](/decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md).
+It does not treat fusion and antichains as the same transformation. Instead,
+`Compute_plan` supplies one data/state/effect dependency model from which the
+compiler derives dependent fusion regions and independent concurrency stages as
+separate products.
+
+Captured operations are normalized into an SSA-like assignment graph with
+explicit index domains, effects, layouts, state, aliases, resources, and FX
+provenance. Target profiles from hardware probing cost legal register, SRAM,
+recomputation, reduction, dispatch, and concurrency alternatives. Block-quant
+schemas retain exact physical/logical semantics plus target-aware SIMD tactics;
+the portable scalar form is a correctness fallback, not the optimization target.
+
+The resulting dispatches, dependencies, and barriers form an AOT GPU command
+queue which is solidified into the Metal ICB. This compiler queue is distinct
+from the runtime SRPT serving request queue. Existing `pass_fuse_*.ml` and
+`metal.ml` paths remain explicit legacy fallbacks until generated-plan evidence
+shows the unified path covers their semantics.
+
 ## 3.3. Tactic Registry & Microarchitectural Hardware Discovery
 
 Rather than relying on brittle heuristic rules, kernel implementations are resolved through a unified, typed tactic registry ([`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml)):

@@ -3,17 +3,19 @@ type: Decision
 title: 'Adopt OCANNL arrayjit loop-nest lowering for quantized LLM kernels and multi-backend portability'
 description: 'Integrate OCANNL arrayjit as an intermediate loop lowering tier between llmopt macro-fusion and device shader compilation, extending arrayjit with sub-byte dequantization and warp-level reduction transforms to automate Metal/CUDA/HIP codegen.'
 tags: [decision, compiler, lowering, ocannl, arrayjit, quantization, metal, rocm, cuda, icb]
-status: approved
-generated: { by: human:tung, at: '2026-08-31T13:58:30+07:00' }
+status: deprecated
+superseded_by: /decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md
+generated: { by: codex/gpt-5.6, at: '2026-09-01T23:22:30+07:00' }
+verified: { by: human:tung, at: '2026-09-01T23:22:30+07:00' }
 sources:
   - id: ocannl-prior-art
-    resource: /.okf/prior-art/ocannl-arrayjit.md
+    resource: /prior-art/ocannl-arrayjit.md
     title: OCANNL arrayjit prior art analysis
   - id: gguf-ud-decision
-    resource: /.okf/decisions/gguf-unsloth-dynamic-quantization.md
+    resource: /decisions/gguf-unsloth-dynamic-quantization.md
     title: GGUF and Unsloth Dynamic Quantization Support
   - id: backend-boundary
-    resource: /.okf/decisions/backend-boundary.md
+    resource: /decisions/backend-boundary.md
     title: Metal backend boundary
   - id: direction-md
     resource: /direction.md
@@ -21,6 +23,11 @@ sources:
 ---
 
 # Decision
+
+> **Superseded:** The detached experiment remains evidence for virtual W4A16
+> and Q4_K assignment lowering, but direct adoption of its divergent branch and
+> continued operation-specific macro-fusion are replaced by
+> [Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](/decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md).
 
 `llmopt` adopts **OCANNL's `arrayjit` loop-nest compilation engine** as the intermediate lowering tier between high-level macro-fusion passes and backend shader generation. `llmopt` retains ownership of FX graph capture, GGUF parameter binding, Model Program linking, static memory planning, paged KV cache allocation, and prebaked Indirect Command Buffer (ICB) execution.
 

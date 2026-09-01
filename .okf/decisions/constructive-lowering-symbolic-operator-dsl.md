@@ -3,8 +3,10 @@ type: Decision
 title: 'Constructive Lowering via Algebraic Inlining and Symbolic Operator DSL'
 description: 'Replace fragile AST subgraph pattern matching with constructive lowering in OCaml, using overloaded symbolic operators and arrayjit algebraic virtualization to fuse elementwise, normalization, and activation chains by construction.'
 tags: [decision, compiler, lowering, symbolic-dsl, inlining, virtualization, fusion, fx]
-status: approved
-generated: { by: human:tung, at: '2026-08-31T14:05:00+07:00' }
+status: deprecated
+superseded_by: /decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md
+generated: { by: codex/gpt-5.6, at: '2026-09-01T23:22:30+07:00' }
+verified: { by: human:tung, at: '2026-09-01T23:22:30+07:00' }
 sources:
   - id: fusion-query
     resource: /lib/fusion_query.ml
@@ -21,6 +23,11 @@ sources:
 ---
 
 # Decision
+
+> **Superseded:** Local symbolic inlining remains an implementation technique,
+> but the governing architecture is now the shared assignment, dependency,
+> effect, cost, and AOT queue model in
+> [Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](/decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md).
 
 `llmopt` adopts **constructive algebraic lowering with an OCaml symbolic operator DSL**, replacing fragile AST subgraph pattern matching (`fusion_query.ml` and bespoke `pass_fuse_*.ml` passes). 
 

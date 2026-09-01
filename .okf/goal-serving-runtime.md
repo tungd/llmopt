@@ -109,6 +109,20 @@ Build an optimizing LLM compiler and zero-JIT serving system whose frontend is P
 
 ---
 
+## Active unified-compiler transition
+
+The current table records the executable operator/pass baseline; it does not
+claim that the ad hoc fusion passes or monolithic Metal emitter have already
+been retired. The approved successor is
+[Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](/decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md): one modeled assignment/dependency/effect system produces legal fusion regions and independent antichain stages, target hardware probes feed cost selection, block-quant schemas retain target-aware SIMD tactics, and the chosen dispatch/dependency graph becomes an AOT GPU command queue.
+
+The parked Gemma 4 12B target-prefill/decode/verification run is the authority
+for whether the transition has succeeded. Its future receipt must separate
+compiler-path coverage, queue structure, correctness, and measured performance;
+no static source check or older Gemma result substitutes for that run.
+
+---
+
 # 3. Completed Milestones (Slices 1 to 32)
 
 Across 32 iterative compiler and runtime slices, the repository transitioned from a single-model prototype to a generalizable multi-architecture engine:
