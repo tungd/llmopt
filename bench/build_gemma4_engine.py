@@ -263,6 +263,7 @@ def target_graph(captured: CapturedFx, inventory: dict[str, Any]) -> dict[str, A
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target-gguf", required=True, type=Path)
+    parser.add_argument("--target-profile", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -305,6 +306,7 @@ def main() -> None:
         "--tokenizer", str(args.target_gguf),
         "--prefill", str(prefill_path),
         "--decode", str(decode_path),
+        "--target-profile", str(args.target_profile),
         "--output", str(output),
         "--model", "unsloth/gemma-4-12B-it-qat-GGUF",
         "--architecture", "gemma4",
