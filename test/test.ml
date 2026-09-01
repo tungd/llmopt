@@ -4973,4 +4973,480 @@ let () =
     (uoc02_stage_ids state_plan = [ [ 0; 1 ]; [ 2 ]; [ 3 ] ])
     "UOC-02 keeps non-pure stateful requests in singleton stages";
 
+  (* UOC-03 constructive fusion regions: assignments retain their source
+     nodes and primitives, while legal dependency components are separate
+     from the plan's concurrency antichains. *)
+  let uoc03_shape dimensions = Tensor_shape.of_ints_exn dimensions in
+  let uoc03_input graph name dimensions dtype =
+    Ir.Graph.tensor_input graph ~name ~source:Ir.Input_source.Runtime
+      ~shape:(uoc03_shape dimensions) ~dtype
+  in
+  let uoc03_value graph dimensions dtype =
+    Ir.Graph.fresh_tensor_value graph ~shape:(uoc03_shape dimensions) ~dtype
+  in
+  let uoc03_plan graph = Compute_plan.of_graph graph |> expect_ok in
+  let uoc03_analysis graph =
+    Constructive_lowering.analyze ~target:Target_hardware.default
+      (uoc03_plan graph)
+  in
+  let uoc03_assignment_id assignment =
+    Constructive_lowering.Assignment.node_id assignment
+    |> Compute_plan.Node_id.to_int
+  in
+  let uoc03_assignment_operation assignment =
+    Constructive_lowering.Assignment.source_node assignment |> Ir.node_op
+  in
+  let uoc03_region_ids region =
+    Constructive_lowering.Region.assignments region
+    |> List.map uoc03_assignment_id
+  in
+  let uoc03_has_assignment analysis predicate =
+    Constructive_lowering.Analysis.assignments analysis
+    |> List.exists (fun assignment ->
+           predicate (uoc03_assignment_operation assignment))
+  in
+  let uoc03_has_accepted_edge plan decisions predicate =
+    List.exists
+      (function
+        | Constructive_lowering.Decision.Accepted candidate
+          when predicate
+                 (Compute_plan.Node_id.to_int
+                    (Constructive_lowering.Decision.source candidate))
+                 (Compute_plan.Node_id.to_int
+                    (Constructive_lowering.Decision.destination candidate)) ->
+            Option.is_some
+              (Compute_plan.edge plan
+                 ~source:(Constructive_lowering.Decision.source candidate)
+                 ~destination:(Constructive_lowering.Decision.destination candidate))
+        | _ -> false)
+      decisions
+  in
+  let uoc03_assert_cut_boundaries decisions message =
+    List.iter
+      (function
+        | Constructive_lowering.Decision.Accepted _ -> ()
+        | Constructive_lowering.Decision.Cut (_, legality) ->
+            expect
+              (Constructive_lowering.Legality.boundaries legality <> [])
+              message)
+      decisions
+  in
+  let uoc03_has_boundary decisions predicate =
+    List.exists
+      (function
+        | Constructive_lowering.Decision.Accepted _ -> false
+        | Constructive_lowering.Decision.Cut (_, legality) ->
+            List.exists predicate
+              (Constructive_lowering.Legality.boundaries legality))
+      decisions
+  in
+  let uoc03_is_linear_to_add plan source destination =
+    match Compute_plan.request plan source, Compute_plan.request plan destination with
+    | Some source, Some destination ->
+        (match Compute_plan.Request.op source, Compute_plan.Request.op destination with
+        | Ir.Op.Linear _, Ir.Op.Add _ -> true
+        | _ -> false)
+    | _ -> false
+  in
+
+  (* A linear and residual add are fused across an unrelated unsupported
+     node; no source/destination node adjacency is assumed. *)
+  let linear_add_graph = Ir.Graph.create () in
+  let linear_add_input =
+    uoc03_input linear_add_graph "linear-add-input" [ 1; 64 ] Ir.Dtype.Float16
+  in
+  let linear_add_weight =
+    uoc03_input linear_add_graph "linear-add-weight" [ 128; 64 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q4_K)
+  in
+  let linear_add_value =
+    uoc03_value linear_add_graph [ 1; 128 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append linear_add_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ linear_add_input; linear_add_weight ]
+    ~output:(Some linear_add_value);
+  let unrelated_value =
+    uoc03_value linear_add_graph [ 1; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append linear_add_graph ~op:Ir.Op.Relu ~inputs:[ linear_add_input ]
+    ~output:(Some unrelated_value);
+  let linear_add_residual =
+    uoc03_input linear_add_graph "linear-add-residual" [ 1; 128 ]
+      Ir.Dtype.Float16
+  in
+  let linear_add_output =
+    uoc03_value linear_add_graph [ 1; 128 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append linear_add_graph
+    ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ linear_add_value; linear_add_residual ]
+    ~output:(Some linear_add_output);
+  Ir.Graph.add_output linear_add_graph ~name:"linear-add-result"
+    linear_add_output;
+  let linear_add_plan = uoc03_plan linear_add_graph in
+  let linear_add_analysis = uoc03_analysis linear_add_graph in
+  let linear_add_decisions =
+    Constructive_lowering.Analysis.decisions linear_add_analysis
+  in
+  expect
+    (uoc03_has_assignment linear_add_analysis (function Ir.Op.Linear _ -> true | _ -> false)
+    && uoc03_has_assignment linear_add_analysis (function Ir.Op.Add _ -> true | _ -> false))
+    "UOC-03 normalizes linear and add into provenance-bearing assignments";
+  expect
+    (List.exists
+       (fun assignment ->
+         match uoc03_assignment_operation assignment,
+               Constructive_lowering.Assignment.primitive assignment with
+         | Ir.Op.Linear _, Kernel_ir.Primitive.Linear { storage = Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K; _ } ->
+             true
+         | _ -> false)
+       (Constructive_lowering.Analysis.assignments linear_add_analysis))
+    "UOC-03 assignments retain the existing Kernel_ir primitive semantics";
+  expect
+    (uoc03_has_accepted_edge linear_add_plan linear_add_decisions
+       (uoc03_is_linear_to_add linear_add_plan))
+    "UOC-03 accepts an existing non-adjacent linear-to-add dependency edge";
+  uoc03_assert_cut_boundaries linear_add_decisions
+    "UOC-03 every linear-add cut reports a nonempty typed boundary";
+  expect
+    (List.exists
+       (fun region -> List.length (uoc03_region_ids region) = 2)
+       (Constructive_lowering.Analysis.regions linear_add_analysis))
+    "UOC-03 forms a two-assignment linear-add region";
+
+  (* An intermediate graph output is a typed materialization boundary even
+     when the value also feeds a downstream pointwise assignment. *)
+  let graph_output_graph = Ir.Graph.create () in
+  let graph_output_input =
+    uoc03_input graph_output_graph "graph-output-input" [ 1; 64 ]
+      Ir.Dtype.Float16
+  in
+  let graph_output_weight =
+    uoc03_input graph_output_graph "graph-output-weight" [ 128; 64 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q4_K)
+  in
+  let graph_output_linear =
+    uoc03_value graph_output_graph [ 1; 128 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append graph_output_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ graph_output_input; graph_output_weight ]
+    ~output:(Some graph_output_linear);
+  Ir.Graph.add_output graph_output_graph ~name:"intermediate"
+    graph_output_linear;
+  let graph_output_residual =
+    uoc03_input graph_output_graph "graph-output-residual" [ 1; 128 ]
+      Ir.Dtype.Float16
+  in
+  let graph_output_final =
+    uoc03_value graph_output_graph [ 1; 128 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append graph_output_graph
+    ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ graph_output_linear; graph_output_residual ]
+    ~output:(Some graph_output_final);
+  let graph_output_analysis = uoc03_analysis graph_output_graph in
+  let graph_output_decisions =
+    Constructive_lowering.Analysis.decisions graph_output_analysis
+  in
+  expect
+    (uoc03_has_boundary graph_output_decisions (function
+      | Constructive_lowering.Boundary.Graph_output _ -> true
+      | _ -> false))
+    "UOC-03 reports graph-output materialization as a boundary";
+  uoc03_assert_cut_boundaries graph_output_decisions
+    "UOC-03 graph-output cuts report a nonempty typed boundary";
+
+  (* Gate/up/Silu/multiply is a shared-input rejoin.  All three dependency
+     edges are accepted into one region, while the two linear branches retain
+     their distinct producer identities. *)
+  let gated_graph = Ir.Graph.create () in
+  let gated_input =
+    uoc03_input gated_graph "gated-input" [ 1; 64 ] Ir.Dtype.Float16
+  in
+  let gated_weight =
+    uoc03_input gated_graph "gated-weight" [ 128; 64 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q5_0)
+  in
+  let up_weight =
+    uoc03_input gated_graph "up-weight" [ 128; 64 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q5_0)
+  in
+  let gated_value =
+    uoc03_value gated_graph [ 1; 128 ] Ir.Dtype.Float16
+  in
+  let up_value = uoc03_value gated_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append gated_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ gated_input; gated_weight ] ~output:(Some gated_value);
+  Ir.Graph.append gated_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ gated_input; up_weight ] ~output:(Some up_value);
+  let silu_value = uoc03_value gated_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append gated_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, gated_value))))
+    ~inputs:[ gated_value ] ~output:(Some silu_value);
+  let gated_output = uoc03_value gated_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append gated_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor silu_value,
+                 Ir.Pointwise.Tensor up_value ))))
+    ~inputs:[ silu_value; up_value ] ~output:(Some gated_output);
+  Ir.Graph.add_output gated_graph ~name:"gated-result" gated_output;
+  let gated_plan = uoc03_plan gated_graph in
+  let gated_analysis = uoc03_analysis gated_graph in
+  expect
+    (List.exists
+       (fun region -> List.length (uoc03_region_ids region) = 4)
+       (Constructive_lowering.Analysis.regions gated_analysis))
+    "UOC-03 forms one gate/up/Silu/multiply region";
+  expect
+    (uoc03_has_accepted_edge gated_plan
+       (Constructive_lowering.Analysis.decisions gated_analysis)
+       (fun source destination ->
+         match Compute_plan.request gated_plan source,
+               Compute_plan.request gated_plan destination with
+         | Some source, Some destination ->
+             (match Compute_plan.Request.op source,
+                    Compute_plan.Request.op destination with
+             | Ir.Op.Linear _, Ir.Op.Primitive (Ir.Primitive.Pointwise _) -> true
+             | Ir.Op.Primitive (Ir.Primitive.Pointwise _),
+               Ir.Op.Primitive (Ir.Primitive.Pointwise _) -> true
+             | _ -> false)
+         | _ -> false))
+    "UOC-03 accepts existing gate/up/Silu/multiply edges";
+  uoc03_assert_cut_boundaries
+    (Constructive_lowering.Analysis.decisions gated_analysis)
+    "UOC-03 gate/up cuts report a nonempty typed boundary";
+
+  (* Q/K/V projections share an input but have no dependent edge, so they stay
+     an antichain of singleton fusion regions. *)
+  let qkv_graph = Ir.Graph.create () in
+  let qkv_input = uoc03_input qkv_graph "qkv-input" [ 1; 576 ] Ir.Dtype.Float16 in
+  let q_weight = uoc03_input qkv_graph "q-weight" [ 576; 576 ] (Ir.Dtype.Quant Ir.Dtype.Q5_0) in
+  let k_weight = uoc03_input qkv_graph "k-weight" [ 192; 576 ] (Ir.Dtype.Quant Ir.Dtype.Q5_0) in
+  let v_weight = uoc03_input qkv_graph "v-weight" [ 192; 576 ] (Ir.Dtype.Quant Ir.Dtype.Q5_0) in
+  let q_value = uoc03_value qkv_graph [ 1; 576 ] Ir.Dtype.Float16 in
+  let k_value = uoc03_value qkv_graph [ 1; 192 ] Ir.Dtype.Float16 in
+  let v_value = uoc03_value qkv_graph [ 1; 192 ] Ir.Dtype.Float16 in
+  List.iter
+    (fun (weight, output, n) ->
+      Ir.Graph.append qkv_graph
+        ~op:(Ir.Op.Linear { m = 1; n; k = 576; bias = false })
+        ~inputs:[ qkv_input; weight ] ~output:(Some output))
+    [ q_weight, q_value, 576; k_weight, k_value, 192; v_weight, v_value, 192 ];
+  Ir.Graph.add_output qkv_graph ~name:"q" q_value;
+  Ir.Graph.add_output qkv_graph ~name:"k" k_value;
+  Ir.Graph.add_output qkv_graph ~name:"v" v_value;
+  let qkv_plan = uoc03_plan qkv_graph in
+  let qkv_analysis = uoc03_analysis qkv_graph in
+  let qkv_regions = Constructive_lowering.Analysis.regions qkv_analysis in
+  expect
+    (List.length qkv_regions = 3
+    && List.for_all
+         (fun region -> List.length (uoc03_region_ids region) = 1)
+         qkv_regions)
+    "UOC-03 keeps independent Q/K/V projections as singleton regions";
+  expect
+    (not
+       (List.exists
+          (function Constructive_lowering.Decision.Accepted _ -> true | _ -> false)
+          (Constructive_lowering.Analysis.decisions qkv_analysis)))
+    "UOC-03 does not invent fusion edges for the Q/K/V shared-input antichain";
+  expect
+    (List.exists
+       (fun stage ->
+         let requests = Compute_plan.Stage.requests stage in
+         List.length
+           (List.filter
+              (fun request ->
+                match Compute_plan.Request.op request with
+                | Ir.Op.Linear _ -> true
+                | _ -> false)
+              requests)
+         = 3)
+       (Compute_plan.stages qkv_plan))
+    "UOC-03 preserves the Q/K/V ready antichain as a separate product";
+
+  (* Stateful and opaque operations remain real cut candidates with typed
+     effect and unsupported-operation boundaries. *)
+  let state_graph = Ir.Graph.create () in
+  let state_input = uoc03_input state_graph "uoc03-state-input" [ 1; 3; 4 ] Ir.Dtype.Float16 in
+  let state_slot = uoc03_input state_graph "uoc03-state-slot" [ 1; 4; 3 ] Ir.Dtype.Float16 in
+  let state_value = uoc03_value state_graph [ 1; 3; 4 ] Ir.Dtype.Float16 in
+  let state_config = Ir.Short_conv_step.create ~channels:4 ~window:3 |> expect_ok in
+  Ir.Graph.append state_graph ~op:(Ir.Op.Short_conv_step state_config)
+    ~inputs:[ state_input; state_slot ] ~output:(Some state_value);
+  let state_residual = uoc03_input state_graph "uoc03-state-residual" [ 1; 3; 4 ] Ir.Dtype.Float16 in
+  let state_output = uoc03_value state_graph [ 1; 3; 4 ] Ir.Dtype.Float16 in
+  Ir.Graph.append state_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ state_value; state_residual ] ~output:(Some state_output);
+  Ir.Graph.add_output state_graph ~name:"state-result" state_output;
+  let state_analysis = uoc03_analysis state_graph in
+  let state_decisions = Constructive_lowering.Analysis.decisions state_analysis in
+  expect
+    (uoc03_has_boundary state_decisions (function
+      | Constructive_lowering.Boundary.Unsupported_operation _ -> true
+      | _ -> false)
+    && uoc03_has_boundary state_decisions (function
+         | Constructive_lowering.Boundary.Effect_state _ -> true
+         | _ -> false))
+    "UOC-03 reports stateful operation and effect boundaries";
+  uoc03_assert_cut_boundaries state_decisions
+    "UOC-03 stateful cuts report a nonempty typed boundary";
+
+  let opaque_graph = Ir.Graph.create () in
+  let opaque_input = uoc03_input opaque_graph "uoc03-opaque-input" [ 1; 4 ] Ir.Dtype.Float16 in
+  let opaque_value = uoc03_value opaque_graph [ 1; 4 ] Ir.Dtype.Float16 in
+  Ir.Graph.append opaque_graph
+    ~op:
+      (Ir.Op.Opaque
+         { op = "opaque"; target = "test";
+           arguments = [ Ir.Argument.Value opaque_input ]; keyword_arguments = [] })
+    ~inputs:[ opaque_input ] ~output:(Some opaque_value);
+  let opaque_output = uoc03_value opaque_graph [ 1; 4 ] Ir.Dtype.Float16 in
+  Ir.Graph.append opaque_graph ~op:Ir.Op.Relu ~inputs:[ opaque_value ]
+    ~output:(Some opaque_output);
+  Ir.Graph.add_output opaque_graph ~name:"opaque-result" opaque_output;
+  let opaque_analysis = uoc03_analysis opaque_graph in
+  let opaque_decisions = Constructive_lowering.Analysis.decisions opaque_analysis in
+  expect
+    (uoc03_has_boundary opaque_decisions (function
+      | Constructive_lowering.Boundary.Unsupported_operation _ -> true
+      | _ -> false)
+    && uoc03_has_boundary opaque_decisions (function
+         | Constructive_lowering.Boundary.Effect_state _ -> true
+         | _ -> false))
+    "UOC-03 reports opaque operation and effect boundaries";
+  uoc03_assert_cut_boundaries opaque_decisions
+    "UOC-03 opaque cuts report a nonempty typed boundary";
+
+  let index_graph = Ir.Graph.create () in
+  let index_input = uoc03_input index_graph "uoc03-index-input" [ 1; 4 ] Ir.Dtype.Float16 in
+  let index_value = uoc03_value index_graph [ 1; 4 ] Ir.Dtype.Float16 in
+  let index =
+    Tensor_shape.Index.of_selectors
+      [ Tensor_shape.Index.At 0;
+        Tensor_shape.Index.Slice { start = 0; step = 1; length = 4 } ]
+    |> expect_ok
+  in
+  Ir.Graph.append index_graph
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.Index index)))
+    ~inputs:[ index_input ] ~output:(Some index_value);
+  let index_output = uoc03_value index_graph [ 1; 4 ] Ir.Dtype.Float16 in
+  Ir.Graph.append index_graph ~op:Ir.Op.Relu ~inputs:[ index_value ]
+    ~output:(Some index_output);
+  Ir.Graph.add_output index_graph ~name:"index-result" index_output;
+  let index_analysis = uoc03_analysis index_graph in
+  let index_decisions = Constructive_lowering.Analysis.decisions index_analysis in
+  expect
+    (uoc03_has_boundary index_decisions (function
+      | Constructive_lowering.Boundary.Unsupported_index_map _ -> true
+      | _ -> false))
+    "UOC-03 reports unsupported index-map adjacency";
+  uoc03_assert_cut_boundaries index_decisions
+    "UOC-03 index-map cuts report a nonempty typed boundary";
+
+  (* Fan-out retains the external-use boundary and prevents either source
+     edge from being folded into a region. *)
+  let fanout_graph = Ir.Graph.create () in
+  let fanout_input = uoc03_input fanout_graph "fanout-input" [ 1; 64 ] Ir.Dtype.Float16 in
+  let fanout_weight = uoc03_input fanout_graph "fanout-weight" [ 128; 64 ] (Ir.Dtype.Quant Ir.Dtype.Q4_K) in
+  let fanout_value = uoc03_value fanout_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append fanout_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ fanout_input; fanout_weight ] ~output:(Some fanout_value);
+  let fanout_residual_left = uoc03_input fanout_graph "fanout-left" [ 1; 128 ] Ir.Dtype.Float16 in
+  let fanout_residual_right = uoc03_input fanout_graph "fanout-right" [ 1; 128 ] Ir.Dtype.Float16 in
+  let fanout_left = uoc03_value fanout_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  let fanout_right = uoc03_value fanout_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append fanout_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ fanout_value; fanout_residual_left ] ~output:(Some fanout_left);
+  Ir.Graph.append fanout_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ fanout_value; fanout_residual_right ] ~output:(Some fanout_right);
+  Ir.Graph.add_output fanout_graph ~name:"fanout-left-result" fanout_left;
+  Ir.Graph.add_output fanout_graph ~name:"fanout-right-result" fanout_right;
+  let fanout_analysis = uoc03_analysis fanout_graph in
+  let fanout_decisions = Constructive_lowering.Analysis.decisions fanout_analysis in
+  expect
+    (uoc03_has_boundary fanout_decisions (function
+      | Constructive_lowering.Boundary.External_use _ -> true
+      | _ -> false))
+    "UOC-03 reports external fan-out instead of fusing one consumer";
+  expect
+    (not
+       (List.exists
+          (function Constructive_lowering.Decision.Accepted _ -> true | _ -> false)
+          fanout_decisions))
+    "UOC-03 keeps externally-used fan-out assignments separate";
+  uoc03_assert_cut_boundaries fanout_decisions
+    "UOC-03 fan-out cuts report a nonempty typed boundary";
+
+  (* Optional bias metadata is part of numerical legality, not merely a
+     parameter-count convention. *)
+  let bad_bias_graph = Ir.Graph.create () in
+  let bad_bias_input = uoc03_input bad_bias_graph "bad-bias-input" [ 1; 64 ] Ir.Dtype.Float16 in
+  let bad_bias_weight = uoc03_input bad_bias_graph "bad-bias-weight" [ 128; 64 ] (Ir.Dtype.Quant Ir.Dtype.Q4_K) in
+  let bad_bias = uoc03_input bad_bias_graph "bad-bias" [ 3 ] Ir.Dtype.Float16 in
+  let bad_bias_value = uoc03_value bad_bias_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append bad_bias_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = true })
+    ~inputs:[ bad_bias_input; bad_bias_weight; bad_bias ]
+    ~output:(Some bad_bias_value);
+  let bad_bias_residual = uoc03_input bad_bias_graph "bad-bias-residual" [ 1; 128 ] Ir.Dtype.Float16 in
+  let bad_bias_output = uoc03_value bad_bias_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append bad_bias_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ bad_bias_value; bad_bias_residual ] ~output:(Some bad_bias_output);
+  Ir.Graph.add_output bad_bias_graph ~name:"bad-bias-result" bad_bias_output;
+  let bad_bias_analysis = uoc03_analysis bad_bias_graph in
+  let bad_bias_decisions = Constructive_lowering.Analysis.decisions bad_bias_analysis in
+  expect
+    (uoc03_has_boundary bad_bias_decisions (function
+      | Constructive_lowering.Boundary.Numerical_incompatibility _ -> true
+      | _ -> false))
+    "UOC-03 reports optional-bias shape incompatibility";
+  uoc03_assert_cut_boundaries bad_bias_decisions
+    "UOC-03 numerical cuts report a nonempty typed boundary";
+
+  (* Reduction/linear destinations are not inlined in this slice; this
+     generic legality rule prevents accidental giant linear chains. *)
+  let linear_chain_graph = Ir.Graph.create () in
+  let linear_chain_input = uoc03_input linear_chain_graph "linear-chain-input" [ 1; 64 ] Ir.Dtype.Float16 in
+  let linear_chain_weight_left = uoc03_input linear_chain_graph "linear-chain-weight-left" [ 128; 64 ] (Ir.Dtype.Quant Ir.Dtype.Q4_K) in
+  let linear_chain_left = uoc03_value linear_chain_graph [ 1; 128 ] Ir.Dtype.Float16 in
+  Ir.Graph.append linear_chain_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ linear_chain_input; linear_chain_weight_left ]
+    ~output:(Some linear_chain_left);
+  let linear_chain_weight_right = uoc03_input linear_chain_graph "linear-chain-weight-right" [ 256; 128 ] (Ir.Dtype.Quant Ir.Dtype.Q4_K) in
+  let linear_chain_right = uoc03_value linear_chain_graph [ 1; 256 ] Ir.Dtype.Float16 in
+  Ir.Graph.append linear_chain_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 256; k = 128; bias = false })
+    ~inputs:[ linear_chain_left; linear_chain_weight_right ]
+    ~output:(Some linear_chain_right);
+  Ir.Graph.add_output linear_chain_graph ~name:"linear-chain-result" linear_chain_right;
+  let linear_chain_analysis = uoc03_analysis linear_chain_graph in
+  let linear_chain_decisions = Constructive_lowering.Analysis.decisions linear_chain_analysis in
+  expect
+    (uoc03_has_boundary linear_chain_decisions (function
+      | Constructive_lowering.Boundary.Unsupported_index_map _ -> true
+      | _ -> false))
+    "UOC-03 cuts a linear-to-linear edge at the generic inlining boundary";
+  expect
+    (not
+       (List.exists
+          (function Constructive_lowering.Decision.Accepted _ -> true | _ -> false)
+          linear_chain_decisions))
+    "UOC-03 does not form a giant linear chain region";
+  uoc03_assert_cut_boundaries linear_chain_decisions
+    "UOC-03 linear-chain cuts report a nonempty typed boundary";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
