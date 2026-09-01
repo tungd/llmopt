@@ -116,7 +116,7 @@ Out of scope:
   - **Commit:** `26274fb` (`feat: model exact block-quant schemas`); correction
     `9dc0a5d` (`fix: specialize block schema tactic primitives`).
 
-- [ ] **UOC-02 — Make dependency and use facts a single reusable authority**
+- [x] **UOC-02 — Make dependency and use facts a single reusable authority**
 
   - **Where:** `lib/compute_plan.mli`, `lib/compute_plan.ml`, `test/test.ml`.
   - **Symbols:** add abstract `Compute_plan.Use.t` and
@@ -128,7 +128,16 @@ Out of scope:
   - **Proof:** Focused DAG tests cover a chain, a diamond/shared producer, an
     independent antichain, and state/effect ordering; existing co-scheduling
     tests remain unchanged and pass.
-  - **Commit:** Record after completion.
+  - **Evidence:** `ninja -f ninja.build test` passes all 72 Python tests and the
+    OCaml suite (`llmopt canonical W4A16/KVQ8 tests passed`); `git diff --check`
+    passes. Focused assertions cover deterministic producer/use relationships,
+    chain and diamond paths, independent ready antichains, duplicate declared
+    plus embedded references collapsing to one use, typed
+    `Data_and_state` edge aggregation, state/effect dependencies, and singleton
+    non-pure stages. `Edge_map` is the immutable relation authority from which
+    predecessor/successor indexes are derived, while producer and ordered-use
+    indexes are captured once during `of_graph`.
+  - **Commit:** `597287a` (`feat: centralize compute plan dependency facts`).
 
 - [ ] **UOC-03 — Form fusion regions algorithmically and report every cut**
 
