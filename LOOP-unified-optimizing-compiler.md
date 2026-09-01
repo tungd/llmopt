@@ -290,8 +290,11 @@ Out of scope:
     `1113/1161` AOT stages, `2906/3146` dependencies, and `1014/1062`
     barriers. Generation measured `4.474057 tok/s`, `7.506000 s` TTFT, and
     `166.168352 ms` mean inter-token time versus the pinned `27.94 tok/s` and
-    `35.79 ms/token` reference; the output repeats and becomes token ID `0`
-    from completion position 29. The full receipts and exact deltas are in
+    `35.79 ms/token` reference. The throughput arithmetic compares LLMOpt total
+    generation time with llama.cpp decode-only evaluation time; inter-token
+    versus TPOT is the closer decode comparison. The output repeats and becomes
+    token ID `0` from completion position 29. The full receipts and exact
+    deltas are in
     `.okf/experiments/exp-0138-unified-compiler-gemma4-transition-2026-09-02.md`.
     `ninja -f ninja.build`, `ninja -f ninja.build test` (OCaml plus 72 Python
     tests), `git diff --check`, and strict OKF validation pass; validation keeps

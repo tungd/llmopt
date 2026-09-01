@@ -117,6 +117,13 @@ The sole generation command requested 128 greedy tokens. It ran from
 | Throughput | `4.474057 tok/s` | `27.94 tok/s` | `-23.465943 tok/s` (`-83.986911%`) | `0.160130888x` |
 | Per-token time | `166.168352 ms` mean inter-token | `35.79 ms/token` | `+130.378352 ms` (`+364.287097%`) | `4.642870970x` |
 
+The throughput row preserves the requested arithmetic comparison but its
+denominators differ: LLMOpt divides 128 tokens by TTFT plus all inter-token
+intervals, while the llama.cpp field divides generated tokens by decode
+evaluation time and reports prompt time separately. It is not a like-for-like
+decode-throughput ratio. The inter-token/TPOT row is the closer decode-time
+comparison.
+
 LLMOpt additionally measured `7.506000 s` TTFT, `28.609381 s` total elapsed
 time, and `133.504152 ms` median inter-token time.
 
