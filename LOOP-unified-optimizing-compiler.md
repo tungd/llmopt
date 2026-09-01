@@ -87,7 +87,7 @@ Out of scope:
   - **Evidence:** `uv run /Users/tung/.codex/skills/validate/scripts/okf_validate.py .okf --strict` reports a conformant bundle; the only warning names an unrelated pre-existing lifecycle value.
   - **Commit:** `7fbd8172d86f6b838cf402a8308004f5f9d174f4` (`docs: define unified optimizing compiler model`). Parked code commit: `9047771`.
 
-- [ ] **UOC-01 — Model exact block-quant schemas without importing arrayjit**
+- [x] **UOC-01 — Model exact block-quant schemas without importing arrayjit**
 
   - **Where:** create `lib/block_schema.mli` and `lib/block_schema.ml`; update
     their explicit Ninja edges in `ninja.build`; extend `test/test.ml`.
@@ -105,7 +105,14 @@ Out of scope:
     W4 groupwise nibble/sign/scale semantics through its existing storage type,
     all existing block-quant dtypes, invalid dtype rejection, and stable tactic
     enumeration. Run the repository test target.
-  - **Commit:** Record after completion.
+  - **Evidence:** `ninja -f ninja.build test` passes all 72 Python tests and the
+    OCaml suite (`llmopt canonical W4A16/KVQ8 tests passed`); `git diff --check`
+    passes. Focused assertions cover exact Q4_K fields and six-bit packed
+    scale/minimum ranges, composed block/sub-block decode factors, W4's 64-value
+    two-complement nibble layout plus separate F16 group scale, all seven
+    `Ir.Dtype.quant_type` size contracts, typed rejection, and backend-specific
+    target primitives.
+  - **Commit:** `26274fb` (`feat: model exact block-quant schemas`).
 
 - [ ] **UOC-02 — Make dependency and use facts a single reusable authority**
 
