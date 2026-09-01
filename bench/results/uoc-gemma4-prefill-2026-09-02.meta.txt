@@ -1,0 +1,6 @@
+command: _build/bin/llmopt-package-check _artifacts/gemma4-12b-qat-uoc-transition-2026-09-02/prefill
+started_utc: 2026-09-01T19:33:43Z
+ended_utc: 2026-09-01T19:33:43Z
+status: 0
+stdout: bench/results/uoc-gemma4-prefill-2026-09-02.stdout.txt
+stderr: bench/results/uoc-gemma4-prefill-2026-09-02.stderr.txt

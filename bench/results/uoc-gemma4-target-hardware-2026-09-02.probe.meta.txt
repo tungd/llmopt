@@ -1,0 +1,9 @@
+command: _build/bin/llmopt-hardware-probe --output bench/results/uoc-gemma4-target-hardware-2026-09-02.json
+probe_invocations: 1
+probe_exit_status: 0 (inferred from complete JSON and normal stdout; the wrapper failed after the child because zsh reserves `status` as read-only)
+wrapper_exit_status: 1
+wrapper_failure: zsh:8: read-only variable: status
+started_utc: not captured because the wrapper failed while collecting the child status
+completed_utc: 2026-09-01T19:30:43Z (profile and stdout filesystem timestamp)
+stdout: bench/results/uoc-gemma4-target-hardware-2026-09-02.probe.stdout.txt
+stderr: bench/results/uoc-gemma4-target-hardware-2026-09-02.probe.stderr.txt

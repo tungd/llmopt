@@ -1,0 +1,12 @@
+Valid Model Program (ABI v6):
+  Model: unsloth/gemma-4-12B-it-qat-GGUF
+  Architecture: gemma4
+  Family: gemma4
+  Tokenizer: tokenizer.llmopt
+  Chat: chatml (bos=2, message_start=2, message_end=1)
+  Prefill entrypoint: prefill/package.llmopt (input: input_ids)
+  Decode entrypoint: decode/package.llmopt (input: input_ids)
+  Generation: vocab_size=262144, max_positions=262144
+  State: 48 attention layers (0:8x256,1:8x256,2:8x256,3:8x256,4:8x256,5:1x512,6:8x256,7:8x256,8:8x256,9:8x256,10:8x256,11:1x512,12:8x256,13:8x256,14:8x256,15:8x256,16:8x256,17:1x512,18:8x256,19:8x256,20:8x256,21:8x256,22:8x256,23:1x512,24:8x256,25:8x256,26:8x256,27:8x256,28:8x256,29:1x512,30:8x256,31:8x256,32:8x256,33:8x256,34:8x256,35:1x512,36:8x256,37:8x256,38:8x256,39:8x256,40:8x256,41:1x512,42:8x256,43:8x256,44:8x256,45:8x256,46:8x256,47:1x512), 0 recurrent layers (0 dim x 0 window)
+  Specialization: min_prefill_tokens=1
+  Runtime specialization: tokens=22, captured_decode_past=2, paged_q8_attention=48

@@ -1,0 +1,4 @@
+device=Apple M4 Pro backend=metal dispatch_us=5.375 sustained_effective_bandwidth_gbps=228.772 stream_bytes=268435456 output=bench/results/uoc-gemma4-target-hardware-2026-09-02.json
+stream_bytes=16777216 effective_bandwidth_gbps=158.089
+stream_bytes=67108864 effective_bandwidth_gbps=154.644
+stream_bytes=268435456 effective_bandwidth_gbps=228.772

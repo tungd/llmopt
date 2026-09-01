@@ -1,0 +1,1 @@
+valid serving package: 108 kernels, 3732 commands, 0 opaque, tensor-store=670, workspace=2234112/14955008 bytes, allocations=1324

@@ -1,0 +1,13 @@
+[llmopt-pipeline] Building unified engine at: /Users/tung/Projects/std23/llmopt/_artifacts/gemma4-12b-qat-uoc-transition-2026-09-02
+[llmopt-pipeline] Packaging tokenizer...
+[llmopt-pipeline] Compiling prefill engine & shaders...
+[llmopt-pipeline] Prefill: 5895 FX nodes -> 3492 IR nodes
+[llmopt-pipeline] Compiling decode engine & shaders...
+[llmopt-pipeline] Decode: 6087 FX nodes -> 3732 IR nodes
+[llmopt-pipeline] Linking root Model Program (model.llmopt)...
+
+=======================================================
+  LLMOPT ENGINE READY FOR SERVING
+  Engine bundle: /Users/tung/Projects/std23/llmopt/_artifacts/gemma4-12b-qat-uoc-transition-2026-09-02
+  Launch: _build/bin/llmopt-serve /Users/tung/Projects/std23/llmopt/_artifacts/gemma4-12b-qat-uoc-transition-2026-09-02 --port 18105
+=======================================================
