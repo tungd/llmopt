@@ -111,8 +111,10 @@ Out of scope:
     scale/minimum ranges, composed block/sub-block decode factors, W4's 64-value
     two-complement nibble layout plus separate F16 group scale, all seven
     `Ir.Dtype.quant_type` size contracts, typed rejection, and backend-specific
-    target primitives.
-  - **Commit:** `26274fb` (`feat: model exact block-quant schemas`).
+    target primitives, including the direct-integer versus packed primitive
+    distinction.
+  - **Commit:** `26274fb` (`feat: model exact block-quant schemas`); correction
+    `9dc0a5d` (`fix: specialize block schema tactic primitives`).
 
 - [ ] **UOC-02 — Make dependency and use facts a single reusable authority**
 
