@@ -161,15 +161,29 @@ let optional_value values ~name ~dtype ~shape label =
       expect_value values ~name ~dtype ~shape label
       |> Result.map (fun _ -> Some name)
 
+let optional_token_id values ~tokens label =
+  match String_map.find_opt "token_id" values with
+  | None -> Ok None
+  | Some value when Ir.Value.dtype value <> Ir.Dtype.Int32 ->
+      Error
+        (Printf.sprintf "%s token_id has dtype %s; expected i32" label
+           (Ir.Value.dtype value |> Ir.Dtype.to_string))
+  | Some value
+    when Model_program.Entrypoint.Head.token_id_shape_matches ~tokens
+           (dimensions value) ->
+      Ok (Some "token_id")
+  | Some value ->
+      Error
+        (Printf.sprintf
+           "%s token_id has shape [%s]; expected [%d] or [1x%d]" label
+           (shape_string (dimensions value)) tokens tokens)
+
 let validate_head values ~tokens ~vocabulary label =
   let* logits =
     optional_value values ~name:"logits" ~dtype:Ir.Dtype.Float16
       ~shape:[ 1; tokens; vocabulary ] label
   in
-  let* token_id =
-    optional_value values ~name:"token_id" ~dtype:Ir.Dtype.Int32
-      ~shape:[ tokens ] label
-  in
+  let* token_id = optional_token_id values ~tokens label in
   match logits, token_id with
   | None, None ->
       Error (label ^ " must expose logits or token_id")
@@ -214,7 +228,7 @@ let of_state_recurrent (b : Model_program.State.Recurrent_binding.t) : recurrent
   }
 
 let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
-    ~recurrent_shape ~vocab_size ~prefill ~decode =
+    ~recurrent_shape ~vocab_size ~auxiliary_inputs ~prefill ~decode =
   let prefill_inputs = runtime_inputs prefill in
   let decode_inputs = runtime_inputs decode in
   let prefill_outputs = named_outputs prefill in
@@ -340,10 +354,10 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
       validate_head decode_outputs ~tokens:1 ~vocabulary:vocab_size
         "decode output"
     in
-    let expected_prefill_inputs = [ input_ids ] in
+    let expected_prefill_inputs = input_ids :: auxiliary_inputs in
     let expected_decode_inputs =
-      input_ids
-      :: (List.concat_map
+      (input_ids :: auxiliary_inputs)
+      @ (List.concat_map
             (fun binding -> [ binding.key_input; binding.value_input ])
             attentions
          @ List.map (fun binding -> binding.state_input) recurrents)
@@ -426,8 +440,22 @@ let contract ?program ~config ~prefill ~decode () =
       [ 1; dim; window ]
     else [ 1; 0; 0 ]
   in
+  let specialization =
+    match program with
+    | Some p -> Model_program.specialization p
+    | None ->
+        Model_program.Specialization.create ~min_prefill_tokens:1 ()
+        |> Result.get_ok
+  in
+  let auxiliary_inputs =
+    [ Model_program.Specialization.position_ids_input specialization;
+      Model_program.Specialization.full_attention_mask_input specialization;
+      Model_program.Specialization.sliding_attention_mask_input specialization ]
+    |> List.filter_map Fun.id
+  in
   contract_of_parts ~input_ids ~attentions ~recurrents
-    ~attention_layout:layout ~recurrent_shape ~vocab_size ~prefill ~decode
+    ~attention_layout:layout ~recurrent_shape ~vocab_size ~auxiliary_inputs
+    ~prefill ~decode
 
 let validate_packages ?program ~config ~prefill ~decode () =
   let* () = validate_package prefill "prefill" in
@@ -883,6 +911,69 @@ let token_buffer runtime tokens =
     tokens;
   Metal_runtime.Buffer.of_bytes ~runtime bytes
 
+let position_ids_buffer runtime ~start ~length =
+  let bytes = Bytes.create (8 * length) in
+  for index = 0 to length - 1 do
+    Bytes.set_int64_le bytes (8 * index) (Int64.of_int (start + index))
+  done;
+  Metal_runtime.Buffer.of_bytes ~runtime bytes
+
+let attention_mask_buffer runtime ~query_start ~query_tokens ~total_tokens
+    ?sliding_window () =
+  let bytes = Bytes.make (2 * query_tokens * total_tokens) '\000' in
+  for query = 0 to query_tokens - 1 do
+    let absolute_query = query_start + query in
+    for key = 0 to total_tokens - 1 do
+      let future = key > absolute_query in
+      let outside_window =
+        match sliding_window with
+        | None -> false
+        | Some window -> key <= absolute_query - window
+      in
+      if future || outside_window then
+        Bytes.set_uint16_le bytes (2 * ((query * total_tokens) + key)) 0xfc00
+    done
+  done;
+  Metal_runtime.Buffer.of_bytes ~runtime bytes
+
+let transformer_auxiliary_inputs engine ~runtime ~query_start ~query_tokens
+    ~total_tokens =
+  let specialization = specialization_of engine in
+  let* position =
+    match Model_program.Specialization.position_ids_input specialization with
+    | None -> Ok []
+    | Some name ->
+        let* buffer = position_ids_buffer runtime ~start:query_start ~length:query_tokens in
+        Ok [ name, buffer ]
+  in
+  let* full =
+    match
+      Model_program.Specialization.full_attention_mask_input specialization
+    with
+    | None -> Ok []
+    | Some name ->
+        let* buffer =
+          attention_mask_buffer runtime ~query_start ~query_tokens ~total_tokens ()
+        in
+        Ok [ name, buffer ]
+  in
+  let* sliding =
+    match
+      Model_program.Specialization.sliding_attention_mask_input specialization
+    with
+    | None -> Ok []
+    | Some name ->
+        let sliding_window =
+          Model_program.Specialization.sliding_window specialization
+        in
+        let* buffer =
+          attention_mask_buffer runtime ~query_start ~query_tokens ~total_tokens
+            ?sliding_window ()
+        in
+        Ok [ name, buffer ]
+  in
+  Ok (position @ full @ sliding)
+
 let output execution name =
   match Metal_runtime.Execution.output execution ~name with
   | Some buffer -> Ok buffer
@@ -975,9 +1066,13 @@ let prefill engine ~tokens =
             Ok [ cosine_name, cosine; sine_name, sine ]
         | _ -> Ok [])
   in
+  let* auxiliary_inputs =
+    transformer_auxiliary_inputs engine ~runtime:engine.prefill ~query_start:0
+      ~query_tokens:token_count ~total_tokens:token_count
+  in
   let* execution =
     Metal_runtime.execute_schedule engine.prefill ~schedule ~memory_plan
-      ~inputs:((engine.contract.input_ids, input) :: rope_inputs)
+      ~inputs:((engine.contract.input_ids, input) :: (rope_inputs @ auxiliary_inputs))
   in
   let checkpoint_required = engine.contract.recurrents <> [] in
   let* reservation =
@@ -1105,9 +1200,14 @@ let decode_inputs engine ~slots ~token_input ~rope_buffers buffers =
     | Some _, None -> Error "decode RoPE table is missing its position binding"
     | None, Some _ -> Error "decode RoPE binding has no serving table"
   in
+  let past_tokens = Array.length slots in
+  let* auxiliary_inputs =
+    transformer_auxiliary_inputs engine ~runtime:engine.decode
+      ~query_start:past_tokens ~query_tokens:1 ~total_tokens:(past_tokens + 1)
+  in
   Ok
     ((engine.contract.input_ids, token_input)
-    :: (rope_inputs @ attention_inputs
+    :: (rope_inputs @ auxiliary_inputs @ attention_inputs
        @ Serving_replay.Decode_buffers.inputs buffers))
 
 let attention_pack_slice _engine ~past_tokens:_ = 1, 0

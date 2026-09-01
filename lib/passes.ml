@@ -20,6 +20,71 @@ let fuse_swiglu_ffn graph = Ok (Pass_fuse_epilogues.run graph)
 let fuse_short_conv_step = Pass_fuse_short_conv_step.run
 let fuse_gated_delta = Pass_fuse_gated_delta.run
 let fuse_lm_head_argmax = Pass_fuse_lm_head_argmax.run
+
+let parameterize_token_id_output graph =
+  let next_node =
+    Ir.Graph.nodes graph
+    |> List.fold_left (fun next node -> max next (Ir.node_id node + 1)) 0
+    |> ref
+  in
+  let token_output = ref None in
+  let rec rewrite acc = function
+    | [] -> Ok (List.rev acc)
+    | node :: rest ->
+        (match Ir.node_op node, Ir.node_inputs node with
+        | Ir.Op.Output { name = "token_id" }, [ input ]
+          when Ir.Value.dtype input <> Ir.Dtype.Int32 ->
+            let rank =
+              Tensor_shape.dimensions (Ir.Value.logical_shape input)
+              |> List.length
+            in
+            if rank = 0 then Error "token_id source must have a vocabulary axis"
+            else if
+              Ir.Value.dtype input <> Ir.Dtype.Float16
+              && Ir.Value.dtype input <> Ir.Dtype.Float32
+            then
+              Error
+                (Printf.sprintf "token_id source must be f16, f32, or i32; got %s"
+                   (Ir.Dtype.to_string (Ir.Value.dtype input)))
+            else
+              let axis = rank - 1 in
+              let* shape =
+                Tensor_shape.reduce (Ir.Value.logical_shape input) ~axes:[ axis ]
+                  ~keepdim:false
+                |> Result.map_error Tensor_shape.error_to_string
+              in
+              let token =
+                Ir.Graph.fresh_tensor_value graph ~shape ~dtype:Ir.Dtype.Int32
+              in
+              let argmax =
+                Ir.node_create ~id:(Ir.node_id node)
+                  ~op:
+                    (Ir.Op.Primitive
+                       (Ir.Primitive.Reduce
+                          { Ir.Reduction.operator = Argmax;
+                            axes = [ axis ];
+                            keepdim = false }))
+                  ~inputs:[ input ] ~output:(Some token)
+              in
+              let output =
+                Ir.node_create ~id:!next_node
+                  ~op:(Ir.Op.Output { name = "token_id" }) ~inputs:[ token ]
+                  ~output:None
+              in
+              incr next_node;
+              token_output := Some token;
+              rewrite (output :: argmax :: acc) rest
+        | _ -> rewrite (node :: acc) rest)
+  in
+  let* nodes = rewrite [] (Ir.Graph.nodes graph) in
+  let outputs =
+    Ir.Graph.outputs graph
+    |> List.map (fun (name, value) ->
+           match name, !token_output with
+           | "token_id", Some token -> name, token
+           | _ -> name, value)
+  in
+  Ok (Ir.Graph.with_nodes_and_outputs graph nodes outputs)
 let fuse_epilogues = Pass_fuse_epilogues.run
 let co_schedule = Pass_co_schedule.run
 let co_schedule_plan = Pass_co_schedule.run_plan

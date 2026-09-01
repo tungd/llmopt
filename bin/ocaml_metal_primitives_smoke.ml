@@ -167,7 +167,7 @@ let () =
           input runtime "wide_attention_value"
             (bytes_of_u16 (List.init 512 (Fun.const 0x4200)));
           input runtime "wide_attention_mask"
-            (bytes_of_bool [ true; true; true; true ]);
+            (bytes_of_u16 [ 0; 0; 0; 0 ]);
           input runtime "paged_query" (bytes_of_u16 (List.init 64 (Fun.const 0)));
           input runtime "paged_current_key"
             (bytes_of_u16 (List.init 64 (Fun.const 0)));

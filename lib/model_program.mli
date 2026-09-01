@@ -54,6 +54,7 @@ module Entrypoint : sig
     val create : ?logits:string -> ?token_id:string -> unit -> (t, string) result
     val logits : t -> string option
     val token_id : t -> string option
+    val token_id_shape_matches : tokens:int -> int list -> bool
   end
 
   type kind = Prefill | Decode | Verify
@@ -248,6 +249,10 @@ module Specialization : sig
     ?rope_cosine_input:string ->
     ?rope_sine_input:string ->
     ?paged_slots_input:string ->
+    ?position_ids_input:string ->
+    ?full_attention_mask_input:string ->
+    ?sliding_attention_mask_input:string ->
+    ?sliding_window:int ->
     unit ->
     (t, string) result
 
@@ -255,6 +260,10 @@ module Specialization : sig
   val rope_cosine_input : t -> string option
   val rope_sine_input : t -> string option
   val paged_slots_input : t -> string option
+  val position_ids_input : t -> string option
+  val full_attention_mask_input : t -> string option
+  val sliding_attention_mask_input : t -> string option
+  val sliding_window : t -> int option
 end
 
 type t

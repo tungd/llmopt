@@ -442,9 +442,11 @@ module Quant_qkv_tactic = struct
 end
 
 module Paged_attention_tactic = struct
-  let kernel_name ~experimental_gqa3_split8 ~split8 ~query_heads ~kv_heads =
+  let kernel_name ~experimental_gqa3_split8 ~split8 ~query_heads ~kv_heads
+      ~head_dimension =
     let gqa3_shape = query_heads = 3 * kv_heads in
-    if split8 && gqa3_shape && experimental_gqa3_split8 then
+    if head_dimension <> 64 then "llmopt_attention_q8_paged_simd_generic"
+    else if split8 && gqa3_shape && experimental_gqa3_split8 then
       "llmopt_attention_q8_paged_simd_h64_gqa3_split8"
     else if split8 then "llmopt_attention_q8_paged_simd_h64_split8"
     else if gqa3_shape then "llmopt_attention_q8_paged_simd_h64_gqa3"
@@ -604,8 +606,8 @@ module Parameters = struct
   let attention ~batches ~heads ~query_length ~key_length ~head_dimension
       ~mask_batches ~mask_heads ~causal ~scale ?(kv_heads = heads)
       ?(token_first_output = 0) ?(past_length = 0)
-      ?(token_first_value = 0) () =
-    let bytes = Bytes.make 52 '\000' in
+      ?(token_first_value = 0) ?(mask_dtype = 0) () =
+    let bytes = Bytes.make 56 '\000' in
     let values =
       [ batches; heads; query_length; key_length; head_dimension; mask_batches;
         mask_heads; (if causal then 1 else 0) ]
@@ -622,12 +624,14 @@ module Parameters = struct
     let* () = set_u32 bytes 40 token_first_output in
     let* () = set_u32 bytes 44 past_length in
     let* () = set_u32 bytes 48 token_first_value in
+    let* () = set_u32 bytes 52 mask_dtype in
     Ok bytes
 
   let paged_attention_q8 ~batches ~query_heads ~kv_heads ~past_length
       ~head_dimension ~mask_batches ~mask_heads ~token_elements ~key_offset
-      ~value_offset ~group_size ~token_stride ~scale ?(query_length = 1) () =
-    let bytes = Bytes.make 56 '\000' in
+      ~value_offset ~group_size ~token_stride ~scale ~mask_dtype
+      ?(query_length = 1) () =
+    let bytes = Bytes.make 60 '\000' in
     let values =
       [ batches; query_heads; kv_heads; past_length; head_dimension; mask_batches;
         mask_heads; token_elements; key_offset; value_offset; group_size;
@@ -642,6 +646,7 @@ module Parameters = struct
     let* () = write 0 values in
     Bytes.set_int32_le bytes 48 (Int32.bits_of_float scale);
     let* () = set_u32 bytes 52 query_length in
+    let* () = set_u32 bytes 56 mask_dtype in
     Ok bytes
 
   let speculative_attention ~batches ~heads ~query_length ~key_length
@@ -2421,6 +2426,12 @@ let pointwise_kernel operation output =
   in
   match operation, tensor_dtypes, output_dtype with
   | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _),
+    [ Ir.Dtype.Float16; Ir.Dtype.Float32 ], Ir.Dtype.Float16 ->
+      Ok ("llmopt_mul_f16_f32_f16", Ir.Dtype.Float16)
+  | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _),
+    [ Ir.Dtype.Float32; Ir.Dtype.Float16 ], Ir.Dtype.Float16 ->
+      Ok ("llmopt_mul_f32_f16_f16", Ir.Dtype.Float32)
+  | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _),
     [ Ir.Dtype.Float16; Ir.Dtype.Float32 ], Ir.Dtype.Float32 ->
       Ok ("llmopt_mul_f16_f32", Ir.Dtype.Float16)
   | _ ->
@@ -2581,6 +2592,10 @@ let reduction_kernel reduction input output =
       Ok ("llmopt_sum_f32", axis)
   | Ir.Reduction.Mean, [ axis ], Ir.Dtype.Float32, Ir.Dtype.Float32 ->
       Ok ("llmopt_mean_f32", axis)
+  | Ir.Reduction.Argmax, [ axis ], Ir.Dtype.Float16, Ir.Dtype.Int32 ->
+      Ok ("llmopt_argmax_f16", axis)
+  | Ir.Reduction.Argmax, [ axis ], Ir.Dtype.Float32, Ir.Dtype.Int32 ->
+      Ok ("llmopt_argmax_f32", axis)
   | _ ->
       Error
         (Printf.sprintf "unsupported Metal reduction kernel: %s %s -> %s"
@@ -2862,11 +2877,16 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             in
             let* input_buffer = find_value state input in
             let* parameters = Parameters.u32s [ outer; width; inner ] in
+            let grid =
+              match reduction.Ir.Reduction.operator with
+              | Ir.Reduction.Argmax -> (outer * inner * 256, 1, 1)
+              | Ir.Reduction.Mean | Ir.Reduction.Sum -> (outer * inner, 1, 1)
+            in
             dispatched
               (dispatch_output ~name runtime state output
                  ~operation:Kernel_abi.Operation.Reduction
                  ~input_dtype:(Ir.Value.dtype input) ~buffers:[ input_buffer ]
-                 ~parameters ~grid:(outer * inner, 1, 1))
+                 ~parameters ~grid)
         | ( Ir.Op.Primitive (Ir.Primitive.Update_slice index),
             [ destination; source ],
             Some output ) ->
@@ -3844,6 +3864,15 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Ok (mask_batches, mask_heads)
               | _ -> Error "attention mask must have rank four"
             in
+            let* mask_dtype =
+              match Ir.Value.dtype mask with
+              | Ir.Dtype.Bool -> Ok 1
+              | Ir.Dtype.Float16 -> Ok 2
+              | dtype ->
+                  Error
+                    (Printf.sprintf "attention mask dtype %s is unsupported"
+                       (Ir.Dtype.to_string dtype))
+            in
             let token_first_output =
               match Tensor_shape.dimensions (Ir.Value.logical_shape output) with
               | [ b; q; hidden ]
@@ -3861,7 +3890,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~head_dimension ~mask_batches ~mask_heads
                 ~causal:(Ir.Attention.causal config)
                 ~scale:(Ir.Attention.scale config)
-                ~kv_heads ~token_first_output ~past_length ~token_first_value ()
+                ~kv_heads ~token_first_output ~past_length ~token_first_value
+                ~mask_dtype ()
             in
             let rows = batches * heads * query_length in
             let input_dtype = Ir.Value.dtype query in
@@ -3923,7 +3953,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~head_dimension ~mask_batches ~mask_heads
                 ~causal:(Ir.Attention.causal config)
                 ~scale:(Ir.Attention.scale config)
-                ~kv_heads ~token_first_output ~past_length ~token_first_value ()
+                ~kv_heads ~token_first_output ~past_length ~token_first_value
+                ~mask_dtype:0 ()
             in
             let rows = batches * heads * query_length in
             let input_dtype = Ir.Value.dtype query in
@@ -3960,14 +3991,24 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | [ past_length ] -> Ok past_length
               | _ -> Error "paged Q8 attention slots must have rank one"
             in
-            let* mask_batches, mask_heads, mask_buffer =
+            let* mask_batches, mask_heads, mask_dtype, mask_buffer =
               match mask_values with
-              | [] when query_length = 1 -> Ok (0, 0, slots)
+              | [] when query_length = 1 -> Ok (0, 0, 0, slots)
               | [ mask ] ->
                   (match Tensor_shape.dimensions (Ir.Value.logical_shape mask) with
                   | [ mask_batches; mask_heads; mask_query; _key_length ]
                     when mask_query = query_length || mask_query = 1 ->
-                      Ok (mask_batches, mask_heads, mask)
+                      let* mask_dtype =
+                        match Ir.Value.dtype mask with
+                        | Ir.Dtype.Bool -> Ok 1
+                        | Ir.Dtype.Float16 -> Ok 2
+                        | dtype ->
+                            Error
+                              (Printf.sprintf
+                                 "paged Q8 attention mask dtype %s is unsupported"
+                                 (Ir.Dtype.to_string dtype))
+                      in
+                      Ok (mask_batches, mask_heads, mask_dtype, mask)
                   | _ -> Error "paged Q8 attention mask must have rank four")
               | [] -> Error "maskless paged Q8 attention requires one query token"
               | _ -> assert false
@@ -3986,17 +4027,17 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~group_size:(Ir.Paged_attention_q8.group_size config)
                 ~token_stride:(Ir.Paged_attention_q8.token_stride config)
                 ~scale:(Ir.Paged_attention_q8.scale config)
-                ~query_length ()
+                ~mask_dtype ~query_length ()
             in
             let split8 =
               Sys.getenv_opt "LLMOPT_EXPERIMENTAL_SPLIT8" = Some "1"
-              && query_length = 1 && past_length >= 64
+              && head_dimension = 64 && query_length = 1 && past_length >= 64
             in
             let kernel_name =
               Paged_attention_tactic.kernel_name
                 ~experimental_gqa3_split8:
                   (Sys.getenv_opt "LLMOPT_EXPERIMENTAL_GQA3_SPLIT8" = Some "1")
-                ~split8 ~query_heads ~kv_heads
+                ~split8 ~query_heads ~kv_heads ~head_dimension
             in
             let* entry =
               kernel_entry ~name:kernel_name runtime

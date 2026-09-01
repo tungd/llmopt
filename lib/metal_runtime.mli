@@ -25,6 +25,7 @@ module Paged_attention_tactic : sig
     split8:bool ->
     query_heads:int ->
     kv_heads:int ->
+    head_dimension:int ->
     string
 
   val groups_by_kv_head : string -> bool

@@ -285,12 +285,14 @@ module Gated_activation = struct
 end
 
 module Reduction = struct
-  type operator = Mean | Sum
+  type operator = Mean | Sum | Argmax
   type t = { operator : operator; axes : int list; keepdim : bool }
 
   let to_string reduction =
     let axes = reduction.axes |> List.map string_of_int |> String.concat "," in
-    let operator = match reduction.operator with Mean -> "mean" | Sum -> "sum" in
+    let operator =
+      match reduction.operator with Mean -> "mean" | Sum -> "sum" | Argmax -> "argmax"
+    in
     Printf.sprintf "%s(axes=[%s],keepdim=%b)" operator axes reduction.keepdim
 end
 

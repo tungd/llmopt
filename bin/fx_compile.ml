@@ -139,7 +139,15 @@ let () =
                 prerr_endline ("optimization failed: " ^ message);
                 exit 3
           in
-          let planned = Passes.Optimization.execution_graph optimization in
+          let planned =
+            Passes.Optimization.execution_graph optimization
+            |> Passes.parameterize_token_id_output
+            |> function
+            | Ok graph -> graph
+            | Error message ->
+                prerr_endline ("greedy token-id lowering failed: " ^ message);
+                exit 3
+          in
           let fusion_regions = Passes.Optimization.fusion_regions optimization in
           let scan_regions = Passes.Optimization.scan_regions optimization in
           let graph_plan = Format.asprintf "%a" Ir.Graph.pp planned in

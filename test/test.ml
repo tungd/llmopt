@@ -188,14 +188,15 @@ let legacy_model_program_v2_bytes program =
 
 let legacy_model_program_v3_bytes program =
   let bytes = Model_program.to_bytes program in
-  let final = Bytes.length bytes - 1 in
-  if
-    final < 1
-    || Bytes.get bytes final <> '\000'
-    || Bytes.get bytes (final - 1) <> '\000'
-  then
-    fail "expected an ABI-v5 Model Program without optional entrypoints";
-  let legacy = Bytes.sub bytes 0 (final - 1) in
+  let optional_suffix_bytes = 6 in
+  let length = Bytes.length bytes in
+  if length < optional_suffix_bytes then
+    fail "expected an ABI-v6 Model Program optional-field suffix";
+  for index = length - optional_suffix_bytes to length - 1 do
+    if Bytes.get bytes index <> '\000' then
+      fail "expected an ABI-v6 Model Program without optional extensions"
+  done;
+  let legacy = Bytes.sub bytes 0 (length - optional_suffix_bytes) in
   let version_offset = String.length "LLMOPT-MODEL\000" in
   Bytes.set legacy version_offset '\003';
   Bytes.set legacy (version_offset + 1) '\000';
@@ -904,6 +905,10 @@ let () =
        "kernel void llmopt_attention_f16_simd_h256(")
     "Metal lowering specializes SIMD attention for the captured width";
   expect
+    (contains_substring (Metal.Program.source wide_attention_program)
+       "reinterpret_cast<device const half*>(mask)[mask_index]")
+    "attention interprets additive Float16 masks by element rather than byte";
+  expect
     (Metal.Program.kernels wide_attention_program
     |> List.exists (fun entry ->
            Kernel_abi.Entry.name entry = "llmopt_attention_f16_simd_h256"))
@@ -1243,6 +1248,48 @@ let () =
   expect
     (Metal.Tactic.name q4_m1_tactic = "llmopt_q4_k_linear_f16")
     "Metal tactics retain the generic Q4_K Linear outside the paired-row shape";
+  let gemma_q4_0_prefill_tactic =
+    Metal.Tactic.select_linear ~target:Target_hardware.default ~m:22 ~n:4096
+      ~k:3840 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0)
+      ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Metal.Tactic.name gemma_q4_0_prefill_tactic
+    = "llmopt_q4_0_linear_f16")
+    "Gemma Q4_0 prefill selects the arbitrary-row Linear tactic";
+  let captured_q4_0 = Ir.Graph.create () in
+  let captured_q4_0_input =
+    tensor_input captured_q4_0 ~name:"captured_q4_0_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 2; 3840 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let captured_q4_0_weight =
+    tensor_input captured_q4_0 ~name:"captured_q4_0_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "captured_q4_0_weight" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let captured_q4_0_output =
+    Ir.Graph.fresh_tensor_value captured_q4_0
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 2; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append captured_q4_0
+    ~op:(Ir.Op.Linear { m = 2; n = 4096; k = 3840; bias = false })
+    ~inputs:[ captured_q4_0_input; captured_q4_0_weight ]
+    ~output:(Some captured_q4_0_output);
+  Ir.Graph.add_output captured_q4_0 ~name:"output" captured_q4_0_output;
+  let captured_q4_0_kernels =
+    captured_q4_0 |> Metal.lower |> expect_ok |> Metal.Program.kernels
+    |> List.map Kernel_abi.Entry.name
+  in
+  expect
+    (List.mem "llmopt_q4_0_linear_f16_m2" captured_q4_0_kernels)
+    "captured two-row Q4_0 package retains its specialized tactic";
+  expect
+    (List.mem "llmopt_q4_0_linear_f16" captured_q4_0_kernels)
+    "captured two-row Q4_0 package also retains the arbitrary-row fallback";
   let q8_lm_head_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:49152
       ~k:576 ~input_dtype:Ir.Dtype.Float16
@@ -1349,8 +1396,8 @@ let () =
     (List.mem "llmopt_q4_k_linear_f16_m2_n2_l32" q4_m2_kernel_names)
     "Metal lowering declares the selected full-SIMD two-token/two-column tactic";
   expect
-    (not (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names))
-    "Metal lowering omits the unselected generic Q4_K Linear tactic";
+    (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names)
+    "Metal lowering retains the generic Q4_K Linear tactic for dynamic row specialization";
   expect
     (List.mem "llmopt_q4_k_linear_f16_llama_mv_add" q4_m2_kernel_names
     && List.mem "llmopt_q6_k_linear_f16_llama_mv_add" q4_m2_kernel_names)
@@ -1569,9 +1616,25 @@ let () =
                  Ir.Pointwise.Tensor mean,
                  Ir.Pointwise.Scalar (Ir.Scalar.Float 1e-6) ))))
     ~inputs:[ mean ] ~output:(Some shifted);
+  let gemma_scale =
+    tensor_input mixed_graph ~name:"gemma_scale"
+      ~source:(Ir.Input_source.Tensor_store { key = "gemma_scale" })
+      ~shape:[ 1 ] ~dtype:Ir.Dtype.Float32
+  in
+  let gemma_scaled = mixed_output Ir.Dtype.Float16 [ 2; 3 ] in
+  Ir.Graph.append mixed_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor bf16_linear,
+                 Ir.Pointwise.Tensor gemma_scale ))))
+    ~inputs:[ bf16_linear; gemma_scale ] ~output:(Some gemma_scaled);
   Ir.Graph.add_output mixed_graph ~name:"gelu" gelu_output;
   Ir.Graph.add_output mixed_graph ~name:"bf16_linear" bf16_linear;
   Ir.Graph.add_output mixed_graph ~name:"shifted" shifted;
+  Ir.Graph.add_output mixed_graph ~name:"gemma_scaled" gemma_scaled;
   ignore (Serving_schedule.of_graph mixed_graph |> expect_ok);
   let mixed_source = Metal.lower mixed_graph |> expect_ok |> Metal.Program.source in
   [ "kernel void llmopt_linear_f16_f32";
@@ -1581,6 +1644,7 @@ let () =
     "tanh(clamp(";
     "kernel void llmopt_pow_f32";
     "kernel void llmopt_add_f32";
+    "kernel void llmopt_mul_f16_f32_f16";
     "kernel void llmopt_mean_f32" ]
   |> List.iter (fun declaration ->
          expect (contains_substring mixed_source declaration)
@@ -1713,23 +1777,33 @@ let () =
   expect
     (Metal_runtime.Paged_attention_tactic.kernel_name
        ~experimental_gqa3_split8:true ~split8:true ~query_heads:9 ~kv_heads:3
+       ~head_dimension:64
     = "llmopt_attention_q8_paged_simd_h64_gqa3_split8")
     "GQA3 split8 selects the shared-KV experimental kernel";
   expect
     (Metal_runtime.Paged_attention_tactic.kernel_name
        ~experimental_gqa3_split8:false ~split8:true ~query_heads:9 ~kv_heads:3
+       ~head_dimension:64
     = "llmopt_attention_q8_paged_simd_h64_split8")
     "GQA3 split8 retains the per-query-head kernel when disabled";
   expect
     (Metal_runtime.Paged_attention_tactic.kernel_name
        ~experimental_gqa3_split8:true ~split8:false ~query_heads:9 ~kv_heads:3
+       ~head_dimension:64
     = "llmopt_attention_q8_paged_simd_h64_gqa3")
     "short-context GQA3 retains its non-split kernel";
   expect
     (Metal_runtime.Paged_attention_tactic.kernel_name
        ~experimental_gqa3_split8:true ~split8:true ~query_heads:8 ~kv_heads:4
+       ~head_dimension:64
     = "llmopt_attention_q8_paged_simd_h64_split8")
     "non-GQA3 split8 retains its per-query-head kernel";
+  expect
+    (Metal_runtime.Paged_attention_tactic.kernel_name
+       ~experimental_gqa3_split8:true ~split8:true ~query_heads:16 ~kv_heads:8
+       ~head_dimension:256
+    = "llmopt_attention_q8_paged_simd_generic")
+    "wide-head paged attention selects the generic kernel";
 
   let graph = Ir.Graph.create () in
   let hidden =
@@ -1810,6 +1884,47 @@ let () =
              = Kernel_abi.Operation.W4a16_lm_head_argmax
            && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Int32))
     "W4A16 LM-head kernel has an Int32 ABI";
+
+  let generic_greedy = Ir.Graph.create () in
+  let generic_logits =
+    tensor_input generic_greedy ~name:"generic_logits"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 2; 262144 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.add_output generic_greedy ~name:"token_id" generic_logits;
+  let generic_greedy =
+    Passes.parameterize_token_id_output generic_greedy |> expect_ok
+  in
+  expect
+    (match Ir.Graph.outputs generic_greedy with
+    | [ "token_id", output ] ->
+        Ir.Value.dtype output = Ir.Dtype.Int32
+        && Tensor_shape.dimensions (Ir.Value.logical_shape output) = [ 1; 2 ]
+    | _ -> false)
+    "generic greedy lowering parameterizes token_id as Int32";
+  expect
+    (Ir.Graph.nodes generic_greedy
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_output node with
+           | ( Ir.Op.Primitive
+                 (Ir.Primitive.Reduce
+                    { operator = Ir.Reduction.Argmax;
+                      axes = [ 2 ];
+                      keepdim = false }),
+               Some output ) ->
+               Ir.Value.dtype output = Ir.Dtype.Int32
+           | _ -> false))
+    "generic greedy lowering inserts an on-device vocabulary argmax";
+  let generic_schedule =
+    generic_greedy |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  ignore (expect_ok (Serving_memory_plan.create generic_schedule));
+  let generic_program = expect_ok (Metal.lower generic_greedy) in
+  expect
+    (contains_substring (Metal.Program.source generic_program)
+       "kernel void llmopt_argmax_f16")
+    "generic greedy Metal lowering emits the F16 to Int32 argmax kernel";
 
   let ffn = Ir.Graph.create () in
   let activation =
@@ -3006,6 +3121,14 @@ let () =
     (contains_substring paged_attention_source
        "kernel void llmopt_attention_q8_paged_simd_h64_gqa3_split8")
     "cache program includes the GQA3 split8 attention candidate";
+  expect
+    (contains_substring paged_attention_source
+       "kernel void llmopt_attention_q8_paged_simd_generic")
+    "cache program includes generic wide-head paged attention";
+  expect
+    (contains_substring paged_attention_source
+       "llmopt_q8_paged_mask_active")
+    "paged attention supports bool and additive Float16 masks";
   let decode_graph = Ir.Graph.create () in
   let decode_tensor name shape dtype =
     tensor_input decode_graph ~name ~source:Ir.Input_source.Runtime ~shape ~dtype
@@ -3013,7 +3136,9 @@ let () =
   let decode_query = decode_tensor "decode_query" [ 1; 1; 1; 64 ] Ir.Dtype.Float16 in
   let decode_key = decode_tensor "decode_key" [ 1; 1; 1; 64 ] Ir.Dtype.Float16 in
   let decode_value = decode_tensor "decode_value" [ 1; 1; 1; 64 ] Ir.Dtype.Float16 in
-  let decode_mask = decode_tensor "decode_mask" [ 1; 1; 1; 1 ] Ir.Dtype.Bool in
+  let decode_mask =
+    decode_tensor "decode_mask" [ 1; 1; 1; 1 ] Ir.Dtype.Float16
+  in
   let decode_output =
     Ir.Graph.fresh_tensor_value decode_graph
       ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 1; 64 ])
@@ -3032,6 +3157,22 @@ let () =
     |> expect_ok
   in
   Unix.putenv "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE" "";
+  let additive_mask_decode =
+    Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past:8
+      ~past_tokens:16 ~cache:suffix_cache decode_base
+    |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands additive_mask_decode
+    |> List.exists (fun command ->
+           match
+             Serving_schedule.Command.op command,
+             Serving_schedule.Command.inputs command
+           with
+           | Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 _),
+             [ _; _; _; _; _; mask ] -> Ir.Value.dtype mask = Ir.Dtype.Float16
+           | _ -> false))
+    "paged Q8 decode accepts an additive Float16 attention mask";
   expect
     (Serving_schedule.runtime_inputs maskless_decode
     |> List.for_all (fun (name, _) -> name <> "decode_mask"))
@@ -3266,6 +3407,17 @@ let () =
       (Model_program.Entrypoint.Head.create ~logits:"logits"
          ~token_id:"token_id" ())
   in
+  expect
+    (Model_program.Entrypoint.Head.token_id_shape_matches ~tokens:2 [ 2 ])
+    "token_id contract accepts the fused flat token shape";
+  expect
+    (Model_program.Entrypoint.Head.token_id_shape_matches ~tokens:2 [ 1; 2 ])
+    "token_id contract accepts the generic batch-preserving token shape";
+  expect
+    (not
+       (Model_program.Entrypoint.Head.token_id_shape_matches ~tokens:2
+          [ 2; 1 ]))
+    "token_id contract rejects a non-semantic equal-element shape";
   let prefill_entry =
     expect_ok
       (Model_program.Entrypoint.create ~kind:Model_program.Entrypoint.Prefill

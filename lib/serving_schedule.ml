@@ -591,9 +591,18 @@ let validate_command seen_values command =
                 ~axes:reduction.Ir.Reduction.axes ~keepdim:reduction.keepdim
               |> Result.map_error Tensor_shape.error_to_string
             in
+            let dtype_matches =
+              match reduction.Ir.Reduction.operator with
+              | Ir.Reduction.Argmax ->
+                  (Ir.Value.dtype input = Ir.Dtype.Float16
+                   || Ir.Value.dtype input = Ir.Dtype.Float32)
+                  && Ir.Value.dtype output = Ir.Dtype.Int32
+              | Ir.Reduction.Mean | Ir.Reduction.Sum ->
+                  Ir.Value.dtype input = Ir.Value.dtype output
+            in
             if
               Tensor_shape.equal inferred (Ir.Value.logical_shape output)
-              && Ir.Value.dtype input = Ir.Value.dtype output
+              && dtype_matches
             then Ok ()
             else
               Error
@@ -913,6 +922,7 @@ let validate_command seen_values command =
                   && query_heads mod kv_heads = 0
                   && head_dim = key_dim && head_dim = value_dim
                   && head_dim mod group_size = 0
+                  && head_dim <= 512
                   && past_tokens > 0
                   && (mask_batches = 1 || mask_batches = batches)
                   && (mask_heads = 1 || mask_heads = query_heads)
@@ -923,9 +933,7 @@ let validate_command seen_values command =
               | ( [ batches; query_heads; 1; head_dim ],
                   [ key_batches; kv_heads; 1; key_dim ],
                   [ value_batches; value_heads; 1; value_dim ],
-                  [ pool_bytes ],
-                  [ past_tokens ],
-                  None ) ->
+                  [ pool_bytes ], [ past_tokens ], None ) ->
                   let group_size = Ir.Paged_attention_q8.group_size config in
                   let token_elements =
                     Ir.Paged_attention_q8.token_elements config
@@ -937,7 +945,8 @@ let validate_command seen_values command =
                   && head_dim = Ir.Paged_attention_q8.head_dim config
                   && query_heads mod kv_heads = 0
                   && head_dim = key_dim && head_dim = value_dim
-                  && head_dim mod group_size = 0 && past_tokens > 0
+                  && head_dim mod group_size = 0 && head_dim <= 512
+                  && past_tokens > 0
                   && pool_bytes mod Ir.Paged_attention_q8.token_stride config = 0
                   && Ir.Paged_attention_q8.token_stride config
                      = token_elements + (2 * token_groups)
@@ -946,7 +955,9 @@ let validate_command seen_values command =
             let mask_dtype_matches =
               match mask_values with
               | [] -> true
-              | [ mask ] -> Ir.Value.dtype mask = Ir.Dtype.Bool
+              | [ mask ] ->
+                  Ir.Value.dtype mask = Ir.Dtype.Bool
+                  || Ir.Value.dtype mask = Ir.Dtype.Float16
               | _ -> false
             in
             if
@@ -2960,6 +2971,11 @@ let write_primitive writer = function
       Binary.Writer.u16 writer (List.length axes);
       List.iter (Binary.Writer.u16 writer) axes;
       Binary.Writer.bool writer keepdim
+  | Ir.Primitive.Reduce { operator = Ir.Reduction.Argmax; axes; keepdim } ->
+      Binary.Writer.u8 writer 25;
+      Binary.Writer.u16 writer (List.length axes);
+      List.iter (Binary.Writer.u16 writer) axes;
+      Binary.Writer.bool writer keepdim
   | Ir.Primitive.Movement movement ->
       Binary.Writer.u8 writer 3;
       (match movement with
@@ -3203,6 +3219,19 @@ let read_primitive values reader =
       let* offset = Binary.Reader.u32 reader in
       Ir.L2_norm_slice.create ~epsilon ~offset
       |> Result.map (fun config -> Ir.Primitive.L2_norm_slice config)
+  | 25 ->
+      let* count = Binary.Reader.u16 reader in
+      let rec axes acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* axis = Binary.Reader.u16 reader in
+          axes (axis :: acc) (remaining - 1)
+      in
+      let* axes = axes [] count in
+      let* keepdim = Binary.Reader.bool reader in
+      Ok
+        (Ir.Primitive.Reduce
+           { Ir.Reduction.operator = Argmax; axes; keepdim })
   | _ -> Error (Printf.sprintf "unknown primitive tag: %d" tag)
 
 let write_op writer = function

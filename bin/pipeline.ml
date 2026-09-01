@@ -89,7 +89,10 @@ let compile_single_graph ~target ~weights_path ~graph_path ~output_dir ~greedy =
     if greedy then rename_logits_to_token_id graph else Ok graph
   in
   let* optimization = Passes.optimize ~target graph in
-  let planned = Passes.Optimization.execution_graph optimization in
+  let* planned =
+    Passes.Optimization.execution_graph optimization
+    |> Passes.parameterize_token_id_output
+  in
   let fusion_regions = Passes.Optimization.fusion_regions optimization in
   let graph_plan = Format.asprintf "%a" Ir.Graph.pp planned in
   let plan =
@@ -156,6 +159,11 @@ type options = {
   message_start_token_id : int option;
   message_end_token_id : int option;
   minimum_prefill_tokens : int;
+  input_ids_name : string option;
+  position_ids_input : string option;
+  full_attention_mask_input : string option;
+  sliding_attention_mask_input : string option;
+  sliding_window : int option;
   attention_states : (string * string * string * string) list;
   recurrent_states : (string * string) list;
 }
@@ -171,6 +179,9 @@ let usage () =
      [--verification <graph.llmopt> --verification-captured-past <count> \
       --verification-captured-query <count>] \
      [--minimum-prefill-tokens <count>] \
+     [--input-ids <name>] [--position-ids-input <name>] \
+     [--full-attention-mask-input <name>] \
+     [--sliding-attention-mask-input <name>] [--sliding-window <count>] \
      [--attention-state <key-in>:<value-in>:<key-out>:<value-out>]... \
      [--recurrent-state <state-in>:<state-out>]...";
   exit 64
@@ -240,6 +251,16 @@ let parse_arguments () =
         loop { opts with message_end_token_id = Some (nonnegative v) } rest
     | "--minimum-prefill-tokens" :: v :: rest ->
         loop { opts with minimum_prefill_tokens = positive v } rest
+    | "--input-ids" :: v :: rest ->
+        loop { opts with input_ids_name = Some v } rest
+    | "--position-ids-input" :: v :: rest ->
+        loop { opts with position_ids_input = Some v } rest
+    | "--full-attention-mask-input" :: v :: rest ->
+        loop { opts with full_attention_mask_input = Some v } rest
+    | "--sliding-attention-mask-input" :: v :: rest ->
+        loop { opts with sliding_attention_mask_input = Some v } rest
+    | "--sliding-window" :: v :: rest ->
+        loop { opts with sliding_window = Some (positive v) } rest
     | "--attention-state" :: v :: rest ->
         loop
           { opts with
@@ -277,6 +298,11 @@ let parse_arguments () =
             message_start_token_id = None;
             message_end_token_id = None;
             minimum_prefill_tokens = 1;
+            input_ids_name = None;
+            position_ids_input = None;
+            full_attention_mask_input = None;
+            sliding_attention_mask_input = None;
+            sliding_window = None;
             attention_states = [];
             recurrent_states = [];
           }
@@ -376,7 +402,7 @@ let run () =
   (* 1. Copy tokenizer and link weights *)
   let target_tok = Filename.concat opts.output_dir "tokenizer.llmopt" in
   Printf.printf "[llmopt-pipeline] Packaging tokenizer...\n%!";
-  copy_file opts.tokenizer target_tok;
+  link_or_copy opts.tokenizer target_tok;
   link_or_copy opts.weights (Filename.concat opts.output_dir "weights.llmopt");
 
   (* 2. Compile prefill package *)
@@ -420,7 +446,11 @@ let run () =
   let* decode_art = Model_program.Artifact.create "decode/package.llmopt" in
   let* tok_art = Model_program.Artifact.create "tokenizer.llmopt" in
   let* program =
-    Model_program_linker.of_packages ~profile ~attentions ~recurrents
+    Model_program_linker.of_packages ?input_ids_name:opts.input_ids_name
+      ?position_ids_input:opts.position_ids_input
+      ?full_attention_mask_input:opts.full_attention_mask_input
+      ?sliding_attention_mask_input:opts.sliding_attention_mask_input
+      ?sliding_window:opts.sliding_window ~profile ~attentions ~recurrents
       ~tokenizer:tok_art
       ~prefill_path:prefill_art
       ~prefill:prefill_pkg

@@ -1848,7 +1848,19 @@ struct Q8PagedAttentionParams {
   uint token_stride;
   float scale;
   uint query_length;
+  uint mask_dtype;
 };
+
+inline bool llmopt_q8_paged_mask_active(
+    device const uchar* mask,
+    constant Q8PagedAttentionParams& params,
+    uint index) {
+  if (mask == nullptr || params.mask_batches == 0 || params.mask_dtype == 0)
+    return true;
+  if (params.mask_dtype == 2)
+    return float(reinterpret_cast<device const half*>(mask)[index]) >= 0.0f;
+  return mask[index] != 0;
+}
 
 inline float llmopt_q8_paged_value(
     device const uchar* pool,
@@ -1905,14 +1917,14 @@ kernel void llmopt_attention_q8_paged_simd_h64(
   float result_low = 0.0f;
   float result_high = 0.0f;
   for (uint key_position = 0; key_position < key_length; ++key_position) {
-    if (q_len > 1 && mask != nullptr && params.mask_batches > 0) {
+    if (mask != nullptr && params.mask_batches > 0) {
       const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
       const uint mask_head = params.mask_heads == 1 ? 0 : head;
       const uint mask_key_stride = params.past_length + q_len;
       const uint mask_index =
           ((mask_batch * params.mask_heads + mask_head) * q_len + q_pos)
               * mask_key_stride + key_position;
-      if (mask[mask_index] == 0) continue;
+      if (!llmopt_q8_paged_mask_active(mask, params, mask_index)) continue;
     }
     float partial_score = 0.0f;
     for (uint dimension = lane; dimension < params.head_dim;
@@ -1955,6 +1967,98 @@ kernel void llmopt_attention_q8_paged_simd_h64(
   if (high_dimension < params.head_dim)
     output[output_base + high_dimension] = half(
         denominator == 0.0f ? 0.0f : result_high / denominator);
+}
+
+#define Q8_PAGED_ATTENTION_MAX_FRAGMENTS 16
+
+kernel void llmopt_attention_q8_paged_simd_generic(
+    device const half* query [[buffer(0)]],
+    device const half* current_key [[buffer(1)]],
+    device const half* current_value [[buffer(2)]],
+    device const uchar* pool [[buffer(3)]],
+    device const uint* slots [[buffer(4)]],
+    device const uchar* mask [[buffer(5)]],
+    device half* output [[buffer(6)]],
+    constant Q8PagedAttentionParams& params [[buffer(7)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x
+      * Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP + simdgroup;
+  const uint q_len = params.query_length == 0 ? 1 : params.query_length;
+  const uint rows = params.batches * params.query_heads * q_len;
+  if (row >= rows) return;
+  const uint q_pos = row % q_len;
+  const uint head = (row / q_len) % params.query_heads;
+  const uint batch = row / (q_len * params.query_heads);
+  const uint heads_per_kv = params.query_heads / params.kv_heads;
+  const uint kv_head = head / heads_per_kv;
+  const uint query_base =
+      ((batch * params.query_heads + head) * q_len + q_pos) * params.head_dim;
+  const uint current_base =
+      (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
+  const uint key_length = params.past_length + q_pos + 1;
+  const uint fragments =
+      (params.head_dim + Q8_PAGED_ATTENTION_SIMD_WIDTH - 1u)
+      / Q8_PAGED_ATTENTION_SIMD_WIDTH;
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+  float results[Q8_PAGED_ATTENTION_MAX_FRAGMENTS];
+  for (uint component = 0; component < Q8_PAGED_ATTENTION_MAX_FRAGMENTS;
+       ++component)
+    results[component] = 0.0f;
+  for (uint key_position = 0; key_position < key_length; ++key_position) {
+    if (mask != nullptr && params.mask_batches > 0) {
+      const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
+      const uint mask_head = params.mask_heads == 1 ? 0 : head;
+      const uint mask_key_stride = params.past_length + q_len;
+      const uint mask_index =
+          ((mask_batch * params.mask_heads + mask_head) * q_len + q_pos)
+              * mask_key_stride + key_position;
+      if (!llmopt_q8_paged_mask_active(mask, params, mask_index)) continue;
+    }
+    float partial_score = 0.0f;
+    for (uint dimension = lane; dimension < params.head_dim;
+         dimension += Q8_PAGED_ATTENTION_SIMD_WIDTH) {
+      const float key_value = key_position < params.past_length
+          ? llmopt_q8_paged_value(pool, slots, params, key_position,
+                params.key_offset, kv_head, dimension)
+          : float(current_key[current_base
+                + (key_position - params.past_length) * params.head_dim
+                + dimension]);
+      partial_score += float(query[query_base + dimension]) * key_value;
+    }
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_maximum = max(maximum, score);
+    const float previous_scale = denominator == 0.0f ? 0.0f
+        : exp(maximum - next_maximum);
+    const float current_scale = exp(score - next_maximum);
+    for (uint component = 0; component < fragments; ++component) {
+      const uint dimension =
+          lane + component * Q8_PAGED_ATTENTION_SIMD_WIDTH;
+      if (dimension < params.head_dim) {
+        const float value = key_position < params.past_length
+            ? llmopt_q8_paged_value(pool, slots, params, key_position,
+                  params.value_offset, kv_head, dimension)
+            : float(current_value[current_base
+                  + (key_position - params.past_length) * params.head_dim
+                  + dimension]);
+        results[component] = results[component] * previous_scale
+            + current_scale * value;
+      }
+    }
+    denominator = denominator * previous_scale + current_scale;
+    maximum = next_maximum;
+  }
+  const uint output_base =
+      ((batch * q_len + q_pos) * params.query_heads + head) * params.head_dim;
+  for (uint component = 0; component < fragments; ++component) {
+    const uint dimension =
+        lane + component * Q8_PAGED_ATTENTION_SIMD_WIDTH;
+    if (dimension < params.head_dim)
+      output[output_base + dimension] = half(
+          denominator == 0.0f ? 0.0f : results[component] / denominator);
+  }
 }
 
 kernel void llmopt_attention_q8_paged_simd_h64_gqa3(
@@ -2005,18 +2109,18 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3(
     bool active0 = true;
     bool active1 = true;
     bool active2 = true;
-    if (q_len > 1 && mask != nullptr && params.mask_batches > 0) {
+    if (mask != nullptr && params.mask_batches > 0) {
       const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
       const uint mask_key_stride = params.past_length + q_len;
       const uint mask_base =
           (mask_batch * params.mask_heads * q_len + q_pos)
               * mask_key_stride + key_position;
-      active0 = mask[mask_base
-          + (params.mask_heads == 1 ? 0 : head0 * q_len * mask_key_stride)] != 0;
-      active1 = mask[mask_base
-          + (params.mask_heads == 1 ? 0 : head1 * q_len * mask_key_stride)] != 0;
-      active2 = mask[mask_base
-          + (params.mask_heads == 1 ? 0 : head2 * q_len * mask_key_stride)] != 0;
+      active0 = llmopt_q8_paged_mask_active(mask, params, mask_base
+          + (params.mask_heads == 1 ? 0 : head0 * q_len * mask_key_stride));
+      active1 = llmopt_q8_paged_mask_active(mask, params, mask_base
+          + (params.mask_heads == 1 ? 0 : head1 * q_len * mask_key_stride));
+      active2 = llmopt_q8_paged_mask_active(mask, params, mask_base
+          + (params.mask_heads == 1 ? 0 : head2 * q_len * mask_key_stride));
       if (!active0 && !active1 && !active2) continue;
     }
     float partial_score0 = 0.0f;
@@ -2118,6 +2222,15 @@ kernel void llmopt_attention_q8_paged_simd_h64_split8(
   const uint chunk_stop = min(chunk_start + chunk_length, key_length);
   for (uint key_position = chunk_start; key_position < chunk_stop;
        ++key_position) {
+    if (mask != nullptr && params.mask_batches > 0) {
+      const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
+      const uint mask_head = params.mask_heads == 1 ? 0 : head;
+      const uint mask_key_stride = params.past_length + q_len;
+      const uint mask_index =
+          ((mask_batch * params.mask_heads + mask_head) * q_len + q_pos)
+              * mask_key_stride + key_position;
+      if (!llmopt_q8_paged_mask_active(mask, params, mask_index)) continue;
+    }
     float partial_score = 0.0f;
     for (uint dimension = lane; dimension < params.head_dim;
          dimension += Q8_PAGED_ATTENTION_SIMD_WIDTH) {
@@ -2239,6 +2352,23 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3_split8(
   const uint chunk_stop = min(chunk_start + chunk_length, key_length);
   for (uint key_position = chunk_start; key_position < chunk_stop;
        ++key_position) {
+    bool active0 = true;
+    bool active1 = true;
+    bool active2 = true;
+    if (mask != nullptr && params.mask_batches > 0) {
+      const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
+      const uint mask_key_stride = params.past_length + q_len;
+      const uint mask_base =
+          (mask_batch * params.mask_heads * q_len + q_pos)
+              * mask_key_stride + key_position;
+      active0 = llmopt_q8_paged_mask_active(mask, params, mask_base
+          + (params.mask_heads == 1 ? 0 : head0 * q_len * mask_key_stride));
+      active1 = llmopt_q8_paged_mask_active(mask, params, mask_base
+          + (params.mask_heads == 1 ? 0 : (head0 + 1) * q_len * mask_key_stride));
+      active2 = llmopt_q8_paged_mask_active(mask, params, mask_base
+          + (params.mask_heads == 1 ? 0 : (head0 + 2) * q_len * mask_key_stride));
+      if (!active0 && !active1 && !active2) continue;
+    }
     float partial_score0 = 0.0f;
     float partial_score1 = 0.0f;
     float partial_score2 = 0.0f;
@@ -2270,7 +2400,7 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3_split8(
               + (key_position - params.past_length) * params.head_dim
               + high_dimension]);
 #define LLMOPT_GQA3_SPLIT_UPDATE(N) \
-    { \
+    if (active##N) { \
       const float next_maximum = max(maximum##N, score##N); \
       const float previous_scale = denominator##N == 0.0f ? 0.0f \
           : exp(maximum##N - next_maximum); \
@@ -2365,6 +2495,10 @@ let cache_entries =
       Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_attention_q8_paged_simd_h64"
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_attention_q8_paged_simd_generic"
       ~operation:Kernel_abi.Operation.Attention
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -7154,7 +7288,7 @@ let attention_source =
   ^ "  uint batches; uint heads; uint query_length; uint key_length;\n"
   ^ "  uint head_dimension; uint mask_batches; uint mask_heads; uint causal;\n"
   ^ "  float scale; uint kv_heads; uint token_first_output;\n"
-  ^ "  uint past_length; uint token_first_value;\n"
+  ^ "  uint past_length; uint token_first_value; uint mask_dtype;\n"
   ^ "};\n\n"
   ^ "inline bool llmopt_attention_allowed(\n"
   ^ "    device const uchar* mask, constant AttentionParams& params,\n"
@@ -7170,6 +7304,8 @@ let attention_source =
   ^ "  const uint mask_index = (((mask_batch * params.mask_heads + mask_head)\n"
   ^ "      * params.query_length + query_position) * params.key_length)\n"
   ^ "      + key_position;\n"
+  ^ "  if (params.mask_dtype == 2)\n"
+  ^ "    return float(reinterpret_cast<device const half*>(mask)[mask_index]) >= 0.0f;\n"
   ^ "  return mask[mask_index] != 0;\n"
   ^ "}\n\n"
   ^ "inline float llmopt_attention_score(\n"
@@ -8260,6 +8396,30 @@ let pointwise_mixed_mul_f16_f32 =
   ^ "  output[gid] = float(left[left_offset]) * right[right_offset];\n"
   ^ "}\n\n"
 
+let pointwise_mixed_mul_f16_f32_f16 =
+  "kernel void llmopt_mul_f16_f32_f16(\n"
+  ^ "    device const half* left [[buffer(0)]],\n"
+  ^ "    device const float* right [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant PointwiseParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.count) return;\n"
+  ^ "  const uint left_offset = llmopt_pointwise_offset(gid, params, true);\n"
+  ^ "  const uint right_offset = llmopt_pointwise_offset(gid, params, false);\n"
+  ^ "  output[gid] = half(float(left[left_offset]) * right[right_offset]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_mul_f32_f16_f16(\n"
+  ^ "    device const float* left [[buffer(0)]],\n"
+  ^ "    device const half* right [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant PointwiseParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]]) {\n"
+  ^ "  if (gid >= params.count) return;\n"
+  ^ "  const uint left_offset = llmopt_pointwise_offset(gid, params, true);\n"
+  ^ "  const uint right_offset = llmopt_pointwise_offset(gid, params, false);\n"
+  ^ "  output[gid] = half(left[left_offset] * float(right[right_offset]));\n"
+  ^ "}\n\n"
+
 let pointwise_source =
   "\nstruct PointwiseParams {\n"
   ^ "  uint count; uint rank; uint left_scalar; uint right_scalar;\n"
@@ -8320,6 +8480,7 @@ let pointwise_source =
       ~expression:
         "half(1.0f / (1.0f + exp(-float(left_value)))) * right_value"
   ^ pointwise_mixed_mul_f16_f32
+  ^ pointwise_mixed_mul_f16_f32_f16
   ^ pointwise_binary_kernel ~name:"llmopt_le_i64" ~input_type:"long"
       ~output_type:"uchar" ~scalar_field:"i64" ~scalar_cast:"long"
       ~expression:"left_value <= right_value ? 1 : 0"
@@ -8391,6 +8552,8 @@ let pointwise_entries =
     entry "llmopt_gelu_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_sigmoid_mul_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
     entry "llmopt_mul_f16_f32" Ir.Dtype.Float16 Ir.Dtype.Float32;
+    entry "llmopt_mul_f16_f32_f16" Ir.Dtype.Float16 Ir.Dtype.Float16;
+    entry "llmopt_mul_f32_f16_f16" Ir.Dtype.Float32 Ir.Dtype.Float16;
     entry "llmopt_le_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
     entry "llmopt_gt_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
     entry "llmopt_eq_i64" Ir.Dtype.Int64 Ir.Dtype.Bool;
@@ -8636,6 +8799,68 @@ let reduction_source =
   ^ "  }\n"
   ^ "  output[gid] = accumulator / float(params.width);\n"
   ^ "}\n\n"
+  ^ "kernel void llmopt_argmax_f16(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device int* output [[buffer(1)]],\n"
+  ^ "    constant ReductionParams& params [[buffer(2)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint group [[threadgroup_position_in_grid]]) {\n"
+  ^ "  const uint count = params.outer * params.inner;\n"
+  ^ "  if (group >= count) return;\n"
+  ^ "  const uint outer_index = group / params.inner;\n"
+  ^ "  const uint inner_index = group % params.inner;\n"
+  ^ "  float best = -3.402823466e+38f;\n"
+  ^ "  uint best_index = 0;\n"
+  ^ "  for (uint axis = tid; axis < params.width; axis += 256) {\n"
+  ^ "    const uint offset = ((outer_index * params.width + axis) * params.inner) + inner_index;\n"
+  ^ "    const float candidate = float(input[offset]);\n"
+  ^ "    if (candidate > best || (candidate == best && axis < best_index)) { best = candidate; best_index = axis; }\n"
+  ^ "  }\n"
+  ^ "  threadgroup float values[256];\n"
+  ^ "  threadgroup uint indices[256];\n"
+  ^ "  values[tid] = best; indices[tid] = best_index;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint width = 128; width > 0; width >>= 1) {\n"
+  ^ "    if (tid < width) {\n"
+  ^ "      const float candidate = values[tid + width];\n"
+  ^ "      const uint index = indices[tid + width];\n"
+  ^ "      if (candidate > values[tid] || (candidate == values[tid] && index < indices[tid])) { values[tid] = candidate; indices[tid] = index; }\n"
+  ^ "    }\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  }\n"
+  ^ "  if (tid == 0) output[group] = int(indices[0]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_argmax_f32(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device int* output [[buffer(1)]],\n"
+  ^ "    constant ReductionParams& params [[buffer(2)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint group [[threadgroup_position_in_grid]]) {\n"
+  ^ "  const uint count = params.outer * params.inner;\n"
+  ^ "  if (group >= count) return;\n"
+  ^ "  const uint outer_index = group / params.inner;\n"
+  ^ "  const uint inner_index = group % params.inner;\n"
+  ^ "  float best = -3.402823466e+38f;\n"
+  ^ "  uint best_index = 0;\n"
+  ^ "  for (uint axis = tid; axis < params.width; axis += 256) {\n"
+  ^ "    const uint offset = ((outer_index * params.width + axis) * params.inner) + inner_index;\n"
+  ^ "    const float candidate = input[offset];\n"
+  ^ "    if (candidate > best || (candidate == best && axis < best_index)) { best = candidate; best_index = axis; }\n"
+  ^ "  }\n"
+  ^ "  threadgroup float values[256];\n"
+  ^ "  threadgroup uint indices[256];\n"
+  ^ "  values[tid] = best; indices[tid] = best_index;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint width = 128; width > 0; width >>= 1) {\n"
+  ^ "    if (tid < width) {\n"
+  ^ "      const float candidate = values[tid + width];\n"
+  ^ "      const uint index = indices[tid + width];\n"
+  ^ "      if (candidate > values[tid] || (candidate == values[tid] && index < indices[tid])) { values[tid] = candidate; indices[tid] = index; }\n"
+  ^ "    }\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  }\n"
+  ^ "  if (tid == 0) output[group] = int(indices[0]);\n"
+  ^ "}\n\n"
 
 let reduction_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -8646,7 +8871,13 @@ let reduction_entries =
       ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_mean_f32" ~operation:Kernel_abi.Operation.Reduction
-      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_argmax_f16" ~operation:Kernel_abi.Operation.Reduction
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Int32;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_argmax_f32" ~operation:Kernel_abi.Operation.Reduction
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Int32 ]
 
 let update_slice_kernel_source ~name ~value_type =
   "kernel void " ^ name ^ "(\n"
@@ -9154,19 +9385,46 @@ let quant_linear_tactics ~target graph =
              match Ir.Linear_storage.classify ~has_bias:bias ~weight ~parameters with
              | Error _ -> None
              | Ok storage ->
-                 Tactic.select_linear ~target ~m ~n ~k
-                   ~input_dtype:(Ir.Value.dtype input) ~storage:storage.layout
-                   ~output_dtype:(Ir.Value.dtype output))
+                 let quant =
+                   match Ir.Value.dtype weight with
+                   | Ir.Dtype.Quant quant -> Some quant
+                   | _ -> None
+                 in
+                 (match
+                    quant,
+                    Tactic.select_linear ~target ~m ~n ~k
+                      ~input_dtype:(Ir.Value.dtype input)
+                      ~storage:storage.layout
+                      ~output_dtype:(Ir.Value.dtype output)
+                  with
+                 | Some quant, Some tactic -> Some (quant, tactic)
+                 | _ -> None))
          | _ -> None)
-  |> List.sort_uniq (fun left right ->
-         String.compare (Tactic.name left) (Tactic.name right))
+  |> List.sort_uniq (fun (left_quant, left) (right_quant, right) ->
+         match compare left_quant right_quant with
+         | 0 -> String.compare (Tactic.name left) (Tactic.name right)
+         | order -> order)
 
 let quant_tactic_entries tactics =
-  let selected_names = List.map Tactic.name tactics in
+  let selected_names = List.map (fun (_, tactic) -> Tactic.name tactic) tactics in
+  let generic_name = function
+    | Ir.Dtype.Q8_0 -> "llmopt_q8_0_linear_f16"
+    | Ir.Dtype.Q4_K -> "llmopt_q4_k_linear_f16"
+    | Ir.Dtype.Q5_K -> "llmopt_q5_k_linear_f16"
+    | Ir.Dtype.Q6_K -> "llmopt_q6_k_linear_f16"
+    | Ir.Dtype.Q5_0 -> "llmopt_q5_0_linear_f16"
+    | Ir.Dtype.Q4_0 -> "llmopt_q4_0_linear_f16"
+    | Ir.Dtype.IQ4_XS -> "llmopt_iq4_xs_linear_f16"
+  in
+  let generic_names =
+    tactics |> List.map (fun (quant, _) -> generic_name quant)
+    |> List.sort_uniq String.compare
+  in
   block32_entries @ kquant_entries
   |> List.filter (fun entry ->
          Kernel_abi.Entry.operation entry <> Kernel_abi.Operation.Linear
          || List.mem (Kernel_abi.Entry.name entry) selected_names
+         || List.mem (Kernel_abi.Entry.name entry) generic_names
          || List.mem (Kernel_abi.Entry.name entry)
               [ "llmopt_q5_0_linear_f16_llama_mv_add";
                 "llmopt_q8_0_linear_f16_llama_mv";

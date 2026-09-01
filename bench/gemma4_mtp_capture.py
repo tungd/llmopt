@@ -185,6 +185,70 @@ class FunctionalCache:
         return tuple(item for pair in zip(self.keys, self.values) for item in pair)
 
 
+class EmptyFunctionalCache:
+    def __init__(self, layers: int) -> None:
+        self.keys = [None] * layers
+        self.values = [None] * layers
+
+    def update(
+        self, key_states: Any, value_states: Any, layer_idx: int, *_: Any, **__: Any
+    ) -> tuple[Any, Any]:
+        self.keys[layer_idx] = key_states
+        self.values[layer_idx] = value_states
+        return key_states, value_states
+
+    def state(self) -> tuple[Any, ...]:
+        if any(item is None for item in self.keys + self.values):
+            raise RuntimeError("prefill did not populate every cache layer")
+        return tuple(item for pair in zip(self.keys, self.values) for item in pair)
+
+
+def _target_prefill_wrapper_type() -> type[Any]:
+    import torch
+
+    class FunctionalTargetPrefill(torch.nn.Module):
+        def __init__(self, model: Any):
+            super().__init__()
+            self.model = model
+
+        def forward(
+            self,
+            input_ids: Any,
+            position_ids: Any,
+            full_attention_mask: Any,
+            sliding_attention_mask: Any,
+        ) -> tuple[Any, ...]:
+            cache = EmptyFunctionalCache(self.model.config.num_hidden_layers)
+            outputs = self.model.model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                attention_mask={
+                    "full_attention": full_attention_mask,
+                    "sliding_attention": sliding_attention_mask,
+                },
+                past_key_values=cache,
+                use_cache=True,
+                return_shared_kv_states=True,
+            )
+            hidden = outputs.last_hidden_state
+            logits = self.model.lm_head(hidden)
+            cap = self.model.config.final_logit_softcapping
+            if cap is not None:
+                logits = torch.tanh(logits / cap) * cap
+            shared = outputs.shared_kv_states
+            return (
+                logits,
+                hidden,
+                shared["full_attention"][0],
+                shared["full_attention"][1],
+                shared["sliding_attention"][0],
+                shared["sliding_attention"][1],
+                *cache.state(),
+            )
+
+    return FunctionalTargetPrefill
+
+
 def _target_wrapper_type() -> type[Any]:
     import torch
 
@@ -399,6 +463,10 @@ def _target_arguments(
             )
         )
     return tuple(values)
+
+
+def _target_prefill_arguments(*, query_tokens: int) -> tuple[Any, ...]:
+    return _target_arguments((), query_tokens=query_tokens, past_tokens=0)[:4]
 
 
 def _assistant_arguments(*, shared_tokens: int) -> tuple[Any, ...]:

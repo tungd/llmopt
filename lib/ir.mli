@@ -134,7 +134,7 @@ module Gated_activation : sig
 end
 
 module Reduction : sig
-  type operator = Mean | Sum
+  type operator = Mean | Sum | Argmax
   type t = { operator : operator; axes : int list; keepdim : bool }
   val to_string : t -> string
 end

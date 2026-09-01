@@ -19,6 +19,69 @@ let output_names schedule =
          | _ -> set)
        String_set.empty
 
+let dimensions value =
+  Ir.Value.logical_shape value |> Tensor_shape.dimensions
+
+let runtime_input_shape schedule name =
+  Serving_schedule.runtime_inputs schedule
+  |> List.assoc_opt name |> Option.map dimensions
+
+let validate_runtime_specializations program prefill_pkg decode_pkg =
+  let prefill_schedule = Serving_package.schedule prefill_pkg in
+  let decode_schedule = Serving_package.schedule decode_pkg in
+  let prefill_entry = Model_program.prefill program in
+  let state = Model_program.state program in
+  let* captured_prefill =
+    match
+      runtime_input_shape prefill_schedule
+        (Model_program.Entrypoint.input_ids prefill_entry)
+    with
+    | Some [ 1; tokens ] when tokens > 0 -> Ok tokens
+    | _ -> Error "prefill input_ids has an invalid captured shape"
+  in
+  let* captured_past =
+    match Model_program.State.attentions state with
+    | [] -> Ok 0
+    | binding :: _ ->
+        (match
+           runtime_input_shape decode_schedule
+             (Model_program.State.Attention_binding.key_input binding)
+         with
+        | Some [ 1; _heads; tokens; _width ] when tokens > 0 -> Ok tokens
+        | _ -> Error "decode attention key has an invalid captured shape")
+  in
+  let page_size = Serving_package.Cache.page_size (Serving_package.cache prefill_pkg) in
+  let* config =
+    Serving_cache.Config.of_state_plan ~state ~token_capacity:2_048
+      ~checkpoint_capacity:16 ~page_size ()
+  in
+  let minimum =
+    Model_program.Specialization.min_prefill_tokens
+      (Model_program.specialization program)
+  in
+  let probe_tokens = max minimum 22 in
+  let* _prefill =
+    Serving_schedule.Sequence.specialize_prefill ~minimum_tokens:minimum
+      ~captured_tokens:captured_prefill ~tokens:probe_tokens prefill_schedule
+  in
+  if captured_past = 0 then Ok (probe_tokens, 0, 0)
+  else
+    let* decode =
+      Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past
+        ~past_tokens:probe_tokens ~cache:(Serving_cache.Config.kv config)
+        decode_schedule
+    in
+    let paged_attention =
+      Serving_schedule.commands decode
+      |> List.fold_left
+           (fun count command ->
+             match Serving_schedule.Command.op command with
+             | Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 _) -> count + 1
+             | _ -> count)
+           0
+    in
+    Ok (probe_tokens, captured_past, paged_attention)
+
 let validate_declared_roles program prefill_pkg decode_pkg =
   let prefill_sched = Serving_package.schedule prefill_pkg in
   let decode_sched = Serving_package.schedule decode_pkg in
@@ -130,6 +193,9 @@ let run root =
   in
 
   let* () = validate_declared_roles program prefill_pkg decode_pkg in
+  let* probe_tokens, captured_past, paged_attention =
+    validate_runtime_specializations program prefill_pkg decode_pkg
+  in
 
   let ident = Model_program.identity program in
   let gen = Model_program.generation program in
@@ -180,6 +246,9 @@ let run root =
     (Model_program.State.Cache_layout.recurrent_window layout);
   Printf.printf "  Specialization: min_prefill_tokens=%d\n"
     (Model_program.Specialization.min_prefill_tokens (Model_program.specialization program));
+  Printf.printf
+    "  Runtime specialization: tokens=%d, captured_decode_past=%d, paged_q8_attention=%d\n"
+    probe_tokens captured_past paged_attention;
   Ok ()
 
 let () =

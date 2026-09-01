@@ -73,9 +73,22 @@ let validate_head values ~tokens ?vocabulary label =
         optional_value values ~name:"logits" ~dtype:Ir.Dtype.Float16
           ~shape:[ 1; tokens; vocab ] label
       in
+      let* token_id_match =
+        optional_value_matching values ~name:"token_id" ~dtype:Ir.Dtype.Int32
+          label
+      in
       let* token_id =
-        optional_value values ~name:"token_id" ~dtype:Ir.Dtype.Int32
-          ~shape:[ tokens ] label
+        match token_id_match with
+        | None -> Ok None
+        | Some (name, shape)
+          when Model_program.Entrypoint.Head.token_id_shape_matches ~tokens shape ->
+            Ok (Some name)
+        | Some (_, shape) ->
+            Error
+              (Printf.sprintf "%s output token_id has shape [%s]; expected [%d] or [1x%d]"
+                 label
+                 (shape |> List.map string_of_int |> String.concat "x") tokens
+                 tokens)
       in
       (match logits, token_id with
       | None, None -> Error (label ^ " must expose logits or token_id")
@@ -90,7 +103,8 @@ let validate_head values ~tokens ?vocabulary label =
       (match logits_opt, token_id_opt with
       | Some (name, [1; t; v]), _ when t = tokens ->
           Model_program.Entrypoint.Head.create ~logits:name ?token_id:(Option.map fst token_id_opt) ()
-      | _, Some (name, [t]) when t = tokens ->
+      | _, Some (name, shape)
+        when Model_program.Entrypoint.Head.token_id_shape_matches ~tokens shape ->
           Model_program.Entrypoint.Head.create ?logits:(Option.map fst logits_opt) ~token_id:name ()
       | None, None -> Error (label ^ " must expose logits or token_id")
       | _ -> Error (label ^ " head outputs do not match token shape"))
@@ -120,12 +134,18 @@ let discover_input_ids prefill_inputs decode_inputs =
         (Printf.sprintf "entrypoint packages have ambiguous token inputs: %s"
            (String.concat ", " names))
 
-let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode =
+let validate_entrypoints_full ?input_ids_name ?position_ids_input
+    ?full_attention_mask_input ?sliding_attention_mask_input ~profile
+    ~attentions ~recurrents ~prefill ~decode =
   let decode_inputs = runtime_inputs decode in
   let prefill_inputs = runtime_inputs prefill in
   let prefill_outputs = named_outputs prefill in
   let decode_outputs = named_outputs decode in
-  let* input_ids = discover_input_ids prefill_inputs decode_inputs in
+  let* input_ids =
+    match input_ids_name with
+    | Some name -> Ok name
+    | None -> discover_input_ids prefill_inputs decode_inputs
+  in
   let* prefill_ids =
     match String_map.find_opt input_ids prefill_inputs with
     | Some value when Ir.Value.dtype value = Ir.Dtype.Int64 -> Ok value
@@ -143,6 +163,20 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
   let* _ =
     expect_value decode_inputs ~name:input_ids ~dtype:Ir.Dtype.Int64
       ~shape:[ 1; 1 ] "decode runtime input"
+  in
+  let* () =
+    match position_ids_input with
+    | None -> Ok ()
+    | Some name ->
+        let* _ =
+          expect_value prefill_inputs ~name ~dtype:Ir.Dtype.Int64
+            ~shape:[ 1; prefill_tokens ] "prefill runtime input"
+        in
+        let* _ =
+          expect_value decode_inputs ~name ~dtype:Ir.Dtype.Int64
+            ~shape:[ 1; 1 ] "decode runtime input"
+        in
+        Ok ()
   in
   let rec discover_attentions acc = function
     | [] -> Ok (List.rev acc)
@@ -208,6 +242,24 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
       (Printf.sprintf "decode past length %d does not match prefill length %d"
          past_tokens prefill_tokens)
   else
+    let* () =
+      let validate_mask = function
+        | None -> Ok ()
+        | Some name ->
+            let* _ =
+              expect_value prefill_inputs ~name ~dtype:Ir.Dtype.Float16
+                ~shape:[ 1; 1; prefill_tokens; prefill_tokens ]
+                "prefill runtime input"
+            in
+            let* _ =
+              expect_value decode_inputs ~name ~dtype:Ir.Dtype.Float16
+                ~shape:[ 1; 1; 1; past_tokens + 1 ] "decode runtime input"
+            in
+            Ok ()
+      in
+      let* () = validate_mask full_attention_mask_input in
+      validate_mask sliding_attention_mask_input
+    in
     let rec validate_attention = function
       | [] -> Ok ()
       | (binding, geometry, _) :: rest ->
@@ -286,10 +338,16 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
           |> Model_program.Generation.vocab_size)
         "decode output"
     in
-    let expected_prefill_inputs = [ input_ids ] in
+    let auxiliary_inputs =
+      [ position_ids_input;
+        full_attention_mask_input;
+        sliding_attention_mask_input ]
+      |> List.filter_map Fun.id
+    in
+    let expected_prefill_inputs = input_ids :: auxiliary_inputs in
     let expected_decode_inputs =
-      input_ids
-      :: (List.concat_map
+      (input_ids :: auxiliary_inputs)
+      @ (List.concat_map
             (fun binding ->
               [ Model_program.State.Attention_binding.key_input binding;
                 Model_program.State.Attention_binding.value_input binding ])
@@ -351,18 +409,25 @@ let validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode 
         recurrent_dim,
         recurrent_cache )
 
-let validate_entrypoints ~profile ~attentions ~recurrents ~prefill ~decode =
+let validate_entrypoints ?input_ids_name ?position_ids_input
+    ?full_attention_mask_input ?sliding_attention_mask_input ~profile
+    ~attentions ~recurrents ~prefill ~decode =
   let* _, prefill_tokens, past_tokens, prefill_head, decode_head, _, _, _, _, _ =
-    validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode
+    validate_entrypoints_full ?input_ids_name ?position_ids_input
+      ?full_attention_mask_input ?sliding_attention_mask_input ~profile
+      ~attentions ~recurrents ~prefill ~decode
   in
   Ok (prefill_tokens, past_tokens, prefill_head, decode_head)
 
-let of_packages ~profile ~attentions ~recurrents ?tokenizer ~prefill_path
-    ~prefill ~decode_path ~decode () =
+let of_packages ?input_ids_name ?position_ids_input ?full_attention_mask_input
+    ?sliding_attention_mask_input ?sliding_window ~profile ~attentions
+    ~recurrents ?tokenizer ~prefill_path ~prefill ~decode_path ~decode () =
   let* input_ids, _prefill_tokens, _past_tokens, prefill_head, decode_head,
        attentions, recurrents, attention_layouts, recurrent_dim,
        recurrent_cache =
-    validate_entrypoints_full ~profile ~attentions ~recurrents ~prefill ~decode
+    validate_entrypoints_full ?input_ids_name ?position_ids_input
+      ?full_attention_mask_input ?sliding_attention_mask_input ~profile
+      ~attentions ~recurrents ~prefill ~decode
   in
   let identity = Model_profile.identity profile in
   let* tokenizer =
@@ -395,7 +460,9 @@ let of_packages ~profile ~attentions ~recurrents ?tokenizer ~prefill_path
       ~min_prefill_tokens:(Model_profile.minimum_prefill_tokens profile)
       ~rope_cosine_input:Serving_schedule.Sequence.rope_cosine_input
       ~rope_sine_input:Serving_schedule.Sequence.rope_sine_input
-      ~paged_slots_input:Serving_schedule.Sequence.q8_attention_slots_input ()
+      ~paged_slots_input:Serving_schedule.Sequence.q8_attention_slots_input
+      ?position_ids_input ?full_attention_mask_input
+      ?sliding_attention_mask_input ?sliding_window ()
   in
   Model_program.create ~identity ~processor ~prefill:prefill_entry
     ~decode:decode_entry ~generation ~state ~specialization

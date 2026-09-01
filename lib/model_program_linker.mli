@@ -1,4 +1,8 @@
 val validate_entrypoints :
+  ?input_ids_name:string ->
+  ?position_ids_input:string ->
+  ?full_attention_mask_input:string ->
+  ?sliding_attention_mask_input:string ->
   profile:Model_profile.t ->
   attentions:Model_program.State.Attention_binding.t list ->
   recurrents:Model_program.State.Recurrent_binding.t list ->
@@ -7,6 +11,11 @@ val validate_entrypoints :
   (int * int * Model_program.Entrypoint.Head.t * Model_program.Entrypoint.Head.t, string) result
 
 val of_packages :
+  ?input_ids_name:string ->
+  ?position_ids_input:string ->
+  ?full_attention_mask_input:string ->
+  ?sliding_attention_mask_input:string ->
+  ?sliding_window:int ->
   profile:Model_profile.t ->
   attentions:Model_program.State.Attention_binding.t list ->
   recurrents:Model_program.State.Recurrent_binding.t list ->

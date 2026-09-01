@@ -119,6 +119,11 @@ module Entrypoint = struct
 
     let logits head = head.logits
     let token_id head = head.token_id
+
+    let token_id_shape_matches ~tokens = function
+      | [ actual ] -> actual = tokens
+      | [ 1; actual ] -> actual = tokens
+      | _ -> false
   end
 
   type kind = Prefill | Decode | Verify
@@ -544,9 +549,15 @@ module Specialization = struct
     rope_cosine_input : string option;
     rope_sine_input : string option;
     paged_slots_input : string option;
+    position_ids_input : string option;
+    full_attention_mask_input : string option;
+    sliding_attention_mask_input : string option;
+    sliding_window : int option;
   }
 
-  let create ?(min_prefill_tokens = 1) ?rope_cosine_input ?rope_sine_input ?paged_slots_input () =
+  let create ?(min_prefill_tokens = 1) ?rope_cosine_input ?rope_sine_input
+      ?paged_slots_input ?position_ids_input ?full_attention_mask_input
+      ?sliding_attention_mask_input ?sliding_window () =
     if min_prefill_tokens < 1 then
       Error "model-program min_prefill_tokens must be at least 1"
     else
@@ -561,12 +572,39 @@ module Specialization = struct
       let* rope_cosine_input = clean_opt "rope_cosine_input" rope_cosine_input in
       let* rope_sine_input = clean_opt "rope_sine_input" rope_sine_input in
       let* paged_slots_input = clean_opt "paged_slots_input" paged_slots_input in
-      Ok { min_prefill_tokens; rope_cosine_input; rope_sine_input; paged_slots_input }
+      let* position_ids_input = clean_opt "position_ids_input" position_ids_input in
+      let* full_attention_mask_input =
+        clean_opt "full_attention_mask_input" full_attention_mask_input
+      in
+      let* sliding_attention_mask_input =
+        clean_opt "sliding_attention_mask_input" sliding_attention_mask_input
+      in
+      let* sliding_window =
+        match sliding_window with
+        | None -> Ok None
+        | Some value when value > 0 -> Ok (Some value)
+        | Some _ -> Error "model-program sliding_window must be positive"
+      in
+      Ok
+        { min_prefill_tokens;
+          rope_cosine_input;
+          rope_sine_input;
+          paged_slots_input;
+          position_ids_input;
+          full_attention_mask_input;
+          sliding_attention_mask_input;
+          sliding_window }
 
   let min_prefill_tokens specialization = specialization.min_prefill_tokens
   let rope_cosine_input specialization = specialization.rope_cosine_input
   let rope_sine_input specialization = specialization.rope_sine_input
   let paged_slots_input specialization = specialization.paged_slots_input
+  let position_ids_input specialization = specialization.position_ids_input
+  let full_attention_mask_input specialization =
+    specialization.full_attention_mask_input
+  let sliding_attention_mask_input specialization =
+    specialization.sliding_attention_mask_input
+  let sliding_window specialization = specialization.sliding_window
 end
 
 type t = {
@@ -581,8 +619,9 @@ type t = {
   prompt_lookup : Prompt_lookup.t option;
 }
 
-let current_abi_version = 5
+let current_abi_version = 6
 let mtp_abi_version = 4
+let prompt_lookup_abi_version = 5
 let legacy_uniform_cache_abi_version = 2
 let legacy_heterogeneous_cache_abi_version = 3
 
@@ -810,6 +849,10 @@ let to_bytes program =
   write_option writer Binary.Writer.string (Specialization.rope_cosine_input program.specialization);
   write_option writer Binary.Writer.string (Specialization.rope_sine_input program.specialization);
   write_option writer Binary.Writer.string (Specialization.paged_slots_input program.specialization);
+  write_option writer Binary.Writer.string (Specialization.position_ids_input program.specialization);
+  write_option writer Binary.Writer.string (Specialization.full_attention_mask_input program.specialization);
+  write_option writer Binary.Writer.string (Specialization.sliding_attention_mask_input program.specialization);
+  write_option writer Binary.Writer.u32 (Specialization.sliding_window program.specialization);
 
   (* Optional target-coupled MTP assistant entrypoint (ABI v4). *)
   write_option writer write_mtp program.mtp;
@@ -830,6 +873,7 @@ let of_bytes bytes =
     if
       version <> current_abi_version
       && version <> mtp_abi_version
+      && version <> prompt_lookup_abi_version
       && version <> legacy_uniform_cache_abi_version
       && version <> legacy_heterogeneous_cache_abi_version
     then
@@ -947,7 +991,32 @@ let of_bytes bytes =
       let* rope_cosine_input = read_option reader Binary.Reader.string in
       let* rope_sine_input = read_option reader Binary.Reader.string in
       let* paged_slots_input = read_option reader Binary.Reader.string in
-      let* specialization = Specialization.create ~min_prefill_tokens ?rope_cosine_input ?rope_sine_input ?paged_slots_input () in
+      let* position_ids_input =
+        if version >= current_abi_version then
+          read_option reader Binary.Reader.string
+        else Ok None
+      in
+      let* full_attention_mask_input =
+        if version >= current_abi_version then
+          read_option reader Binary.Reader.string
+        else Ok None
+      in
+      let* sliding_attention_mask_input =
+        if version >= current_abi_version then
+          read_option reader Binary.Reader.string
+        else Ok None
+      in
+      let* sliding_window =
+        if version >= current_abi_version then
+          read_option reader Binary.Reader.u32
+        else Ok None
+      in
+      let* specialization =
+        Specialization.create ~min_prefill_tokens ?rope_cosine_input
+          ?rope_sine_input ?paged_slots_input ?position_ids_input
+          ?full_attention_mask_input ?sliding_attention_mask_input
+          ?sliding_window ()
+      in
 
       let* mtp =
         if version >= mtp_abi_version then read_option reader read_mtp
@@ -955,7 +1024,7 @@ let of_bytes bytes =
       in
 
       let* prompt_lookup =
-        if version >= current_abi_version then
+        if version >= prompt_lookup_abi_version then
           read_option reader read_prompt_lookup
         else Ok None
       in

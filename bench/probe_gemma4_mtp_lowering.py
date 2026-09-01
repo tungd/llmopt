@@ -26,6 +26,8 @@ from gemma4_mtp_capture import (
     _assistant_wrapper_type,
     _load_target_config,
     _target_arguments,
+    _target_prefill_arguments,
+    _target_prefill_wrapper_type,
     _target_wrapper_type,
     build_assistant_text_config,
     expected_target_geometry,
@@ -93,8 +95,8 @@ def stages(target: Any, assistant: Any, geometry: tuple[Any, ...]):
     return (
         (
             "target-prefill",
-            _target_wrapper_type()(target),
-            _target_arguments(geometry, query_tokens=2, past_tokens=0),
+            _target_prefill_wrapper_type()(target),
+            _target_prefill_arguments(query_tokens=2),
         ),
         (
             "target-decode",

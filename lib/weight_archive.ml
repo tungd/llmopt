@@ -56,6 +56,8 @@ module Dtype = struct
     | 10 -> Ok (Quant Q5_K)
     | 11 -> Ok (Quant Q6_K)
     | 12 -> Ok (Quant Q5_0)
+    | 13 -> Ok (Quant Q4_0)
+    | 14 -> Ok (Quant IQ4_XS)
     | tag -> Error (Printf.sprintf "unknown weight-archive dtype tag: %d" tag)
 
   let byte_width = function

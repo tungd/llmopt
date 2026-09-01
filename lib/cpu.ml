@@ -312,6 +312,8 @@ let reduce state reduction input_value output_value output =
           Tensor.set_linear output index
             (Tensor.get_linear output index /. Float.of_int count))
         counts
+  | Ir.Reduction.Argmax ->
+      invalid_arg "CPU argmax reduction requires an Int32 tensor implementation"
 
 let l2_norm state ~epsilon input_value output =
   let dimensions = Tensor_shape.dimensions (Ir.Value.logical_shape input_value) in
