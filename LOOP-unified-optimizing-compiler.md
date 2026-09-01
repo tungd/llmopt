@@ -223,7 +223,7 @@ Out of scope:
     package fallback, and preserved legacy registry selection.
   - **Commit:** `09a05c5` (`feat: route covered fusion through constructive regions`).
 
-- [ ] **UOC-06 — Emit the optimization and AOT command-queue receipt**
+- [x] **UOC-06 — Emit the optimization and AOT command-queue receipt**
 
   - **Where:** `lib/passes.mli`, `lib/passes.ml`, `bin/pipeline.ml`,
     `test/test.ml`.
@@ -238,7 +238,19 @@ Out of scope:
   - **Proof:** JSON round-trip/snapshot tests distinguish a fused dependent
     region from independent commands in one stage and from a sequential barrier;
     pipeline tests or fixtures confirm the artifact is emitted deterministically.
-  - **Commit:** Record after completion.
+  - **Evidence:** `ninja -f ninja.build test` passed the OCaml suite and all 72
+    Python tests; `ninja -f ninja.build` linked the default targets; and `git
+    diff --check` passed. Focused tests parse the canonical receipt, retain the
+    target profile, accepted/cut decisions, aggregate accepted/cut/unified and
+    total/named legacy counts, exact costed tactic and roofline composition,
+    emitted ABI entries, fused source membership, independent Q/K/V commands in
+    one concurrent stage, and sequential state stages with compiler barriers.
+    `Passes.Optimization.receipt ~kernels` remains backend-neutral while the
+    pipeline writes the exact cache-augmented Metal kernel list to
+    `optimization-receipt.json` for every prefill/decode/verification package
+    before package and metallib linking. The deterministic `Receipt.write_file`
+    fixture parses back to the same JSON; no Gemma build or generation was run.
+  - **Commit:** `41a96ec` (`feat: emit optimization queue receipts`).
 
 - [ ] **UOC-07 — Execute and record the one-shot Gemma 4 12B transition run**
 
