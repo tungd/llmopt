@@ -176,6 +176,15 @@ let () =
           input runtime "paged_pool" (paged_pool ());
           input runtime "paged_slots" (bytes_of_i32 [ 0 ]);
           input runtime "paged_mask" (bytes_of_bool [ true; true ]);
+          input runtime "paged_gqa3_query"
+            (bytes_of_u16 (List.init 192 (Fun.const 0)));
+          input runtime "paged_gqa3_current_key"
+            (bytes_of_u16 (List.init 64 (Fun.const 0)));
+          input runtime "paged_gqa3_current_value"
+            (bytes_of_u16 (List.init 64 (Fun.const 0x4400)));
+          input runtime "paged_gqa3_pool" (paged_pool ());
+          input runtime "paged_gqa3_slots" (bytes_of_i32 [ 0 ]);
+          input runtime "paged_gqa3_mask" (bytes_of_bool [ true; true ]);
           input runtime "cast_f16_input"
             (bytes_of_u16 [ 0x3c00; 0xc000; 0x3800 ]);
           input runtime "cast_f32_input" (bytes_of_f32 [ 1.; -2.; 0.5 ]);
@@ -289,6 +298,8 @@ let () =
     (bytes_of_u16 (List.init 512 (Fun.const 0x4200)));
   expect_bytes execution "paged_attention"
     (bytes_of_u16 (List.init 64 (Fun.const 0x4200)));
+  expect_bytes execution "paged_gqa3_attention"
+    (bytes_of_u16 (List.init 192 (Fun.const 0x4200)));
   expect_bytes execution "cast_f16_f32" (bytes_of_f32 [ 1.; -2.; 0.5 ]);
   expect_bytes execution "cast_f32_f16"
     (bytes_of_u16 [ 0x3c00; 0xc000; 0x3800 ]);
@@ -365,7 +376,7 @@ let () =
     fail "unaligned batched matmul did not select the tiled fallback";
   let workspace_bytes = Metal_runtime.Execution.workspace_bytes execution in
   Printf.printf
-    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: canonical primitive set exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\nwide-attention: exact\nwide-attention-kernel: llmopt_attention_f16_simd_h256\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\n"
+    "device: %s\ndispatch: binary-schedule\ncommands: %d\nkernels: %d\nworkspace: %d bytes\noutputs: canonical primitive set exact\nrms-rope-reference: exact\nrms-rope-kernel: llmopt_rms_rope_f16_simd_h64\nwide-attention: exact\nwide-attention-kernel: llmopt_attention_f16_simd_h256\npaged-attention: exact\npaged-attention-kernel: llmopt_attention_q8_paged_simd_h64\npaged-gqa3-attention: exact\npaged-gqa3-attention-kernel: llmopt_attention_q8_paged_simd_h64_gqa3\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.schedule package |> Serving_schedule.commands |> List.length)
     (List.length kernels) workspace_bytes

@@ -86,6 +86,7 @@ typedef struct {
   NSUInteger parameter_length;
   MTLSize grid;
   MTLSize group;
+  bool barrier_before;
   bool is_paged_attention;
   bool is_checkpoint_pack;
 } llmopt_dispatch_record;
@@ -121,6 +122,7 @@ typedef struct {
   llmopt_metal_library *library;
   llmopt_dispatch_record *records;
   size_t record_count;
+  size_t barrier_count;
   id<MTLBuffer> token_buffer;
   NSUInteger token_buffer_offset;
   id<MTLBuffer> output_buffer;
@@ -713,6 +715,40 @@ CAMLprim value caml_llmopt_metal_buffer_contents(value buffer_value) {
   CAMLreturn(result);
 }
 
+CAMLprim value caml_llmopt_metal_buffer_argmax_f16(value buffer_value,
+                                                    value vocabulary_value) {
+  CAMLparam2(buffer_value, vocabulary_value);
+  llmopt_metal_buffer *buffer = Buffer_val(buffer_value);
+  intnat requested = Long_val(vocabulary_value);
+  if (buffer == NULL) {
+    caml_failwith("Metal buffer has been finalized");
+  }
+  if (requested <= 0) {
+    caml_invalid_argument("float16 logits vocabulary must be positive");
+  }
+  NSUInteger vocabulary = (NSUInteger)requested;
+  if (vocabulary > NSUIntegerMax / sizeof(_Float16)) {
+    caml_invalid_argument("float16 logits vocabulary byte length overflows");
+  }
+  NSUInteger row_bytes = vocabulary * sizeof(_Float16);
+  if (buffer->length == 0 || buffer->length % row_bytes != 0) {
+    caml_invalid_argument("float16 logits buffer does not contain complete rows");
+  }
+  const uint8_t *base =
+      (const uint8_t *)buffer->buffer.contents + buffer->offset;
+  const _Float16 *ptr =
+      (const _Float16 *)(base + buffer->length - row_bytes);
+  _Float16 max_val = ptr[0];
+  NSUInteger max_idx = 0;
+  for (NSUInteger i = 1; i < vocabulary; i++) {
+    if (ptr[i] > max_val) {
+      max_val = ptr[i];
+      max_idx = i;
+    }
+  }
+  CAMLreturn(Val_long((intnat)max_idx));
+}
+
 CAMLprim value caml_llmopt_metal_buffer_length(value buffer_value) {
   CAMLparam1(buffer_value);
   llmopt_metal_buffer *buffer = Buffer_val(buffer_value);
@@ -1176,6 +1212,7 @@ CAMLprim value caml_llmopt_metal_commit_batch(value batch_value) {
   CAMLparam1(batch_value);
   llmopt_metal_batch *batch = require_active_batch(batch_value);
   @autoreleasepool {
+    uint64_t started = mach_absolute_time();
     end_batch_compute(batch);
     id<MTLCommandBuffer> command = [batch->command retain];
     [batch->command commit];
@@ -1185,6 +1222,18 @@ CAMLprim value caml_llmopt_metal_commit_batch(value batch_value) {
     caml_enter_blocking_section();
     [command waitUntilCompleted];
     caml_leave_blocking_section();
+    uint64_t finished = mach_absolute_time();
+    if (getenv("LLMOPT_PROFILE_BATCH") != NULL) {
+      double gpu_seconds = llmopt_command_duration(command, started, finished);
+      mach_timebase_info_data_t info;
+      mach_timebase_info(&info);
+      double wall_seconds =
+          ((double)(finished - started) * (double)info.numer /
+           (double)info.denom) * 1e-9;
+      fprintf(stderr,
+              "llmopt-metal-profile: gpu_ms=%.6f commit_wait_ms=%.6f\n",
+              gpu_seconds * 1000.0, wall_seconds * 1000.0);
+    }
     MTLCommandBufferStatus status = command.status;
     NSError *command_error = [command.error retain];
     [command release];
@@ -1340,6 +1389,9 @@ static void *llmopt_worker_loop(void *arg) {
 
       for (size_t i = 0; i < q->record_count; i++) {
         llmopt_dispatch_record *r = &q->records[i];
+        if (r->barrier_before) {
+          [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        }
         [enc setComputePipelineState:r->pipeline];
         for (NSUInteger b = 0; b < r->buffer_count; b++) {
           [enc setBuffer:r->buffers[b] offset:r->offsets[b] atIndex:b];
@@ -1508,8 +1560,12 @@ CAMLprim value caml_llmopt_ring_start_worker(value v_ring,
     value params = Field(item, 2);
     q->records[i].grid = MTLSizeMake(Long_val(Field(item, 3)), Long_val(Field(item, 4)), Long_val(Field(item, 5)));
     q->records[i].group = MTLSizeMake(Long_val(Field(item, 6)), Long_val(Field(item, 7)), Long_val(Field(item, 8)));
+    q->records[i].barrier_before = Bool_val(Field(item, 9));
     q->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
-    q->records[i].is_paged_attention = (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0);
+    q->records[i].is_paged_attention =
+        (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0 ||
+         strcmp(kname, "llmopt_attention_q8_paged_simd_h64_gqa3") == 0 ||
+         strcmp(kname, "llmopt_attention_q8_paged_simd_h64_split8") == 0);
 
     NSUInteger b_idx = 0;
     value rem = buffers;
@@ -1580,12 +1636,22 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
   for (mlsize_t i = 0; i < total; i++) {
     value item = Field(v_dispatches, i);
     const char *kname = String_val(Field(item, 0));
+    if (getenv("LLMOPT_PROFILE_PLAN") != NULL) {
+      fprintf(stderr, "llmopt-prebaked-kernel: %s\n", kname);
+    }
     value buffers = Field(item, 1);
     value params = Field(item, 2);
     plan->records[i].grid = MTLSizeMake(Long_val(Field(item, 3)), Long_val(Field(item, 4)), Long_val(Field(item, 5)));
     plan->records[i].group = MTLSizeMake(Long_val(Field(item, 6)), Long_val(Field(item, 7)), Long_val(Field(item, 8)));
+    plan->records[i].barrier_before = Bool_val(Field(item, 9));
+    if (plan->records[i].barrier_before) {
+      plan->barrier_count += 1;
+    }
     plan->records[i].pipeline = [pipeline_for_name_icb(lib, kname) retain];
-    plan->records[i].is_paged_attention = (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0);
+    plan->records[i].is_paged_attention =
+        (strcmp(kname, "llmopt_attention_q8_paged_simd_h64") == 0 ||
+         strcmp(kname, "llmopt_attention_q8_paged_simd_h64_gqa3") == 0 ||
+         strcmp(kname, "llmopt_attention_q8_paged_simd_h64_split8") == 0);
     plan->records[i].is_checkpoint_pack = (strcmp(kname, "llmopt_cache_pack_checkpoint_q8_simd") == 0);
 
     NSUInteger b_idx = 0;
@@ -1633,7 +1699,7 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
       for (size_t i = 0; i < total; i++) {
         llmopt_dispatch_record *r = &plan->records[i];
         id<MTLIndirectComputeCommand> cmd = [plan->icb indirectComputeCommandAtIndex:i];
-        if (i > 0) {
+        if (r->barrier_before) {
           [cmd setBarrier];
         }
         [cmd setComputePipelineState:r->pipeline];
@@ -1696,6 +1762,7 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
   }
 
   @autoreleasepool {
+    uint64_t started = mach_absolute_time();
     id<MTLCommandBuffer> cmd = [plan->queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
 
@@ -1708,6 +1775,9 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
       id<MTLComputePipelineState> current_pipeline = nil;
       for (size_t i = 0; i < plan->record_count; i++) {
         llmopt_dispatch_record *r = &plan->records[i];
+        if (r->barrier_before) {
+          [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        }
         if (r->pipeline != current_pipeline) {
           [enc setComputePipelineState:r->pipeline];
           current_pipeline = r->pipeline;
@@ -1733,6 +1803,19 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
     caml_enter_blocking_section();
     [cmd waitUntilCompleted];
     caml_leave_blocking_section();
+    uint64_t finished = mach_absolute_time();
+    if (getenv("LLMOPT_PROFILE_BATCH") != NULL) {
+      double gpu_seconds = llmopt_command_duration(cmd, started, finished);
+      mach_timebase_info_data_t info;
+      mach_timebase_info(&info);
+      double wall_seconds =
+          ((double)(finished - started) * (double)info.numer /
+           (double)info.denom) * 1e-9;
+      fprintf(stderr,
+              "llmopt-prebaked-profile: dispatches=%zu barriers=%zu gpu_ms=%.6f wait_ms=%.6f\n",
+              plan->record_count, plan->barrier_count,
+              gpu_seconds * 1000.0, wall_seconds * 1000.0);
+    }
     if (cmd.status != MTLCommandBufferStatusCompleted) {
       fail_with_error("Prebaked Metal batch failed", cmd.error);
     }

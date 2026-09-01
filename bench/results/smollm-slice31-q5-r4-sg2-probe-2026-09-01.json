@@ -1,0 +1,47 @@
+{
+  "created_at": "2026-09-01T13:01:53+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-q5-r4-sg2-probe",
+  "model_dir": "/tmp/llmopt-smollm-q5-r4-sg2-engine",
+  "protocol": {
+    "q5_0_kernel": "llmopt_q5_0_linear_f16_m1_r4_sg2",
+    "q5_0_output_rows_per_simdgroup": 4,
+    "q5_0_simdgroups_per_threadgroup": 2,
+    "q8_0_kernel": "llmopt_q8_0_linear_f16_m1_r2_sg4",
+    "attention_kernel": "llmopt_attention_q8_paged_simd_h64_split8",
+    "environment": "LLMOPT_EXPERIMENTAL_SPLIT8=1",
+    "decode": "sequential-greedy-cpu-argmax",
+    "lengths": [128, 512],
+    "campaigns": 1
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 0.933546,
+      "tokens_per_second": 137.111571,
+      "inter_token_mean_ms": 6.789403,
+      "inter_token_median_ms": 5.837917,
+      "inter_token_min_ms": 4.473925,
+      "inter_token_max_ms": 78.835964
+    },
+    "512_tokens": {
+      "elapsed_seconds": 3.764770,
+      "tokens_per_second": 135.997683,
+      "inter_token_mean_ms": 7.251055,
+      "inter_token_median_ms": 6.817818,
+      "inter_token_min_ms": 4.658937,
+      "inter_token_max_ms": 14.843941
+    }
+  },
+  "comparison": {
+    "128_over_q8_head_control_ratio": 1.014637692,
+    "512_over_q8_head_control_ratio": 0.988639503,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 2.804386013,
+    "completion_stream_comparator_run": false
+  },
+  "disposition": {
+    "selected_by_default": false,
+    "implementation_retained": false,
+    "reason": "The 512-token observation was 1.13605% below the Q8-head control."
+  }
+}

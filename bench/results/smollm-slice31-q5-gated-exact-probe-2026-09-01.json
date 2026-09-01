@@ -1,0 +1,49 @@
+{
+  "created_at": "2026-09-01T12:48:32+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-q5-gated-exact-probe",
+  "model_dir": "/tmp/llmopt-smollm-q5-gated-exact-engine",
+  "protocol": {
+    "attention_kernel": "llmopt_attention_q8_paged_simd_h64_gqa3",
+    "prebaked_from_past_tokens": 64,
+    "fused_ffn_sequences": 30,
+    "projection_simdgroups_per_output": 2,
+    "decode_ir_commands": 1249,
+    "lengths": [128, 512],
+    "campaigns": 1
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 1.348121,
+      "tokens_per_second": 94.946972,
+      "inter_token_mean_ms": 9.654456,
+      "inter_token_median_ms": 9.413958,
+      "inter_token_min_ms": 6.888866,
+      "inter_token_max_ms": 29.778957,
+      "completion_tokens_sha256": "aabd29ae76a45b46d0e0416454ef139a3f855d71d6f25506edcebe339d2a291a"
+    },
+    "512_tokens": {
+      "elapsed_seconds": 9.199958,
+      "tokens_per_second": 55.652426,
+      "inter_token_mean_ms": 17.892140,
+      "inter_token_median_ms": 17.747164,
+      "inter_token_min_ms": 6.652117,
+      "inter_token_max_ms": 30.521154,
+      "completion_tokens_sha256": "ed7517782fb449e9dacda386cbf4133bf1b649b7689c5c562b2c694ad08e5f45"
+    }
+  },
+  "comparison": {
+    "128_over_corrected_prebake_ratio": 1.029439047,
+    "512_over_corrected_prebake_ratio": 1.025123758,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 6.853070520,
+    "completion_tokens_equal_128": true,
+    "completion_tokens_equal_512": false
+  },
+  "next_package": {
+    "model_dir": "/tmp/llmopt-smollm-split8-contiguous-engine",
+    "attention_partition": "eight contiguous temporal chunks",
+    "attention_merge": "chronological online-softmax",
+    "status": "compiled-and-linked-unmeasured"
+  }
+}

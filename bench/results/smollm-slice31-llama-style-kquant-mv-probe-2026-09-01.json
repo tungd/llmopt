@@ -1,0 +1,77 @@
+{
+  "created_at": "2026-09-01T14:39:24+07:00",
+  "kind": "smollm-slice31-llama-style-kquant-mv-probe",
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "engine": "_artifacts/smollm-slice31-llama-mv-engine-v7",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "environment": {
+    "LLMOPT_PROFILE_BATCH": "1",
+    "LLMOPT_PROFILE_PLAN": "1",
+    "LLMOPT_EXPERIMENTAL_SPLIT8": "1",
+    "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE": "1",
+    "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_KQUANT_LLAMA_MV": "1"
+  },
+  "artifacts": {
+    "executable_sha256": "94ad0fef26e98bc7b1857b767cb061356d8e9be63460af85b4a7aa14b3f66178",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "decode_package_sha256": "f61b68b1605c6c56873d70851c6b20f3b9eca6f58c0ff82f9c7b246836fb0d1b",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211",
+    "raw_log_directory": "/tmp/llmopt-kquant-llama-mv-probe.BynXVe"
+  },
+  "runs": [
+    {
+      "completion_tokens": 128,
+      "elapsed_seconds": 0.624663,
+      "tokens_per_second": 204.910372,
+      "inter_token_mean_ms": 4.403946,
+      "inter_token_median_ms": 2.463102,
+      "completion_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.179568,
+      "gpu_median_ms": 2.162750,
+      "commit_wait_mean_ms": 2.340181,
+      "commit_wait_median_ms": 2.297042
+    },
+    {
+      "completion_tokens": 512,
+      "elapsed_seconds": 2.100700,
+      "tokens_per_second": 243.728265,
+      "inter_token_mean_ms": 3.999953,
+      "inter_token_median_ms": 3.760099,
+      "completion_sha256": "951697f8bce6e64b93cafe731b73042e96a95978eccce304838e12e246c76c7f",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.191877,
+      "gpu_median_ms": 3.176500,
+      "commit_wait_mean_ms": 3.370694,
+      "commit_wait_median_ms": 3.332625,
+      "dispatches": 282,
+      "barriers": 245
+    }
+  ],
+  "comparison": {
+    "q5_only_512_tokens_per_second": 238.003417,
+    "candidate_minus_q5_only_tokens_per_second": 5.724848,
+    "candidate_minus_q5_only_percent": 2.405364,
+    "candidate_minus_q5_only_gpu_mean_ms": -0.102621,
+    "candidate_minus_q5_only_commit_wait_mean_ms": -0.100407,
+    "paired_cache_512_tokens_per_second": 219.697086,
+    "candidate_minus_paired_cache_tokens_per_second": 24.031179,
+    "candidate_minus_paired_cache_percent": 10.938324,
+    "original_profiled_baseline_512_tokens_per_second": 217.977505,
+    "candidate_minus_original_baseline_tokens_per_second": 25.750760,
+    "candidate_minus_original_baseline_percent": 11.813494,
+    "llama_cpp_reference_tokens_per_second": 381.39,
+    "llama_cpp_over_candidate": 1.564816,
+    "candidate_fraction_of_llama_cpp": 0.639053
+  },
+  "parity": {
+    "versus_q5_only_128": "exact",
+    "versus_q5_only_512": "exact",
+    "versus_original_128": "exact",
+    "versus_original_512": "different",
+    "original_first_512_divergence_index_zero_based": 459,
+    "original_token_at_divergence": 94,
+    "candidate_token_at_divergence": 2692
+  }
+}

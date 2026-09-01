@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-09-01T17:25:00+07:00",
+  "kind": "smollm-slice31-gqa3-split8-strictfp-static",
+  "superseded_by": "bench/results/smollm-slice31-gqa3-split8-strictfp-probe-2026-09-01.json",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_GQA3_SPLIT8=1",
+    "required_environment_flag": "LLMOPT_EXPERIMENTAL_SPLIT8=1",
+    "kernel": "llmopt_attention_q8_paged_simd_h64_gqa3_split8",
+    "change_from_measured_v12": "disable unsafe floating-point reassociation for paged Q8 value reconstruction and attention kernels",
+    "hypothesis": "forcing the same per-head operation order in control and grouped kernels removes the deterministic completion divergence while preserving shared K/V work",
+    "default_selected": false
+  },
+  "engine": {
+    "path": "_artifacts/smollm-slice31-gqa3-split8-strictfp-engine-v13",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "25d42ceaeb236d569dfa33d1d01dedd6a20af919d20deee7653655e3bf5d87a2",
+    "decode_package_sha256": "a7ba4b718faa94f0038d0bdcd0409694c6d51fa79296260d1482c536bca0e3fc",
+    "verification_package_sha256": "b6ac45a8ff2054d24aedf35b8c493cd372fa09f77cc88d6810ab4be0f35aa97f",
+    "decode_metal_source_sha256": "b2b9855e15b22c3c97c57f39b8481b19574cbd9fe9eb2bedc1bca7deebcbabf6",
+    "decode_metallib_sha256": "fc4159083c727b192d95e7d775e8c9117de1c020dcae055fa951e0194b5f5c73",
+    "generate_executable_sha256": "321076e3e6e133c40e32420ea7f7168d9e50b6027a09e9ccc774faaa8f72c808"
+  },
+  "static_validation": {
+    "strict_fp_directive_present_in_all_packages": true,
+    "metal_source_compiled": true,
+    "model_program_valid": true,
+    "model_program_abi": 5,
+    "packages_validated": ["prefill", "decode", "verification"],
+    "kernels_per_package": 106,
+    "prefill_ir_commands": 1069,
+    "decode_ir_commands": 1189,
+    "verification_ir_commands": 1219,
+    "opaque_commands_per_package": 0,
+    "full_ninja_build": "passed",
+    "ocaml_tests": "passed",
+    "python_tests": 72
+  },
+  "measurement": "bench/results/smollm-slice31-gqa3-split8-strictfp-probe-2026-09-01.json"
+}

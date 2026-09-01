@@ -1,0 +1,42 @@
+{
+  "created_at": "2026-09-01T13:40:00+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-same-binary-lazy-schedule-probe",
+  "artifacts": {
+    "executable_sha256": "6f55132970251931f3b09b9cf85935e4ba2fd5f0f09ed34fe5cef7edb70fe199",
+    "model_program_sha256": "cac86d5114c0973a909c79f5bb2e8ba3f7807e8d767132a5015329fdb201b5f8",
+    "decode_package_sha256": "3b2a44faf2d07e7a71462aa544815a82703b2b4880cefb199e97a1adc9d67904"
+  },
+  "protocol": {
+    "environment": ["LLMOPT_PROFILE_BATCH=1", "LLMOPT_EXPERIMENTAL_SPLIT8=1"],
+    "modes": {
+      "control": "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE=0",
+      "lazy": "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE=1"
+    },
+    "lengths": [128, 512],
+    "campaigns_per_mode": 1,
+    "prebaked_dispatches": 372,
+    "prebaked_barriers": 245
+  },
+  "result": {
+    "control": {
+      "128_tokens": {"tokens_per_second": 148.080915, "inter_token_mean_ms": 6.229207, "inter_token_median_ms": 5.502939, "completion_tokens_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0", "prebaked_gpu_mean_ms": 2.853218, "prebaked_wait_mean_ms": 3.444648},
+      "512_tokens": {"tokens_per_second": 147.043224, "inter_token_mean_ms": 6.700938, "inter_token_median_ms": 6.587029, "completion_tokens_sha256": "847c4abc3104d910e487dfb30fd58f56ffb2512d3859e8850343b6ef6b52a771", "prebaked_gpu_mean_ms": 3.798203, "prebaked_wait_mean_ms": 4.424895}
+    },
+    "lazy": {
+      "128_tokens": {"tokens_per_second": 205.514830, "inter_token_mean_ms": 4.459552, "inter_token_median_ms": 3.030062, "completion_tokens_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0", "prebaked_gpu_mean_ms": 2.707879, "prebaked_wait_mean_ms": 2.895496},
+      "512_tokens": {"tokens_per_second": 217.933883, "inter_token_mean_ms": 4.487488, "inter_token_median_ms": 4.110813, "completion_tokens_sha256": "847c4abc3104d910e487dfb30fd58f56ffb2512d3859e8850343b6ef6b52a771", "prebaked_gpu_mean_ms": 3.664962, "prebaked_wait_mean_ms": 3.844650}
+    }
+  },
+  "comparison": {
+    "lazy_512_over_control_512_ratio": 1.482107622,
+    "completion_streams_identical_by_length": true,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_lazy_512_ratio": 1.750026177,
+    "lazy_512_as_fraction_of_llamacpp": 0.571420024
+  },
+  "disposition": {
+    "retained_as_implementation": true,
+    "reason": "The prebaked plan retains its originating schedule, and both modes in the same executable reproduce the established completion hashes."
+  }
+}

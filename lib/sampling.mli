@@ -12,6 +12,7 @@ module Params : sig
   }
 
   val greedy : t
+  val is_greedy : t -> bool
 
   val create :
     ?temperature:float ->

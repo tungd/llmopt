@@ -1,0 +1,43 @@
+{
+  "created_at": "2026-09-01T16:22:04+07:00",
+  "kind": "smollm-slice31-sequence-slot-append-static",
+  "superseded_by": "bench/results/smollm-slice31-sequence-slot-append-probe-2026-09-01.json",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_SEQUENCE_SLOT_APPEND=1",
+    "required_environment_flag": "LLMOPT_EXPERIMENTAL_SEQUENCE_CURSOR=1",
+    "scope": "single sequential generation cursor over a page-size-one radix cache",
+    "default_selected": false,
+    "initial_full_slot_index_uploads": 1,
+    "per_token_slot_index_bytes_uploaded": 4,
+    "per_token_full_slot_index_remap_removed": true,
+    "per_token_full_slot_index_upload_removed": true,
+    "runtime_profile_marker": "llmopt-sequence-profile: incremental_slots=1"
+  },
+  "engine": {
+    "path": "_artifacts/smollm-slice31-llama-mv-engine-v10",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "0ead105584fac0b36d02430a0372365f670940f40ea60f64f73664d95e306c7c",
+    "decode_package_sha256": "e15a136ce013881dd137a4192fc7b134a9f501da0dd23700ee862f7ad65b9f5a",
+    "verification_package_sha256": "aac2cc1b83c7b9de3aedadce2e5a21df02c33f1d34a6b4ffd79e975fd1381bb5",
+    "generate_executable_sha256": "3691b463368d68f7daea7c553edb6523ded1c9c54ca43ee032b2567b76850a65",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211"
+  },
+  "static_validation": {
+    "packages_validated": [
+      "prefill",
+      "decode",
+      "verification"
+    ],
+    "kernels_per_package": 105,
+    "prefill_ir_commands": 1069,
+    "decode_ir_commands": 1189,
+    "verification_ir_commands": 1219,
+    "opaque_commands_per_package": 0,
+    "full_ninja_build": "passed",
+    "ocaml_tests": "passed",
+    "python_tests": 72,
+    "executable_contains_flag": true,
+    "executable_contains_profile_marker": true
+  },
+  "measurement": "bench/results/smollm-slice31-sequence-slot-append-probe-2026-09-01.json"
+}

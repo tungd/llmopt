@@ -10,6 +10,26 @@ val load_packages :
 val device_name : t -> string
 val package : t -> Serving_package.t
 
+module Quant_qkv_tactic : sig
+  val kernel_name :
+    experimental_llama_mv:bool ->
+    experimental_mixed_llama_mv:bool ->
+    m:int ->
+    v_dtype:Ir.Dtype.t ->
+    (string, string) result
+end
+
+module Paged_attention_tactic : sig
+  val kernel_name :
+    experimental_gqa3_split8:bool ->
+    split8:bool ->
+    query_heads:int ->
+    kv_heads:int ->
+    string
+
+  val groups_by_kv_head : string -> bool
+end
+
 module Buffer : sig
   type t
 
@@ -17,6 +37,7 @@ module Buffer : sig
   val create : runtime:runtime -> bytes:int -> (t, string) result
   val view : parent:t -> offset:int -> bytes:int -> (t, string) result
   val contents : t -> (bytes, string) result
+  val argmax_f16 : t -> vocabulary:int -> (int, string) result
   val byte_length : t -> int
   val copy : source:t -> destination:t -> (unit, string) result
   val set_int64 : t -> offset:int -> int64 -> (unit, string) result
@@ -76,6 +97,14 @@ module Cache : sig
     source:Buffer.t ->
     (string, string) result
 
+  val batch_pack_attention_pair :
+    batch ->
+    layer:int ->
+    slots:Kv_cache.Slot.t array ->
+    key_source:Buffer.t ->
+    value_source:Buffer.t ->
+    (string, string) result
+
   val batch_pack_attention_slice :
     batch ->
     layer:int ->
@@ -84,6 +113,16 @@ module Cache : sig
     source_items:int ->
     source_offset:int ->
     source:Buffer.t ->
+    (string, string) result
+
+  val batch_pack_attention_pair_slice :
+    batch ->
+    layer:int ->
+    slots:Kv_cache.Slot.t array ->
+    source_items:int ->
+    source_offset:int ->
+    key_source:Buffer.t ->
+    value_source:Buffer.t ->
     (string, string) result
 
   val batch_unpack_attention :
@@ -167,6 +206,17 @@ val encode_cache_pack_attention_slice :
   source:Buffer.t ->
   (string, string) result
 
+val encode_cache_pack_attention_pair_slice :
+  Execution_batch.t ->
+  cache:Cache.t ->
+  layer:int ->
+  slots:Kv_cache.Slot.t array ->
+  source_items:int ->
+  source_offset:int ->
+  key_source:Buffer.t ->
+  value_source:Buffer.t ->
+  (string, string) result
+
 val encode_cache_pack_checkpoint :
   Execution_batch.t ->
   cache:Cache.t ->
@@ -204,7 +254,7 @@ val precompile_decode_batch :
   t ->
   schedule:Serving_schedule.t ->
   inputs:(string * Buffer.t) list ->
-  ((string * Buffer.t list * bytes * int * int * int * int * int * int) array * Execution.t, string) result
+  ((string * Buffer.t list * bytes * int * int * int * int * int * int * bool) array * Execution.t, string) result
 
 val tensor :
   t -> name:string -> (Buffer.t * Weight_archive.Tensor.t, string) result
@@ -247,7 +297,7 @@ module Ring_queue : sig
   val start_worker :
     t ->
     runtime:runtime ->
-    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int)
+    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int * bool)
                array ->
     token_buffer:Buffer.t ->
     output_buffer:Buffer.t ->
@@ -261,7 +311,7 @@ module Prebaked : sig
 
   val create :
     runtime:runtime ->
-    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int)
+    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int * bool)
                array ->
     token_buffer:Buffer.t ->
     output_buffer:Buffer.t ->

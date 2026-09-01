@@ -1,0 +1,117 @@
+{
+  "created_at": "2026-09-01T16:57:46+07:00",
+  "kind": "smollm-slice31-gqa3-split8-strictfp-probe",
+  "valid_path_measurement": true,
+  "valid_parity_measurement": false,
+  "retained": false,
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "engine": "_artifacts/smollm-slice31-gqa3-split8-strictfp-engine-v13",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "candidate_environment": "LLMOPT_EXPERIMENTAL_GQA3_SPLIT8=1",
+  "common_environment": {
+    "LLMOPT_PROFILE_BATCH": "1",
+    "LLMOPT_PROFILE_PLAN": "1",
+    "LLMOPT_EXPERIMENTAL_SPLIT8": "1",
+    "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE": "1",
+    "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_KQUANT_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_Q8_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_SHARED_VALUES": "1",
+    "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_MIXED_QKV_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_SEQUENCE_CURSOR": "1",
+    "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE": "1"
+  },
+  "artifacts": {
+    "executable_sha256": "321076e3e6e133c40e32420ea7f7168d9e50b6027a09e9ccc774faaa8f72c808",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "25d42ceaeb236d569dfa33d1d01dedd6a20af919d20deee7653655e3bf5d87a2",
+    "decode_package_sha256": "a7ba4b718faa94f0038d0bdcd0409694c6d51fa79296260d1482c536bca0e3fc",
+    "verification_package_sha256": "b6ac45a8ff2054d24aedf35b8c493cd372fa09f77cc88d6810ab4be0f35aa97f",
+    "decode_metal_source_sha256": "b2b9855e15b22c3c97c57f39b8481b19574cbd9fe9eb2bedc1bca7deebcbabf6",
+    "decode_metallib_sha256": "fc4159083c727b192d95e7d775e8c9117de1c020dcae055fa951e0194b5f5c73",
+    "raw_log_directory": "/tmp/llmopt-gqa3-split8-strictfp-probe.fx8Hia"
+  },
+  "path_assertions": {
+    "radix_hits_each_run": 1,
+    "radix_misses_each_run": 1,
+    "all_q5_qkv_llama_mv_dispatches_each_run": 16,
+    "mixed_q5_q5_q8_qkv_llama_mv_dispatches_each_run": 14,
+    "control_attention_kernel_dispatches": 30,
+    "candidate_attention_kernel_dispatches": 30,
+    "dispatches_each_profiled_decode_step": 274,
+    "barriers_each_profiled_decode_step": 244,
+    "control_attention_threadgroups_per_layer": 9,
+    "candidate_attention_threadgroups_per_layer": 3
+  },
+  "run_order": ["128_control", "128_candidate", "512_candidate", "512_control"],
+  "runs": {
+    "128_control": {
+      "elapsed_seconds": 0.643011,
+      "tokens_per_second": 199.063514,
+      "inter_token_mean_ms": 4.524205,
+      "inter_token_median_ms": 2.550125,
+      "completion_sha256": "3db6b79b5461a5d9cf0dc065d0ebd171c8df135eb59ef11a180b9d608ab4931c",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.161113538,
+      "commit_wait_mean_ms": 2.376030681,
+      "host_residual_ms": 2.363091462
+    },
+    "128_candidate": {
+      "elapsed_seconds": 0.561648,
+      "tokens_per_second": 227.900696,
+      "inter_token_mean_ms": 3.973914,
+      "inter_token_median_ms": 2.201080,
+      "completion_sha256": "f0b48841ee7f8fe1c359ee3c4efd122825eaf426b0be520a392c5e9e0b1bc19e",
+      "profile_steps": 91,
+      "gpu_mean_ms": 1.952099297,
+      "commit_wait_mean_ms": 2.174891934,
+      "host_residual_ms": 2.021814703
+    },
+    "512_control": {
+      "elapsed_seconds": 1.903436,
+      "tokens_per_second": 268.987283,
+      "inter_token_mean_ms": 3.616923,
+      "inter_token_median_ms": 3.427029,
+      "completion_sha256": "c8975188b7dd15b8435188319c547aa53280a14977e00cd12c616fd4856acaea",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.084163326,
+      "commit_wait_mean_ms": 3.251082196,
+      "host_residual_ms": 0.532759674
+    },
+    "512_candidate": {
+      "elapsed_seconds": 1.364205,
+      "tokens_per_second": 375.310260,
+      "inter_token_mean_ms": 2.556172,
+      "inter_token_median_ms": 2.175093,
+      "completion_sha256": "14027b1c1a587b1195f4ab9fc569f84acdd02ecf3e97444918727d69443e7fc7",
+      "profile_steps": 475,
+      "gpu_mean_ms": 1.939791754,
+      "commit_wait_mean_ms": 2.107506516,
+      "host_residual_ms": 0.616380246
+    }
+  },
+  "comparison": {
+    "candidate_minus_control_128_tokens_per_second": 28.837182,
+    "candidate_minus_control_128_percent": 14.486423,
+    "candidate_minus_control_512_tokens_per_second": 106.322977,
+    "candidate_minus_control_512_percent": 39.527139,
+    "candidate_minus_control_512_inter_token_mean_ms": -1.060751,
+    "candidate_minus_control_512_inter_token_median_ms": -1.251936,
+    "candidate_minus_control_512_gpu_mean_ms": -1.144371572,
+    "candidate_minus_control_512_commit_wait_mean_ms": -1.143575680,
+    "candidate_minus_control_512_host_residual_ms": 0.083620572,
+    "llama_cpp_reference_tokens_per_second": 381.39,
+    "candidate_fraction_of_llama_cpp": 0.984058995,
+    "llama_cpp_minus_candidate_tokens_per_second": 6.079740,
+    "llama_cpp_over_candidate_percent": 1.619924
+  },
+  "parity": {
+    "control_candidate_128": "different at zero-based completion index 41: control 198, candidate 76",
+    "control_candidate_512": "different at zero-based completion index 41: control 198, candidate 76"
+  },
+  "disposition": "strict reassociation did not change the first divergence or materially change candidate throughput; the directive was removed from source and the result is retained only as changed-output path evidence"
+}

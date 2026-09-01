@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-09-01T14:48:57+07:00",
+  "kind": "smollm-slice31-radix-offset-walk-static",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK=1",
+    "scope": "Radix_cache.match_prefix compressed-edge traversal",
+    "default_selected": false,
+    "old_traversal": "allocates the complete remaining token suffix at each visited edge",
+    "candidate_traversal": "derives the child key and common-prefix length directly from the original token array and current offset",
+    "unchanged_semantics": [
+      "resumable-node selection",
+      "compressed-edge splitting",
+      "lease locking and release",
+      "matched-slot assembly"
+    ]
+  },
+  "static_validation": {
+    "python_tests": 72,
+    "ocaml_tests": "passed",
+    "transformer_prefix_match_tokens": 3,
+    "transformer_prefix_checkpoint": null
+  },
+  "measurement": null
+}

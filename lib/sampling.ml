@@ -51,6 +51,9 @@ module Params = struct
       seed = 0;
     }
 
+  let is_greedy params =
+    params.temperature <= 0.0001 || params.top_k = 1
+
   let create ?(temperature = 0.0) ?(top_k = 0) ?(top_p = 1.0) ?(min_p = 0.0)
       ?(seed = 0) () =
     {
@@ -139,7 +142,7 @@ external f16_sample_native :
 let sample ~params ~vocabulary bytes =
   let ( let* ) = Result.bind in
   let* row = Float16_logits.last_row ~vocabulary bytes in
-  if params.Params.temperature <= 0.0001 || params.Params.top_k = 1 then
+  if Params.is_greedy params then
     Greedy.f16_last_row ~vocabulary bytes
   else
     try

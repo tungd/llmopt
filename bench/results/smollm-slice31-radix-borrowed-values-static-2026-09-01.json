@@ -1,0 +1,19 @@
+{
+  "created_at": "2026-09-01T15:03:14+07:00",
+  "kind": "smollm-slice31-radix-borrowed-values-static",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_RADIX_SHARED_VALUES=1",
+    "scope": "sequential decode matched-slot access",
+    "default_selected": false,
+    "old_access": "copies the lease-local matched-slot array before read-only sequential decode",
+    "candidate_access": "borrows the lease-local array read-only until release_match",
+    "other_cache_callers_keep_copied_values": true
+  },
+  "static_validation": {
+    "python_tests": 72,
+    "ocaml_tests": "passed",
+    "canonical_slot_order": "exact",
+    "copied_api_preserved": true
+  },
+  "measurement": null
+}

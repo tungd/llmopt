@@ -261,6 +261,26 @@ let graph () =
     [ 1; 1; 1; 64 ] Ir.Dtype.Float16
   |> output graph "paged_attention";
 
+  let paged_gqa3_query =
+    input graph "paged_gqa3_query" [ 1; 3; 1; 64 ] Ir.Dtype.Float16
+  in
+  let paged_gqa3_key =
+    input graph "paged_gqa3_current_key" [ 1; 1; 1; 64 ] Ir.Dtype.Float16
+  in
+  let paged_gqa3_value =
+    input graph "paged_gqa3_current_value" [ 1; 1; 1; 64 ] Ir.Dtype.Float16
+  in
+  let paged_gqa3_pool = input graph "paged_gqa3_pool" [ 132 ] Ir.Dtype.Int8 in
+  let paged_gqa3_slots = input graph "paged_gqa3_slots" [ 1 ] Ir.Dtype.Int32 in
+  let paged_gqa3_mask =
+    input graph "paged_gqa3_mask" [ 1; 1; 1; 2 ] Ir.Dtype.Bool
+  in
+  primitive graph (Ir.Primitive.Paged_attention_q8 paged_attention)
+    [ paged_gqa3_query; paged_gqa3_key; paged_gqa3_value; paged_gqa3_pool;
+      paged_gqa3_slots; paged_gqa3_mask ]
+    [ 1; 3; 1; 64 ] Ir.Dtype.Float16
+  |> output graph "paged_gqa3_attention";
+
   let cast_f16 = input graph "cast_f16_input" [ 3 ] Ir.Dtype.Float16 in
   primitive graph (Ir.Primitive.Cast Ir.Dtype.Float32) [ cast_f16 ] [ 3 ]
     Ir.Dtype.Float32

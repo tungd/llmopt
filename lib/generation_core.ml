@@ -39,7 +39,8 @@ module type Engine = sig
   type step
 
   val prompt : t -> tokens:int array -> (step * int, string) result
-  val decode : t -> prefix:int array -> token:int -> (step, string) result
+  val decode : t -> step:step -> token:int -> (step, string) result
+  val release : step -> (unit, string) result
   val tokens : step -> int array
   val next_token : ?params:Sampling.Params.t -> step -> (int, string) result
 end
@@ -55,6 +56,7 @@ module Make (Engine : Engine) = struct
       | Finished of {
           result : Result.t;
         }
+      | Closed
 
     type t = {
       config : Config.t;
@@ -72,17 +74,18 @@ module Make (Engine : Engine) = struct
     let is_finished state =
       match state.status with
       | Finished _ -> true
+      | Closed -> true
       | Active _ -> false
 
     let result state =
       match state.status with
       | Finished { result } -> Some result
-      | Active _ -> None
+      | Active _ | Closed -> None
 
     let current_tokens state =
       match state.status with
       | Active { step; _ } -> Engine.tokens step
-      | Finished _ -> [||]
+      | Finished _ | Closed -> [||]
 
     let completion_tokens state =
       List.rev state.completion_rev
@@ -93,9 +96,19 @@ module Make (Engine : Engine) = struct
         ~prompt () =
       let started = Unix.gettimeofday () in
       let* step, cached_prompt_tokens = Engine.prompt engine ~tokens:prompt in
-      let* first_token = Engine.next_token ~params:sampling_params step in
+      let* first_token =
+        match Engine.next_token ~params:sampling_params step with
+        | Ok token -> Ok token
+        | Error message ->
+            (match Engine.release step with
+            | Ok () -> Error message
+            | Error release ->
+                Error (message ^ "; generation release failed: " ^ release))
+      in
       let first_at = Unix.gettimeofday () in
       let limit = Config.max_new_tokens config in
+      let terminal = is_stop first_token || limit = 1 in
+      let* () = if terminal then Engine.release step else Ok () in
       let state =
         {
           config;
@@ -143,14 +156,27 @@ module Make (Engine : Engine) = struct
     let step engine state =
       match state.status with
       | Finished { result } -> Ok (None, Some result.finish_reason)
+      | Closed -> Error "generation state is closed"
       | Active { step; last_token; count } ->
           let limit = Config.max_new_tokens state.config in
           let token_started = Unix.gettimeofday () in
           let* next_step =
-            Engine.decode engine ~prefix:(Engine.tokens step) ~token:last_token
+            match Engine.decode engine ~step ~token:last_token with
+            | Ok next_step -> Ok next_step
+            | Error message ->
+                (match Engine.release step with
+                | Ok () -> Error message
+                | Error release ->
+                    Error (message ^ "; generation release failed: " ^ release))
           in
           let* next_token =
-            Engine.next_token ~params:state.sampling_params next_step
+            match Engine.next_token ~params:state.sampling_params next_step with
+            | Ok token -> Ok token
+            | Error message ->
+                (match Engine.release next_step with
+                | Ok () -> Error message
+                | Error release ->
+                    Error (message ^ "; generation release failed: " ^ release))
           in
           let token_at = Unix.gettimeofday () in
           let inter_token = token_at -. token_started in
@@ -159,6 +185,7 @@ module Make (Engine : Engine) = struct
             inter_token :: state.inter_token_seconds_rev;
           let new_count = count + 1 in
           if state.is_stop next_token then (
+            let* () = Engine.release next_step in
             let res =
               {
                 Result.prompt_tokens = Array.copy state.prompt;
@@ -174,6 +201,7 @@ module Make (Engine : Engine) = struct
             state.status <- Finished { result = res };
             Ok (Some next_token, Some Finish_reason.End_token)
           ) else if new_count >= limit then (
+            let* () = Engine.release next_step in
             let res =
               {
                 Result.prompt_tokens = Array.copy state.prompt;
@@ -198,6 +226,14 @@ module Make (Engine : Engine) = struct
                 };
             Ok (Some next_token, None)
           )
+
+    let close state =
+      match state.status with
+      | Active { step; _ } ->
+          let* () = Engine.release step in
+          state.status <- Closed;
+          Ok ()
+      | Finished _ | Closed -> Ok ()
   end
 
   let run ?(emit = Fun.const ()) ?(sampling_params = Sampling.Params.greedy)

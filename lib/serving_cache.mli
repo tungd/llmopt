@@ -27,6 +27,10 @@ module Match : sig
 
   val tokens : t -> int
   val slots : t -> Kv_cache.Slot.t array
+
+  (** Borrowed read-only view, valid until [release_match]. *)
+  val slots_view : t -> Kv_cache.Slot.t array
+
   val checkpoint : t -> Kv_cache.Checkpoint.t option
 end
 
@@ -55,9 +59,31 @@ val insert :
   ?namespace:string ->
   tokens:int array ->
   slots:Kv_cache.Slot.t array ->
-  checkpoint:Kv_cache.Checkpoint.t ->
+  ?checkpoint:Kv_cache.Checkpoint.t ->
   unit ->
   (int, string) result
+
+(** Insert a complete prefix and acquire its canonical cache lease without a
+    second radix traversal. The match must be released with [release_match]. *)
+val insert_and_match :
+  t ->
+  ?namespace:string ->
+  tokens:int array ->
+  slots:Kv_cache.Slot.t array ->
+  ?checkpoint:Kv_cache.Checkpoint.t ->
+  unit ->
+  (int * Match.t, string) result
+
+(** Extend a live page-size-one match without re-walking its complete token
+    prefix. The original and returned matches must each be released. *)
+val extend_match :
+  t ->
+  Match.t ->
+  token:int ->
+  slot:Kv_cache.Slot.t ->
+  ?checkpoint:Kv_cache.Checkpoint.t ->
+  unit ->
+  (Match.t, string) result
 
 val validate : t -> (unit, string) result
 val stats : t -> Stats.t

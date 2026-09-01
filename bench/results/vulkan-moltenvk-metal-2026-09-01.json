@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "experiment": "vulkan-moltenvk-metal-streaming-copy",
-  "recorded_at": "2026-08-31T21:19:09.484154+00:00",
+  "recorded_at": "2026-09-01T14:20:56.726806+00:00",
   "host": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
   "measurement_contract": {
     "timing": "backend device-time intervals around one compute dispatch; Metal uses command GPU timestamps when exposed",
@@ -30,33 +30,33 @@
       "execution": {
         "gpu_cores": 16,
         "max_threads_per_threadgroup": 1024,
-        "memory_bandwidth_gbps": 212.3068322696309,
+        "memory_bandwidth_gbps": 223.61468403959054,
         "fp16_tflops": 18.7,
-        "dispatch_overhead_seconds": 2.500019036233425e-06
+        "dispatch_overhead_seconds": 2.7916976250708103e-06
       }
     },
     "measurement": {
       "warmup": 5,
       "repeats": 21,
       "max_threads_per_threadgroup": 1024,
-      "dispatch_overhead_seconds": 2.500019036233425e-06,
-      "memory_bandwidth_gbps": 212.3068322696309,
+      "dispatch_overhead_seconds": 2.7916976250708103e-06,
+      "memory_bandwidth_gbps": 223.61468403959054,
       "memory_bandwidth_stream_bytes": 268435456,
       "streaming_copy_sweep": [
         {
           "stream_bytes": 16777216,
-          "dispatch_overhead_seconds": 4.791654646396637e-06,
-          "effective_bandwidth_gbps": 259.6087689803925
+          "dispatch_overhead_seconds": 6.125017534941435e-06,
+          "effective_bandwidth_gbps": 159.37194395681362
         },
         {
           "stream_bytes": 67108864,
-          "dispatch_overhead_seconds": 2.500019036233425e-06,
-          "effective_bandwidth_gbps": 242.92803301324847
+          "dispatch_overhead_seconds": 2.7916976250708103e-06,
+          "effective_bandwidth_gbps": 236.64598790146542
         },
         {
           "stream_bytes": 268435456,
-          "dispatch_overhead_seconds": 2.374988980591297e-06,
-          "effective_bandwidth_gbps": 212.3068322696309
+          "dispatch_overhead_seconds": 2.00001522898674e-06,
+          "effective_bandwidth_gbps": 223.61468403959054
         }
       ]
     }
@@ -70,57 +70,57 @@
     "measurement": {
       "warmup": 5,
       "repeats": 21,
-      "dispatch_overhead_seconds": 7.875e-06,
-      "memory_bandwidth_gbps": 249.01721785989434,
+      "dispatch_overhead_seconds": 7.125e-06,
+      "memory_bandwidth_gbps": 246.59151640641252,
       "memory_bandwidth_stream_bytes": 268435456,
       "copy_sample_validated": true,
       "streaming_copy_sweep": [
         {
           "stream_bytes": 16777216,
-          "gpu_seconds": 0.000127584,
-          "effective_bandwidth_gbps": 262.9987459242538
+          "gpu_seconds": 0.00012916700000000002,
+          "effective_bandwidth_gbps": 259.77557735334875
         },
         {
           "stream_bytes": 67108864,
-          "gpu_seconds": 0.0005387090000000001,
-          "effective_bandwidth_gbps": 249.14699401717806
+          "gpu_seconds": 0.000541667,
+          "effective_bandwidth_gbps": 247.7864222852786
         },
         {
           "stream_bytes": 268435456,
-          "gpu_seconds": 0.0021559590000000003,
-          "effective_bandwidth_gbps": 249.01721785989434
+          "gpu_seconds": 0.0021771670000000003,
+          "effective_bandwidth_gbps": 246.59151640641252
         }
       ]
     }
   },
   "comparison": {
     "dispatch": {
-      "metal_seconds": 2.500019036233425e-06,
-      "vulkan_seconds": 7.875e-06,
-      "vulkan_over_metal": 3.1499760145285216,
-      "vulkan_minus_metal_seconds": 5.374980963766575e-06
+      "metal_seconds": 2.7916976250708103e-06,
+      "vulkan_seconds": 7.125e-06,
+      "vulkan_over_metal": 2.552210503033715,
+      "vulkan_minus_metal_seconds": 4.33330237492919e-06
     },
     "streaming_copy_sweep": [
       {
         "stream_bytes": 16777216,
-        "metal_effective_bandwidth_gbps": 259.6087689803925,
-        "vulkan_effective_bandwidth_gbps": 262.9987459242538,
-        "vulkan_over_metal": 1.0130580217192793,
-        "vulkan_minus_metal_gbps": 3.3899769438613134
+        "metal_effective_bandwidth_gbps": 159.37194395681362,
+        "vulkan_effective_bandwidth_gbps": 259.77557735334875,
+        "vulkan_over_metal": 1.6299956623716805,
+        "vulkan_minus_metal_gbps": 100.40363339653513
       },
       {
         "stream_bytes": 67108864,
-        "metal_effective_bandwidth_gbps": 242.92803301324847,
-        "vulkan_effective_bandwidth_gbps": 249.14699401717806,
-        "vulkan_over_metal": 1.0256000138262777,
-        "vulkan_minus_metal_gbps": 6.218961003929593
+        "metal_effective_bandwidth_gbps": 236.64598790146542,
+        "vulkan_effective_bandwidth_gbps": 247.7864222852786,
+        "vulkan_over_metal": 1.0470763712607367,
+        "vulkan_minus_metal_gbps": 11.140434383813187
       },
       {
         "stream_bytes": 268435456,
-        "metal_effective_bandwidth_gbps": 212.3068322696309,
-        "vulkan_effective_bandwidth_gbps": 249.01721785989434,
-        "vulkan_over_metal": 1.1729119369255203,
-        "vulkan_minus_metal_gbps": 36.710385590263456
+        "metal_effective_bandwidth_gbps": 223.61468403959054,
+        "vulkan_effective_bandwidth_gbps": 246.59151640641252,
+        "vulkan_over_metal": 1.1027518942483847,
+        "vulkan_minus_metal_gbps": 22.97683236682198
       }
     ]
   }

@@ -1,0 +1,51 @@
+{
+  "created_at": "2026-09-01T13:13:19+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-icb-zero-barrier-probe",
+  "model_dir": "/tmp/llmopt-smollm-q8-r2-sg4-engine-v2",
+  "protocol": {
+    "environment": ["LLMOPT_PROFILE_BATCH=1", "LLMOPT_EXPERIMENTAL_SPLIT8=1"],
+    "lengths": [128, 512],
+    "campaigns": 1,
+    "prebaked_dispatches": 372,
+    "prebaked_barriers": 0
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 0.745624,
+      "tokens_per_second": 171.668334,
+      "inter_token_mean_ms": 5.169118,
+      "inter_token_median_ms": 4.029989,
+      "inter_token_min_ms": 2.959967,
+      "inter_token_max_ms": 20.304918,
+      "completion_tokens_sha256": "901a54813ed7684415f90dd2c4188730f1a266b2514a2b308a632fd4a7e3e0ed",
+      "prebaked_steps": 91,
+      "prebaked_gpu_mean_ms": 1.445958,
+      "prebaked_wait_mean_ms": 2.019998
+    },
+    "512_tokens": {
+      "elapsed_seconds": 2.380376,
+      "tokens_per_second": 215.092082,
+      "inter_token_mean_ms": 4.545352,
+      "inter_token_median_ms": 4.235983,
+      "inter_token_min_ms": 2.912998,
+      "inter_token_max_ms": 14.688015,
+      "completion_tokens_sha256": "a8c404502ebde2146f4f05a47f59ec150cc596c186647597741f3899be806fd8",
+      "prebaked_steps": 475,
+      "prebaked_gpu_mean_ms": 1.586993,
+      "prebaked_wait_mean_ms": 2.178189
+    }
+  },
+  "comparison": {
+    "128_over_q8_head_control_ratio": 1.270360780,
+    "512_over_q8_head_control_ratio": 1.563618764,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 1.773147558,
+    "result_512_as_fraction_of_llamacpp": 0.563968856
+  },
+  "disposition": {
+    "retained_as_dependency_policy": false,
+    "reason": "Specialization had pruned every barrier, so the observation used fully concurrent dispatches with workspace reuse designed for sequential execution.",
+    "follow_up": "Specialization now preserves barrier commands and rebuilds the workspace lifetime stages; compiled and unmeasured."
+  }
+}

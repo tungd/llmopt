@@ -77,6 +77,7 @@ module Match = struct
 
   let tokens match_ = Radix_cache.matched_tokens match_.lease
   let slots match_ = Radix_cache.matched_values match_.lease
+  let slots_view match_ = Radix_cache.matched_values_view match_.lease
   let checkpoint match_ = Radix_cache.checkpoint match_.lease
 end
 
@@ -149,14 +150,60 @@ let release_redundant cache result =
       | Some checkpoint ->
           release_checkpoint cache checkpoint)
 
-let insert cache ?namespace ~tokens ~slots ~checkpoint () =
+let insert cache ?namespace ~tokens ~slots ?checkpoint () =
   let key = Radix_cache.Key.create ?namespace tokens in
-  match Radix_cache.insert cache.radix ~key ~values:slots ~checkpoint with
+  match Radix_cache.insert cache.radix ~key ~values:slots ?checkpoint () with
   | Error message -> Error message
   | Ok result ->
       (match release_redundant cache result with
       | Error message -> Error message
       | Ok () -> Ok result.prefix_tokens)
+
+let insert_and_match cache ?namespace ~tokens ~slots ?checkpoint () =
+  let key = Radix_cache.Key.create ?namespace tokens in
+  match
+    Radix_cache.insert_and_match cache.radix ~key ~values:slots ?checkpoint ()
+  with
+  | Error message -> Error message
+  | Ok (result, lease) ->
+      (match release_redundant cache result with
+      | Ok () -> Ok (result.prefix_tokens, { Match.lease = lease })
+      | Error message ->
+          let _ = Radix_cache.release cache.radix lease in
+          Error message)
+
+let extend_match cache match_ ~token ~slot ?checkpoint () =
+  match
+    Radix_cache.extend cache.radix match_.Match.lease ~token ~value:slot
+      ?checkpoint ()
+  with
+  | Error message -> Error message
+  | Ok (lease, canonical_slot, redundant_checkpoint) ->
+      let release_slot =
+        if same_slot slot canonical_slot then Ok ()
+        else release_tokens cache [| slot |]
+      in
+      let release_checkpoint_result =
+        match redundant_checkpoint with
+        | None -> Ok ()
+        | Some redundant
+          when Option.exists (same_checkpoint redundant)
+                 (Radix_cache.checkpoint lease) ->
+            Ok ()
+        | Some redundant -> release_checkpoint cache redundant
+      in
+      (match release_slot, release_checkpoint_result with
+      | Ok (), Ok () -> Ok { Match.lease = lease }
+      | slot_result, checkpoint_result ->
+          let _ = Radix_cache.release cache.radix lease in
+          let failures =
+            [ (match slot_result with Ok () -> None | Error value -> Some value);
+              (match checkpoint_result with
+              | Ok () -> None
+              | Error value -> Some value) ]
+            |> List.filter_map Fun.id
+          in
+          Error (String.concat "; " failures))
 
 let evict cache ~target_tokens =
   let eviction = Radix_cache.evict cache.radix ~target_tokens in

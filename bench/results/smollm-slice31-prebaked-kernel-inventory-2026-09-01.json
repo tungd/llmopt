@@ -1,0 +1,36 @@
+{
+  "created_at": "2026-09-01T13:45:00+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-prebaked-kernel-inventory",
+  "executable_sha256": "0260f28b089e0ac28312406becfa3658f517b09865d3134f97969c5c0e6aac3d",
+  "protocol": {
+    "environment": ["LLMOPT_PROFILE_BATCH=1", "LLMOPT_PROFILE_PLAN=1", "LLMOPT_EXPERIMENTAL_SPLIT8=1", "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE=1"],
+    "lengths": [128, 512],
+    "campaigns": 1,
+    "dispatches": 372,
+    "barriers": 245
+  },
+  "kernel_counts": {
+    "llmopt_q5_0_linear_f16": 76,
+    "llmopt_rms_norm_f16_wf32_wide": 61,
+    "llmopt_cache_pack_attention_q8_simd": 60,
+    "llmopt_rotary_qk_f16_simd_h64": 30,
+    "llmopt_q5_0_linear_f16_add": 30,
+    "llmopt_q5_0_gated_linear_f16": 30,
+    "llmopt_attention_q8_paged_simd_h64_split8": 30,
+    "llmopt_q4_k_linear_f16_add": 16,
+    "llmopt_q8_0_linear_f16": 14,
+    "llmopt_q6_k_linear_f16_add": 14,
+    "auxiliary_dispatches": 11
+  },
+  "result": {
+    "128_tokens": {"tokens_per_second": 198.283242, "inter_token_mean_ms": 4.626875, "completion_tokens_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0", "prebaked_gpu_mean_ms": 2.719440, "prebaked_wait_mean_ms": 2.906492},
+    "512_tokens": {"tokens_per_second": 217.977505, "inter_token_mean_ms": 4.489587, "completion_tokens_sha256": "847c4abc3104d910e487dfb30fd58f56ffb2512d3859e8850343b6ef6b52a771", "prebaked_gpu_mean_ms": 3.660957, "prebaked_wait_mean_ms": 3.842525}
+  },
+  "analysis": {
+    "qkv_projection_dispatches": 90,
+    "attention_rms_norm_dispatches": 30,
+    "qkv_plus_attention_rms_norm_dispatches": 120,
+    "next_implementation_target": "mixed-Q5_0-Q8_0 attention RMSNorm-QKV fusion"
+  }
+}

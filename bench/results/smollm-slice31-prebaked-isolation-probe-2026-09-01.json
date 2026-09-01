@@ -1,0 +1,44 @@
+{
+  "created_at": "2026-09-01T12:21:34+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-prebaked-isolation-probe",
+  "model_dir": "/tmp/llmopt-smollm-split8-prebaked-engine",
+  "protocol": {
+    "split8_enabled": false,
+    "attention_kernel": "llmopt_attention_q8_paged_simd_h64_gqa3",
+    "prebaked_from_past_tokens": 64,
+    "lengths": [128, 512],
+    "campaigns": 1
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 1.196002,
+      "tokens_per_second": 107.023210,
+      "inter_token_mean_ms": 8.879027,
+      "inter_token_median_ms": 8.790016,
+      "inter_token_min_ms": 7.676840,
+      "inter_token_max_ms": 18.940210
+    },
+    "512_tokens": {
+      "elapsed_seconds": 7.055802,
+      "tokens_per_second": 72.564393,
+      "inter_token_mean_ms": 13.695466,
+      "inter_token_median_ms": 11.721134,
+      "inter_token_min_ms": 7.333040,
+      "inter_token_max_ms": 25.394201
+    }
+  },
+  "comparison": {
+    "128_over_baseline_ratio": 1.358409422,
+    "512_over_baseline_ratio": 1.572040334,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 5.255883557,
+    "completion_tokens_equal_to_baseline": false
+  },
+  "diagnosis": {
+    "dynamic_past_length_updated": true,
+    "captured_causal_mask_extent_updated": false,
+    "prebaked_default_enabled": false,
+    "next_change": "One-token paged attention ignores the redundant all-visible causal mask before prebaking is measured again."
+  }
+}

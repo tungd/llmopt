@@ -1,0 +1,23 @@
+{
+  "created_at": "2026-09-01T14:05:17+07:00",
+  "kind": "smollm-slice31-paired-cache-pack-static",
+  "implementation": {
+    "kernel": "llmopt_cache_pack_attention_q8_pair_simd",
+    "input_dtype": "f16",
+    "output_dtype": "i8",
+    "dispatches_per_attention_layer_before": 2,
+    "dispatches_per_attention_layer_after": 1,
+    "legacy_package_fallback": true,
+    "quantization_contract": "independent key and value maxima, FP16 stored scales, rint and clamp to [-127,127]"
+  },
+  "static_validation": {
+    "python_tests": 72,
+    "ocaml_tests": "passed",
+    "metal_fixture_kernels": 104,
+    "metal_fixture_commands": 1090,
+    "metal_fixture_opaque_commands": 0,
+    "metal_source_compiled": true,
+    "package_validated": true
+  },
+  "measurement": null
+}

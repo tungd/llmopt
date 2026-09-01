@@ -1,0 +1,78 @@
+{
+  "created_at": "2026-09-01T14:05:17+07:00",
+  "kind": "smollm-slice31-mixed-qkv-fusion-probe",
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "engine": "_artifacts/smollm-slice31-qkv-engine-v2",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "environment": {
+    "LLMOPT_PROFILE_BATCH": "1",
+    "LLMOPT_PROFILE_PLAN": "1",
+    "LLMOPT_EXPERIMENTAL_SPLIT8": "1",
+    "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE": "1"
+  },
+  "artifacts": {
+    "executable_sha256": "9d53b2abc986a9c5f642ea7544ef4765d47cdccb1572f74203dbb4ad41253933",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "decode_package_sha256": "ebf54f86fd47c84fa119bd44c5d008fbdc56f8c3fada5670105e30bd23b0e371",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211",
+    "raw_log_directory": "/tmp/llmopt-qkv-probe.ZGei88"
+  },
+  "runs": [
+    {
+      "completion_tokens": 128,
+      "elapsed_seconds": 0.714226,
+      "tokens_per_second": 179.214981,
+      "inter_token_mean_ms": 4.604347,
+      "inter_token_median_ms": 3.043175,
+      "completion_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.683040,
+      "gpu_median_ms": 2.666917,
+      "commit_wait_mean_ms": 2.869440,
+      "commit_wait_median_ms": 2.852083
+    },
+    {
+      "completion_tokens": 512,
+      "elapsed_seconds": 2.342418,
+      "tokens_per_second": 218.577515,
+      "inter_token_mean_ms": 4.466304,
+      "inter_token_median_ms": 4.185915,
+      "completion_sha256": "847c4abc3104d910e487dfb30fd58f56ffb2512d3859e8850343b6ef6b52a771",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.633636,
+      "gpu_median_ms": 3.622625,
+      "commit_wait_mean_ms": 3.811745,
+      "commit_wait_median_ms": 3.781500,
+      "dispatches": 312,
+      "barriers": 245
+    }
+  ],
+  "decode_kernel_inventory": {
+    "rmsnorm": 61,
+    "cache_pack": 60,
+    "rotary": 30,
+    "q5_linear_add": 30,
+    "q5_gated": 30,
+    "split8_attention": 30,
+    "q5_qkv": 16,
+    "mixed_q5_q5_q8_qkv": 14,
+    "q4_k_linear_add": 16,
+    "q6_k_linear_add": 14
+  },
+  "comparison": {
+    "exact_profiled_baseline_512_tokens_per_second": 217.977505,
+    "candidate_minus_baseline_tokens_per_second": 0.600010,
+    "candidate_minus_baseline_percent": 0.275262,
+    "baseline_dispatches": 372,
+    "dispatches_removed": 60,
+    "candidate_minus_baseline_gpu_mean_ms": -0.027321,
+    "candidate_minus_baseline_commit_wait_mean_ms": -0.030780,
+    "llama_cpp_reference_tokens_per_second": 381.39,
+    "llama_cpp_over_candidate": 1.744873,
+    "candidate_fraction_of_llama_cpp": 0.573108
+  },
+  "parity": {
+    "status": "exact",
+    "baseline_hashes_match": true
+  }
+}

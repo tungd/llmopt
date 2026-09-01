@@ -1,0 +1,38 @@
+{
+  "created_at": "2026-09-01T14:32:38+07:00",
+  "kind": "smollm-slice31-llama-style-kquant-mv-static",
+  "upstream_reference": {
+    "repository": "https://github.com/ggml-org/llama.cpp",
+    "commit": "0eadefebd3f8f92a86d634a0e5b8fffc9dc792c0",
+    "files": [
+      "ggml/src/ggml-metal/ggml-metal-impl.h",
+      "ggml/src/ggml-metal/kernels/mul_mv.metal"
+    ],
+    "output_rows_per_simdgroup": {
+      "Q4_K": 2,
+      "Q6_K": 2
+    },
+    "simdgroups_per_threadgroup": 2
+  },
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_KQUANT_LLAMA_MV=1",
+    "kernels": [
+      "llmopt_q4_k_linear_f16_llama_mv_add",
+      "llmopt_q6_k_linear_f16_llama_mv_add"
+    ],
+    "scope": "single-token Q4_K and Q6_K down-projection residual adds",
+    "slice31_dispatches_affected": 30,
+    "default_selected": false,
+    "arithmetic_note": "llama.cpp-style two-row SIMD structure changes floating-point reduction order"
+  },
+  "static_validation": {
+    "python_tests": 72,
+    "ocaml_tests": "passed",
+    "metal_source_compiled": true,
+    "slice31_package_kernels": 102,
+    "slice31_packages_opaque_commands": 0,
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "decode_package_sha256": "f61b68b1605c6c56873d70851c6b20f3b9eca6f58c0ff82f9c7b246836fb0d1b"
+  },
+  "measurement": null
+}

@@ -4,7 +4,7 @@ title: 'Graph-Captured GGUF/UD Serving Across Model Families'
 description: 'Track the architecture-neutral trajectory from PyTorch Dynamo FX capture through GGUF/UD tensor ingestion, AOT megakernel fusions, zero-JIT Metal dispatch, and continuous batching serving under Model Program ABI v2.'
 tags: [goal, compiler, pytorch, fx, gguf, unsloth, metal, serving, continuous-batching, megakernels]
 status: stable
-generated: { by: 'process:antigravity', at: '2026-08-31T10:20:00+07:00' }
+generated: { by: 'codex/gpt-5', at: '2026-09-01T17:17:48+07:00' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -60,6 +60,12 @@ sources:
   - id: slice-31-receipt
     resource: /bench/results/compiler-generalization-slice-31-2026-08-30.json
     title: Slice 31 cross-model benchmark receipt
+  - id: smollm-matched-sustained
+    resource: /bench/results/smollm-slice31-llamacpp-matched-trace-probe-2026-09-01.json
+    title: SmolLM2 matched-token sustained LLMOpt and llama.cpp comparison
+  - id: smollm-matched-q8kv
+    resource: /bench/results/smollm-slice31-llamacpp-q8kv-matched-trace-probe-2026-09-01.json
+    title: SmolLM2 matched-token Q8-KV LLMOpt and llama.cpp comparison
   - id: build
     resource: /ninja.build
     title: Ninja build graph
@@ -135,6 +141,21 @@ The latest measured baseline across the probe suite on Apple M4 Pro (16 cores, 2
 ```
 
 All models compile to zero-opaque schedules, execute with single-workspace memory planning, and produce deterministic finite logits.
+
+The later matched-token sustained SmolLM2 campaign uses the same 28 prompt IDs
+and counterbalances 512- and 1,024-token generation. LLMOpt measures
+`376.065890/413.437096 tok/s` versus llama.cpp `389.8/387.1 tok/s`, ratios of
+`0.964766x/1.068037x`; both observations are inside the existing user-declared
+`0.90x` to `1.10x` performance envelope. This is performance parity evidence,
+not output parity: the decoded streams differ from the first generated token,
+and the compared KV paths are LLMOpt paged Q8 versus llama.cpp default F16.
+
+A separate matched Q8-KV campaign measured LLMOpt at
+`301.159736/321.751415 tok/s` versus llama.cpp at `278.4/286.3 tok/s` for
+512/1,024 tokens, so LLMOpt was `1.081752x/1.123826x` faster in that campaign.
+Both runtimes slowed materially versus the immediately preceding campaign while
+reproducing their exact prior output hashes. The same-campaign ratio is valid;
+the cross-campaign Q8-versus-F16 delta does not isolate KV precision.
 
 ---
 

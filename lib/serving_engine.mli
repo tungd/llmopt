@@ -37,6 +37,7 @@ module Batch_result : sig
 end
 
 type t
+type engine = t
 
 val validate_packages :
   ?program:Model_program.t ->
@@ -71,6 +72,17 @@ val prompt : t -> tokens:int array -> (Prompt.t, string) result
 val verify_prompt : t -> tokens:int array -> (Prompt.t, string) result
 val prefill : t -> tokens:int array -> (Step.t, string) result
 val decode : t -> prefix:int array -> token:int -> (Step.t, string) result
+
+module Sequence : sig
+  type t
+
+  (** Acquire the fully cached prefix represented by [step] once, then extend
+      that canonical cache lease directly after each decode. *)
+  val create : engine -> Step.t -> (t, string) result
+  val step : t -> Step.t
+  val decode : t -> token:int -> (Step.t, string) result
+  val close : t -> (unit, string) result
+end
 val step_batch :
   t ->
   decodes:Batch_item.decode_request list ->

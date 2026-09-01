@@ -1,0 +1,45 @@
+{
+  "created_at": "2026-09-01T15:24:00+07:00",
+  "kind": "smollm-slice31-llama-style-qkv-mv-static",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV=1",
+    "kernel": "llmopt_q5_0_qkv_linear_f16_llama_mv",
+    "scope": "single-token fused Q/K/V projections whose three weights are Q5_0",
+    "default_selected": false,
+    "threads_per_threadgroup": 128,
+    "simdgroups_per_threadgroup": 4,
+    "output_rows_per_simdgroup": 4,
+    "output_rows_per_threadgroup": 16,
+    "mixed_q5_q5_q8_dispatches_unchanged": true
+  },
+  "slice31_inventory_per_graph": {
+    "all_q5_qkv_dispatches": 16,
+    "mixed_q5_q5_q8_qkv_dispatches": 14
+  },
+  "engine": {
+    "path": "_artifacts/smollm-slice31-llama-mv-engine-v9",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "abf8216977aa1bb7ffe9cc94f6f32db27f43d8857f06b3939ea3d737b4f70348",
+    "decode_package_sha256": "e9088588278641135a1eeb49640e68a674c134a05a1b0add641acbb26c074244",
+    "verification_package_sha256": "ec66e8cdacf6e0e4b6462df6d7fe1f10d6e2fe03978cc998e3ee4ecd672707fd",
+    "metal_source_sha256": "8fdbfedff9d0d40423a9a7fa7ab3e6aec33884e6e8c716950ec173f32e905489",
+    "metallib_sha256": "0157967903be47dc05c9c005b9f5ccbd711c7c0a013a049d3f50aca1dbf1ae38",
+    "generate_executable_sha256": "e774d62296483e8d52fff32320ddbf30ca226bc926f90fba0478abf25a66874d",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211"
+  },
+  "static_validation": {
+    "metal_source_compiled": true,
+    "model_program_linked": true,
+    "packages_validated": ["prefill", "decode", "verification"],
+    "kernels_per_package": 104,
+    "prefill_ir_commands": 1069,
+    "decode_ir_commands": 1189,
+    "verification_ir_commands": 1219,
+    "opaque_commands_per_package": 0,
+    "selector_unit_cases": 4,
+    "executable_contains_environment_flag": true,
+    "executable_contains_candidate_kernel_name": true,
+    "ocaml_tests": "passed"
+  },
+  "measurement": null
+}

@@ -1,0 +1,45 @@
+{
+  "created_at": "2026-09-01T15:31:14+07:00",
+  "kind": "smollm-slice31-llama-style-mixed-qkv-mv-static",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_MIXED_QKV_LLAMA_MV=1",
+    "common_required_flag": "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV=1",
+    "kernel": "llmopt_q5_0_qkv_linear_vq8_f16_llama_mv",
+    "scope": "single-token fused Q/K/V projections with Q5_0 Q/K and Q8_0 V weights",
+    "default_selected": false,
+    "threads_per_threadgroup": 128,
+    "simdgroups_per_threadgroup": 4,
+    "output_rows_per_simdgroup": 4,
+    "output_rows_per_threadgroup": 16
+  },
+  "slice31_inventory_per_graph": {
+    "new_mixed_q5_q5_q8_dispatches": 14,
+    "existing_all_q5_dispatches": 16,
+    "cumulative_llama_style_qkv_dispatches": 30
+  },
+  "engine": {
+    "path": "_artifacts/smollm-slice31-llama-mv-engine-v10",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "0ead105584fac0b36d02430a0372365f670940f40ea60f64f73664d95e306c7c",
+    "decode_package_sha256": "e15a136ce013881dd137a4192fc7b134a9f501da0dd23700ee862f7ad65b9f5a",
+    "verification_package_sha256": "aac2cc1b83c7b9de3aedadce2e5a21df02c33f1d34a6b4ffd79e975fd1381bb5",
+    "metal_source_sha256": "a0271abc6fadf764560becab1ee315b68e31ea5e8e852420b59377560472264f",
+    "metallib_sha256": "7790d66d9c754c5017a699d960256631c8d9b52ba73ce0a1000e883d2b29d560",
+    "generate_executable_sha256": "7073bd8629b703caf703114407e0a0849d93c26af16485782e406143840f3cf0",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211"
+  },
+  "static_validation": {
+    "metal_source_compiled": true,
+    "model_program_linked": true,
+    "packages_validated": ["prefill", "decode", "verification"],
+    "kernels_per_package": 105,
+    "prefill_ir_commands": 1069,
+    "decode_ir_commands": 1189,
+    "verification_ir_commands": 1219,
+    "opaque_commands_per_package": 0,
+    "selector_unit_cases": 5,
+    "python_tests": 72,
+    "ocaml_tests": "passed"
+  },
+  "measurement": null
+}

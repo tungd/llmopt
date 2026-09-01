@@ -41,6 +41,12 @@ module Resource_class = struct
           +. (Float.of_int (m * total_n) *. 2.0)
         in
         flops /. max 1.0 bytes
+    | Ir.Op.Quant_qkv_linear { m; k; n_q; n_k; n_v; _ } ->
+        let total_n = n_q + n_k + n_v in
+        let flops = 2.0 *. Float.of_int m *. Float.of_int total_n *. Float.of_int k in
+        let weights = Float.of_int (total_n * k) *. 0.5625 in
+        let activations = Float.of_int (m * (k + total_n)) *. 2.0 in
+        flops /. max 1.0 (weights +. activations)
     | Ir.Op.W4a16_lm_head_argmax { m; n; k; _ } ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
         let bytes =
@@ -91,6 +97,7 @@ module Resource_class = struct
     match op with
     | Ir.Op.W4a16_linear _
     | Ir.Op.W4a16_qkv_linear _
+    | Ir.Op.Quant_qkv_linear _
     | Ir.Op.W4a16_swiglu_ffn _
     | Ir.Op.Gated_linear _
     | Ir.Op.W4a16_lm_head_argmax _

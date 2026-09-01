@@ -1,0 +1,110 @@
+{
+  "created_at": "2026-09-01T21:18:11+07:00",
+  "kind": "smollm-slice31-llamacpp-q8kv-matched-trace-probe",
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "valid_same_campaign_relative_comparison": true,
+  "valid_isolated_q8_versus_f16_effect": false,
+  "protocol": {
+    "run_order": ["512_llama_cpp_q8kv", "512_llmopt_q8kv", "1024_llmopt_q8kv", "1024_llama_cpp_q8kv"],
+    "executions_per_runtime_and_length": 1,
+    "prompt_token_count": 28,
+    "prompt_token_ids_sha256": "696a0b3d2a4b6a8397f1fbeab7887d42d38b1f0b710d713dc61dcfa2fb20ba00",
+    "temperature": 0.0,
+    "seed": 0,
+    "raw_log_directory": "/tmp/llmopt-llamacpp-q8kv-matched-trace.uz9EYU"
+  },
+  "llama_cpp": {
+    "executable": "/opt/local/bin/llama-cli",
+    "version": "0.1.2-dev build 10531 commit f20395d",
+    "executable_sha256": "30b6e5c787fc9ab14df3f6c893ef836e19123e10f86a35adf121b6ea1a47ea5b",
+    "model_sha256": "ed5fa30c487b282ec156c29062f1222e5c20875a944ac98289dbd242e947f747",
+    "kv_cache": {"key": "q8_0", "value": "q8_0"},
+    "flags": ["-ngl", "999", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "-t", "8", "--temp", "0.0", "--seed", "0", "--no-warmup", "--no-conversation", "--single-turn", "--simple-io", "--perf", "--show-timings"]
+  },
+  "llmopt": {
+    "engine": "_artifacts/smollm-slice31-gqa3-split8-engine-v12",
+    "executable_sha256": "321076e3e6e133c40e32420ea7f7168d9e50b6027a09e9ccc774faaa8f72c808",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "kv_cache": "paged Q8 group-64",
+    "path_assertions": {
+      "gqa3_split8_dispatches_each_run": 30,
+      "all_q5_qkv_llama_mv_dispatches_each_run": 16,
+      "mixed_q5_q5_q8_qkv_llama_mv_dispatches_each_run": 14,
+      "dispatches_each_profiled_decode_step": 274,
+      "barriers_each_profiled_decode_step": 244,
+      "radix_hits_each_run": 1,
+      "radix_misses_each_run": 1
+    }
+  },
+  "runs": {
+    "512_llama_cpp_q8kv": {
+      "generated_tokens": 512,
+      "tokens_per_second": 278.4,
+      "tpot_ms": 3.591954023,
+      "retokenized_completion_ids_sha256": "47d46c5f42cb9c2f327c9c768e850bb15df87ef04f99c86c3ca7c2e462bd5362",
+      "generated_text_sha256": "95b2209c3078a13bb837dfd9fa1222a1ea172fcba263042b7bb38d9460db4113"
+    },
+    "512_llmopt_q8kv": {
+      "generated_tokens": 512,
+      "elapsed_seconds": 1.700094,
+      "tokens_per_second": 301.159736,
+      "inter_token_mean_ms": 3.203398,
+      "inter_token_median_ms": 2.276897,
+      "profile_steps": 475,
+      "gpu_mean_ms": 2.483151842,
+      "commit_wait_mean_ms": 2.719708949,
+      "completion_token_ids_sha256": "142f1c85e86133d29bc56cdc566873c6821fc08b3332c5131af9f118908a0f6b"
+    },
+    "1024_llmopt_q8kv": {
+      "generated_tokens": 1024,
+      "elapsed_seconds": 3.182581,
+      "tokens_per_second": 321.751415,
+      "inter_token_mean_ms": 3.056706,
+      "inter_token_median_ms": 2.292156,
+      "profile_steps": 987,
+      "gpu_mean_ms": 2.475909248,
+      "commit_wait_mean_ms": 2.700722058,
+      "completion_token_ids_sha256": "8c4ccd3324a55511bc2e5a587752242f42733cc498ce53aeddd3c69970b07f54"
+    },
+    "1024_llama_cpp_q8kv": {
+      "generated_tokens": 1024,
+      "tokens_per_second": 286.3,
+      "tpot_ms": 3.492839678,
+      "retokenized_completion_ids_sha256": "f9058d48fbf98a50a41314c7531c9b29019aee56b5ec13ba02cf15decef17450",
+      "generated_text_sha256": "edf6ff1527990756b058c9d0537837555edb5dcab06f5ba3a003fe78ce0c93cf"
+    }
+  },
+  "same_campaign_comparison": {
+    "512_llmopt_over_llama_cpp_q8kv": 1.081751925287,
+    "512_llmopt_minus_llama_cpp_q8kv_tokens_per_second": 22.759736,
+    "512_llmopt_minus_llama_cpp_q8kv_percent": 8.175193,
+    "1024_llmopt_over_llama_cpp_q8kv": 1.123826108977,
+    "1024_llmopt_minus_llama_cpp_q8kv_tokens_per_second": 35.451415,
+    "1024_llmopt_minus_llama_cpp_q8kv_percent": 12.382611
+  },
+  "cross_campaign_observation": {
+    "prior_f16_receipt": "bench/results/smollm-slice31-llamacpp-matched-trace-probe-2026-09-01.json",
+    "512_llama_cpp_q8kv_over_prior_f16": 0.714212416624,
+    "512_llama_cpp_q8kv_minus_prior_f16_percent": -28.578758,
+    "1024_llama_cpp_q8kv_over_prior_f16": 0.739602169982,
+    "1024_llama_cpp_q8kv_minus_prior_f16_percent": -26.039783,
+    "512_llmopt_current_over_prior": 0.800816410124,
+    "512_llmopt_current_minus_prior_percent": -19.918359,
+    "1024_llmopt_current_over_prior": 0.778235475512,
+    "1024_llmopt_current_minus_prior_percent": -22.176452,
+    "interpretation": "Both runtimes slowed materially versus the prior campaign while reproducing their exact prior output hashes; therefore the separate-campaign Q8-versus-F16 delta does not isolate KV precision."
+  },
+  "output_comparison": {
+    "llama_cpp_q8kv_equals_prior_f16_at_512": true,
+    "llama_cpp_q8kv_equals_prior_f16_at_1024": true,
+    "llmopt_equals_prior_at_512": true,
+    "llmopt_equals_prior_at_1024": true,
+    "cross_runtime_exact": false
+  },
+  "post_run_device_state": {
+    "macos_thermal_warning": "none recorded",
+    "macos_performance_warning": "none recorded",
+    "vm_pages_throttled": 0
+  },
+  "disposition": "With both runtimes using Q8 KV, LLMOpt is 8.175193% faster at 512 tokens and 12.382611% faster at 1024 tokens in the same campaign. The observed 26% to 29% llama.cpp Q8-versus-prior-F16 slowdown is not isolated because contemporaneous LLMOpt also slowed 20% to 22%."
+}

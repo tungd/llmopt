@@ -69,6 +69,12 @@ type rope_table = {
   row_bytes : int;
 }
 
+type prebaked_decode = {
+  plan : Metal_runtime.Prebaked.t;
+  execution : Metal_runtime.Execution.t;
+  schedule : Serving_schedule.t;
+}
+
 type t = {
   program : Model_program.t option;
   config : Serving_cache.Config.t;
@@ -80,6 +86,7 @@ type t = {
   contract : contract;
   decode_workspace : Metal_runtime.Buffer.t option;
   decode_token_buffer : Metal_runtime.Buffer.t option;
+  decode_prebaked_output : Metal_runtime.Buffer.t;
   rope_table : rope_table option;
   decode_schedules : (int, Serving_schedule.t) Hashtbl.t;
   prefill_schedules : (int, Serving_schedule.t * Serving_memory_plan.t) Hashtbl.t;
@@ -92,7 +99,10 @@ type t = {
     Serving_replay.Decode_buffers.t
     option;
   mutable decode_checkpoint : Kv_cache.Checkpoint.t option;
+  mutable decode_prebaked_long : prebaked_decode option;
 }
+
+type engine = t
 
 let program engine = engine.program
 let vocabulary engine = engine.contract.vocab_size
@@ -689,6 +699,9 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
       Metal_runtime.Buffer.create ~runtime:decode ~bytes:8
       |> Result.map Option.some
     in
+    let* decode_prebaked_output =
+      Metal_runtime.Buffer.create ~runtime:decode ~bytes:4
+    in
     Ok
       {
         program;
@@ -701,6 +714,7 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         contract;
         decode_workspace;
         decode_token_buffer;
+        decode_prebaked_output;
         rope_table;
         decode_schedules = Hashtbl.create 64;
         prefill_schedules = Hashtbl.create 64;
@@ -708,6 +722,7 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         verification_schedules = Hashtbl.create 64;
         decode_recurrent_buffers = None;
         decode_checkpoint = None;
+        decode_prebaked_long = None;
       }
 
 let create ~config ~prefill ~decode =
@@ -879,15 +894,16 @@ let optional_output execution = function
 
 type reservation = {
   slots : Kv_cache.Slot.t array;
-  checkpoint : Kv_cache.Checkpoint.t;
+  checkpoint : Kv_cache.Checkpoint.t option;
 }
 
-let reserve cache token_count =
+let reserve cache ~checkpoint_required token_count =
   match Serving_cache.reserve_tokens cache token_count with
   | Error error -> Error (Kv_cache.error_to_string error)
+  | Ok slots when not checkpoint_required -> Ok { slots; checkpoint = None }
   | Ok slots ->
       (match Serving_cache.reserve_checkpoint cache with
-      | Ok checkpoint -> Ok { slots; checkpoint }
+      | Ok checkpoint -> Ok { slots; checkpoint = Some checkpoint }
       | Error error ->
           let message = Kv_cache.error_to_string error in
           (match Serving_cache.release_tokens cache slots with
@@ -898,7 +914,9 @@ let reserve cache token_count =
 let abort cache reservation message =
   let token_result = Serving_cache.release_tokens cache reservation.slots in
   let checkpoint_result =
-    Serving_cache.release_checkpoint cache reservation.checkpoint
+    match reservation.checkpoint with
+    | None -> Ok ()
+    | Some checkpoint -> Serving_cache.release_checkpoint cache checkpoint
   in
   match token_result, checkpoint_result with
   | Ok (), Ok () -> Error message
@@ -918,30 +936,25 @@ let rec pack_prefill_attention batch execution slots
   | [] -> Ok ()
   | binding :: rest ->
       let* key = output execution binding.key_output in
-      let* _ =
-        Metal_runtime.Cache.batch_pack_attention batch
-          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
-          ~slots ~source:key
-      in
       let* value = output execution binding.value_output in
       let* _ =
-        Metal_runtime.Cache.batch_pack_attention batch
-          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
-          ~slots ~source:value
+        Metal_runtime.Cache.batch_pack_attention_pair batch
+          ~layer:binding.cache_layer ~slots ~key_source:key ~value_source:value
       in
       pack_prefill_attention batch execution slots rest
 
 let rec pack_prefill_recurrent batch execution checkpoint
     (bindings : recurrent_binding list) =
-  match bindings with
-  | [] -> Ok ()
-  | binding :: rest ->
+  match bindings, checkpoint with
+  | [], _ -> Ok ()
+  | _ :: _, None -> Error "recurrent state has no checkpoint reservation"
+  | binding :: rest, Some checkpoint ->
       let* state = output execution binding.state_output in
       let* _ =
         Metal_runtime.Cache.batch_pack_checkpoint batch
           ~layer:binding.cache_layer ~checkpoint ~source:state
       in
-      pack_prefill_recurrent batch execution checkpoint rest
+      pack_prefill_recurrent batch execution (Some checkpoint) rest
 
 let prefill engine ~tokens =
   let* () = validate_tokens engine tokens in
@@ -966,7 +979,10 @@ let prefill engine ~tokens =
     Metal_runtime.execute_schedule engine.prefill ~schedule ~memory_plan
       ~inputs:((engine.contract.input_ids, input) :: rope_inputs)
   in
-  let* reservation = reserve engine.logical_cache token_count in
+  let checkpoint_required = engine.contract.recurrents <> [] in
+  let* reservation =
+    reserve engine.logical_cache ~checkpoint_required token_count
+  in
   let result =
     let* () =
       Metal_runtime.Cache.with_batch_async engine.physical_cache (fun batch ->
@@ -983,7 +999,7 @@ let prefill engine ~tokens =
     in
     let* cached_prefix =
       Serving_cache.insert engine.logical_cache ~tokens
-        ~slots:reservation.slots ~checkpoint:reservation.checkpoint ()
+        ~slots:reservation.slots ?checkpoint:reservation.checkpoint ()
     in
     Ok
       {
@@ -1019,9 +1035,10 @@ let prepare_decode_buffers engine _slots checkpoint =
         Kv_cache.Layout.recurrent_window layout ]
   in
   let rec recurrent batch buffers (bindings : recurrent_binding list) =
-    match bindings with
-    | [] -> Ok (List.rev buffers)
-    | binding :: rest ->
+    match bindings, checkpoint with
+    | [], _ -> Ok (List.rev buffers)
+    | _ :: _, None -> Error "recurrent decode prefix has no checkpoint"
+    | binding :: rest, Some checkpoint ->
         let* state =
           Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:recurrent_bytes
         in
@@ -1047,9 +1064,10 @@ let unpack_recurrent_states engine checkpoint =
         Kv_cache.Layout.recurrent_window layout ]
   in
   let rec recurrent batch buffers (bindings : recurrent_binding list) =
-    match bindings with
-    | [] -> Ok (List.rev buffers)
-    | binding :: rest ->
+    match bindings, checkpoint with
+    | [], _ -> Ok (List.rev buffers)
+    | _ :: _, None -> Error "recurrent prefill prefix has no checkpoint"
+    | binding :: rest, Some checkpoint ->
         let* state =
           Metal_runtime.Buffer.create ~runtime:engine.prefill ~bytes:recurrent_bytes
         in
@@ -1100,30 +1118,26 @@ let rec pack_decode_attention batch execution slots ~source_items
   | [] -> Ok ()
   | binding :: rest ->
       let* key = output execution binding.key_output in
-      let* _ =
-        Metal_runtime.Cache.batch_pack_attention_slice batch
-          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
-          ~slots ~source_items ~source_offset ~source:key
-      in
       let* value = output execution binding.value_output in
       let* _ =
-        Metal_runtime.Cache.batch_pack_attention_slice batch
-          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
-          ~slots ~source_items ~source_offset ~source:value
+        Metal_runtime.Cache.batch_pack_attention_pair_slice batch
+          ~layer:binding.cache_layer ~slots ~source_items ~source_offset
+          ~key_source:key ~value_source:value
       in
       pack_decode_attention batch execution slots ~source_items ~source_offset
         rest
 
 let rec pack_decode_recurrent batch checkpoint
     (buffers : (recurrent_binding * Metal_runtime.Buffer.t) list) =
-  match buffers with
-  | [] -> Ok ()
-  | (binding, state) :: rest ->
+  match buffers, checkpoint with
+  | [], _ -> Ok ()
+  | _ :: _, None -> Error "recurrent decode has no checkpoint reservation"
+  | (binding, state) :: rest, Some checkpoint ->
       let* _ =
         Metal_runtime.Cache.batch_pack_checkpoint batch
           ~layer:binding.cache_layer ~checkpoint ~source:state
       in
-      pack_decode_recurrent batch checkpoint rest
+      pack_decode_recurrent batch (Some checkpoint) rest
 
 let rec encode_decode_attention batch cache execution slot ~source_items
     ~source_offset (bindings : attention_binding list) =
@@ -1131,30 +1145,26 @@ let rec encode_decode_attention batch cache execution slot ~source_items
   | [] -> Ok ()
   | binding :: rest ->
       let* key = output execution binding.key_output in
-      let* _ =
-        Metal_runtime.encode_cache_pack_attention_slice batch ~cache
-          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Key
-          ~slots:[| slot |] ~source_items ~source_offset ~source:key
-      in
       let* value = output execution binding.value_output in
       let* _ =
-        Metal_runtime.encode_cache_pack_attention_slice batch ~cache
-          ~layer:binding.cache_layer ~kind:Metal_runtime.Cache.Attention.Value
-          ~slots:[| slot |] ~source_items ~source_offset ~source:value
+        Metal_runtime.encode_cache_pack_attention_pair_slice batch ~cache
+          ~layer:binding.cache_layer ~slots:[| slot |] ~source_items
+          ~source_offset ~key_source:key ~value_source:value
       in
       encode_decode_attention batch cache execution slot ~source_items
         ~source_offset rest
 
 let rec encode_decode_recurrent batch cache checkpoint
     (buffers : (recurrent_binding * Metal_runtime.Buffer.t) list) =
-  match buffers with
-  | [] -> Ok ()
-  | (binding, state) :: rest ->
+  match buffers, checkpoint with
+  | [], _ -> Ok ()
+  | _ :: _, None -> Error "recurrent replay has no checkpoint reservation"
+  | (binding, state) :: rest, Some checkpoint ->
       let* _ =
         Metal_runtime.encode_cache_pack_checkpoint batch ~cache
           ~layer:binding.cache_layer ~checkpoint ~source:state
       in
-      encode_decode_recurrent batch cache checkpoint rest
+      encode_decode_recurrent batch cache (Some checkpoint) rest
 
 let with_match engine match_ operation =
   let result = operation () in
@@ -1167,6 +1177,10 @@ let with_match engine match_ operation =
       Error (message ^ "; radix lease release failed: " ^ release)
 
 let unpack_decode_checkpoint engine checkpoint buffers =
+  match checkpoint, Serving_replay.Decode_buffers.recurrent buffers with
+  | None, [] -> Ok ()
+  | None, _ -> Error "recurrent decode prefix has no checkpoint"
+  | Some checkpoint, recurrent ->
   Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
       let rec unpack = function
         | [] -> Ok ()
@@ -1177,9 +1191,42 @@ let unpack_decode_checkpoint engine checkpoint buffers =
             in
             unpack rest
       in
-      unpack (Serving_replay.Decode_buffers.recurrent buffers))
+      unpack recurrent)
 
-let decode_matched engine match_ ~schedule ~prefix ~token =
+let execute_prebaked_decode engine ~schedule ~inputs ~token ~past_tokens
+    ~checkpoint ~cache_pack =
+  let execute plan execution =
+    let checkpoint =
+      checkpoint |> Option.map Kv_cache.Checkpoint.to_int
+      |> Option.value ~default:(-1)
+    in
+    let* _ =
+      Metal_runtime.Prebaked.execute plan ~token ~past_tokens ~checkpoint
+    in
+    Ok execution
+  in
+  match engine.decode_prebaked_long with
+  | Some prebaked -> execute prebaked.plan prebaked.execution
+  | None ->
+      let* dispatches, execution =
+        Metal_runtime.precompile_decode_batch
+          ?workspace:engine.decode_workspace ~cache:engine.physical_cache
+          ~cache_pack engine.decode ~schedule ~inputs
+      in
+      let* token_buffer =
+        match engine.decode_token_buffer with
+        | Some buffer -> Ok buffer
+        | None -> Error "prebaked decode requires a stable token buffer"
+      in
+      let* plan =
+        Metal_runtime.Prebaked.create ~runtime:engine.decode ~dispatches
+          ~token_buffer ~output_buffer:engine.decode_prebaked_output
+      in
+      let prebaked = { plan; execution; schedule } in
+      engine.decode_prebaked_long <- Some prebaked;
+      execute plan execution
+
+let decode_matched engine match_ ~schedule ~prefix ~token ~retain_inserted_match =
   let past_tokens = Array.length prefix in
   let matched = Serving_cache.Match.tokens match_ in
   if matched <> past_tokens then
@@ -1187,16 +1234,32 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
       (Printf.sprintf "decode prefix tokens %d does not match cached prefix %d"
          past_tokens matched)
   else
-    match Serving_cache.Match.checkpoint match_ with
-    | None -> Error "decode cache match has no recurrent checkpoint"
-    | Some source_checkpoint ->
-        let* reservation = reserve engine.logical_cache 1 in
+        let source_checkpoint = Serving_cache.Match.checkpoint match_ in
+        let checkpoint_required = engine.contract.recurrents <> [] in
+        let* () =
+          if checkpoint_required && Option.is_none source_checkpoint then
+            Error "decode cache match has no recurrent checkpoint"
+          else Ok ()
+        in
+        let* reservation =
+          reserve engine.logical_cache ~checkpoint_required 1
+        in
         let result =
-          let matched_slots = Serving_cache.Match.slots match_ in
+          let matched_slots =
+            if
+              Sys.getenv_opt "LLMOPT_EXPERIMENTAL_RADIX_SHARED_VALUES"
+              = Some "1"
+            then Serving_cache.Match.slots_view match_
+            else Serving_cache.Match.slots match_
+          in
           let* buffers =
             match engine.decode_recurrent_buffers, engine.decode_checkpoint with
             | Some buffers, Some cp
-              when Kv_cache.Checkpoint.to_int cp = Kv_cache.Checkpoint.to_int source_checkpoint ->
+              when Option.exists
+                     (fun source ->
+                       Kv_cache.Checkpoint.to_int cp
+                       = Kv_cache.Checkpoint.to_int source)
+                     source_checkpoint ->
                 Ok buffers
             | Some buffers, _ ->
                 let* () = unpack_decode_checkpoint engine source_checkpoint buffers in
@@ -1237,17 +1300,23 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
               reservation.slots.(0)
           in
           let* execution, token_id_buffer =
-            let* execution =
-              Metal_runtime.execute_decode_step
-                ?workspace:engine.decode_workspace engine.decode
-                ~cache:engine.physical_cache ~schedule ~inputs
-                ~cache_pack:(fun execution batch ->
+            let cache_pack execution batch =
                   let* () =
                     pack_decode_attention batch execution reservation.slots
                       ~source_items ~source_offset engine.contract.attentions
                   in
                   pack_decode_recurrent batch reservation.checkpoint
-                    (Serving_replay.Decode_buffers.recurrent buffers))
+                    (Serving_replay.Decode_buffers.recurrent buffers)
+            in
+            let* execution =
+              if past_tokens >= 64 && engine.contract.recurrents = []
+              then
+                execute_prebaked_decode engine ~schedule ~inputs ~token
+                  ~past_tokens ~checkpoint:reservation.checkpoint ~cache_pack
+              else
+                Metal_runtime.execute_decode_step
+                  ?workspace:engine.decode_workspace engine.decode
+                  ~cache:engine.physical_cache ~schedule ~inputs ~cache_pack
             in
             let* token_id =
               optional_output execution engine.contract.decode_head.token_id
@@ -1255,22 +1324,34 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
             Ok (execution, token_id)
           in
           let tokens = Array.append prefix [| token |] in
-          let slots = Array.append matched_slots reservation.slots in
           let* logits = optional_output execution engine.contract.decode_head.logits in
-          let* cached_prefix =
-            Serving_cache.insert engine.logical_cache ~tokens ~slots
-              ~checkpoint:reservation.checkpoint ()
+          let* cached_prefix, inserted_match =
+            if retain_inserted_match then
+              let* inserted_match =
+                Serving_cache.extend_match engine.logical_cache match_ ~token
+                  ~slot:reservation.slots.(0)
+                  ?checkpoint:reservation.checkpoint ()
+              in
+              Ok (past_tokens, Some inserted_match)
+            else
+              let slots = Array.append matched_slots reservation.slots in
+              let* cached_prefix =
+                Serving_cache.insert engine.logical_cache ~tokens ~slots
+                  ?checkpoint:reservation.checkpoint ()
+              in
+              Ok (cached_prefix, None)
           in
-          engine.decode_checkpoint <- Some reservation.checkpoint;
+          engine.decode_checkpoint <- reservation.checkpoint;
           Ok
-            {
-              Step.logits;
-              token_id = token_id_buffer;
-              tokens;
-              vocabulary = engine.contract.vocab_size;
-              cached_prefix;
-              kernels = Metal_runtime.Execution.kernels execution;
-            }
+            ( {
+                Step.logits;
+                token_id = token_id_buffer;
+                tokens;
+                vocabulary = engine.contract.vocab_size;
+                cached_prefix;
+                kernels = Metal_runtime.Execution.kernels execution;
+              },
+              inserted_match )
         in
         (match result with
         | Ok _ as result -> result
@@ -1278,7 +1359,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token =
 
 type replay_reservation = {
   slots : Kv_cache.Slot.t array;
-  checkpoints : Kv_cache.Checkpoint.t array;
+  checkpoints : Kv_cache.Checkpoint.t option array;
 }
 
 let release_checkpoints cache checkpoints offset =
@@ -1289,15 +1370,18 @@ let release_checkpoints cache checkpoints offset =
       | failures -> Error (String.concat "; " failures)
     else
       let failures =
-        match Serving_cache.release_checkpoint cache checkpoints.(index) with
-        | Ok () -> failures
-        | Error message -> message :: failures
+        match checkpoints.(index) with
+        | None -> failures
+        | Some checkpoint ->
+            (match Serving_cache.release_checkpoint cache checkpoint with
+            | Ok () -> failures
+            | Error message -> message :: failures)
       in
       release failures (index + 1)
   in
   release [] offset
 
-let reserve_replay cache token_count =
+let reserve_replay cache ~checkpoint_required token_count =
   match Serving_cache.reserve_tokens cache token_count with
   | Error error -> Error (Kv_cache.error_to_string error)
   | Ok slots ->
@@ -1308,9 +1392,12 @@ let reserve_replay cache token_count =
               slots;
               checkpoints = Array.of_list (List.rev output);
             }
+        else if not checkpoint_required then
+          checkpoints (None :: output) (remaining - 1)
         else
           match Serving_cache.reserve_checkpoint cache with
-          | Ok checkpoint -> checkpoints (checkpoint :: output) (remaining - 1)
+          | Ok checkpoint ->
+              checkpoints (Some checkpoint :: output) (remaining - 1)
           | Error error ->
               let message = Kv_cache.error_to_string error in
               let allocated = Array.of_list output in
@@ -1370,7 +1457,7 @@ let insert_replay engine ~tokens ~cached_tokens ~matched_slots reservation =
       in
       match
         Serving_cache.insert engine.logical_cache ~tokens:prefix_tokens
-          ~slots:prefix_slots ~checkpoint:reservation.checkpoints.(index) ()
+          ~slots:prefix_slots ?checkpoint:reservation.checkpoints.(index) ()
       with
       | Error message -> Error (index, message)
       | Ok cached_prefix when suffix_length = Array.length reservation.slots ->
@@ -1389,10 +1476,16 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
       (Printf.sprintf "prompt cache miss: requested %d tokens; matched %d"
          cached_tokens matched)
   else
-    match Serving_cache.Match.checkpoint match_ with
-    | None -> Error "prompt cache match has no recurrent checkpoint"
-    | Some source_checkpoint ->
-        let* reservation = reserve_replay engine.logical_cache suffix_tokens in
+        let source_checkpoint = Serving_cache.Match.checkpoint match_ in
+        let checkpoint_required = engine.contract.recurrents <> [] in
+        let* () =
+          if checkpoint_required && Option.is_none source_checkpoint then
+            Error "prompt cache match has no recurrent checkpoint"
+          else Ok ()
+        in
+        let* reservation =
+          reserve_replay engine.logical_cache ~checkpoint_required suffix_tokens
+        in
         let before_insert result =
           Result.map_error (fun message -> (0, message)) result
         in
@@ -1478,15 +1571,16 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
 
 type suffix_prefill_reservation = {
   slots : Kv_cache.Slot.t array;
-  checkpoint : Kv_cache.Checkpoint.t;
+  checkpoint : Kv_cache.Checkpoint.t option;
 }
 
-let reserve_suffix_prefill cache token_count =
+let reserve_suffix_prefill cache ~checkpoint_required token_count =
   match Serving_cache.reserve_tokens cache token_count with
   | Error error -> Error (Kv_cache.error_to_string error)
+  | Ok slots when not checkpoint_required -> Ok { slots; checkpoint = None }
   | Ok slots ->
       match Serving_cache.reserve_checkpoint cache with
-      | Ok checkpoint -> Ok { slots; checkpoint }
+      | Ok checkpoint -> Ok { slots; checkpoint = Some checkpoint }
       | Error error ->
           let message = Kv_cache.error_to_string error in
           let _ = Serving_cache.release_tokens cache slots in
@@ -1494,7 +1588,11 @@ let reserve_suffix_prefill cache token_count =
 
 let abort_suffix_prefill cache (reservation : suffix_prefill_reservation) message =
   let _ = Serving_cache.release_tokens cache reservation.slots in
-  let _ = Serving_cache.release_checkpoint cache reservation.checkpoint in
+  let _ =
+    match reservation.checkpoint with
+    | None -> Ok ()
+    | Some checkpoint -> Serving_cache.release_checkpoint cache checkpoint
+  in
   Error message
 
 let suffix_causal_mask runtime ~past_tokens ~tokens =
@@ -1512,11 +1610,18 @@ let suffix_prefill ?(cache_result = true) engine match_ ~tokens ~cached_tokens =
   if suffix_tokens < 3 then
     replay_matched engine match_ ~tokens ~cached_tokens
   else
-    match Serving_cache.Match.checkpoint match_ with
-    | None -> Error "prompt cache match has no recurrent checkpoint"
-    | Some source_checkpoint ->
+        let source_checkpoint = Serving_cache.Match.checkpoint match_ in
+        let checkpoint_required = engine.contract.recurrents <> [] in
+        let* () =
+          if checkpoint_required && Option.is_none source_checkpoint then
+            Error "prompt cache match has no recurrent checkpoint"
+          else Ok ()
+        in
         let matched_slots = Serving_cache.Match.slots match_ in
-        let* reservation = reserve_suffix_prefill engine.logical_cache suffix_tokens in
+        let* reservation =
+          reserve_suffix_prefill engine.logical_cache ~checkpoint_required
+            suffix_tokens
+        in
         let result =
           let* schedule, memory_plan =
             suffix_prefill_schedule engine
@@ -1582,14 +1687,17 @@ let suffix_prefill ?(cache_result = true) engine match_ ~tokens ~cached_tokens =
             if cache_result then
               let all_slots = Array.append matched_slots reservation.slots in
               Serving_cache.insert engine.logical_cache ~tokens
-                ~slots:all_slots ~checkpoint:reservation.checkpoint ()
+                ~slots:all_slots ?checkpoint:reservation.checkpoint ()
             else
               let* () =
                 Serving_cache.release_tokens engine.logical_cache reservation.slots
               in
               let* () =
-                Serving_cache.release_checkpoint engine.logical_cache
-                  reservation.checkpoint
+                match reservation.checkpoint with
+                | None -> Ok ()
+                | Some checkpoint ->
+                    Serving_cache.release_checkpoint engine.logical_cache
+                      checkpoint
               in
               Ok cached_tokens
           in
@@ -1613,9 +1721,89 @@ let decode engine ~prefix ~token =
   let match_ =
     Serving_cache.match_prefix engine.logical_cache ~reserve_tail:0 prefix
   in
-  with_match engine match_ (fun () ->
-      let* schedule = decode_schedule engine (Array.length prefix) in
-      decode_matched engine match_ ~schedule ~prefix ~token)
+    with_match engine match_ (fun () ->
+      let lazy_schedule =
+        Sys.getenv_opt "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE" = Some "1"
+      in
+      let* schedule =
+        match lazy_schedule, engine.decode_prebaked_long with
+        | true, Some prebaked when engine.contract.recurrents = [] ->
+            Ok prebaked.schedule
+        | _ -> decode_schedule engine (Array.length prefix)
+      in
+      let* step, _ =
+        decode_matched engine match_ ~schedule ~prefix ~token
+          ~retain_inserted_match:false
+      in
+      Ok step)
+
+module Sequence = struct
+  type sequence = {
+    engine : engine;
+    mutable step : Step.t;
+    mutable match_ : Serving_cache.Match.t option;
+  }
+
+  type nonrec t = sequence
+
+  let create engine step =
+    if Serving_cache.Config.page_size engine.config <> 1 then
+      Error "sequential cursor requires radix page size one"
+    else
+      let match_ =
+        Serving_cache.match_prefix engine.logical_cache ~reserve_tail:0
+          step.Step.tokens
+      in
+      if Serving_cache.Match.tokens match_ <> Array.length step.Step.tokens then (
+        let _ = Serving_cache.release_match engine.logical_cache match_ in
+        Error "sequential cursor requires a fully cached serving step"
+      ) else Ok { engine; step; match_ = Some match_ }
+
+  let step sequence = sequence.step
+
+  let close sequence =
+    match sequence.match_ with
+    | None -> Ok ()
+    | Some match_ ->
+        sequence.match_ <- None;
+        Serving_cache.release_match sequence.engine.logical_cache match_
+
+  let decode sequence ~token =
+    match sequence.match_ with
+    | None -> Error "sequential cursor is closed"
+    | Some current_match ->
+        let engine = sequence.engine in
+        let prefix = sequence.step.Step.tokens in
+        let* () = validate_tokens engine [| token |] in
+        let lazy_schedule =
+          Sys.getenv_opt "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE" = Some "1"
+        in
+        let* schedule =
+          match lazy_schedule, engine.decode_prebaked_long with
+          | true, Some prebaked when engine.contract.recurrents = [] ->
+              Ok prebaked.schedule
+          | _ -> decode_schedule engine (Array.length prefix)
+        in
+        (match
+           decode_matched engine current_match ~schedule ~prefix ~token
+             ~retain_inserted_match:true
+         with
+        | Error message -> Error message
+        | Ok (step, None) ->
+            Error "sequential cursor decode did not retain its inserted prefix"
+        | Ok (step, Some next_match) ->
+            (match Serving_cache.release_match engine.logical_cache current_match with
+            | Error message ->
+                let _ =
+                  Serving_cache.release_match engine.logical_cache next_match
+                in
+                sequence.match_ <- None;
+                Error message
+            | Ok () ->
+                sequence.step <- step;
+                sequence.match_ <- Some next_match;
+                Ok step))
+end
 
 let prompt engine ~tokens =
   let* () = validate_tokens engine tokens in
@@ -1965,12 +2153,10 @@ module Prompt_lookup = struct
                  "prompt-lookup cached prefix has %d tokens; expected %d"
                  (Serving_cache.Match.tokens match_) prefix_count)
           else
-            match Serving_cache.Match.checkpoint match_ with
-            | None -> Error "prompt-lookup cached prefix has no checkpoint"
-            | Some _ ->
                 let token_count = Array.length verification_inputs in
                 let* reservation =
-                  reserve_suffix_prefill engine.logical_cache token_count
+                  reserve_suffix_prefill engine.logical_cache
+                    ~checkpoint_required:false token_count
                 in
                 let matched_slots = Serving_cache.Match.slots match_ in
                 let verification =
@@ -2025,23 +2211,28 @@ module Prompt_lookup = struct
                         pack_prefill_attention batch execution reservation.slots
                           engine.contract.attentions)
                   in
-                  let* token_ids =
-                    match
-                      entrypoint |> Model_program.Entrypoint.head
-                      |> Model_program.Entrypoint.Head.token_id
-                    with
-                    | None ->
-                        Error
-                          "prompt-lookup verification requires an on-device greedy output"
+                  let head = Model_program.Entrypoint.head entrypoint in
+                  let* predictions =
+                    match Model_program.Entrypoint.Head.token_id head with
                     | Some name ->
                         (match Metal_runtime.Execution.output execution ~name with
-                        | Some output -> Ok output
+                        | None -> Error "prompt-lookup execution omitted token_id"
+                        | Some token_ids ->
+                            let* bytes = Metal_runtime.Buffer.contents token_ids in
+                            Sampling.Greedy.on_device_all bytes)
+                    | None ->
+                        (match Model_program.Entrypoint.Head.logits head with
                         | None ->
                             Error
-                              "prompt-lookup execution omitted token_id")
+                              "prompt-lookup verification has neither token_id nor logits"
+                        | Some name ->
+                            (match Metal_runtime.Execution.output execution ~name with
+                            | None -> Error "prompt-lookup execution omitted logits"
+                            | Some logits ->
+                                let* bytes = Metal_runtime.Buffer.contents logits in
+                                Sampling.Greedy.f16_all_rows
+                                  ~vocabulary:engine.contract.vocab_size bytes))
                   in
-                  let* bytes = Metal_runtime.Buffer.contents token_ids in
-                  let* predictions = Sampling.Greedy.on_device_all bytes in
                   let* acceptance =
                     Speculative_acceptance.greedy ~draft_tokens
                       ~target_predictions:predictions
@@ -2081,7 +2272,7 @@ module Prompt_lookup = struct
                         (match
                            Serving_cache.insert engine.logical_cache
                              ~tokens:committed_tokens ~slots:all_slots
-                             ~checkpoint:reservation.checkpoint ()
+                             ?checkpoint:reservation.checkpoint ()
                          with
                         | Error message ->
                             let _ =
@@ -2089,8 +2280,11 @@ module Prompt_lookup = struct
                                 committed_slots
                             in
                             let _ =
-                              Serving_cache.release_checkpoint
-                                engine.logical_cache reservation.checkpoint
+                              match reservation.checkpoint with
+                              | None -> Ok ()
+                              | Some checkpoint ->
+                                  Serving_cache.release_checkpoint
+                                    engine.logical_cache checkpoint
                             in
                             Error message
                         | Ok _ ->

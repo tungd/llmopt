@@ -1,0 +1,25 @@
+{
+  "created_at": "2026-09-01T14:53:34+07:00",
+  "kind": "smollm-slice31-radix-offset-insert-static",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT=1",
+    "scope": "Radix_cache.insert compressed-edge traversal",
+    "default_selected": false,
+    "old_traversal": "allocates the complete remaining token suffix at each existing edge",
+    "candidate_traversal": "derives child keys and common-prefix lengths from the original token array and offset, then allocates one suffix for the final new leaf",
+    "unchanged_semantics": [
+      "existing-node and split-node selection",
+      "resumable-node and checkpoint ownership",
+      "redundant slot release",
+      "canonical prefix-token count"
+    ]
+  },
+  "static_validation": {
+    "python_tests": 72,
+    "ocaml_tests": "passed",
+    "transformer_prefix_match_tokens": 3,
+    "canonical_slot_order": "exact",
+    "cache_kv_ownership": "valid"
+  },
+  "measurement": null
+}

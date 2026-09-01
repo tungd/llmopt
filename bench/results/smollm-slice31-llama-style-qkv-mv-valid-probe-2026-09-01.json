@@ -1,0 +1,104 @@
+{
+  "created_at": "2026-09-01T15:25:33+07:00",
+  "kind": "smollm-slice31-llama-style-qkv-mv-valid-probe",
+  "valid": true,
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "engine": "_artifacts/smollm-slice31-llama-mv-engine-v9",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "candidate_environment": "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV=1",
+  "common_environment": {
+    "LLMOPT_PROFILE_BATCH": "1",
+    "LLMOPT_PROFILE_PLAN": "1",
+    "LLMOPT_EXPERIMENTAL_SPLIT8": "1",
+    "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE": "1",
+    "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_KQUANT_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_Q8_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_SHARED_VALUES": "1"
+  },
+  "artifacts": {
+    "executable_sha256": "e774d62296483e8d52fff32320ddbf30ca226bc926f90fba0478abf25a66874d",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "decode_package_sha256": "e9088588278641135a1eeb49640e68a674c134a05a1b0add641acbb26c074244",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211",
+    "raw_log_directory": "/tmp/llmopt-qkv-llama-mv-valid-probe.1S2rBs"
+  },
+  "dispatch_assertions": {
+    "control_llama_qkv_dispatches": 0,
+    "control_original_all_q5_qkv_dispatches": 16,
+    "candidate_llama_qkv_dispatches": 16,
+    "candidate_original_all_q5_qkv_dispatches": 0
+  },
+  "run_order": ["128_control", "128_candidate", "512_candidate", "512_control"],
+  "runs": {
+    "128_control": {
+      "elapsed_seconds": 0.582625,
+      "tokens_per_second": 219.695377,
+      "inter_token_mean_ms": 3.982872,
+      "inter_token_median_ms": 2.541065,
+      "completion_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.205134,
+      "gpu_median_ms": 2.192458,
+      "commit_wait_mean_ms": 2.394963,
+      "commit_wait_median_ms": 2.366417
+    },
+    "128_candidate": {
+      "elapsed_seconds": 0.591615,
+      "tokens_per_second": 216.356935,
+      "inter_token_mean_ms": 4.216787,
+      "inter_token_median_ms": 2.517939,
+      "completion_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.159995,
+      "gpu_median_ms": 2.142167,
+      "commit_wait_mean_ms": 2.345707,
+      "commit_wait_median_ms": 2.329083
+    },
+    "512_control": {
+      "elapsed_seconds": 1.952130,
+      "tokens_per_second": 262.277636,
+      "inter_token_mean_ms": 3.710491,
+      "inter_token_median_ms": 3.533125,
+      "completion_sha256": "951697f8bce6e64b93cafe731b73042e96a95978eccce304838e12e246c76c7f",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.133220,
+      "gpu_median_ms": 3.128292,
+      "commit_wait_mean_ms": 3.301378,
+      "commit_wait_median_ms": 3.278667
+    },
+    "512_candidate": {
+      "elapsed_seconds": 1.948008,
+      "tokens_per_second": 262.832556,
+      "inter_token_mean_ms": 3.702355,
+      "inter_token_median_ms": 3.515005,
+      "completion_sha256": "951697f8bce6e64b93cafe731b73042e96a95978eccce304838e12e246c76c7f",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.118849,
+      "gpu_median_ms": 3.129125,
+      "commit_wait_mean_ms": 3.289369,
+      "commit_wait_median_ms": 3.285625
+    }
+  },
+  "comparison": {
+    "candidate_minus_control_128_tokens_per_second": -3.338442,
+    "candidate_minus_control_128_percent": -1.519578,
+    "candidate_minus_control_128_inter_token_mean_ms": 0.233915,
+    "candidate_minus_control_128_gpu_mean_ms": -0.045139,
+    "candidate_minus_control_512_tokens_per_second": 0.554920,
+    "candidate_minus_control_512_percent": 0.211577,
+    "candidate_minus_control_512_inter_token_mean_ms": -0.008136,
+    "candidate_minus_control_512_gpu_mean_ms": -0.014371,
+    "candidate_minus_control_512_commit_wait_mean_ms": -0.012009,
+    "llama_cpp_reference_tokens_per_second": 381.39,
+    "llama_cpp_over_candidate": 1.451076,
+    "candidate_fraction_of_llama_cpp": 0.689144
+  },
+  "parity": {
+    "control_candidate_128": "exact",
+    "control_candidate_512": "exact"
+  }
+}

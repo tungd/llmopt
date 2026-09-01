@@ -2,30 +2,62 @@ let ( let* ) = Result.bind
 
 module Native_engine = struct
   type t = Serving_engine.t
-  type step = Serving_engine.Step.t
+  type step = {
+    serving_step : Serving_engine.Step.t;
+    sequence : Serving_engine.Sequence.t option;
+  }
 
   let prompt engine ~tokens =
     let* prompt = Serving_engine.prompt engine ~tokens in
+    let serving_step = Serving_engine.Prompt.step prompt in
+    let sequence_cursor =
+      Sys.getenv_opt "LLMOPT_EXPERIMENTAL_SEQUENCE_CURSOR" = Some "1"
+    in
+    let* sequence =
+      if sequence_cursor then
+        Serving_engine.Sequence.create engine serving_step |> Result.map Option.some
+      else Ok None
+    in
     Ok
-      ( Serving_engine.Prompt.step prompt,
+      ( { serving_step; sequence },
         Serving_engine.Prompt.cached_tokens prompt )
 
-  let decode = Serving_engine.decode
-  let tokens = Serving_engine.Step.tokens
+  let decode engine ~step ~token =
+    match step.sequence with
+    | Some sequence ->
+        let* serving_step = Serving_engine.Sequence.decode sequence ~token in
+        Ok { serving_step; sequence = Some sequence }
+    | None ->
+        let prefix = Serving_engine.Step.tokens step.serving_step in
+        let* serving_step = Serving_engine.decode engine ~prefix ~token in
+        Ok { serving_step; sequence = None }
 
-  let next_token ?(params = Sampling.Params.greedy) step =
-    match Serving_engine.Step.token_id step with
+  let release step =
+    match step.sequence with
+    | None -> Ok ()
+    | Some sequence -> Serving_engine.Sequence.close sequence
+
+  let tokens step = Serving_engine.Step.tokens step.serving_step
+
+  let next_token_serving ?(params = Sampling.Params.greedy) serving_step =
+    match Serving_engine.Step.token_id serving_step with
     | Some buffer ->
         let* bytes = Metal_runtime.Buffer.contents buffer in
         if Bytes.length bytes = 4 then Sampling.Greedy.on_device bytes
         else Sampling.Greedy.on_device_last bytes
     | None ->
-        (match Serving_engine.Step.logits step with
+        (match Serving_engine.Step.logits serving_step with
         | Some buffer ->
-            let* bytes = Metal_runtime.Buffer.contents buffer in
-            Sampling.sample ~params
-              ~vocabulary:(Serving_engine.Step.vocabulary step) bytes
+            let vocabulary = Serving_engine.Step.vocabulary serving_step in
+            if Sampling.Params.is_greedy params then
+              Metal_runtime.Buffer.argmax_f16 buffer ~vocabulary
+            else
+              let* bytes = Metal_runtime.Buffer.contents buffer in
+              Sampling.sample ~params ~vocabulary bytes
         | None -> Error "serving step has neither token_id nor logits output")
+
+  let next_token ?params step =
+    next_token_serving ?params step.serving_step
 end
 
 module Driver = Generation_core.Make (Native_engine)
@@ -138,6 +170,9 @@ module Session = struct
   let decode_text session =
     let tokens = Array.of_list (completion_tokens session) in
     Tokenizer.decode session.parent.tokenizer tokens
+
+  let close session =
+    Driver.State.close session.driver_state
 end
 
 let generate_tokens ?emit ?(sampling_params = Sampling.Params.greedy)
@@ -208,7 +243,9 @@ let generate_prompt_lookup ?(min_ngram = 2) ?(max_ngram = 4)
     let* prompt_tokens = Chat_template.encode generation.chat messages in
     let started_at = Unix.gettimeofday () in
     let* prompt = Serving_engine.prompt generation.engine ~tokens:prompt_tokens in
-    let* first_token = Native_engine.next_token (Serving_engine.Prompt.step prompt) in
+    let* first_token =
+      Native_engine.next_token_serving (Serving_engine.Prompt.step prompt)
+    in
     let is_stop =
       if ignore_eos then Fun.const false
       else Chat_template.is_end_token generation.chat
@@ -232,7 +269,7 @@ let generate_prompt_lookup ?(min_ngram = 2) ?(max_ngram = 4)
           let prefix = Array.sub history 0 (Array.length history - 1) in
           let token = history.(Array.length history - 1) in
           let* step = Serving_engine.decode generation.engine ~prefix ~token in
-          let* next = Native_engine.next_token step in
+          let* next = Native_engine.next_token_serving step in
           loop (append history [| next |]) (next :: completion_rev) (count + 1)
             (target_forward_passes + 1) verification_passes proposed_tokens
             accepted_draft_tokens

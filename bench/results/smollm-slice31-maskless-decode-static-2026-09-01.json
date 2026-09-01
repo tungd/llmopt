@@ -1,0 +1,48 @@
+{
+  "created_at": "2026-09-01T16:42:00+07:00",
+  "kind": "smollm-slice31-maskless-decode-static",
+  "superseded_by": "bench/results/smollm-slice31-maskless-decode-probe-2026-09-01.json",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE=1",
+    "scope": "one-token paged-Q8 decode specialization",
+    "default_selected": false,
+    "semantic_paged_attention_inputs_before": 6,
+    "semantic_paged_attention_inputs_after": 5,
+    "kernel_abi_mask_binding": "the slots buffer is rebound at the unused mask position",
+    "arithmetic_path_changed": false,
+    "observed_control_dispatches_targeted": 8,
+    "observed_control_dispatch_inventory": {
+      "llmopt_arange_i64": 2,
+      "llmopt_index_i64": 2,
+      "llmopt_add_i64": 2,
+      "llmopt_le_i64": 1,
+      "llmopt_expand_bool": 1
+    }
+  },
+  "engine": {
+    "path": "_artifacts/smollm-slice31-llama-mv-engine-v10",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "0ead105584fac0b36d02430a0372365f670940f40ea60f64f73664d95e306c7c",
+    "decode_package_sha256": "e15a136ce013881dd137a4192fc7b134a9f501da0dd23700ee862f7ad65b9f5a",
+    "verification_package_sha256": "aac2cc1b83c7b9de3aedadce2e5a21df02c33f1d34a6b4ffd79e975fd1381bb5",
+    "generate_executable_sha256": "66c4e3346da86ec9ac4a970d38fe1d1b86279b5a5ff40f5977a4fb42ecd7e2e2"
+  },
+  "static_validation": {
+    "focused_schedule_test": "passed",
+    "focused_schedule_test_assertions": [
+      "mask runtime input is pruned",
+      "paged-Q8 attention has five semantic inputs"
+    ],
+    "packages_validated": ["prefill", "decode", "verification"],
+    "kernels_per_package": 105,
+    "prefill_ir_commands": 1069,
+    "decode_ir_commands": 1189,
+    "verification_ir_commands": 1219,
+    "opaque_commands_per_package": 0,
+    "full_ninja_build": "passed",
+    "ocaml_tests": "passed",
+    "python_tests": 72
+  },
+  "measurement": "bench/results/smollm-slice31-maskless-decode-probe-2026-09-01.json",
+  "notes": "The eight-dispatch target is counted from the retained 512-token control inventory; no candidate model/device run was made."
+}

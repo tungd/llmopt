@@ -1,0 +1,49 @@
+{
+  "created_at": "2026-09-01T17:04:00+07:00",
+  "kind": "smollm-slice31-gqa3-split8-static",
+  "superseded_by": "bench/results/smollm-slice31-gqa3-split8-probe-2026-09-01.json",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_GQA3_SPLIT8=1",
+    "required_environment_flag": "LLMOPT_EXPERIMENTAL_SPLIT8=1",
+    "kernel": "llmopt_attention_q8_paged_simd_h64_gqa3_split8",
+    "scope": "one-token long-context paged-Q8 attention with exactly three query heads per KV head",
+    "default_selected": false,
+    "threads_per_threadgroup": 256,
+    "temporal_simdgroups_per_threadgroup": 8,
+    "query_heads_computed_per_threadgroup": 3,
+    "control_threadgroups_per_layer": 9,
+    "candidate_threadgroups_per_layer": 3,
+    "attention_dispatches_per_graph": 30,
+    "q8_key_value_dequantization_shared_across_query_heads": true,
+    "temporal_merge_order_changed": false
+  },
+  "engine": {
+    "path": "_artifacts/smollm-slice31-gqa3-split8-engine-v12",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "25d42ceaeb236d569dfa33d1d01dedd6a20af919d20deee7653655e3bf5d87a2",
+    "decode_package_sha256": "a7ba4b718faa94f0038d0bdcd0409694c6d51fa79296260d1482c536bca0e3fc",
+    "verification_package_sha256": "b6ac45a8ff2054d24aedf35b8c493cd372fa09f77cc88d6810ab4be0f35aa97f",
+    "decode_metal_source_sha256": "f48a91d0e0909869bce7d18a5fb042e43008de9cf0e97a296b6572536a31e5af",
+    "decode_metallib_sha256": "0aada3581492c6ab63e076145ec2d96ae136fded4a1b5c32fdbcaadab623dceb",
+    "generate_executable_sha256": "321076e3e6e133c40e32420ea7f7168d9e50b6027a09e9ccc774faaa8f72c808"
+  },
+  "static_validation": {
+    "metal_source_compiled": true,
+    "model_program_valid": true,
+    "model_program_abi": 5,
+    "packages_validated": ["prefill", "decode", "verification"],
+    "kernels_per_package": 106,
+    "prefill_ir_commands": 1069,
+    "decode_ir_commands": 1189,
+    "verification_ir_commands": 1219,
+    "opaque_commands_per_package": 0,
+    "selector_unit_cases": 4,
+    "kernel_source_presence_test": "passed",
+    "full_ninja_build": "passed",
+    "ocaml_tests": "passed",
+    "python_tests": 72,
+    "binary_contains_flag": true,
+    "binary_contains_kernel_name": true
+  },
+  "measurement": "bench/results/smollm-slice31-gqa3-split8-probe-2026-09-01.json"
+}

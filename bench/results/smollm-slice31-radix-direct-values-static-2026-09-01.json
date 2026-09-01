@@ -1,0 +1,20 @@
+{
+  "created_at": "2026-09-01T14:58:36+07:00",
+  "kind": "smollm-slice31-radix-direct-values-static",
+  "implementation": {
+    "environment_flag": "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES=1",
+    "scope": "Radix_cache.match_prefix matched-value assembly",
+    "default_selected": false,
+    "old_assembly": "allocates a path list, a boxed option array, and a mapped result array",
+    "candidate_assembly": "computes total path length and fills one ordered result array backwards with Array.blit",
+    "public_copy_boundary_unchanged": true
+  },
+  "static_validation": {
+    "python_tests": 72,
+    "ocaml_tests": "passed",
+    "transformer_prefix_match_tokens": 3,
+    "canonical_slot_order": "exact",
+    "lease_release": "passed"
+  },
+  "measurement": null
+}

@@ -1,0 +1,47 @@
+{
+  "created_at": "2026-09-01T12:27:08+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-m1n4-linear-probe",
+  "model_dir": "/tmp/llmopt-smollm-m1n4-engine-v2",
+  "protocol": {
+    "attention_kernel": "llmopt_attention_q8_paged_simd_h64_gqa3",
+    "prebaked_from_past_tokens": 64,
+    "linear_tactics": [
+      "llmopt_q5_0_linear_f16_m1_n4_l32",
+      "llmopt_q8_0_linear_f16_m1_n4_l32"
+    ],
+    "lengths": [128, 512],
+    "campaigns": 1
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 1.463753,
+      "tokens_per_second": 87.446463,
+      "inter_token_mean_ms": 10.947778,
+      "inter_token_median_ms": 10.365963,
+      "inter_token_min_ms": 7.962227,
+      "inter_token_max_ms": 70.127964
+    },
+    "512_tokens": {
+      "elapsed_seconds": 9.778518,
+      "tokens_per_second": 52.359673,
+      "inter_token_mean_ms": 19.015346,
+      "inter_token_median_ms": 18.831015,
+      "inter_token_min_ms": 7.557869,
+      "inter_token_max_ms": 32.474041
+    }
+  },
+  "comparison": {
+    "128_over_corrected_prebake_ratio": 0.948116634,
+    "512_over_corrected_prebake_ratio": 0.964470888,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 7.284040907,
+    "first_128_tokens_equal_to_original_sequential": true,
+    "first_128_tokens_sha256": "5a1b745d9d416e048ee85b6330baaddcecd47beb2186faabb2a95b44beaaec5a",
+    "full_512_tokens_machine_compared": false
+  },
+  "disposition": {
+    "selected_after_probe": false,
+    "reason": "The measured tactic was slower at both observed lengths."
+  }
+}

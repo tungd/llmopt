@@ -1,0 +1,43 @@
+{
+  "created_at": "2026-09-01T12:57:10+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-q8-r2-sg4-probe",
+  "model_dir": "/tmp/llmopt-smollm-q8-r2-sg4-engine-v2",
+  "protocol": {
+    "q8_0_kernel": "llmopt_q8_0_linear_f16_m1_r2_sg4",
+    "q8_0_shape": [1, 49152, 576],
+    "q8_0_output_rows_per_threadgroup": 2,
+    "q8_0_k_split_simdgroups": 4,
+    "attention_kernel": "llmopt_attention_q8_paged_simd_h64_split8",
+    "environment": "LLMOPT_EXPERIMENTAL_SPLIT8=1",
+    "decode": "sequential-greedy-cpu-argmax",
+    "lengths": [128, 512],
+    "campaigns": 1
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 0.947211,
+      "tokens_per_second": 135.133528,
+      "inter_token_mean_ms": 6.905167,
+      "inter_token_median_ms": 5.830050,
+      "inter_token_min_ms": 4.770994,
+      "inter_token_max_ms": 66.627026
+    },
+    "512_tokens": {
+      "elapsed_seconds": 3.722000,
+      "tokens_per_second": 137.560438,
+      "inter_token_mean_ms": 7.169948,
+      "inter_token_median_ms": 7.014036,
+      "inter_token_min_ms": 4.866123,
+      "inter_token_max_ms": 15.146017
+    }
+  },
+  "comparison": {
+    "128_over_contiguous_split8_ratio": 1.073305290,
+    "512_over_contiguous_split8_ratio": 1.050321366,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 2.772526793,
+    "result_512_as_fraction_of_llamacpp": 0.360681817,
+    "completion_stream_comparator_run": false
+  }
+}

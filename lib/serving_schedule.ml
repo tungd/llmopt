@@ -196,6 +196,29 @@ let w4a16_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output extra_o
       && dimensions vs = [ n_v; k / 64 ]
   | _ -> false
 
+let quant_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output
+    extra_outputs =
+  let dimensions value =
+    Ir.Value.logical_shape value |> Tensor_shape.dimensions
+  in
+  let f16 value = Ir.Value.dtype value = Ir.Dtype.Float16 in
+  match inputs, extra_outputs with
+  | [ input; qw; kw; vw ], [ k_out; v_out ] ->
+      m > 0 && k > 0 && n_q > 0 && n_k > 0 && n_v > 0
+      && k mod 32 = 0 && f16 input && f16 output && f16 k_out && f16 v_out
+      && Ir.Value.dtype qw = Ir.Dtype.Quant Ir.Dtype.Q5_0
+      && Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q5_0
+      &&
+      (Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q5_0
+      || Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q8_0)
+      && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+      && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n_q
+      && Tensor_shape.numel (Ir.Value.logical_shape k_out) = m * n_k
+      && Tensor_shape.numel (Ir.Value.logical_shape v_out) = m * n_v
+      && dimensions qw = [ n_q; k ] && dimensions kw = [ n_k; k ]
+      && dimensions vw = [ n_v; k ]
+  | _ -> false
+
 let same_value_metadata left right =
   Ir.Value.dtype left = Ir.Value.dtype right
   && Tensor_shape.equal
@@ -297,6 +320,14 @@ let validate_command seen_values command =
                 (Printf.sprintf
                    "schedule node %d W4A16 QKV linear metadata is inconsistent"
                    command.Command.node_id)
+        | Ir.Op.Quant_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs }, inputs, Some output ->
+            if quant_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output extra_outputs then
+              Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d quantized QKV linear metadata is inconsistent"
+                   command.Command.node_id)
         | Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon }, inputs, Some output ->
             if w4a16_swiglu_metadata_matches ~m ~n ~k ~epsilon inputs output then
               Ok ()
@@ -337,9 +368,9 @@ let validate_command seen_values command =
               && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n
               && Ir.Value.dtype input = Ir.Dtype.Float16
               && (match Ir.Value.dtype gate_weight with
-                 | Ir.Dtype.Quant Ir.Dtype.Q4_K -> true
+                 | Ir.Dtype.Quant (Ir.Dtype.Q4_K | Ir.Dtype.Q5_0) -> true
                  | Ir.Dtype.Quant
-                     (Ir.Dtype.Q5_K | Ir.Dtype.Q5_0 | Ir.Dtype.IQ4_XS) ->
+                     (Ir.Dtype.Q5_K | Ir.Dtype.IQ4_XS) ->
                      m = 2
                  | _ -> false)
               && Ir.Value.dtype up_weight = Ir.Value.dtype gate_weight
@@ -837,8 +868,9 @@ let validate_command seen_values command =
                    "schedule node %d attention metadata is inconsistent"
                    command.Command.node_id)
         | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config),
-            [ query; current_key; current_value; pool; slots; mask ],
-            Some output ) ->
+            query :: current_key :: current_value :: pool :: slots :: mask_values,
+            Some output )
+          when List.length mask_values <= 1 ->
             let query_shape =
               Tensor_shape.dimensions (Ir.Value.logical_shape query)
             in
@@ -852,7 +884,13 @@ let validate_command seen_values command =
             let slots_shape =
               Tensor_shape.dimensions (Ir.Value.logical_shape slots)
             in
-            let mask_shape = Tensor_shape.dimensions (Ir.Value.logical_shape mask) in
+            let mask_shape =
+              match mask_values with
+              | [] -> None
+              | [ mask ] ->
+                  Some (Tensor_shape.dimensions (Ir.Value.logical_shape mask))
+              | _ -> assert false
+            in
             let metadata_matches =
               match query_shape, key_shape, value_shape, pool_shape, slots_shape,
                     mask_shape with
@@ -861,7 +899,7 @@ let validate_command seen_values command =
                   [ value_batches; value_heads; value_tokens; value_dim ],
                   [ pool_bytes ],
                   [ past_tokens ],
-                  [ mask_batches; mask_heads; mask_query; _key_length ] ) ->
+                  Some [ mask_batches; mask_heads; mask_query; _key_length ] ) ->
                   let group_size = Ir.Paged_attention_q8.group_size config in
                   let token_elements =
                     Ir.Paged_attention_q8.token_elements config
@@ -882,6 +920,33 @@ let validate_command seen_values command =
                   && pool_bytes mod Ir.Paged_attention_q8.token_stride config = 0
                   && Ir.Paged_attention_q8.token_stride config
                      = token_elements + (2 * token_groups)
+              | ( [ batches; query_heads; 1; head_dim ],
+                  [ key_batches; kv_heads; 1; key_dim ],
+                  [ value_batches; value_heads; 1; value_dim ],
+                  [ pool_bytes ],
+                  [ past_tokens ],
+                  None ) ->
+                  let group_size = Ir.Paged_attention_q8.group_size config in
+                  let token_elements =
+                    Ir.Paged_attention_q8.token_elements config
+                  in
+                  let token_groups = token_elements / group_size in
+                  batches = key_batches && batches = value_batches
+                  && kv_heads = value_heads
+                  && kv_heads = Ir.Paged_attention_q8.kv_heads config
+                  && head_dim = Ir.Paged_attention_q8.head_dim config
+                  && query_heads mod kv_heads = 0
+                  && head_dim = key_dim && head_dim = value_dim
+                  && head_dim mod group_size = 0 && past_tokens > 0
+                  && pool_bytes mod Ir.Paged_attention_q8.token_stride config = 0
+                  && Ir.Paged_attention_q8.token_stride config
+                     = token_elements + (2 * token_groups)
+              | _ -> false
+            in
+            let mask_dtype_matches =
+              match mask_values with
+              | [] -> true
+              | [ mask ] -> Ir.Value.dtype mask = Ir.Dtype.Bool
               | _ -> false
             in
             if
@@ -894,7 +959,7 @@ let validate_command seen_values command =
               && Ir.Value.dtype current_value = Ir.Dtype.Float16
               && Ir.Value.dtype pool = Ir.Dtype.Int8
               && Ir.Value.dtype slots = Ir.Dtype.Int32
-              && Ir.Value.dtype mask = Ir.Dtype.Bool
+              && mask_dtype_matches
               && Ir.Value.dtype output = Ir.Dtype.Float16
             then Ok ()
             else
@@ -1465,6 +1530,17 @@ module Sequence = struct
                n_v = substitute substitutions n_v;
                extra_outputs;
              })
+    | Ir.Op.Quant_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs } ->
+        Ok
+          (Ir.Op.Quant_qkv_linear
+             {
+               m = substitute substitutions m;
+               k = substitute substitutions k;
+               n_q = substitute substitutions n_q;
+               n_k = substitute substitutions n_k;
+               n_v = substitute substitutions n_v;
+               extra_outputs;
+             })
     | Ir.Op.W4a16_swiglu_ffn { m; n; k; epsilon } ->
         Ok
           (Ir.Op.W4a16_swiglu_ffn
@@ -1652,7 +1728,8 @@ module Sequence = struct
         |> shape_error
     | ( Ir.Op.Matmul _ | Ir.Op.Linear _ | Ir.Op.Linear_add _
       | Ir.Op.Fused_matmul_bias _
-      | Ir.Op.W4a16_linear _ | Ir.Op.Gated_linear _ ), _ ->
+      | Ir.Op.W4a16_linear _ | Ir.Op.Gated_linear _
+      | Ir.Op.Quant_qkv_linear _ ), _ ->
         map_shape substitutions original
     | Ir.Op.W4a16_swiglu_ffn _, _ -> map_shape substitutions original
     | Ir.Op.W4a16_lm_head_argmax { m; _ }, _ ->
@@ -1710,6 +1787,10 @@ module Sequence = struct
         let* k_out = specialized_matrix_value substitutions ~rows:m ~columns:n_k k_out in
         let* v_out = specialized_matrix_value substitutions ~rows:m ~columns:n_v v_out in
         Ok [ k_out; v_out ]
+    | Ir.Op.Quant_qkv_linear { m; n_k; n_v; _ }, [ k_out; v_out ] ->
+        let* k_out = specialized_matrix_value substitutions ~rows:m ~columns:n_k k_out in
+        let* v_out = specialized_matrix_value substitutions ~rows:m ~columns:n_v v_out in
+        Ok [ k_out; v_out ]
     | Ir.Op.Rms_rope_qk _, [ k_out ] ->
         specialized_generic_value substitutions k_out
         |> Result.map (fun output -> [ output ])
@@ -1725,6 +1806,8 @@ module Sequence = struct
         Ir.Op.W4a16_lm_head_argmax { config with extra_outputs = outputs }
     | Ir.Op.W4a16_qkv_linear config ->
         Ir.Op.W4a16_qkv_linear { config with extra_outputs = outputs }
+    | Ir.Op.Quant_qkv_linear config ->
+        Ir.Op.Quant_qkv_linear { config with extra_outputs = outputs }
     | Ir.Op.Rms_rope_qk config ->
         Ir.Op.Rms_rope_qk { config with extra_outputs = outputs }
     | Ir.Op.Rotary_qk config ->
@@ -2038,7 +2121,7 @@ module Sequence = struct
            match command.Command.op with
            | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _
            | Ir.Op.Barrier_create _ ->
-               false
+               true
            | _ -> (
                match command.Command.output with
                | None -> true
@@ -2195,7 +2278,7 @@ module Sequence = struct
     in
     find value
 
-  let direct_q8_attention ~past_tokens ~cache schedule =
+  let direct_q8_attention ~maskless ~past_tokens ~cache schedule =
     let layout = Kv_cache.Config.layout cache in
     let group_size = Kv_cache.Format.q8_group_size in
     let commands = schedule.commands in
@@ -2264,13 +2347,17 @@ module Sequence = struct
                     ~key_offset ~value_offset ~group_size
                     ~token_stride:(Kv_cache.Layout.bytes_per_token layout)
                 in
+                let attention_inputs =
+                  if maskless then
+                    [ query; key.current; value.current; pool; slots ]
+                  else [ query; key.current; value.current; pool; slots; mask ]
+                in
                 let command =
                   {
                     command with
                     Command.op =
                       Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config);
-                    inputs =
-                      [ query; key.current; value.current; pool; slots; mask ];
+                    inputs = attention_inputs;
                   }
                 in
                 let aliases =
@@ -2313,7 +2400,10 @@ module Sequence = struct
 
   let specialize_decode_paged_q8 ~captured_past ~past_tokens ~cache schedule =
     let* schedule = specialize_decode ~captured_past ~past_tokens schedule in
-    direct_q8_attention ~past_tokens ~cache schedule
+    let maskless =
+      Sys.getenv_opt "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE" = Some "1"
+    in
+    direct_q8_attention ~maskless ~past_tokens ~cache schedule
 
   let recurrent_in_input layer =
     Printf.sprintf "__llmopt_recurrent_in_%d" layer
@@ -2432,7 +2522,9 @@ module Sequence = struct
           ~tokens schedule
       in
       let* schedule = specialize_rope ~tokens schedule in
-      let* schedule = direct_q8_attention ~past_tokens ~cache schedule in
+      let* schedule =
+        direct_q8_attention ~maskless:false ~past_tokens ~cache schedule
+      in
       let* schedule = specialize_conv_checkpoint schedule in
       specialize_suffix_mask ~past_tokens ~tokens schedule
 
@@ -2455,7 +2547,9 @@ module Sequence = struct
           schedule
       in
       let* schedule = specialize_rope ~tokens:query_tokens schedule in
-      let* schedule = direct_q8_attention ~past_tokens ~cache schedule in
+      let* schedule =
+        direct_q8_attention ~maskless:false ~past_tokens ~cache schedule
+      in
       specialize_suffix_mask ~past_tokens ~tokens:query_tokens schedule
 end
 
@@ -3195,6 +3289,11 @@ let write_op writer = function
       List.iter (Binary.Writer.u64 writer) [ m; k; n_q; n_k; n_v ];
       Binary.Writer.u8 writer (List.length extra_outputs);
       List.iter (write_value writer) extra_outputs
+  | Ir.Op.Quant_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs } ->
+      Binary.Writer.u8 writer 41;
+      List.iter (Binary.Writer.u64 writer) [ m; k; n_q; n_k; n_v ];
+      Binary.Writer.u8 writer (List.length extra_outputs);
+      List.iter (write_value writer) extra_outputs
   | Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
       Binary.Writer.u8 writer (if extra_outputs = [] then 29 else 33);
       List.iter (Binary.Writer.u64 writer) [ m; n; k ];
@@ -3332,6 +3431,21 @@ let read_op values reader =
       in
       let* extra_outputs = outputs [] count in
       Ok (Ir.Op.W4a16_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs })
+  | 41 ->
+      let* m = Binary.Reader.u64 reader in
+      let* k = Binary.Reader.u64 reader in
+      let* n_q = Binary.Reader.u64 reader in
+      let* n_k = Binary.Reader.u64 reader in
+      let* n_v = Binary.Reader.u64 reader in
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      Ok (Ir.Op.Quant_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs })
   | 15 -> read_primitive values reader |> Result.map (fun value -> Ir.Op.Primitive value)
   | 16 ->
       let* epsilon = Binary.Reader.float64 reader in

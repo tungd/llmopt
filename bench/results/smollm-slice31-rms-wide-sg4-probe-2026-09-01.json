@@ -1,0 +1,115 @@
+{
+  "created_at": "2026-09-01T15:44:36+07:00",
+  "kind": "smollm-slice31-rms-wide-sg4-probe",
+  "valid_dispatch_measurement": true,
+  "retained": false,
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "engine": "_artifacts/smollm-slice31-llama-mv-engine-v11",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "candidate_environment": "LLMOPT_EXPERIMENTAL_RMS_WIDE_SG4=1",
+  "common_environment": {
+    "LLMOPT_PROFILE_BATCH": "1",
+    "LLMOPT_PROFILE_PLAN": "1",
+    "LLMOPT_EXPERIMENTAL_SPLIT8": "1",
+    "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE": "1",
+    "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_KQUANT_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_Q8_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_SHARED_VALUES": "1",
+    "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_MIXED_QKV_LLAMA_MV": "1"
+  },
+  "artifacts": {
+    "executable_sha256": "d39e17340cf6190751fd62eff9a11032e0d67d32d98dc4ddbc16b0e65587bc87",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "decode_package_sha256": "c16e23de647aac5cbd549cb261f59d1085fcd28fbe8300f170558096ab62239d",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211",
+    "raw_log_directory": "/tmp/llmopt-rms-wide-sg4-probe.D0TYXh"
+  },
+  "dispatch_assertions": {
+    "control_original_wide_rms_dispatches": 61,
+    "control_sg4_wide_rms_dispatches": 0,
+    "candidate_original_wide_rms_dispatches": 0,
+    "candidate_sg4_wide_rms_dispatches": 61
+  },
+  "run_order": ["128_control", "128_candidate", "512_candidate", "512_control"],
+  "runs": {
+    "128_control": {
+      "elapsed_seconds": 0.566467,
+      "tokens_per_second": 225.961953,
+      "inter_token_mean_ms": 3.971072,
+      "inter_token_median_ms": 2.497196,
+      "completion_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.142228956,
+      "gpu_median_ms": 2.124875,
+      "commit_wait_mean_ms": 2.331461967,
+      "commit_wait_median_ms": 2.325375
+    },
+    "128_candidate": {
+      "elapsed_seconds": 0.578973,
+      "tokens_per_second": 221.081009,
+      "inter_token_mean_ms": 4.109396,
+      "inter_token_median_ms": 2.583027,
+      "completion_sha256": "aabd29ae76a45b46d0e0416454ef139a3f855d71d6f25506edcebe339d2a291a",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.212053549,
+      "gpu_median_ms": 2.187250,
+      "commit_wait_mean_ms": 2.398653846,
+      "commit_wait_median_ms": 2.353125
+    },
+    "512_control": {
+      "elapsed_seconds": 1.932934,
+      "tokens_per_second": 264.882324,
+      "inter_token_mean_ms": 3.677066,
+      "inter_token_median_ms": 3.463030,
+      "completion_sha256": "951697f8bce6e64b93cafe731b73042e96a95978eccce304838e12e246c76c7f",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.090352547,
+      "gpu_median_ms": 3.081708,
+      "commit_wait_mean_ms": 3.256056760,
+      "commit_wait_median_ms": 3.238417
+    },
+    "512_candidate": {
+      "elapsed_seconds": 1.964849,
+      "tokens_per_second": 260.579821,
+      "inter_token_mean_ms": 3.734818,
+      "inter_token_median_ms": 3.527880,
+      "completion_sha256": "b52c7ebbded5ce3ec83e1e11e796c91d23f9000dc0b5a2cf83e5ba5ecf44ea19",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.148192804,
+      "gpu_median_ms": 3.161833,
+      "commit_wait_mean_ms": 3.320622368,
+      "commit_wait_median_ms": 3.328917
+    }
+  },
+  "comparison": {
+    "candidate_minus_control_128_tokens_per_second": -4.880944,
+    "candidate_minus_control_128_percent": -2.160073,
+    "candidate_minus_control_128_inter_token_mean_ms": 0.138324,
+    "candidate_minus_control_128_gpu_mean_ms": 0.069824593,
+    "candidate_minus_control_128_commit_wait_mean_ms": 0.067191879,
+    "candidate_minus_control_512_tokens_per_second": -4.302503,
+    "candidate_minus_control_512_percent": -1.624307,
+    "candidate_minus_control_512_inter_token_mean_ms": 0.057752,
+    "candidate_minus_control_512_inter_token_median_ms": 0.064850,
+    "candidate_minus_control_512_gpu_mean_ms": 0.057840257,
+    "candidate_minus_control_512_gpu_median_ms": 0.080125,
+    "candidate_minus_control_512_commit_wait_mean_ms": 0.064565608,
+    "candidate_minus_control_512_commit_wait_median_ms": 0.090500,
+    "llama_cpp_reference_tokens_per_second": 381.39,
+    "control_fraction_of_llama_cpp": 0.694518273,
+    "llama_cpp_over_control": 1.439846926
+  },
+  "parity": {
+    "control_candidate_128": "different",
+    "control_candidate_512": "different",
+    "first_divergence_index": 92,
+    "control_token": 198,
+    "candidate_token": 9212
+  },
+  "disposition": "removed after one device campaign because it increased GPU, wait, and inter-token times and changed both completion streams"
+}

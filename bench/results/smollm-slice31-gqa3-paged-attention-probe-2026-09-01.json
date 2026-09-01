@@ -1,0 +1,65 @@
+{
+  "created_at": "2026-09-01T12:06:58+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-gqa3-paged-attention-probe",
+  "model_dir": "/tmp/llmopt-smollm-gqa3-engine",
+  "model_weights": "_artifacts/full-model-probe/smollm/package-6/weights.gguf",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "change": {
+    "kernel": "llmopt_attention_q8_paged_simd_h64_gqa3",
+    "query_heads": 9,
+    "kv_heads": 3,
+    "cache_scans_per_layer_before": 9,
+    "cache_scans_per_layer_after": 3
+  },
+  "baseline": {
+    "128_tokens": {
+      "tokens_per_second": 78.785680,
+      "inter_token_mean_ms": 11.874557,
+      "inter_token_median_ms": 11.981010,
+      "inter_token_min_ms": 7.275820,
+      "inter_token_max_ms": 34.069061
+    },
+    "512_tokens": {
+      "tokens_per_second": 46.159371,
+      "inter_token_mean_ms": 21.602731,
+      "inter_token_median_ms": 21.409035,
+      "inter_token_min_ms": 7.061958,
+      "inter_token_max_ms": 39.187908
+    }
+  },
+  "gqa3": {
+    "128_tokens": {
+      "elapsed_seconds": 1.590891,
+      "tokens_per_second": 80.458064,
+      "inter_token_count": 127,
+      "inter_token_mean_ms": 11.904465,
+      "inter_token_median_ms": 11.923075,
+      "inter_token_min_ms": 7.340908,
+      "inter_token_max_ms": 25.963068
+    },
+    "512_tokens": {
+      "elapsed_seconds": 11.245678,
+      "tokens_per_second": 45.528602,
+      "inter_token_count": 511,
+      "inter_token_mean_ms": 21.903540,
+      "inter_token_median_ms": 21.912098,
+      "inter_token_min_ms": 7.125854,
+      "inter_token_max_ms": 38.034916
+    }
+  },
+  "comparison": {
+    "128_tokens_per_second_delta": 1.672384,
+    "128_tokens_per_second_ratio": 1.021227,
+    "512_tokens_per_second_delta": -0.630769,
+    "512_tokens_per_second_ratio": 0.986335,
+    "512_inter_token_median_ms_delta": 0.503063,
+    "completion_tokens_equal_to_baseline": true
+  },
+  "validation": {
+    "ocaml_canonical_tests": "passed",
+    "python_tests": "72 passed",
+    "native_metal_gqa3_fixture": "exact",
+    "metal_compilation": "passed"
+  }
+}

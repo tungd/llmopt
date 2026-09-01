@@ -32,6 +32,9 @@ external buffer_view_stub : buffer_handle -> int -> int -> buffer_handle
 external buffer_contents_stub : buffer_handle -> bytes
   = "caml_llmopt_metal_buffer_contents"
 
+external buffer_argmax_f16_stub : buffer_handle -> int -> int
+  = "caml_llmopt_metal_buffer_argmax_f16"
+
 external buffer_length_stub : buffer_handle -> int
   = "caml_llmopt_metal_buffer_length"
 
@@ -96,7 +99,7 @@ external ring_poll_completion_stub : ring_handle -> (int * int * int) option
 external ring_start_worker_stub :
   ring_handle ->
   library_handle ->
-  (string * buffer_handle list * bytes * int * int * int * int * int * int)
+  (string * buffer_handle list * bytes * int * int * int * int * int * int * bool)
   array ->
   buffer_handle ->
   buffer_handle ->
@@ -108,7 +111,7 @@ type prebaked_handle
 
 external prebaked_create_stub :
   library_handle ->
-  (string * buffer_handle list * bytes * int * int * int * int * int * int)
+  (string * buffer_handle list * bytes * int * int * int * int * int * int * bool)
   array ->
   buffer_handle ->
   buffer_handle ->
@@ -142,12 +145,14 @@ module Batch = struct
     group_x : int;
     group_y : int;
     group_z : int;
+    barrier_before : bool;
   }
 
   type t = {
     handle : batch_handle;
     context : context_handle;
     mutable pending : (library_handle * dispatch_item) list;
+    mutable next_dispatch_barrier : bool;
   }
 
   let create (runtime : runtime) =
@@ -156,6 +161,7 @@ module Batch = struct
           handle = begin_batch_stub runtime.library;
           context = runtime.context;
           pending = [];
+          next_dispatch_barrier = false;
         })
 
   let flush batch =
@@ -212,10 +218,14 @@ module Batch = struct
            group_x;
            group_y;
            group_z;
+           barrier_before = batch.next_dispatch_barrier;
          })
         :: batch.pending;
+      batch.next_dispatch_barrier <- false;
       Ok ()
     )
+
+  let mark_barrier batch = batch.next_dispatch_barrier <- true
 
   let copy batch ~source ~destination =
     let* () = flush batch in
@@ -235,6 +245,7 @@ module Batch = struct
 
   let abort batch =
     batch.pending <- [];
+    batch.next_dispatch_barrier <- false;
     protect (fun () -> abort_batch_stub batch.handle)
 end
 
@@ -351,6 +362,9 @@ module Buffer = struct
     protect (fun () -> buffer_view_stub parent offset bytes)
 
   let contents buffer = protect (fun () -> buffer_contents_stub buffer)
+  let argmax_f16 buffer ~vocabulary =
+    protect (fun () -> buffer_argmax_f16_stub buffer vocabulary)
+
   let byte_length = buffer_length_stub
 
   let copy ~source ~destination =
@@ -409,6 +423,37 @@ let tensor runtime ~name =
               ( buffer_view_stub mapped (Weight_archive.Tensor.offset tensor)
                   (Weight_archive.Tensor.byte_length tensor),
                 tensor )))
+
+module Quant_qkv_tactic = struct
+  let kernel_name ~experimental_llama_mv ~experimental_mixed_llama_mv ~m
+      ~v_dtype =
+    match v_dtype with
+    | Ir.Dtype.Quant Ir.Dtype.Q5_0 when experimental_llama_mv && m = 1 ->
+        Ok "llmopt_q5_0_qkv_linear_f16_llama_mv"
+    | Ir.Dtype.Quant Ir.Dtype.Q5_0 -> Ok "llmopt_q5_0_qkv_linear_f16"
+    | Ir.Dtype.Quant Ir.Dtype.Q8_0
+      when experimental_mixed_llama_mv && m = 1 ->
+        Ok "llmopt_q5_0_qkv_linear_vq8_f16_llama_mv"
+    | Ir.Dtype.Quant Ir.Dtype.Q8_0 -> Ok "llmopt_q5_0_qkv_linear_vq8_f16"
+    | dtype ->
+        Error
+          (Printf.sprintf "unsupported quantized QKV value weight dtype: %s"
+             (Ir.Dtype.to_string dtype))
+end
+
+module Paged_attention_tactic = struct
+  let kernel_name ~experimental_gqa3_split8 ~split8 ~query_heads ~kv_heads =
+    let gqa3_shape = query_heads = 3 * kv_heads in
+    if split8 && gqa3_shape && experimental_gqa3_split8 then
+      "llmopt_attention_q8_paged_simd_h64_gqa3_split8"
+    else if split8 then "llmopt_attention_q8_paged_simd_h64_split8"
+    else if gqa3_shape then "llmopt_attention_q8_paged_simd_h64_gqa3"
+    else "llmopt_attention_q8_paged_simd_h64"
+
+  let groups_by_kv_head name =
+    String.equal name "llmopt_attention_q8_paged_simd_h64_gqa3"
+    || String.equal name "llmopt_attention_q8_paged_simd_h64_gqa3_split8"
+end
 
 let kernel_entry ?name runtime ~operation ~input_dtype ~output_dtype =
   let matches =
@@ -917,6 +962,7 @@ module Cache = struct
 
   type kernels = {
     pack_attention : pack_kernel;
+    pack_attention_pair : pack_kernel option;
     unpack_attention : unpack_kernel;
     pack_checkpoint : pack_kernel;
     unpack_checkpoint : unpack_kernel;
@@ -1042,6 +1088,12 @@ module Cache = struct
         let* pack_attention =
           select_pack_kernel runtime format pack_attention pack_dtype
         in
+        let pack_attention_pair =
+          cache_entry_opt runtime "llmopt_cache_pack_attention_q8_pair_simd"
+            pack_dtype
+          |> Option.map (fun entry ->
+                 { entry; dispatch_layout = Pack_layout.Simdgroup })
+        in
         let* unpack_attention =
           select_unpack_kernel runtime format unpack_attention unpack_dtype
         in
@@ -1078,6 +1130,7 @@ module Cache = struct
             kernels =
               {
                 pack_attention;
+                pack_attention_pair;
                 unpack_attention;
                 pack_checkpoint;
                 unpack_checkpoint;
@@ -1174,6 +1227,35 @@ module Cache = struct
       [ items; segment_offset; heads; head_dim; group_size; token_elements;
         token_groups;
         Kv_cache.Layout.bytes_per_token layout; source_items; source_offset ]
+
+  let attention_pair_parameters cache ~layer ~items ~source_items
+      ~source_offset =
+    let layout = cache.layout in
+    let* geometry =
+      match Kv_cache.Layout.attention layout ~layer with
+      | Some geometry -> Ok geometry
+      | None -> Error "physical cache attention layer is outside the layout"
+    in
+    let* key_offset, value_offset =
+      match
+        ( Kv_cache.Layout.attention_key_offset layout ~layer,
+          Kv_cache.Layout.attention_value_offset layout ~layer )
+      with
+      | Some key_offset, Some value_offset -> Ok (key_offset, value_offset)
+      | _ -> Error "physical cache attention region is missing"
+    in
+    let heads = Kv_cache.Layout.Attention_layer.kv_heads geometry in
+    let head_dim = Kv_cache.Layout.Attention_layer.head_dim geometry in
+    let group_size = group_size (format cache) in
+    let token_elements = Kv_cache.Layout.token_elements layout in
+    let token_groups =
+      Kv_cache.Format.groups_for_elements (format cache)
+        ~elements:token_elements
+    in
+    Parameters.u32s
+      [ items; key_offset; value_offset; heads; head_dim; group_size;
+        token_elements; token_groups; Kv_cache.Layout.bytes_per_token layout;
+        source_items; source_offset ]
 
   let attention_counts cache ~layer items =
     let layout = cache.layout in
@@ -1281,6 +1363,77 @@ module Cache = struct
     else
       attention ~batch batch.cache ~pack:true ~layer ~kind ~slots ~source_items
         ~source_offset source
+
+  let batch_pack_attention_pair_slice batch ~layer ~slots ~source_items
+      ~source_offset ~key_source ~value_source =
+    match batch.cache.kernels.pack_attention_pair with
+    | None ->
+        let* _ =
+          batch_pack_attention_slice batch ~layer ~kind:Attention.Key ~slots
+            ~source_items ~source_offset ~source:key_source
+        in
+        batch_pack_attention_slice batch ~layer ~kind:Attention.Value ~slots
+          ~source_items ~source_offset ~source:value_source
+    | Some kernel ->
+        let cache = batch.cache in
+        let* () =
+          validate_layer layer (Kv_cache.Layout.attention_layers cache.layout)
+            "attention"
+        in
+        let items = Array.length slots in
+        let* _, groups = attention_counts cache ~layer items in
+        let* segment_elements =
+          match Kv_cache.Layout.attention_segment_elements cache.layout ~layer with
+          | Some elements -> Ok elements
+          | None -> Error "physical cache attention layer is outside the layout"
+        in
+        let* () =
+          if source_items <= 0 then
+            Error "physical attention cache source_items must be positive"
+          else if source_offset < 0 || source_offset > source_items - items then
+            Error "physical attention cache source slice is out of range"
+          else Ok ()
+        in
+        let* source_elements =
+          checked_product source_items segment_elements "attention source size"
+        in
+        let* expected_bytes =
+          checked_product source_elements 2 "attention byte length"
+        in
+        let* () =
+          exact_buffer_length key_source expected_bytes "attention key source"
+        in
+        let* () =
+          exact_buffer_length value_source expected_bytes "attention value source"
+        in
+        let* slots_buffer = slots_buffer ~pack:true cache slots in
+        let* parameters =
+          attention_pair_parameters cache ~layer ~items ~source_items
+            ~source_offset
+        in
+        let* grid = pack_grid kernel groups in
+        batch.resources <- slots_buffer :: batch.resources;
+        let* dispatched =
+          dispatch ~batch:batch.commands cache.runtime kernel.entry
+            ~buffers:[ key_source; value_source; slots_buffer; cache.token_pool ]
+            ~parameters ~grid:(grid, 1, 1)
+        in
+        batch.dispatches <- batch.dispatches + 1;
+        Ok dispatched
+
+  let batch_pack_attention_pair batch ~layer ~slots ~key_source ~value_source =
+    match batch.cache.kernels.pack_attention_pair with
+    | None ->
+        let* _ =
+          batch_pack_attention batch ~layer ~kind:Attention.Key ~slots
+            ~source:key_source
+        in
+        batch_pack_attention batch ~layer ~kind:Attention.Value ~slots
+          ~source:value_source
+    | Some _ ->
+        batch_pack_attention_pair_slice batch ~layer ~slots
+          ~source_items:(Array.length slots) ~source_offset:0 ~key_source
+          ~value_source
 
   let batch_unpack_attention batch ~layer ~kind ~slots ~destination =
     attention ~batch batch.cache ~pack:false ~layer ~kind ~slots
@@ -1409,6 +1562,8 @@ module Execution_batch = struct
 end
 
 let with_execution_batch runtime operation =
+  let profile = Sys.getenv_opt "LLMOPT_PROFILE_BATCH" = Some "1" in
+  let started = if profile then Unix.gettimeofday () else 0.0 in
   let* commands = Batch.create runtime in
   let batch =
     {
@@ -1428,10 +1583,18 @@ let with_execution_batch runtime operation =
       release_resources ();
       Error message
   | Ok value ->
+      let encoded = if profile then Unix.gettimeofday () else 0.0 in
       let completion =
         if batch.schedules = 0 then Batch.abort commands
         else Batch.commit commands
       in
+      let committed = if profile then Unix.gettimeofday () else 0.0 in
+      if profile then
+        Printf.eprintf
+          "llmopt-batch-profile: schedules=%d encode_ms=%.6f commit_ms=%.6f total_ms=%.6f\n%!"
+          batch.schedules ((encoded -. started) *. 1000.0)
+          ((committed -. encoded) *. 1000.0)
+          ((committed -. started) *. 1000.0);
       release_resources ();
       let* () = completion in
       Ok value
@@ -1467,6 +1630,12 @@ let encode_cache_pack_attention_slice execution_batch ~cache ~layer ~kind
   encode_cache execution_batch cache (fun batch ->
       Cache.batch_pack_attention_slice batch ~layer ~kind ~slots ~source_items
         ~source_offset ~source)
+
+let encode_cache_pack_attention_pair_slice execution_batch ~cache ~layer ~slots
+    ~source_items ~source_offset ~key_source ~value_source =
+  encode_cache execution_batch cache (fun batch ->
+      Cache.batch_pack_attention_pair_slice batch ~layer ~slots ~source_items
+        ~source_offset ~key_source ~value_source)
 
 let encode_cache_pack_checkpoint execution_batch ~cache ~layer ~checkpoint
     ~source =
@@ -1922,6 +2091,63 @@ let dispatch_w4a16_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k ~n_v
   let state = bind_value state v_output_value v_output_buffer in
   Ok (state, [ kernel ])
 
+let dispatch_quant_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k
+    ~n_v ~extra_outputs values output =
+  let* input_value, q_weight_value, k_weight_value, v_weight_value =
+    match values with
+    | [ input; qw; kw; vw ] -> Ok (input, qw, kw, vw)
+    | _ -> Error "quantized QKV linear command has inconsistent inputs"
+  in
+  let* input = find_value state input_value in
+  let* q_weight = find_value state q_weight_value in
+  let* k_weight = find_value state k_weight_value in
+  let* v_weight = find_value state v_weight_value in
+  let* q_output_buffer = workspace_buffer state output in
+  let* k_output_value, v_output_value =
+    match extra_outputs with
+    | [ k_output; v_output ] -> Ok (k_output, v_output)
+    | _ -> Error "quantized QKV linear command requires K and V outputs"
+  in
+  let* k_output_buffer = workspace_buffer state k_output_value in
+  let* v_output_buffer = workspace_buffer state v_output_value in
+  let* parameters = Parameters.u32s [ m; k; n_q; n_k; n_v ] in
+  let experimental_llama_mv =
+    Sys.getenv_opt "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV" = Some "1"
+  in
+  let experimental_mixed_llama_mv =
+    Sys.getenv_opt "LLMOPT_EXPERIMENTAL_MIXED_QKV_LLAMA_MV" = Some "1"
+  in
+  let v_dtype = Ir.Value.dtype v_weight_value in
+  let* name =
+    Quant_qkv_tactic.kernel_name ~experimental_llama_mv
+      ~experimental_mixed_llama_mv ~m ~v_dtype
+  in
+  let llama_mv = String.ends_with ~suffix:"_llama_mv" name in
+  let* entry =
+    kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* grid_x =
+    if llama_mv then
+      let groups = (n_q + n_k + n_v + 15) / 16 in
+      if groups > max_int / 128 then
+        Error "llama-style Q5_0 QKV grid overflows"
+      else Ok (groups * 128)
+    else linear_f16_grid (m * (n_q + n_k + n_v))
+  in
+  let* kernel =
+    dispatch ~batch runtime entry
+      ~buffers:
+        [ input; q_weight; k_weight; v_weight; q_output_buffer;
+          k_output_buffer; v_output_buffer ]
+      ~parameters ~grid:(grid_x, 1, 1)
+  in
+  let state = bind_value state output q_output_buffer in
+  let state = bind_value state k_output_value k_output_buffer in
+  let state = bind_value state v_output_value v_output_buffer in
+  Ok (state, [ kernel ])
+
 let dispatch_w4a16_lm_head_argmax_command execution_batch batch runtime state ~m ~n ~k ~epsilon
     ~extra_outputs values output =
   let* input_value, norm_weight_value, weight_value, scale_value =
@@ -2094,9 +2320,41 @@ let dispatch_output ?name ?batch runtime state output ~operation ~input_dtype
 let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     ~input_buffer ~weight_buffer ~additive_buffer ~epilogue_mode =
   let* entry =
-    select_quant_linear_kernel
-      ~suffix:(if epilogue_mode = 2 then "_add" else "") runtime ~m ~n ~k
-      ~output_dtype:(Ir.Value.dtype output) quant
+    if
+      Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q8_LLAMA_MV" = Some "1"
+      && quant = Ir.Dtype.Q8_0 && m = 1 && n >= 8192
+      && epilogue_mode = 0
+    then
+      kernel_entry ~name:"llmopt_q8_0_linear_f16_llama_mv" runtime
+        ~operation:Kernel_abi.Operation.Linear
+        ~input_dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
+        ~output_dtype:(Ir.Value.dtype output)
+    else if
+      Sys.getenv_opt "LLMOPT_EXPERIMENTAL_KQUANT_LLAMA_MV" = Some "1"
+      && (quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q6_K)
+      && m = 1 && epilogue_mode = 2
+    then
+      let name =
+        match quant with
+        | Ir.Dtype.Q4_K -> "llmopt_q4_k_linear_f16_llama_mv_add"
+        | Ir.Dtype.Q6_K -> "llmopt_q6_k_linear_f16_llama_mv_add"
+        | _ -> assert false
+      in
+      kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Linear
+        ~input_dtype:(Ir.Dtype.Quant quant)
+        ~output_dtype:(Ir.Value.dtype output)
+    else if
+      Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1"
+      && quant = Ir.Dtype.Q5_0 && m = 1 && epilogue_mode = 2
+    then
+      kernel_entry ~name:"llmopt_q5_0_linear_f16_llama_mv_add" runtime
+        ~operation:Kernel_abi.Operation.Linear
+        ~input_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+        ~output_dtype:(Ir.Value.dtype output)
+    else
+      select_quant_linear_kernel
+        ~suffix:(if epilogue_mode = 2 then "_add" else "") runtime ~m ~n ~k
+        ~output_dtype:(Ir.Value.dtype output) quant
   in
   let name = Kernel_abi.Entry.name entry in
   let tactic_name =
@@ -2106,7 +2364,14 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
   in
   let* parameters = Parameters.u32s [ m; n; k; epilogue_mode ] in
   let columns =
-    if String.ends_with ~suffix:"_m2_n2_l32" tactic_name then (n + 1) / 2
+    if
+      String.equal tactic_name "llmopt_q5_0_linear_f16_llama_mv"
+    then (n + 7) / 8
+    else if String.equal tactic_name "llmopt_q8_0_linear_f16_llama_mv"
+    then (n + 1) / 2
+    else if String.ends_with ~suffix:"_llama_mv" tactic_name then (n + 3) / 4
+    else if String.ends_with ~suffix:"_m1_r2_sg4" tactic_name then (n + 1) / 2
+    else if String.ends_with ~suffix:"_m2_n2_l32" tactic_name then (n + 1) / 2
     else if String.ends_with ~suffix:"_m2_n1_l32" tactic_name then n
     else if String.ends_with ~suffix:"_m2_x2_l32" tactic_name then
       m * ((n + 1) / 2)
@@ -2118,7 +2383,19 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     else m * n
   in
   let* grid_x =
-    if
+    if String.equal tactic_name "llmopt_q8_0_linear_f16_llama_mv" then
+      if columns > max_int / 128 then
+        Error "Metal llama-style Q8_0 Linear grid dimension overflows"
+      else Ok (columns * 128)
+    else if String.ends_with ~suffix:"_llama_mv" tactic_name then
+      if columns > max_int / 64 then
+        Error "Metal llama-style quantized Linear grid dimension overflows"
+      else Ok (columns * 64)
+    else if String.ends_with ~suffix:"_m1_r2_sg4" tactic_name then
+      if columns > max_int / 128 then
+        Error "Metal Q8_0 wide-output Linear grid dimension overflows"
+      else Ok (columns * 128)
+    else if
       String.ends_with ~suffix:"_m2_n2_l32" tactic_name
       || String.ends_with ~suffix:"_m2_n1_l32" tactic_name
       || String.ends_with ~suffix:"_m2_x2_l32" tactic_name
@@ -2832,10 +3109,9 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               match Ir.Value.dtype gate_weight, Ir.Value.dtype up_weight with
               | Ir.Dtype.Quant quant, up_dtype
                 when up_dtype = Ir.Dtype.Quant quant
-                     && (quant = Ir.Dtype.Q4_K
+                     && (quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_0
                         || (m = 2
                            && (quant = Ir.Dtype.Q5_K
-                              || quant = Ir.Dtype.Q5_0
                               || quant = Ir.Dtype.IQ4_XS))) ->
                   Ok quant
               | gate_dtype, up_dtype ->
@@ -2860,8 +3136,11 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | Ir.Dtype.Q4_K, _ -> "llmopt_q4_k_gated_linear_f16"
               | Ir.Dtype.Q5_K, 2 ->
                   "llmopt_q5_k_gated_linear_f16_m2_x1_l32"
-              | Ir.Dtype.Q5_0, 2 ->
-                  "llmopt_q5_0_gated_linear_f16_m2"
+              | Ir.Dtype.Q5_0, 1
+                when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV"
+                     = Some "1" ->
+                  "llmopt_q5_0_gated_linear_f16_llama_mv"
+              | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
               | Ir.Dtype.IQ4_XS, 2 ->
                   "llmopt_iq4_xs_gated_linear_f16_m2"
               | _ -> assert false
@@ -2870,7 +3149,18 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               match quant, m with
               | (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K), 2 ->
                   short_row_quant_grid (m * n)
-              | Ir.Dtype.Q5_0, 2 -> linear_f16_grid (m * n)
+              | Ir.Dtype.Q5_0, 1
+                when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV"
+                     = Some "1" ->
+                  let groups = (n + 3) / 4 in
+                  if groups > max_int / 64 then
+                    Error "llama-style Q5_0 gated Linear grid overflows"
+                  else Ok (groups * 64)
+              | Ir.Dtype.Q5_0, _ ->
+                  let groups = ((m * n) + 3) / 4 in
+                  if groups > max_int / 256 then
+                    Error "Q5_0 gated Linear grid dimension overflows"
+                  else Ok (groups * 256)
               | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
               | Ir.Dtype.Q4_K, _ -> linear_f16_grid (m * n)
               | _ -> assert false
@@ -3649,8 +3939,9 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             in
             dispatched (Ok (bind_value state output output_buffer, kernel))
         | ( Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 config),
-            [ query; current_key; current_value; pool; slots; mask ],
-            Some output ) ->
+            query :: current_key :: current_value :: pool :: slots :: mask_values,
+            Some output )
+          when List.length mask_values <= 1 ->
             let* batches, query_heads, query_length, head_dimension =
               match Tensor_shape.dimensions (Ir.Value.logical_shape query) with
               | [ batches; query_heads; query_length; head_dimension ] ->
@@ -3669,16 +3960,21 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | [ past_length ] -> Ok past_length
               | _ -> Error "paged Q8 attention slots must have rank one"
             in
-            let* mask_batches, mask_heads =
-              match Tensor_shape.dimensions (Ir.Value.logical_shape mask) with
-              | [ mask_batches; mask_heads; mask_query; _key_length ]
-                when mask_query = query_length || mask_query = 1 ->
-                  Ok (mask_batches, mask_heads)
-              | _ -> Error "paged Q8 attention mask must have rank four"
+            let* mask_batches, mask_heads, mask_buffer =
+              match mask_values with
+              | [] when query_length = 1 -> Ok (0, 0, slots)
+              | [ mask ] ->
+                  (match Tensor_shape.dimensions (Ir.Value.logical_shape mask) with
+                  | [ mask_batches; mask_heads; mask_query; _key_length ]
+                    when mask_query = query_length || mask_query = 1 ->
+                      Ok (mask_batches, mask_heads, mask)
+                  | _ -> Error "paged Q8 attention mask must have rank four")
+              | [] -> Error "maskless paged Q8 attention requires one query token"
+              | _ -> assert false
             in
             let* buffers =
               find_values state
-                [ query; current_key; current_value; pool; slots; mask ]
+                [ query; current_key; current_value; pool; slots; mask_buffer ]
             in
             let* parameters =
               Parameters.paged_attention_q8 ~batches ~query_heads ~kv_heads
@@ -3692,13 +3988,43 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~scale:(Ir.Paged_attention_q8.scale config)
                 ~query_length ()
             in
+            let split8 =
+              Sys.getenv_opt "LLMOPT_EXPERIMENTAL_SPLIT8" = Some "1"
+              && query_length = 1 && past_length >= 64
+            in
+            let kernel_name =
+              Paged_attention_tactic.kernel_name
+                ~experimental_gqa3_split8:
+                  (Sys.getenv_opt "LLMOPT_EXPERIMENTAL_GQA3_SPLIT8" = Some "1")
+                ~split8 ~query_heads ~kv_heads
+            in
             let* entry =
-              kernel_entry ~name:"llmopt_attention_q8_paged_simd_h64" runtime
+              kernel_entry ~name:kernel_name runtime
                 ~operation:Kernel_abi.Operation.Attention
                 ~input_dtype:Ir.Dtype.Float16
                 ~output_dtype:(Ir.Value.dtype output)
             in
-            let* grid_x = simd_rows_grid (batches * query_heads * query_length) in
+            let rows =
+              batches
+              * (if Paged_attention_tactic.groups_by_kv_head kernel_name then
+                   kv_heads
+                 else query_heads)
+              * query_length
+            in
+            let* grid_x =
+              if split8 then
+                if rows > max_int / 256 then
+                  Error "paged Q8 split attention grid dimension overflows"
+                else Ok (rows * 256)
+              else
+                simd_rows_grid
+                  (batches
+                     * (if
+                          Paged_attention_tactic.groups_by_kv_head kernel_name
+                        then kv_heads
+                        else query_heads)
+                     * query_length)
+            in
             let* output_buffer = workspace_buffer state output in
             let* kernel =
               dispatch ~batch runtime entry
@@ -3824,6 +4150,12 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             dispatched_many
               (dispatch_w4a16_qkv_linear_command batch runtime state ~m ~k ~n_q
                  ~n_k ~n_v ~extra_outputs values output)
+        | ( Ir.Op.Quant_qkv_linear { m; k; n_q; n_k; n_v; extra_outputs },
+            values,
+            Some output ) ->
+            dispatched_many
+              (dispatch_quant_qkv_linear_command batch runtime state ~m ~k ~n_q
+                 ~n_k ~n_v ~extra_outputs values output)
         | ( Ir.Op.W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs },
             values,
             Some output ) ->
@@ -3834,9 +4166,10 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             let* buffer = find_value state input in
             continue
               { state with outputs_rev = (name, buffer) :: state.outputs_rev }
-        | Ir.Op.Barrier_create _, [], None
-        | Ir.Op.Barrier_arrive _, [], None
-        | Ir.Op.Barrier_wait _, [], None ->
+        | (Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _), [], None ->
+            Batch.mark_barrier batch;
+            continue state
+        | Ir.Op.Barrier_create _, [], None ->
             continue state
         | _ -> unsupported ())
   in
@@ -3907,7 +4240,8 @@ let precompile_decode_batch ?workspace ?memory_plan ?cache ?cache_pack runtime
          (fun (_, it) ->
             (it.Batch.name, it.Batch.buffers, it.Batch.parameters,
              it.Batch.grid_x, it.Batch.grid_y, it.Batch.grid_z,
-             it.Batch.group_x, it.Batch.group_y, it.Batch.group_z))
+             it.Batch.group_x, it.Batch.group_y, it.Batch.group_z,
+             it.Batch.barrier_before))
          items_rev)
   in
   ignore (Batch.abort commands);

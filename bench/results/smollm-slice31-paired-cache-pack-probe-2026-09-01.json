@@ -1,0 +1,69 @@
+{
+  "created_at": "2026-09-01T14:19:35+07:00",
+  "kind": "smollm-slice31-paired-cache-pack-probe",
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "engine": "_artifacts/smollm-slice31-qkv-cachepair-engine-v3",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "environment": {
+    "LLMOPT_PROFILE_BATCH": "1",
+    "LLMOPT_PROFILE_PLAN": "1",
+    "LLMOPT_EXPERIMENTAL_SPLIT8": "1",
+    "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE": "1"
+  },
+  "artifacts": {
+    "executable_sha256": "cfa8728771175c259cacfb6d6d7b5d6af92a5474a32a25c4be87d66db32e7d68",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "decode_package_sha256": "95a86c856c0bf9c939b5658abb38cf9a93286efd8218c5c393c18efa1892f913",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211",
+    "raw_log_directory": "/tmp/llmopt-cachepair-probe.qosFen"
+  },
+  "runs": [
+    {
+      "completion_tokens": 128,
+      "elapsed_seconds": 0.734263,
+      "tokens_per_second": 174.324529,
+      "inter_token_mean_ms": 4.619242,
+      "inter_token_median_ms": 2.955914,
+      "completion_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.624816,
+      "gpu_median_ms": 2.601125,
+      "commit_wait_mean_ms": 2.802479,
+      "commit_wait_median_ms": 2.741750
+    },
+    {
+      "completion_tokens": 512,
+      "elapsed_seconds": 2.330482,
+      "tokens_per_second": 219.697086,
+      "inter_token_mean_ms": 4.449145,
+      "inter_token_median_ms": 4.216909,
+      "completion_sha256": "847c4abc3104d910e487dfb30fd58f56ffb2512d3859e8850343b6ef6b52a771",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.617074,
+      "gpu_median_ms": 3.624917,
+      "commit_wait_mean_ms": 3.795066,
+      "commit_wait_median_ms": 3.789583,
+      "dispatches": 282,
+      "barriers": 245
+    }
+  ],
+  "comparison": {
+    "qkv_only_512_tokens_per_second": 218.577515,
+    "candidate_minus_qkv_only_tokens_per_second": 1.119571,
+    "candidate_minus_qkv_only_percent": 0.512208,
+    "original_profiled_baseline_512_tokens_per_second": 217.977505,
+    "candidate_minus_original_baseline_tokens_per_second": 1.719581,
+    "candidate_minus_original_baseline_percent": 0.788880,
+    "qkv_only_dispatches": 312,
+    "candidate_dispatches": 282,
+    "candidate_minus_qkv_only_gpu_mean_ms": -0.016562,
+    "candidate_minus_qkv_only_commit_wait_mean_ms": -0.016679,
+    "llama_cpp_reference_tokens_per_second": 381.39,
+    "llama_cpp_over_candidate": 1.735981,
+    "candidate_fraction_of_llama_cpp": 0.576043
+  },
+  "parity": {
+    "status": "exact",
+    "baseline_hashes_match": true
+  }
+}

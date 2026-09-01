@@ -13,22 +13,33 @@ module Generation_test_engine = struct
     mutable outputs : int list;
     mutable prompt_calls : int array list;
     mutable decode_calls : (int array * int) list;
+    mutable release_calls : int;
     cached_prompt_tokens : int;
   }
 
   type step = { engine : t; tokens : int array }
 
   let create ~outputs ~cached_prompt_tokens =
-    { outputs; prompt_calls = []; decode_calls = []; cached_prompt_tokens }
+    {
+      outputs;
+      prompt_calls = [];
+      decode_calls = [];
+      release_calls = 0;
+      cached_prompt_tokens;
+    }
 
   let prompt engine ~tokens =
     engine.prompt_calls <- Array.copy tokens :: engine.prompt_calls;
     Ok ({ engine; tokens = Array.copy tokens }, engine.cached_prompt_tokens)
 
-  let decode engine ~prefix ~token =
+  let decode engine ~step ~token =
+    let prefix = step.tokens in
     engine.decode_calls <- (Array.copy prefix, token) :: engine.decode_calls;
     Ok { engine; tokens = Array.append prefix [| token |] }
 
+  let release step =
+    step.engine.release_calls <- step.engine.release_calls + 1;
+    Ok ()
   let tokens step = Array.copy step.tokens
 
   let next_token ?params:_ step =
@@ -243,6 +254,8 @@ let () =
     (Generation_core.Result.finish_reason generated
     = Generation_core.Finish_reason.End_token)
     "generation records the end-token finish reason";
+  expect (generation_engine.release_calls = 1)
+    "generation releases its active engine step exactly once";
   let step_engine =
     Generation_test_engine.create ~outputs:[ 101; 102; 103 ]
       ~cached_prompt_tokens:1
@@ -259,6 +272,33 @@ let () =
   expect
     (Generation_test.State.completion_tokens state = [ 101; 102; 103 ])
     "stateful generation preserves the interleaved token sequence";
+  expect (step_engine.release_calls = 1)
+    "stateful generation releases its terminal engine step";
+  let exhausted_engine =
+    Generation_test_engine.create ~outputs:[] ~cached_prompt_tokens:0
+  in
+  expect
+    (Result.is_error
+       (Generation_test.State.init exhausted_engine
+          ~config:(Generation_core.Config.create ~max_new_tokens:2 |> expect_ok)
+          ~is_stop:(Fun.const false) ~prompt:[| 1 |] ()))
+    "generation reports an initial token failure";
+  expect (exhausted_engine.release_calls = 1)
+    "generation releases its engine step when initial sampling fails";
+  let close_engine =
+    Generation_test_engine.create ~outputs:[ 201; 202 ] ~cached_prompt_tokens:0
+  in
+  let close_state, _ =
+    Generation_test.State.init close_engine
+      ~config:(Generation_core.Config.create ~max_new_tokens:2 |> expect_ok)
+      ~is_stop:(Fun.const false) ~prompt:[| 1 |] ()
+    |> expect_ok
+  in
+  Generation_test.State.close close_state |> expect_ok;
+  expect
+    (close_engine.release_calls = 1
+    && Generation_test.State.is_finished close_state)
+    "closing an active generation releases its engine step exactly once";
 
   let tokenizer_bytes = tokenizer_fixture () in
   let tokenizer = Tokenizer.of_bytes tokenizer_bytes |> expect_ok in
@@ -1203,6 +1243,20 @@ let () =
   expect
     (Metal.Tactic.name q4_m1_tactic = "llmopt_q4_k_linear_f16")
     "Metal tactics retain the generic Q4_K Linear outside the paired-row shape";
+  let q8_lm_head_tactic =
+    Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:49152
+      ~k:576 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
+      ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Metal.Tactic.name q8_lm_head_tactic
+    = "llmopt_q8_0_linear_f16_m1_r2_sg4")
+    "Metal tactics split short-K wide-output Q8_0 Linear across four SIMDgroups";
+  expect
+    (Metal.Tactic.threadgroup q8_lm_head_tactic = (128, 1, 1))
+    "short-K wide-output Q8_0 Linear uses four SIMDgroups";
   [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_splitk";
     Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_splitk";
     Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_splitk";
@@ -1297,6 +1351,10 @@ let () =
   expect
     (not (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names))
     "Metal lowering omits the unselected generic Q4_K Linear tactic";
+  expect
+    (List.mem "llmopt_q4_k_linear_f16_llama_mv_add" q4_m2_kernel_names
+    && List.mem "llmopt_q6_k_linear_f16_llama_mv_add" q4_m2_kernel_names)
+    "Metal lowering declares the experimental llama-style K-quant residual tactics";
 
   [ Ir.Dtype.Q8_0, 32; Ir.Dtype.Q4_K, 256; Ir.Dtype.Q5_K, 1024;
     Ir.Dtype.Q6_K, 256; Ir.Dtype.Q5_0, 32; Ir.Dtype.Q4_0, 32;
@@ -1362,6 +1420,96 @@ let () =
                   String.ends_with ~suffix:"_add"
                     (Kernel_abi.Entry.name entry)))
            "quantized Linear-add lowering emits a dedicated residual epilogue tactic");
+
+  let q5_gated_graph = Ir.Graph.create () in
+  let q5_gated_input =
+    tensor_input q5_gated_graph ~name:"q5_gated_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 64 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q5_gated_weight name =
+    tensor_input q5_gated_graph ~name
+      ~source:(Ir.Input_source.Tensor_store { key = name })
+      ~shape:[ 128; 64 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+  in
+  let q5_gate_weight = q5_gated_weight "q5_decode_gate.weight" in
+  let q5_up_weight = q5_gated_weight "q5_decode_up.weight" in
+  let q5_gated_append op inputs =
+    let output =
+      Ir.Graph.fresh_tensor_value q5_gated_graph
+        ~shape:(Tensor_shape.of_ints_exn [ 1; 128 ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append q5_gated_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let q5_gate_linear =
+    q5_gated_append (Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+      [ q5_gated_input; q5_gate_weight ]
+  in
+  let q5_up_linear =
+    q5_gated_append (Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+      [ q5_gated_input; q5_up_weight ]
+  in
+  let q5_gate_activated =
+    q5_gated_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, q5_gate_linear))))
+      [ q5_gate_linear ]
+  in
+  let q5_gated_product =
+    q5_gated_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor q5_gate_activated,
+                 Ir.Pointwise.Tensor q5_up_linear ))))
+      [ q5_gate_activated; q5_up_linear ]
+  in
+  Ir.Graph.add_output q5_gated_graph ~name:"q5_gated_product"
+    q5_gated_product;
+  let q5_gated_fused =
+    Pass_fuse_linear_bias.fuse_quant_gated_linear q5_gated_graph
+  in
+  expect
+    (Ir.Graph.nodes q5_gated_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Gated_linear
+                 { m = 1; n = 128; k = 64;
+                   activation = Ir.Gated_activation.Silu },
+               [ input; gate_weight; up_weight ] ) ->
+               Ir.Value.equal input q5_gated_input
+               && Ir.Value.equal gate_weight q5_gate_weight
+               && Ir.Value.equal up_weight q5_up_weight
+           | _ -> false))
+    "single-token Q5_0 gate, up, SiLU, and multiply fuse into one typed operation";
+  expect
+    (Ir.Graph.nodes q5_gated_fused
+    |> List.for_all (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Linear _
+           | Ir.Op.Primitive
+               (Ir.Primitive.Pointwise
+                 (Ir.Pointwise.Unary (Ir.Pointwise.Silu, _)
+                 | Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _))) ->
+               false
+           | _ -> true))
+    "single-token Q5_0 gated fusion removes all four producer dispatches";
+  let q5_gated_program = Metal.lower q5_gated_fused |> expect_ok in
+  expect
+    (Metal.Program.kernels q5_gated_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q5_0_gated_linear_f16"))
+    "Metal lowering declares the single-token Q5_0 gated kernel";
+  expect
+    (Metal.Program.kernels q5_gated_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry
+           = "llmopt_q5_0_gated_linear_f16_llama_mv"))
+    "Metal lowering declares the experimental llama-style Q5_0 gated kernel";
 
   let mixed_graph = Ir.Graph.create () in
   let mixed_input =
@@ -1437,6 +1585,151 @@ let () =
   |> List.iter (fun declaration ->
          expect (contains_substring mixed_source declaration)
            ("Gemma graph support emits " ^ declaration));
+
+  let qkv_graph = Ir.Graph.create () in
+  let qkv_input =
+    tensor_input qkv_graph ~name:"qkv_input" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 576 ] ~dtype:Ir.Dtype.Float16
+  in
+  let qkv_weight name rows quant =
+    tensor_input qkv_graph ~name
+      ~source:(Ir.Input_source.Tensor_store { key = name })
+      ~shape:[ rows; 576 ] ~dtype:(Ir.Dtype.Quant quant)
+  in
+  let q_weight = qkv_weight "attn_q.weight" 576 Ir.Dtype.Q5_0 in
+  let k_weight = qkv_weight "attn_k.weight" 192 Ir.Dtype.Q5_0 in
+  let v_weight = qkv_weight "attn_v.weight" 192 Ir.Dtype.Q8_0 in
+  let qkv_fresh shape =
+    Ir.Graph.fresh_tensor_value qkv_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let q_output = qkv_fresh [ 1; 1; 9; 64 ] in
+  let k_output = qkv_fresh [ 1; 1; 3; 64 ] in
+  let v_output = qkv_fresh [ 1; 1; 3; 64 ] in
+  Ir.Graph.append qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 576; k = 576; bias = false })
+    ~inputs:[ qkv_input; q_weight ] ~output:(Some q_output);
+  Ir.Graph.append qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 192; k = 576; bias = false })
+    ~inputs:[ qkv_input; k_weight ] ~output:(Some k_output);
+  Ir.Graph.append qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 192; k = 576; bias = false })
+    ~inputs:[ qkv_input; v_weight ] ~output:(Some v_output);
+  let cosine =
+    tensor_input qkv_graph ~name:"qkv_cosine" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let sine =
+    tensor_input qkv_graph ~name:"qkv_sine" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let rotated_q = qkv_fresh [ 1; 9; 1; 64 ] in
+  let rotated_k = qkv_fresh [ 1; 3; 1; 64 ] in
+  Ir.Graph.append qkv_graph
+    ~op:
+      (Ir.Op.Rotary_qk
+         { q_heads = 9; k_heads = 3; width = 64; half_dimension = 32;
+           extra_outputs = [ rotated_k ] })
+    ~inputs:[ q_output; k_output; cosine; sine ] ~output:(Some rotated_q);
+  Ir.Graph.add_output qkv_graph ~name:"q" rotated_q;
+  Ir.Graph.add_output qkv_graph ~name:"k" rotated_k;
+  Ir.Graph.add_output qkv_graph ~name:"v" v_output;
+  let qkv_fused = Pass_fuse_linear_bias.fuse_quant_qkv qkv_graph in
+  expect
+    (Ir.Graph.nodes qkv_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Quant_qkv_linear
+                 { m = 1; k = 576; n_q = 576; n_k = 192; n_v = 192;
+                   extra_outputs = [ k; v ] },
+               [ input; q; k_weight'; v_weight' ] ) ->
+               Ir.Value.equal input qkv_input
+               && Ir.Value.equal q q_weight
+               && Ir.Value.equal k_weight' k_weight
+               && Ir.Value.equal v_weight' v_weight
+               && Ir.Value.equal k k_output && Ir.Value.equal v v_output
+           | _ -> false))
+    "mixed Q5_0/Q8_0 QKV topology fuses into one typed operation";
+  let qkv_schedule =
+    qkv_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands qkv_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Quant_qkv_linear { n_q = 576; n_k = 192; n_v = 192; _ } ->
+               true
+           | _ -> false))
+    "mixed quantized QKV survives schedule serialization";
+  let qkv_program = Metal.lower qkv_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source qkv_program)
+       "kernel void llmopt_q5_0_qkv_linear_vq8_f16")
+    "Metal lowering emits the mixed Q5_0/Q8_0 QKV kernel";
+  expect
+    (contains_substring (Metal.Program.source qkv_program)
+       "kernel void llmopt_q5_0_qkv_linear_f16_llama_mv")
+    "Metal lowering emits the llama-style all-Q5_0 QKV kernel";
+  expect
+    (contains_substring (Metal.Program.source qkv_program)
+       "kernel void llmopt_q5_0_qkv_linear_vq8_f16_llama_mv")
+    "Metal lowering emits the llama-style mixed Q5_0/Q8_0 QKV kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~experimental_llama_mv:true ~experimental_mixed_llama_mv:false ~m:1
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+    |> expect_ok
+    = "llmopt_q5_0_qkv_linear_f16_llama_mv")
+    "single-token all-Q5_0 QKV selects the experimental llama-style kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:1
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+    |> expect_ok
+    = "llmopt_q5_0_qkv_linear_f16")
+    "all-Q5_0 QKV retains its control kernel when the experiment is disabled";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~experimental_llama_mv:true ~experimental_mixed_llama_mv:true ~m:1
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
+    |> expect_ok
+    = "llmopt_q5_0_qkv_linear_vq8_f16_llama_mv")
+    "single-token mixed Q5_0/Q8_0 QKV selects its llama-style kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~experimental_llama_mv:true ~experimental_mixed_llama_mv:false ~m:1
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
+    |> expect_ok
+    = "llmopt_q5_0_qkv_linear_vq8_f16")
+    "mixed Q5_0/Q8_0 QKV retains its control kernel when disabled";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~experimental_llama_mv:true ~experimental_mixed_llama_mv:true ~m:2
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+    |> expect_ok
+    = "llmopt_q5_0_qkv_linear_f16")
+    "multi-token all-Q5_0 QKV retains its existing kernel";
+  expect
+    (Metal_runtime.Paged_attention_tactic.kernel_name
+       ~experimental_gqa3_split8:true ~split8:true ~query_heads:9 ~kv_heads:3
+    = "llmopt_attention_q8_paged_simd_h64_gqa3_split8")
+    "GQA3 split8 selects the shared-KV experimental kernel";
+  expect
+    (Metal_runtime.Paged_attention_tactic.kernel_name
+       ~experimental_gqa3_split8:false ~split8:true ~query_heads:9 ~kv_heads:3
+    = "llmopt_attention_q8_paged_simd_h64_split8")
+    "GQA3 split8 retains the per-query-head kernel when disabled";
+  expect
+    (Metal_runtime.Paged_attention_tactic.kernel_name
+       ~experimental_gqa3_split8:true ~split8:false ~query_heads:9 ~kv_heads:3
+    = "llmopt_attention_q8_paged_simd_h64_gqa3")
+    "short-context GQA3 retains its non-split kernel";
+  expect
+    (Metal_runtime.Paged_attention_tactic.kernel_name
+       ~experimental_gqa3_split8:true ~split8:true ~query_heads:8 ~kv_heads:4
+    = "llmopt_attention_q8_paged_simd_h64_split8")
+    "non-GQA3 split8 retains its per-query-head kernel";
 
   let graph = Ir.Graph.create () in
   let hidden =
@@ -2706,6 +2999,55 @@ let () =
        "((batch * q_len + q_pos) * params.query_heads + head) * params.head_dim")
     "paged Q8 attention writes token-major multi-token output";
   expect
+    (contains_substring paged_attention_source
+       "kernel void llmopt_cache_pack_attention_q8_pair_simd")
+    "cache program includes paired key/value SIMD packing";
+  expect
+    (contains_substring paged_attention_source
+       "kernel void llmopt_attention_q8_paged_simd_h64_gqa3_split8")
+    "cache program includes the GQA3 split8 attention candidate";
+  let decode_graph = Ir.Graph.create () in
+  let decode_tensor name shape dtype =
+    tensor_input decode_graph ~name ~source:Ir.Input_source.Runtime ~shape ~dtype
+  in
+  let decode_query = decode_tensor "decode_query" [ 1; 1; 1; 64 ] Ir.Dtype.Float16 in
+  let decode_key = decode_tensor "decode_key" [ 1; 1; 1; 64 ] Ir.Dtype.Float16 in
+  let decode_value = decode_tensor "decode_value" [ 1; 1; 1; 64 ] Ir.Dtype.Float16 in
+  let decode_mask = decode_tensor "decode_mask" [ 1; 1; 1; 1 ] Ir.Dtype.Bool in
+  let decode_output =
+    Ir.Graph.fresh_tensor_value decode_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 1; 64 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append decode_graph
+    ~op:(Ir.Op.Primitive (Ir.Primitive.Attention attention_config))
+    ~inputs:[ decode_query; decode_key; decode_value; decode_mask ]
+    ~output:(Some decode_output);
+  Ir.Graph.add_output decode_graph ~name:"decode" decode_output;
+  let decode_base = decode_graph |> Serving_schedule.of_graph |> expect_ok in
+  Unix.putenv "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE" "1";
+  let maskless_decode =
+    Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past:8
+      ~past_tokens:16 ~cache:suffix_cache decode_base
+    |> expect_ok
+  in
+  Unix.putenv "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE" "";
+  expect
+    (Serving_schedule.runtime_inputs maskless_decode
+    |> List.for_all (fun (name, _) -> name <> "decode_mask"))
+    "maskless one-token decode prunes the causal-mask input";
+  expect
+    (Serving_schedule.commands maskless_decode
+    |> List.exists (fun command ->
+           match
+             Serving_schedule.Command.op command,
+             Serving_schedule.Command.inputs command
+           with
+           | Ir.Op.Primitive (Ir.Primitive.Paged_attention_q8 _),
+             [ _; _; _; _; _ ] -> true
+           | _ -> false))
+    "maskless one-token decode emits a five-input paged-attention command";
+  expect
     (Serving_schedule.commands suffix_schedule
     |> List.for_all (fun command ->
            match Serving_schedule.Command.op command,
@@ -2836,6 +3178,8 @@ let () =
   let greedy_params = Sampling.Params.greedy in
   expect (greedy_params.temperature = 0.0) "greedy params has temperature 0";
   expect (greedy_params.top_k = 1) "greedy params has top_k 1";
+  expect (Sampling.Params.is_greedy greedy_params)
+    "greedy params select the direct argmax path";
 
   let custom_params =
     Sampling.Params.create ~temperature:0.7 ~top_k:40 ~top_p:0.9 ~min_p:0.05
@@ -2846,6 +3190,8 @@ let () =
   expect (custom_params.top_p = 0.9) "custom params has top_p 0.9";
   expect (custom_params.min_p = 0.05) "custom params has min_p 0.05";
   expect (custom_params.seed = 42) "custom params has seed 42";
+  expect (not (Sampling.Params.is_greedy custom_params))
+    "stochastic params retain the sampling path";
 
   let sample_req_json =
     `Assoc
@@ -3259,6 +3605,108 @@ let () =
   expect (Kv_cache.Layout.attention_layers tf_kv_layout = 2) "transformer cache layout has 2 attention layers";
   expect (Kv_cache.Layout.recurrent_layers tf_kv_layout = 0) "transformer cache layout has 0 recurrent layers";
   expect (Kv_cache.Layout.bytes_per_checkpoint tf_kv_layout = 0) "transformer cache layout has 0 checkpoint bytes";
+
+  let tf_prefix_cfg =
+    Serving_cache.Config.of_state_plan ~state:tf_state ~token_capacity:5
+      ~checkpoint_capacity:1 ~page_size:1 ()
+    |> Result.get_ok
+  in
+  let tf_prefix_cache = Serving_cache.create tf_prefix_cfg in
+  let tf_prefix_slots = ref [||] in
+  Unix.putenv "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT" "1";
+  for token = 1 to 3 do
+    let slot = Serving_cache.reserve_tokens tf_prefix_cache 1 |> Result.get_ok in
+    tf_prefix_slots := Array.append !tf_prefix_slots slot;
+    Serving_cache.insert tf_prefix_cache
+      ~tokens:(Array.init token (fun index -> index + 1))
+      ~slots:!tf_prefix_slots ()
+    |> Result.get_ok |> ignore
+  done;
+  Unix.putenv "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT" "";
+  let tf_prefix_match =
+    Serving_cache.match_prefix tf_prefix_cache ~reserve_tail:0 [| 1; 2; 3 |]
+  in
+  expect
+    (Serving_cache.Match.tokens tf_prefix_match = 3
+    && Serving_cache.Match.checkpoint tf_prefix_match = None
+    && Array.for_all2
+         (fun actual expected ->
+           Kv_cache.Slot.to_int actual = Kv_cache.Slot.to_int expected)
+         (Serving_cache.Match.slots tf_prefix_match) !tf_prefix_slots)
+    "transformer prefix remains resumable without recurrent checkpoints";
+  Serving_cache.release_match tf_prefix_cache tf_prefix_match |> Result.get_ok;
+  Unix.putenv "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK" "1";
+  let tf_offset_prefix_match =
+    Serving_cache.match_prefix tf_prefix_cache ~reserve_tail:0 [| 1; 2; 3 |]
+  in
+  expect
+    (Serving_cache.Match.tokens tf_offset_prefix_match = 3
+    && Serving_cache.Match.checkpoint tf_offset_prefix_match = None)
+    "offset radix walk matches the same transformer prefix";
+  Serving_cache.release_match tf_prefix_cache tf_offset_prefix_match
+  |> Result.get_ok;
+  Unix.putenv "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK" "";
+  Unix.putenv "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES" "1";
+  let tf_direct_values_match =
+    Serving_cache.match_prefix tf_prefix_cache ~reserve_tail:0 [| 1; 2; 3 |]
+  in
+  expect
+    (Serving_cache.Match.tokens tf_direct_values_match = 3
+    && Array.for_all2
+         (fun actual expected ->
+           Kv_cache.Slot.to_int actual = Kv_cache.Slot.to_int expected)
+         (Serving_cache.Match.slots tf_direct_values_match) !tf_prefix_slots)
+    "direct radix value assembly preserves canonical slot order";
+  expect
+    (Array.for_all2
+       (fun actual expected ->
+         Kv_cache.Slot.to_int actual = Kv_cache.Slot.to_int expected)
+       (Serving_cache.Match.slots_view tf_direct_values_match) !tf_prefix_slots)
+    "borrowed radix values preserve canonical slot order";
+  Serving_cache.release_match tf_prefix_cache tf_direct_values_match
+  |> Result.get_ok;
+  Unix.putenv "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES" "";
+  let fourth_slot =
+    Serving_cache.reserve_tokens tf_prefix_cache 1 |> Result.get_ok
+  in
+  let four_slots = Array.append !tf_prefix_slots fourth_slot in
+  let inserted_tokens, inserted_match =
+    Serving_cache.insert_and_match tf_prefix_cache ~tokens:[| 1; 2; 3; 4 |]
+      ~slots:four_slots ()
+    |> Result.get_ok
+  in
+  expect (inserted_tokens = 3)
+    "insert-and-match reports the existing canonical prefix length";
+  expect (Serving_cache.Match.tokens inserted_match = 4)
+    "insert-and-match leases the complete inserted prefix";
+  expect
+    (Array.for_all2
+       (fun actual expected ->
+         Kv_cache.Slot.to_int actual = Kv_cache.Slot.to_int expected)
+       (Serving_cache.Match.slots_view inserted_match) four_slots)
+    "insert-and-match preserves canonical slot order";
+  expect
+    ((Serving_cache.stats tf_prefix_cache).radix.protected_tokens = 4)
+    "insert-and-match protects the complete active prefix";
+  let fifth_slot =
+    Serving_cache.reserve_tokens tf_prefix_cache 1 |> Result.get_ok
+  in
+  let extended_match =
+    Serving_cache.extend_match tf_prefix_cache inserted_match ~token:5
+      ~slot:fifth_slot.(0) ()
+    |> Result.get_ok
+  in
+  Serving_cache.release_match tf_prefix_cache inserted_match |> Result.get_ok;
+  expect
+    (Serving_cache.Match.tokens extended_match = 5
+    && (Serving_cache.stats tf_prefix_cache).radix.protected_tokens = 5)
+    "lease extension advances and protects the active prefix without a root walk";
+  Serving_cache.release_match tf_prefix_cache extended_match |> Result.get_ok;
+  expect
+    ((Serving_cache.stats tf_prefix_cache).kv.used_checkpoints = 0)
+    "transformer prefixes do not consume checkpoint identifiers";
+  expect (Result.is_ok (Serving_cache.validate tf_prefix_cache))
+    "transformer prefix cache remains valid beyond checkpoint capacity";
 
   (* Gemma 4 target cache: five sliding layers followed by one global layer,
      repeated eight times. Geometry and Q8 physical regions are per-layer. *)
@@ -3677,6 +4125,10 @@ let () =
   (* Block-32 Metal Dequantization & Shader Tests *)
   let q8_0_src = Metal.emit_dequant_q8_0 () in
   expect (String.length q8_0_src > 0) "q8_0 MSL shader emitted";
+  expect
+    (contains_substring q8_0_src
+       "kernel void llmopt_q8_0_linear_f16_llama_mv")
+    "Q8_0 MSL declares the llama-style wide-output matrix-vector candidate";
   let q5_0_src = Metal.emit_dequant_q5_0 () in
   expect (String.length q5_0_src > 0) "q5_0 MSL shader emitted";
 

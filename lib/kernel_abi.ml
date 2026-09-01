@@ -264,8 +264,22 @@ module Linear_tactic = struct
           && block_quantized problem quant
           && problem.supports_simd ~threads:256) }
 
+  let q8_0_short_k_wide_n_registration : registration =
+    { build =
+        (fun _ ->
+          { name = "llmopt_q8_0_linear_f16_m1_r2_sg4";
+            threadgroup = (128, 1, 1) });
+      accepts =
+        (fun (problem : problem) ->
+          problem.m = 1 && problem.n >= 8192 && problem.k > 0
+          && problem.k mod block_elements Ir.Dtype.Q8_0 = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem Ir.Dtype.Q8_0
+          && problem.supports_simd ~threads:128) }
+
   let registry : registration list =
-    [ full_simd_kquant_registration ~accepts_superblocks:(fun _ -> true)
+    [ q8_0_short_k_wide_n_registration;
+      full_simd_kquant_registration ~accepts_superblocks:(fun _ -> true)
         Ir.Dtype.Q4_K
         "_m2_n2_l32";
       full_simd_kquant_registration ~accepts_superblocks:(fun _ -> true)

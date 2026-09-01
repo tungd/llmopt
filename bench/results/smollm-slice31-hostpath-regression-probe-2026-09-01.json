@@ -1,0 +1,62 @@
+{
+  "created_at": "2026-09-01T13:28:22+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-hostpath-regression-probe",
+  "model_dir": "/tmp/llmopt-smollm-q8-r2-sg4-engine-v2",
+  "artifacts": {
+    "executable_sha256": "c8d2a423c31c5555d3bf44c5f7540eccaf5f707e72c30bd32ef4be6fb9faf449",
+    "model_program_sha256": "cac86d5114c0973a909c79f5bb2e8ba3f7807e8d767132a5015329fdb201b5f8",
+    "decode_package_sha256": "3b2a44faf2d07e7a71462aa544815a82703b2b4880cefb199e97a1adc9d67904"
+  },
+  "protocol": {
+    "environment": ["LLMOPT_PROFILE_BATCH=1", "LLMOPT_EXPERIMENTAL_SPLIT8=1"],
+    "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+    "lengths": [128, 512],
+    "campaigns": 1,
+    "candidate_changes": [
+      "offset-indexed radix matching without per-depth suffix arrays",
+      "lazy decode schedule specialization after long-context ICB creation"
+    ],
+    "prebaked_dispatches": 372,
+    "prebaked_barriers": 245
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 0.667608,
+      "tokens_per_second": 191.729340,
+      "inter_token_mean_ms": 4.478368,
+      "inter_token_median_ms": 3.067017,
+      "inter_token_min_ms": 2.732038,
+      "inter_token_max_ms": 19.202948,
+      "completion_tokens_sha256": "02012140acbc746d68ba1f91409c11d8b19b661163bf184695d5b895d87aeee8",
+      "prebaked_steps": 91,
+      "prebaked_gpu_mean_ms": 2.720226,
+      "prebaked_wait_mean_ms": 2.908274
+    },
+    "512_tokens": {
+      "elapsed_seconds": 2.234580,
+      "tokens_per_second": 229.125803,
+      "inter_token_mean_ms": 4.262362,
+      "inter_token_median_ms": 4.046917,
+      "inter_token_min_ms": 2.728939,
+      "inter_token_max_ms": 15.233040,
+      "completion_tokens_sha256": "ed9276f825b10b20c818be0a611eff266748717a96ef8eca1c794fbe04b3eac6",
+      "prebaked_steps": 475,
+      "prebaked_gpu_mean_ms": 3.651799,
+      "prebaked_wait_mean_ms": 3.820614
+    }
+  },
+  "comparison": {
+    "128_over_direct_argmax_control_ratio": 1.297874044,
+    "512_over_direct_argmax_control_ratio": 1.559109628,
+    "completion_stream_matches_direct_argmax_control": false,
+    "first_divergent_completion_index_zero_based": 2,
+    "control_token_at_first_divergence": 1517,
+    "candidate_token_at_first_divergence": 4165
+  },
+  "disposition": {
+    "retained_as_measured_speed_result": false,
+    "reason": "Both completion streams diverged from the direct-argmax control at completion index 2.",
+    "follow_up": "The radix offset rewrite was removed; lazy schedule specialization remains compiled for the next isolated campaign."
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "created_at": "2026-09-01T13:08:44+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-prebaked-profile-coverage",
+  "model_dir": "/tmp/llmopt-smollm-q8-r2-sg4-engine-v2",
+  "protocol": {
+    "environment": ["LLMOPT_PROFILE_BATCH=1", "LLMOPT_EXPERIMENTAL_SPLIT8=1"],
+    "requested_tokens": 512,
+    "campaigns": 1
+  },
+  "generation": {
+    "elapsed_seconds": 3.671879,
+    "tokens_per_second": 139.438162,
+    "inter_token_mean_ms": 7.050271,
+    "inter_token_median_ms": 6.901979,
+    "inter_token_min_ms": 4.552126,
+    "inter_token_max_ms": 17.899990
+  },
+  "profiled_command_buffers": {
+    "count": 37,
+    "gpu_mean_ms": 5.857061,
+    "gpu_min_ms": 4.107333,
+    "gpu_max_ms": 42.504250,
+    "gpu_sum_ms": 216.711250,
+    "commit_wait_mean_ms": 7.254234,
+    "commit_wait_min_ms": 4.764083,
+    "commit_wait_max_ms": 63.365417,
+    "commit_wait_sum_ms": 268.406665,
+    "schedules_per_buffer": 1,
+    "encode_mean_ms": 0.742055,
+    "total_mean_ms": 8.224945
+  },
+  "coverage": {
+    "prebaked_decode_steps_profiled": 0,
+    "finding": "The existing batch profiler covered 37 auxiliary or non-prebaked command buffers, not the long-context ICB decode steps."
+  },
+  "follow_up": {
+    "prebaked_gpu_and_wait_profile_added": true,
+    "icb_dependency_policy": "schedule barrier-wait boundaries",
+    "previous_icb_dependency_policy": "barrier before every recorded dispatch",
+    "status": "compiled-unmeasured"
+  }
+}

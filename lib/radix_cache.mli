@@ -42,6 +42,11 @@ val match_prefix :
 
 val matched_tokens : ('slot, 'checkpoint) lease -> int
 val matched_values : ('slot, 'checkpoint) lease -> 'slot array
+
+(** Borrowed view of the lease-local matched values. The caller must treat the
+    array as read-only and stop using it before releasing the lease. *)
+val matched_values_view : ('slot, 'checkpoint) lease -> 'slot array
+
 val checkpoint : ('slot, 'checkpoint) lease -> 'checkpoint option
 
 val release :
@@ -51,8 +56,33 @@ val insert :
   ('slot, 'checkpoint) t ->
   key:Key.t ->
   values:'slot array ->
-  checkpoint:'checkpoint ->
+  ?checkpoint:'checkpoint ->
+  unit ->
   (('slot, 'checkpoint) insert_result, string) result
+
+(** Insert a complete prefix and acquire its canonical node in the same tree
+    traversal. The returned lease must be released with [release]. *)
+val insert_and_match :
+  ('slot, 'checkpoint) t ->
+  key:Key.t ->
+  values:'slot array ->
+  ?checkpoint:'checkpoint ->
+  unit ->
+  (('slot, 'checkpoint) insert_result * ('slot, 'checkpoint) lease, string)
+  result
+
+(** Extend a live resumable lease by one page-size-one token without walking
+    from the radix root. The original and returned leases are independent and
+    must each be released. The canonical value and any redundant checkpoint
+    identify ownership when another prefix already supplied the child. *)
+val extend :
+  ('slot, 'checkpoint) t ->
+  ('slot, 'checkpoint) lease ->
+  token:int ->
+  value:'slot ->
+  ?checkpoint:'checkpoint ->
+  unit ->
+  (('slot, 'checkpoint) lease * 'slot * 'checkpoint option, string) result
 
 val evict :
   ('slot, 'checkpoint) t -> target_tokens:int ->

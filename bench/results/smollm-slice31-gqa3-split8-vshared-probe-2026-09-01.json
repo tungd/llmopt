@@ -1,0 +1,119 @@
+{
+  "created_at": "2026-09-01T17:08:04+07:00",
+  "kind": "smollm-slice31-gqa3-split8-vshared-probe",
+  "valid_path_measurement": true,
+  "valid_parity_measurement": false,
+  "retained": false,
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "engine": "_artifacts/smollm-slice31-gqa3-split8-vshared-engine-v14",
+  "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+  "candidate_environment": "LLMOPT_EXPERIMENTAL_GQA3_SPLIT8=1",
+  "candidate_change": "serial independent per-query-head K scoring and online-softmax updates inside each temporal SIMDgroup while sharing only V reconstruction",
+  "common_environment": {
+    "LLMOPT_PROFILE_BATCH": "1",
+    "LLMOPT_PROFILE_PLAN": "1",
+    "LLMOPT_EXPERIMENTAL_SPLIT8": "1",
+    "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE": "1",
+    "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_KQUANT_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_Q8_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES": "1",
+    "LLMOPT_EXPERIMENTAL_RADIX_SHARED_VALUES": "1",
+    "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_MIXED_QKV_LLAMA_MV": "1",
+    "LLMOPT_EXPERIMENTAL_SEQUENCE_CURSOR": "1",
+    "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE": "1"
+  },
+  "artifacts": {
+    "executable_sha256": "321076e3e6e133c40e32420ea7f7168d9e50b6027a09e9ccc774faaa8f72c808",
+    "model_program_sha256": "f01e3ac179bd10b012dc45ebf21410c53ae69a0b9277550faf648717f5711b00",
+    "prefill_package_sha256": "25d42ceaeb236d569dfa33d1d01dedd6a20af919d20deee7653655e3bf5d87a2",
+    "decode_package_sha256": "a7ba4b718faa94f0038d0bdcd0409694c6d51fa79296260d1482c536bca0e3fc",
+    "verification_package_sha256": "b6ac45a8ff2054d24aedf35b8c493cd372fa09f77cc88d6810ab4be0f35aa97f",
+    "decode_metal_source_sha256": "9ca5e4bb785500c16ea3506262c924ed582c7542899765bde11bf6e581ce1986",
+    "decode_metallib_sha256": "1b60b49bdc17a7ad810e3c73d4dc7416417840200a2d4e52baed22dfc9af081d",
+    "raw_log_directory": "/tmp/llmopt-gqa3-split8-vshared-probe.8fqd57"
+  },
+  "path_assertions": {
+    "radix_hits_each_run": 1,
+    "radix_misses_each_run": 1,
+    "all_q5_qkv_llama_mv_dispatches_each_run": 16,
+    "mixed_q5_q5_q8_qkv_llama_mv_dispatches_each_run": 14,
+    "control_attention_kernel_dispatches": 30,
+    "candidate_attention_kernel_dispatches": 30,
+    "dispatches_each_profiled_decode_step": 274,
+    "barriers_each_profiled_decode_step": 244,
+    "control_attention_threadgroups_per_layer": 9,
+    "candidate_attention_threadgroups_per_layer": 3
+  },
+  "run_order": ["128_control", "128_candidate", "512_candidate", "512_control"],
+  "runs": {
+    "128_control": {
+      "elapsed_seconds": 0.575024,
+      "tokens_per_second": 222.599263,
+      "inter_token_mean_ms": 3.930372,
+      "inter_token_median_ms": 2.503872,
+      "completion_sha256": "3db6b79b5461a5d9cf0dc065d0ebd171c8df135eb59ef11a180b9d608ab4931c",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.141989077,
+      "commit_wait_mean_ms": 2.327242670,
+      "host_residual_ms": 1.788382923
+    },
+    "128_candidate": {
+      "elapsed_seconds": 0.595576,
+      "tokens_per_second": 214.918150,
+      "inter_token_mean_ms": 4.222500,
+      "inter_token_median_ms": 2.387047,
+      "completion_sha256": "f0b48841ee7f8fe1c359ee3c4efd122825eaf426b0be520a392c5e9e0b1bc19e",
+      "profile_steps": 91,
+      "gpu_mean_ms": 2.226045725,
+      "commit_wait_mean_ms": 2.394226187,
+      "host_residual_ms": 1.996454275
+    },
+    "512_control": {
+      "elapsed_seconds": 1.909230,
+      "tokens_per_second": 268.170972,
+      "inter_token_mean_ms": 3.618970,
+      "inter_token_median_ms": 3.432035,
+      "completion_sha256": "8e4b89abd9251cd78fe80b7b9ab377b1ba9f8457ff721e915a69678da361be5e",
+      "profile_steps": 475,
+      "gpu_mean_ms": 3.074531644,
+      "commit_wait_mean_ms": 3.242772909,
+      "host_residual_ms": 0.544438356
+    },
+    "512_candidate": {
+      "elapsed_seconds": 1.468153,
+      "tokens_per_second": 348.737495,
+      "inter_token_mean_ms": 2.757675,
+      "inter_token_median_ms": 2.397776,
+      "completion_sha256": "351212b44be518fd319812648ff4a0f1faf15e359f992b412bf86667149d5082",
+      "profile_steps": 475,
+      "gpu_mean_ms": 2.165402036,
+      "commit_wait_mean_ms": 2.332113697,
+      "host_residual_ms": 0.592272964
+    }
+  },
+  "comparison": {
+    "candidate_minus_control_128_tokens_per_second": -7.681113,
+    "candidate_minus_control_128_percent": -3.450646,
+    "candidate_minus_control_512_tokens_per_second": 80.566523,
+    "candidate_minus_control_512_percent": 30.042969,
+    "candidate_minus_control_512_inter_token_mean_ms": -0.861295,
+    "candidate_minus_control_512_inter_token_median_ms": -1.034259,
+    "candidate_minus_control_512_gpu_mean_ms": -0.909129608,
+    "candidate_minus_control_512_commit_wait_mean_ms": -0.910659212,
+    "candidate_minus_control_512_host_residual_ms": 0.047834608,
+    "llama_cpp_reference_tokens_per_second": 381.39,
+    "candidate_fraction_of_llama_cpp": 0.914385524,
+    "llama_cpp_minus_candidate_tokens_per_second": 32.652505,
+    "llama_cpp_over_candidate_percent": 9.363061
+  },
+  "parity": {
+    "control_candidate_128": "different at zero-based completion index 41: control 198, candidate 76",
+    "control_candidate_512": "different at zero-based completion index 41: control 198, candidate 76",
+    "candidate_hash_relation": "both candidate hashes exactly equal the original v12 grouped GQA3 candidate hashes"
+  },
+  "disposition": "serial independent K scoring preserved the original grouped output divergence while reducing 512-token throughput by 26.844315 tok/s versus v12; the source change was removed"
+}

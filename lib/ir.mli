@@ -385,6 +385,14 @@ module Op : sig
         n_v : int;
         extra_outputs : Value.t list;
       }
+    | Quant_qkv_linear of {
+        m : int;
+        k : int;
+        n_q : int;
+        n_k : int;
+        n_v : int;
+        extra_outputs : Value.t list;
+      }
     | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
     | Rms_rope_qk of {
         q_heads : int;

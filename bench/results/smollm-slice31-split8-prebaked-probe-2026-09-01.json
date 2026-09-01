@@ -1,0 +1,49 @@
+{
+  "created_at": "2026-09-01T12:19:31+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-split8-prebaked-probe",
+  "model_dir": "/tmp/llmopt-smollm-split8-prebaked-engine",
+  "package_declares_split8_kernel": true,
+  "protocol": {
+    "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+    "campaigns": 1,
+    "lengths": [128, 512],
+    "decode": "sequential-greedy-cpu-argmax",
+    "prebaked_from_past_tokens": 64,
+    "split8_from_past_tokens": 64
+  },
+  "baseline": {
+    "128_tokens_per_second": 78.785680,
+    "512_tokens_per_second": 46.159371,
+    "512_inter_token_median_ms": 21.409035
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 1.001550,
+      "tokens_per_second": 127.801943,
+      "inter_token_mean_ms": 7.386865,
+      "inter_token_median_ms": 6.409883,
+      "inter_token_min_ms": 5.450964,
+      "inter_token_max_ms": 55.601120
+    },
+    "512_tokens": {
+      "elapsed_seconds": 3.942843,
+      "tokens_per_second": 129.855524,
+      "inter_token_mean_ms": 7.601095,
+      "inter_token_median_ms": 7.409811,
+      "inter_token_min_ms": 4.963875,
+      "inter_token_max_ms": 15.444040
+    }
+  },
+  "comparison": {
+    "128_tokens_per_second_ratio": 1.622146855,
+    "512_tokens_per_second_ratio": 2.813199599,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 2.937033314,
+    "completion_tokens_equal_to_baseline": false
+  },
+  "disposition": {
+    "split8_default_enabled": false,
+    "reason": "The combined split8 and prebaked path changed the completion stream; the next probe isolates prebaking with the prior GQA3 attention arithmetic."
+  }
+}

@@ -712,6 +712,14 @@ module Op = struct
         n_v : int;
         extra_outputs : Value.t list;
       }
+    | Quant_qkv_linear of {
+        m : int;
+        k : int;
+        n_q : int;
+        n_k : int;
+        n_v : int;
+        extra_outputs : Value.t list;
+      }
     | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
     | Rms_rope_qk of {
         q_heads : int;
@@ -738,6 +746,7 @@ module Op = struct
   let additional_outputs = function
     | W4a16_lm_head_argmax { extra_outputs; _ } -> extra_outputs
     | W4a16_qkv_linear { extra_outputs; _ } -> extra_outputs
+    | Quant_qkv_linear { extra_outputs; _ } -> extra_outputs
     | Rms_rope_qk { extra_outputs; _ } -> extra_outputs
     | Rotary_qk { extra_outputs; _ } -> extra_outputs
     | _ -> []
@@ -795,6 +804,8 @@ module Op = struct
         Printf.sprintf "w4a16-linear-g64+bias[%dx%dx%d]" m n k
     | W4a16_qkv_linear { m; k; n_q; n_k; n_v; _ } ->
         Printf.sprintf "w4a16-qkv-linear-g64[%dx%dx(%d+%d+%d)]" m k n_q n_k n_v
+    | Quant_qkv_linear { m; k; n_q; n_k; n_v; _ } ->
+        Printf.sprintf "quant-qkv-linear[%dx%dx(%d+%d+%d)]" m k n_q n_k n_v
     | W4a16_swiglu_ffn { m; n; k; epsilon } ->
         Printf.sprintf "w4a16-swiglu-ffn-g64[%dx%dx%d,eps=%.9g]" m n k
           epsilon

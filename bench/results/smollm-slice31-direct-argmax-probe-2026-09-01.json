@@ -1,0 +1,55 @@
+{
+  "created_at": "2026-09-01T13:22:02+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-direct-argmax-probe",
+  "model_dir": "/tmp/llmopt-smollm-q8-r2-sg4-engine-v2",
+  "artifacts": {
+    "executable_sha256": "d73f376fc2fba80e29a5cccdee4b4bacac11948b1d70d83865ab9bef1a37afc4",
+    "model_program_sha256": "cac86d5114c0973a909c79f5bb2e8ba3f7807e8d767132a5015329fdb201b5f8",
+    "decode_package_sha256": "3b2a44faf2d07e7a71462aa544815a82703b2b4880cefb199e97a1adc9d67904"
+  },
+  "protocol": {
+    "environment": ["LLMOPT_PROFILE_BATCH=1", "LLMOPT_EXPERIMENTAL_SPLIT8=1"],
+    "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+    "lengths": [128, 512],
+    "campaigns": 1,
+    "sampling": "greedy direct shared-buffer FP16 argmax",
+    "prebaked_dispatches": 372,
+    "prebaked_barriers": 245
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 0.866471,
+      "tokens_per_second": 147.725691,
+      "inter_token_mean_ms": 6.273211,
+      "inter_token_median_ms": 5.456924,
+      "inter_token_min_ms": 4.667044,
+      "inter_token_max_ms": 20.817995,
+      "completion_tokens_sha256": "36a2d0317068950eca26a92f41a6dc9825242e52b756300faab17272a0792df0",
+      "prebaked_steps": 91,
+      "prebaked_gpu_mean_ms": 2.863559,
+      "prebaked_wait_mean_ms": 3.467975
+    },
+    "512_tokens": {
+      "elapsed_seconds": 3.483956,
+      "tokens_per_second": 146.959392,
+      "inter_token_mean_ms": 6.709829,
+      "inter_token_median_ms": 6.561995,
+      "inter_token_min_ms": 4.575968,
+      "inter_token_max_ms": 16.669989,
+      "completion_tokens_sha256": "847c4abc3104d910e487dfb30fd58f56ffb2512d3859e8850343b6ef6b52a771",
+      "prebaked_steps": 475,
+      "prebaked_gpu_mean_ms": 3.780689,
+      "prebaked_wait_mean_ms": 4.380801
+    }
+  },
+  "comparison": {
+    "128_over_stage_barrier_control_ratio": 0.997885937,
+    "512_over_stage_barrier_control_ratio": 1.012959211,
+    "512_inter_token_mean_reduction_ms": 0.084024,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 2.595206709,
+    "result_512_as_fraction_of_llamacpp": 0.385325761,
+    "completion_stream_matches_stage_barrier_control": true
+  }
+}

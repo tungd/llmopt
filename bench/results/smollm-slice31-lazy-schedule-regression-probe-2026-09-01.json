@@ -1,0 +1,60 @@
+{
+  "created_at": "2026-09-01T13:33:24+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-lazy-schedule-regression-probe",
+  "model_dir": "/tmp/llmopt-smollm-q8-r2-sg4-engine-v2",
+  "artifacts": {
+    "executable_sha256": "7b14ab07e512cb4917549dab62cb56fb82a703a20c771dbc974116a0dbba75aa",
+    "model_program_sha256": "cac86d5114c0973a909c79f5bb2e8ba3f7807e8d767132a5015329fdb201b5f8",
+    "decode_package_sha256": "3b2a44faf2d07e7a71462aa544815a82703b2b4880cefb199e97a1adc9d67904"
+  },
+  "protocol": {
+    "environment": ["LLMOPT_PROFILE_BATCH=1", "LLMOPT_EXPERIMENTAL_SPLIT8=1"],
+    "prompt": "Continue this exact repeating sequence: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma",
+    "lengths": [128, 512],
+    "campaigns": 1,
+    "candidate_change": "lazy decode schedule specialization after long-context ICB creation",
+    "prebaked_dispatches": 372,
+    "prebaked_barriers": 245
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 0.657051,
+      "tokens_per_second": 194.809814,
+      "inter_token_mean_ms": 4.616362,
+      "inter_token_median_ms": 3.077984,
+      "inter_token_min_ms": 2.732992,
+      "inter_token_max_ms": 20.447016,
+      "completion_tokens_sha256": "02012140acbc746d68ba1f91409c11d8b19b661163bf184695d5b895d87aeee8",
+      "prebaked_steps": 91,
+      "prebaked_gpu_mean_ms": 2.714363,
+      "prebaked_wait_mean_ms": 2.902004
+    },
+    "512_tokens": {
+      "elapsed_seconds": 2.346241,
+      "tokens_per_second": 218.221446,
+      "inter_token_mean_ms": 4.481686,
+      "inter_token_median_ms": 4.103899,
+      "inter_token_min_ms": 2.671003,
+      "inter_token_max_ms": 15.655994,
+      "completion_tokens_sha256": "ed9276f825b10b20c818be0a611eff266748717a96ef8eca1c794fbe04b3eac6",
+      "prebaked_steps": 475,
+      "prebaked_gpu_mean_ms": 3.656244,
+      "prebaked_wait_mean_ms": 3.833229
+    }
+  },
+  "comparison": {
+    "128_over_direct_argmax_control_ratio": 1.318726707,
+    "512_over_direct_argmax_control_ratio": 1.484909831,
+    "completion_stream_matches_direct_argmax_control": false,
+    "first_divergent_completion_index_zero_based": 2,
+    "control_token_at_first_divergence": 1517,
+    "candidate_token_at_first_divergence": 4165
+  },
+  "disposition": {
+    "retained_as_measured_speed_result": false,
+    "retained_as_implementation": false,
+    "reason": "Both completion streams diverged from the direct-argmax control at completion index 2.",
+    "follow_up": "The prior eager per-length schedule specialization was restored."
+  }
+}

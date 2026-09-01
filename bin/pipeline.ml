@@ -406,7 +406,7 @@ let run () =
           "[llmopt-pipeline] Compiling prompt-lookup verification engine & shaders...\n%!";
         let* package, fx_nodes, ir_nodes =
           compile_single_graph ~target ~weights_path:opts.weights ~graph_path
-            ~output_dir ~greedy:true
+            ~output_dir ~greedy:opts.greedy
         in
         Printf.printf
           "[llmopt-pipeline] Verification: %d FX nodes -> %d IR nodes\n%!"
@@ -458,9 +458,14 @@ let run () =
                  | _ -> None)
         in
         let* head =
-          if List.mem "token_id" outputs then
-            Model_program.Entrypoint.Head.create ~token_id:"token_id" ()
-          else Error "verification package has no token_id output"
+          match List.mem "token_id" outputs, List.mem "logits" outputs with
+          | true, has_logits ->
+              Model_program.Entrypoint.Head.create ~token_id:"token_id"
+                ?logits:(if has_logits then Some "logits" else None) ()
+          | false, true ->
+              Model_program.Entrypoint.Head.create ~logits:"logits" ()
+          | false, false ->
+              Error "verification package has no logits or token_id output"
         in
         let* package =
           Model_program.Artifact.create "verification/package.llmopt"

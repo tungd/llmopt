@@ -1,0 +1,48 @@
+{
+  "created_at": "2026-09-01T14:25:00+07:00",
+  "kind": "smollm-slice31-mixed-qkv-fusion-static",
+  "implementation": {
+    "operation": "Quant_qkv_linear",
+    "schedule_tag": 41,
+    "kernels": [
+      "llmopt_q5_0_qkv_linear_f16",
+      "llmopt_q5_0_qkv_linear_vq8_f16"
+    ],
+    "supported_weight_layouts": [
+      "Q5_0/Q5_0/Q5_0",
+      "Q5_0/Q5_0/Q8_0"
+    ]
+  },
+  "capture": {
+    "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+    "gguf_sha256": "6fecf6c2124742d774fa66655e3bf282af468be52f845f5b6954ce2584e97211",
+    "tensor_bindings": 273,
+    "quantized_bindings": 211,
+    "captured_past_tokens": 6,
+    "decode_query_tokens": 1,
+    "verification_query_tokens": 5
+  },
+  "static_result": {
+    "fused_regions_per_graph": 30,
+    "projection_dispatches_represented_before": 90,
+    "projection_dispatches_represented_after": 30,
+    "decode_ir_commands": 1189,
+    "decode_kernels": 97,
+    "decode_opaque_commands": 0,
+    "packages_validated": [
+      "prefill",
+      "decode",
+      "verification"
+    ]
+  },
+  "device_attempt": {
+    "capture_completed": true,
+    "packages_compiled": true,
+    "root_model_linked": false,
+    "generation_started": false,
+    "error": "prefill output token_id has dtype f16; expected i32",
+    "cause": "the default greedy pipeline renamed the FP16 logits output before linking; this mixed-GGUF engine must retain logits and use the runtime shared-buffer argmax path",
+    "next_exact_command_change": "relink the already captured graphs with --no-greedy"
+  },
+  "measurement": null
+}

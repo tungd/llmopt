@@ -129,7 +129,7 @@ let run () =
   let load_seconds = Unix.gettimeofday () -. load_started in
   let device = "Apple Silicon" in
   let* prompt_tokens, completion_tokens, text, elapsed_seconds,
-       speculative_stats =
+       speculative_stats, sequential_inter_token_seconds =
     if options.prompt_lookup then
       let* result =
         Generation.generate_prompt_lookup ~min_ngram:options.min_ngram
@@ -144,7 +144,8 @@ let run () =
           | Ok text -> text
           | Error message -> "<decode-error: " ^ message ^ ">"),
           Generation.Prompt_lookup.elapsed_seconds result,
-          Some result )
+          Some result,
+          None )
     else
       let* config =
         Generation_core.Config.create ~max_new_tokens:options.max_new_tokens
@@ -160,6 +161,9 @@ let run () =
       let completion_tokens =
         Generation_core.Result.completion_tokens result
       in
+      let inter_token_seconds =
+        Generation_core.Result.inter_token_seconds result
+      in
       let* text =
         if options.token_ids_only then Ok "<token-ids-only>"
         else Tokenizer.decode (Generation.tokenizer generation) completion_tokens
@@ -169,7 +173,8 @@ let run () =
           completion_tokens,
           text,
           elapsed,
-          None )
+          None,
+          Some inter_token_seconds )
   in
   let cache = Serving_engine.stats (Generation.engine generation) in
   Printf.printf "device: %s\n" device;
@@ -184,6 +189,20 @@ let run () =
   Printf.printf "elapsed-seconds: %.6f\n" elapsed_seconds;
   Printf.printf "tokens-per-second: %.6f\n"
     (float_of_int (Array.length completion_tokens) /. elapsed_seconds);
+  (match sequential_inter_token_seconds with
+  | Some timings when Array.length timings > 0 ->
+      let sorted = Array.copy timings in
+      Array.sort Float.compare sorted;
+      let median = sorted.(Array.length sorted / 2) in
+      let total = Array.fold_left ( +. ) 0.0 sorted in
+      Printf.printf "inter-token-count: %d\n" (Array.length sorted);
+      Printf.printf "inter-token-mean-ms: %.6f\n"
+        (1000.0 *. total /. float_of_int (Array.length sorted));
+      Printf.printf "inter-token-median-ms: %.6f\n" (1000.0 *. median);
+      Printf.printf "inter-token-min-ms: %.6f\n" (1000.0 *. sorted.(0));
+      Printf.printf "inter-token-max-ms: %.6f\n"
+        (1000.0 *. sorted.(Array.length sorted - 1))
+  | _ -> ());
   (match speculative_stats with
   | None -> Printf.printf "decode-mode: sequential\n"
   | Some stats ->

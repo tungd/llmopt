@@ -27,7 +27,8 @@ module type Engine = sig
   type step
 
   val prompt : t -> tokens:int array -> (step * int, string) result
-  val decode : t -> prefix:int array -> token:int -> (step, string) result
+  val decode : t -> step:step -> token:int -> (step, string) result
+  val release : step -> (unit, string) result
   val tokens : step -> int array
   val next_token : ?params:Sampling.Params.t -> step -> (int, string) result
 end
@@ -55,6 +56,7 @@ module Make (Engine : Engine) : sig
     val current_tokens : t -> int array
     val completion_tokens : t -> int list
     val cached_prompt_tokens : t -> int
+    val close : t -> (unit, string) result
   end
 
   val run :

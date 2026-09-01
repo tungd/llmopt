@@ -44,10 +44,11 @@ val chat : t -> Chat_template.t
 
 module Native_engine : sig
   type t = Serving_engine.t
-  type step = Serving_engine.Step.t
+  type step
 
   val prompt : t -> tokens:int array -> (step * int, string) result
-  val decode : t -> prefix:int array -> token:int -> (step, string) result
+  val decode : t -> step:step -> token:int -> (step, string) result
+  val release : step -> (unit, string) result
   val tokens : step -> int array
   val next_token : ?params:Sampling.Params.t -> step -> (int, string) result
 end
@@ -74,6 +75,7 @@ module Session : sig
   val is_finished : session -> bool
   val completion_tokens : session -> int list
   val decode_text : session -> (string, string) result
+  val close : session -> (unit, string) result
 end
 
 val generate :

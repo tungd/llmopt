@@ -84,6 +84,7 @@ let optimize ?(target = Target_hardware.default) graph =
   let gated_delta_graph = Pass_fuse_gated_delta.run scan_lowered_graph in
   let fused_graph = Pass_fuse_epilogues.run gated_delta_graph in
   let qkv_fused_graph = Pass_fuse_linear_bias.fuse_w4a16_qkv fused_graph in
+  let qkv_fused_graph = Pass_fuse_linear_bias.fuse_quant_qkv qkv_fused_graph in
   let gqa_elim_graph =
     Pass_fuse_linear_bias.eliminate_gqa_expansion qkv_fused_graph
   in
@@ -94,8 +95,11 @@ let optimize ?(target = Target_hardware.default) graph =
     Pass_fuse_linear_bias.eliminate_attention_transpose value_layout_graph
     |> Pass_fuse_linear_bias.eliminate_kv_transpose
   in
+  let gated_linear_graph =
+    Pass_fuse_linear_bias.fuse_quant_gated_linear no_trans_graph
+  in
   let linear_add_graph =
-    Pass_fuse_linear_bias.fuse_w4a16_linear_add no_trans_graph
+    Pass_fuse_linear_bias.fuse_w4a16_linear_add gated_linear_graph
     |> Pass_fuse_linear_bias.fuse_quant_linear_add
   in
   let lowered_graph = Pass.Pipeline.run execution_pipeline linear_add_graph in

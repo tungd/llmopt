@@ -36,6 +36,7 @@ type ('slot, 'checkpoint) node = {
   mutable value : 'slot array;
   children : (child_key, ('slot, 'checkpoint) node) Hashtbl.t;
   mutable parent : ('slot, 'checkpoint) node option;
+  mutable resumable : bool;
   mutable checkpoint : 'checkpoint option;
   mutable lock_ref : int;
   mutable last_access : int;
@@ -72,14 +73,15 @@ type ('slot, 'checkpoint) eviction = {
   checkpoints : 'checkpoint list;
 }
 
-let make_node ?parent ?checkpoint ?(namespace = None) ?(lock_ref = 0) ~key ~value
-    ~last_access () =
+let make_node ?parent ?checkpoint ?(resumable = false) ?(namespace = None)
+    ?(lock_ref = 0) ~key ~value ~last_access () =
   {
     namespace;
     key;
     value;
     children = Hashtbl.create 4;
     parent;
+    resumable;
     checkpoint;
     lock_ref;
     last_access;
@@ -113,10 +115,28 @@ let child_key cache namespace tokens =
   let length = min cache.page_size (Array.length tokens) in
   (namespace, Array.to_list (Array.sub tokens 0 length))
 
+let child_key_at cache namespace tokens offset limit =
+  if offset < 0 || offset >= limit || limit > Array.length tokens then
+    invalid_arg "empty radix edge has no child key";
+  let length = min cache.page_size (limit - offset) in
+  let rec collect index acc =
+    if index < offset then acc
+    else collect (index - 1) (tokens.(index) :: acc)
+  in
+  (namespace, collect (offset + length - 1) [])
+
 let common_prefix left right =
   let limit = min (Array.length left) (Array.length right) in
   let rec loop index =
     if index = limit || left.(index) <> right.(index) then index
+    else loop (index + 1)
+  in
+  loop 0
+
+let common_prefix_at edge tokens offset limit =
+  let length = min (Array.length edge) (limit - offset) in
+  let rec loop index =
+    if index = length || edge.(index) <> tokens.(offset + index) then index
     else loop (index + 1)
   in
   loop 0
@@ -174,6 +194,29 @@ let concatenate arrays =
     (function Some value -> value | None -> assert false)
     output
 
+let concatenate_path node =
+  let rec total_length total current =
+    match current.parent with
+    | None -> total
+    | Some parent ->
+        total_length (total + Array.length current.value) parent
+  in
+  let length = total_length 0 node in
+  if length = 0 then [||]
+  else
+    let output = Array.make length node.value.(0) in
+    let rec fill current offset =
+      match current.parent with
+      | None -> if offset <> 0 then invalid_arg "radix path length mismatch"
+      | Some parent ->
+          let segment_length = Array.length current.value in
+          let segment_offset = offset - segment_length in
+          Array.blit current.value 0 output segment_offset segment_length;
+          fill parent segment_offset
+    in
+    fill node length;
+    output
+
 let rec adjust_lock delta cache node =
   if node != cache.root then (
     node.lock_ref <- node.lock_ref + delta;
@@ -186,35 +229,56 @@ let match_prefix cache key =
   let tokens = key.Key.tokens in
   let usable_length = aligned cache (Array.length tokens) in
   let namespace = key.Key.namespace in
+  let offset_walk =
+    Sys.getenv_opt "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_WALK" = Some "1"
+  in
+  let direct_values =
+    Sys.getenv_opt "LLMOPT_EXPERIMENTAL_RADIX_DIRECT_VALUES" = Some "1"
+  in
   let access = tick cache in
   cache.root.last_access <- access;
   let rec walk node offset best =
     if offset = usable_length then (node, best)
     else
-      let remaining = sub tokens offset (usable_length - offset) in
-      match Hashtbl.find_opt node.children (child_key cache namespace remaining) with
-      | None -> (node, best)
-      | Some child ->
+      let follow child prefix =
           child.last_access <- access;
-          let prefix = aligned cache (common_prefix child.key remaining) in
           if prefix = 0 then (node, best)
           else if prefix < Array.length child.key then
             let intermediate = split_node cache namespace child prefix in
             let best =
-              match intermediate.checkpoint with
-              | Some _ -> intermediate
-              | None -> best
+              if intermediate.resumable then intermediate else best
             in
             (intermediate, best)
           else
             let best =
-              match child.checkpoint with Some _ -> child | None -> best
+              if child.resumable then child else best
             in
             walk child (offset + prefix) best
+      in
+      if offset_walk then
+        match
+          Hashtbl.find_opt node.children
+            (child_key_at cache namespace tokens offset usable_length)
+        with
+        | None -> (node, best)
+        | Some child ->
+            follow child
+              (aligned cache
+                 (common_prefix_at child.key tokens offset usable_length))
+      else
+        let remaining = sub tokens offset (usable_length - offset) in
+        match
+          Hashtbl.find_opt node.children (child_key cache namespace remaining)
+        with
+        | None -> (node, best)
+        | Some child ->
+            follow child (aligned cache (common_prefix child.key remaining))
   in
   let _, best = walk cache.root 0 cache.root in
   let values =
-    if best == cache.root then [||] else concatenate (path_values best [])
+    if best == cache.root then [||]
+    else if direct_values then concatenate_path best
+    else concatenate (path_values best [])
   in
   let checkpoint = best.checkpoint in
   if Array.length values = 0 then cache.misses <- cache.misses + 1
@@ -224,6 +288,7 @@ let match_prefix cache key =
 
 let matched_tokens (lease : (_, _) lease) = Array.length lease.values
 let matched_values (lease : (_, _) lease) = Array.copy lease.values
+let matched_values_view (lease : (_, _) lease) = lease.values
 let checkpoint (lease : (_, _) lease) = lease.checkpoint
 
 let release cache lease =
@@ -234,10 +299,13 @@ let release cache lease =
     lease.released <- true;
     Ok ())
 
-let insert cache ~key ~values ~checkpoint =
+let insert_internal cache ~key ~values ?checkpoint () =
   let tokens = key.Key.tokens in
   let namespace = key.Key.namespace in
   let length = Array.length tokens in
+  let offset_insert =
+    Sys.getenv_opt "LLMOPT_EXPERIMENTAL_RADIX_OFFSET_INSERT" = Some "1"
+  in
   if length = 0 then Error "cannot insert an empty radix key"
   else if length <> Array.length values then
     Error "radix key and value arrays must have equal length"
@@ -249,27 +317,44 @@ let insert cache ~key ~values ~checkpoint =
       node.last_access <- access;
       if offset = length then (`Existing node, offset)
       else
-        let remaining = sub tokens offset (length - offset) in
-        match Hashtbl.find_opt node.children (child_key cache namespace remaining) with
-        | None ->
-            let suffix_values = sub values offset (length - offset) in
-            let leaf =
-              make_node ~parent:node ~namespace ~checkpoint ~key:remaining
-                ~value:suffix_values ~last_access:access ()
-            in
-            Hashtbl.add node.children (child_key cache namespace remaining) leaf;
-            cache.cached_tokens <- cache.cached_tokens + Array.length remaining;
-            (`Inserted leaf, offset)
-        | Some child ->
-            child.last_access <- access;
-            let prefix = aligned cache (common_prefix child.key remaining) in
-            if prefix = 0 then invalid_arg "radix child index invariant failed"
-            else if prefix < Array.length child.key then
-              let intermediate = split_node cache namespace child prefix in
-              let next_offset = offset + prefix in
-              if next_offset = length then (`Existing intermediate, next_offset)
-              else walk intermediate next_offset
-            else walk child (offset + prefix)
+        let insert_leaf () =
+          let remaining = sub tokens offset (length - offset) in
+          let suffix_values = sub values offset (length - offset) in
+          let leaf =
+            make_node ~parent:node ~namespace ?checkpoint ~resumable:true
+              ~key:remaining ~value:suffix_values ~last_access:access ()
+          in
+          Hashtbl.add node.children (child_key cache namespace remaining) leaf;
+          cache.cached_tokens <- cache.cached_tokens + Array.length remaining;
+          (`Inserted leaf, offset)
+        in
+        let follow child prefix =
+          child.last_access <- access;
+          if prefix = 0 then invalid_arg "radix child index invariant failed"
+          else if prefix < Array.length child.key then
+            let intermediate = split_node cache namespace child prefix in
+            let next_offset = offset + prefix in
+            if next_offset = length then (`Existing intermediate, next_offset)
+            else walk intermediate next_offset
+          else walk child (offset + prefix)
+        in
+        if offset_insert then
+          match
+            Hashtbl.find_opt node.children
+              (child_key_at cache namespace tokens offset length)
+          with
+          | None -> insert_leaf ()
+          | Some child ->
+              follow child
+                (aligned cache (common_prefix_at child.key tokens offset length))
+        else
+          let remaining = sub tokens offset (length - offset) in
+          match
+            Hashtbl.find_opt node.children (child_key cache namespace remaining)
+          with
+          | None -> insert_leaf ()
+          | Some child ->
+              follow child (aligned cache (common_prefix child.key remaining))
     in
     let outcome, prefix_tokens = walk cache.root 0 in
     let retained_node =
@@ -279,11 +364,15 @@ let insert cache ~key ~values ~checkpoint =
       match outcome with
       | `Inserted _ -> None
       | `Existing node ->
-          (match node.checkpoint with
-          | None ->
+          let was_resumable = node.resumable in
+          node.resumable <- true;
+          (match checkpoint, node.checkpoint with
+          | None, _ -> None
+          | Some checkpoint, None ->
               node.checkpoint <- Some checkpoint;
               None
-          | Some _ -> Some checkpoint)
+          | Some checkpoint, Some _ when was_resumable -> Some checkpoint
+          | Some _, Some _ -> None)
     in
     let canonical_values =
       if prefix_tokens = 0 then [||]
@@ -292,13 +381,87 @@ let insert cache ~key ~values ~checkpoint =
         |> fun values -> sub values 0 prefix_tokens
     in
     Ok
+      ( {
+          prefix_tokens;
+          redundant_values = sub values 0 prefix_tokens;
+          redundant_checkpoint;
+          canonical_values;
+          retained_checkpoint = retained_node.checkpoint;
+        },
+        retained_node )
+
+let insert cache ~key ~values ?checkpoint () =
+  insert_internal cache ~key ~values ?checkpoint () |> Result.map fst
+
+let insert_and_match cache ~key ~values ?checkpoint () =
+  match insert_internal cache ~key ~values ?checkpoint () with
+  | Error _ as error -> error
+  | Ok (result, node) ->
+      adjust_lock 1 cache node;
+      let lease =
+        {
+          owner = cache;
+          node;
+          values = concatenate_path node;
+          checkpoint = result.retained_checkpoint;
+          released = false;
+        }
+      in
+      Ok (result, lease)
+
+let extend cache lease ~token ~value ?checkpoint () =
+  if lease.owner != cache then Error "radix lease belongs to another cache"
+  else if lease.released then Error "cannot extend a released radix lease"
+  else if cache.page_size <> 1 then
+    Error "radix lease extension currently requires page size one"
+  else if not lease.node.resumable then
+    Error "radix lease extension requires a resumable prefix"
+  else
+    let parent = lease.node in
+    let namespace = parent.namespace in
+    let edge = [| token |] in
+    let access = tick cache in
+    parent.last_access <- access;
+    let child, redundant_checkpoint =
+      match Hashtbl.find_opt parent.children (child_key cache namespace edge) with
+      | None ->
+          let child =
+            make_node ~parent ~namespace ?checkpoint ~resumable:true ~key:edge
+              ~value:[| value |] ~last_access:access ()
+          in
+          Hashtbl.add parent.children (child_key cache namespace edge) child;
+          cache.cached_tokens <- cache.cached_tokens + 1;
+          child, None
+      | Some child ->
+          if Array.length child.key <> 1 || Array.length child.value <> 1 then
+            invalid_arg "page-size-one radix child has invalid edge geometry";
+          child.last_access <- access;
+          let was_resumable = child.resumable in
+          child.resumable <- true;
+          let redundant_checkpoint =
+            match checkpoint, child.checkpoint with
+            | None, _ -> None
+            | Some checkpoint, None ->
+                child.checkpoint <- Some checkpoint;
+                None
+            | Some checkpoint, Some _ when was_resumable -> Some checkpoint
+            | Some _, Some _ -> None
+          in
+          child, redundant_checkpoint
+    in
+    adjust_lock 1 cache child;
+    let values = Array.make (Array.length lease.values + 1) child.value.(0) in
+    Array.blit lease.values 0 values 0 (Array.length lease.values);
+    let next =
       {
-        prefix_tokens;
-        redundant_values = sub values 0 prefix_tokens;
-        redundant_checkpoint;
-        canonical_values;
-        retained_checkpoint = retained_node.checkpoint;
+        owner = cache;
+        node = child;
+        values;
+        checkpoint = child.checkpoint;
+        released = false;
       }
+    in
+    Ok (next, child.value.(0), redundant_checkpoint)
 
 let rec collect_leaves root =
   Hashtbl.fold
@@ -460,7 +623,10 @@ let commit_speculative cache ~reservation ~accepted_count =
         in
         match reservation.Speculative.checkpoint with
         | Some cp -> (
-            match insert cache ~key ~values:page_slots ~checkpoint:cp with
+            match insert cache ~key ~values:page_slots ~checkpoint:cp () with
             | Ok result -> Ok (Some result, rejected_slots)
             | Error err -> Error err)
-        | None -> Ok (None, rejected_slots)
+        | None -> (
+            match insert cache ~key ~values:page_slots () with
+            | Ok result -> Ok (Some result, rejected_slots)
+            | Error err -> Error err)

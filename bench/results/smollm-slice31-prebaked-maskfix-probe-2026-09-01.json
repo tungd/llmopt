@@ -1,0 +1,45 @@
+{
+  "created_at": "2026-09-01T12:27:08+07:00",
+  "git_commit": "446f87957683de4ba5657125b51bfb4345fce765",
+  "kind": "smollm-slice31-prebaked-maskfix-probe",
+  "model_dir": "/tmp/llmopt-smollm-prebaked-maskfix-engine",
+  "protocol": {
+    "split8_enabled": false,
+    "attention_kernel": "llmopt_attention_q8_paged_simd_h64_gqa3",
+    "prebaked_from_past_tokens": 64,
+    "one_token_attention_mask_read": false,
+    "lengths": [128, 512],
+    "campaigns": 1
+  },
+  "result": {
+    "128_tokens": {
+      "elapsed_seconds": 1.387808,
+      "tokens_per_second": 92.231757,
+      "inter_token_mean_ms": 10.368681,
+      "inter_token_median_ms": 9.835958,
+      "inter_token_min_ms": 7.341146,
+      "inter_token_max_ms": 75.520992
+    },
+    "512_tokens": {
+      "elapsed_seconds": 9.431096,
+      "tokens_per_second": 54.288495,
+      "inter_token_mean_ms": 18.337499,
+      "inter_token_median_ms": 18.136024,
+      "inter_token_min_ms": 7.336855,
+      "inter_token_max_ms": 31.502008
+    }
+  },
+  "comparison": {
+    "128_over_baseline_ratio": 1.170666509,
+    "512_over_baseline_ratio": 1.176109939,
+    "llamacpp_sequential_reference_tokens_per_second": 381.39,
+    "llamacpp_over_result_512_ratio": 7.025245404,
+    "completion_tokens_equal_to_baseline": true
+  },
+  "diagnosis": {
+    "dynamic_past_length_updated": true,
+    "one_token_causal_mask_required": false,
+    "prebaked_default_enabled": true,
+    "next_change": "Share the activation vector across four adjacent Q5_0 and Q8_0 output-column reductions without changing each column's SIMD32 reduction order."
+  }
+}
