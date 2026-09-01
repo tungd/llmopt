@@ -5227,6 +5227,45 @@ let () =
     (Constructive_lowering.Analysis.decisions gated_analysis)
     "UOC-03 gate/up cuts report a nonempty typed boundary";
 
+  (* RMSNorm keeps its vector-shaped weight metadata while remaining an
+     assignment that may feed a pointwise consumer. *)
+  let rms_uoc03_graph = Ir.Graph.create () in
+  let rms_uoc03_input =
+    uoc03_input rms_uoc03_graph "rms-uoc03-input" [ 1; 64 ]
+      Ir.Dtype.Float16
+  in
+  let rms_uoc03_weight =
+    uoc03_input rms_uoc03_graph "rms-uoc03-weight" [ 64 ]
+      Ir.Dtype.Float32
+  in
+  let rms_uoc03_value =
+    uoc03_value rms_uoc03_graph [ 1; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append rms_uoc03_graph
+    ~op:(Ir.Op.Rms_norm { epsilon = 1e-5 })
+    ~inputs:[ rms_uoc03_input; rms_uoc03_weight ]
+    ~output:(Some rms_uoc03_value);
+  let rms_uoc03_output =
+    uoc03_value rms_uoc03_graph [ 1; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append rms_uoc03_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, rms_uoc03_value))))
+    ~inputs:[ rms_uoc03_value ] ~output:(Some rms_uoc03_output);
+  Ir.Graph.add_output rms_uoc03_graph ~name:"rms-uoc03-result"
+    rms_uoc03_output;
+  let rms_uoc03_analysis = uoc03_analysis rms_uoc03_graph in
+  expect
+    (List.exists
+       (fun region -> List.length (uoc03_region_ids region) = 2)
+       (Constructive_lowering.Analysis.regions rms_uoc03_analysis))
+    "UOC-03 normalizes RMSNorm with vector-shaped weight metadata";
+  uoc03_assert_cut_boundaries
+    (Constructive_lowering.Analysis.decisions rms_uoc03_analysis)
+    "UOC-03 RMSNorm cuts report a nonempty typed boundary";
+
   (* Q/K/V projections share an input but have no dependent edge, so they stay
      an antichain of singleton fusion regions. *)
   let qkv_graph = Ir.Graph.create () in

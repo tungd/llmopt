@@ -283,15 +283,32 @@ let unary_metadata_compatible node inputs output =
 
 let rms_metadata_compatible node inputs output =
   match inputs with
-  | [ input; weight ]
-    when is_float (Ir.Value.dtype input)
-         && is_float (Ir.Value.dtype weight)
-         && is_float (Ir.Value.dtype output)
-         && same_shape input output -> Ok ()
-  | [ input; weight ]
-    when Ir.Value.dtype input <> Ir.Value.dtype weight ->
-      Error (Boundary.Numerical_incompatibility
-               (Boundary.Numerical.Dtype_mismatch node))
+  | [ input; weight ] ->
+      let width_ok =
+        match last_dimension input with
+        | Some width -> dimensions weight = [ width ]
+        | None -> false
+      in
+      if
+        is_float (Ir.Value.dtype input)
+        && is_float (Ir.Value.dtype weight)
+        && is_float (Ir.Value.dtype output)
+        && same_shape input output
+        && width_ok
+      then Ok ()
+      else if
+        not (is_float (Ir.Value.dtype input))
+        || not (is_float (Ir.Value.dtype weight))
+        || not (is_float (Ir.Value.dtype output))
+      then
+        Error (Boundary.Numerical_incompatibility
+                 (Boundary.Numerical.Dtype_mismatch node))
+      else if not (same_shape input output) then
+        Error (Boundary.Numerical_incompatibility
+                 (Boundary.Numerical.Dimension_mismatch node))
+      else
+        Error (Boundary.Numerical_incompatibility
+                 (Boundary.Numerical.Shape_mismatch node))
   | _ ->
       Error (Boundary.Numerical_incompatibility
                (Boundary.Numerical.Shape_mismatch node))
