@@ -149,6 +149,162 @@ end
 
 module Linear_tactic = struct
   type t = { name : string; threadgroup : int * int * int }
+  type linear_tactic = t
+  type tactic = linear_tactic
+
+  module Work_sharing = struct
+    type t = {
+      simdgroups_per_threadgroup : int;
+      output_values_per_threadgroup : int;
+      decoded_weight_reuse : int;
+      activation_reuse : int;
+      split_k_partitions : int;
+      threadgroup_sram_bytes : int;
+      dispatches : int;
+    }
+
+    let make ~simdgroups_per_threadgroup ~output_values_per_threadgroup
+        ~decoded_weight_reuse ~activation_reuse ~split_k_partitions
+        ~threadgroup_sram_bytes ~dispatches =
+      { simdgroups_per_threadgroup; output_values_per_threadgroup;
+        decoded_weight_reuse; activation_reuse; split_k_partitions;
+        threadgroup_sram_bytes; dispatches }
+  end
+
+  module Candidate = struct
+    module Resource = struct
+      type t = {
+        threadgroup_threads : int;
+        simdgroups_per_threadgroup : int;
+        output_values_per_threadgroup : int;
+        decoded_weight_reuse : int;
+        activation_reuse : int;
+        split_k_partitions : int;
+        threadgroup_sram_bytes : int;
+        dispatches : int;
+      }
+
+      let make ~threadgroup_threads (work_sharing : Work_sharing.t) =
+        { threadgroup_threads;
+          simdgroups_per_threadgroup = work_sharing.simdgroups_per_threadgroup;
+          output_values_per_threadgroup =
+            work_sharing.output_values_per_threadgroup;
+          decoded_weight_reuse = work_sharing.decoded_weight_reuse;
+          activation_reuse = work_sharing.activation_reuse;
+          split_k_partitions = work_sharing.split_k_partitions;
+          threadgroup_sram_bytes = work_sharing.threadgroup_sram_bytes;
+          dispatches = work_sharing.dispatches }
+
+      let threadgroup_threads resource = resource.threadgroup_threads
+      let simdgroups_per_threadgroup resource =
+        resource.simdgroups_per_threadgroup
+      let output_values_per_threadgroup resource =
+        resource.output_values_per_threadgroup
+      let decoded_weight_reuse resource = resource.decoded_weight_reuse
+      let activation_reuse resource = resource.activation_reuse
+      let split_k_partitions resource = resource.split_k_partitions
+      let threadgroup_sram_bytes resource = resource.threadgroup_sram_bytes
+      let dispatches resource = resource.dispatches
+    end
+
+    module Legality = struct
+      type t = {
+        resource : Resource.t;
+        simd_width : int;
+        target_simd_width : int;
+        target_max_threads_per_threadgroup : int;
+        target_sram_capacity_bytes : int;
+      }
+
+      let make ~resource ~simd_width ~target_simd_width
+          ~target_max_threads_per_threadgroup ~target_sram_capacity_bytes =
+        { resource; simd_width; target_simd_width;
+          target_max_threads_per_threadgroup; target_sram_capacity_bytes }
+
+      let resource legality = legality.resource
+      let simd_width legality = legality.simd_width
+      let target_simd_width legality = legality.target_simd_width
+      let target_max_threads_per_threadgroup legality =
+        legality.target_max_threads_per_threadgroup
+      let target_sram_capacity_bytes legality =
+        legality.target_sram_capacity_bytes
+    end
+
+    module Cost = struct
+      type t = {
+        flops : float;
+        physical_storage_bytes : float;
+        input_bytes : float;
+        output_bytes : float;
+        weight_traffic_bytes : float;
+        activation_traffic_bytes : float;
+        memory_bytes : float;
+        workgroups : int;
+        core_utilization : float;
+        dispatches : int;
+        compute_seconds : float;
+        memory_seconds : float;
+        roofline_seconds : float;
+        dispatch_seconds : float;
+        total_seconds : float;
+      }
+
+      let make ~flops ~physical_storage_bytes ~input_bytes ~output_bytes
+          ~weight_traffic_bytes ~activation_traffic_bytes ~workgroups
+          ~core_utilization ~dispatches ~compute_seconds ~memory_seconds
+          ~roofline_seconds ~dispatch_seconds =
+        let memory_bytes =
+          weight_traffic_bytes +. activation_traffic_bytes +. output_bytes
+        in
+        let total_seconds =
+          roofline_seconds +. dispatch_seconds
+        in
+        { flops; physical_storage_bytes; input_bytes; output_bytes;
+          weight_traffic_bytes; activation_traffic_bytes; memory_bytes;
+          workgroups; core_utilization; dispatches; compute_seconds;
+          memory_seconds; roofline_seconds; dispatch_seconds; total_seconds }
+
+      let flops cost = cost.flops
+      let physical_storage_bytes cost = cost.physical_storage_bytes
+      let input_bytes cost = cost.input_bytes
+      let output_bytes cost = cost.output_bytes
+      let weight_traffic_bytes cost = cost.weight_traffic_bytes
+      let activation_traffic_bytes cost = cost.activation_traffic_bytes
+      let memory_bytes cost = cost.memory_bytes
+      let workgroups cost = cost.workgroups
+      let core_utilization cost = cost.core_utilization
+      let dispatches cost = cost.dispatches
+      let compute_seconds cost = cost.compute_seconds
+      let memory_seconds cost = cost.memory_seconds
+      let roofline_seconds cost = cost.roofline_seconds
+      let dispatch_seconds cost = cost.dispatch_seconds
+      let total_seconds cost = cost.total_seconds
+    end
+
+    type t = {
+      tactic : tactic;
+      schema : Block_schema.t;
+      target_tactic : Block_schema.Target_tactic.t;
+      legality : Legality.t;
+      cost : Cost.t;
+    }
+
+    let tactic candidate = candidate.tactic
+    let schema candidate = candidate.schema
+    let target_tactic candidate = candidate.target_tactic
+    let legality candidate = candidate.legality
+    let cost candidate = candidate.cost
+  end
+
+  module Selection = struct
+    type t = {
+      chosen : Candidate.t;
+      alternatives : Candidate.t list;
+    }
+
+    let chosen selection = selection.chosen
+    let alternatives selection = selection.alternatives
+  end
 
   type problem = {
     supports_simd : threads:int -> bool;
@@ -163,6 +319,7 @@ module Linear_tactic = struct
   type registration = {
     build : problem -> t;
     accepts : problem -> bool;
+    work_sharing : Work_sharing.t;
   }
 
   let name tactic = tactic.name
@@ -195,7 +352,15 @@ module Linear_tactic = struct
           && problem.k mod block_elements quant = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
-          && problem.supports_simd ~threads:256) }
+          && problem.supports_simd ~threads:256);
+      (* llmopt_{q8_0,q4_k,q5_k,q6_k,q5_0,q4_0,iq4_xs}_linear_f16 maps
+         one SIMDgroup to one output value; a 256-thread group contains eight
+         such groups and has no threadgroup array. *)
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:8
+          ~output_values_per_threadgroup:8 ~split_k_partitions:1
+          ~decoded_weight_reuse:1 ~activation_reuse:1
+          ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
   let paired_quant_registration quant : registration =
     { build =
@@ -208,7 +373,14 @@ module Linear_tactic = struct
           && problem.k mod block_elements quant = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
-          && problem.supports_simd ~threads:256) }
+          && problem.supports_simd ~threads:256);
+      (* The paired kernels share one decoded weight row across two input rows;
+         eight SIMDgroups therefore produce sixteen output values per group. *)
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:8
+          ~output_values_per_threadgroup:16 ~split_k_partitions:1
+          ~decoded_weight_reuse:2 ~activation_reuse:1
+          ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
   let four_column_quant_registration quant : registration =
     { build =
@@ -221,7 +393,15 @@ module Linear_tactic = struct
           && problem.k mod block_elements quant = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
-          && problem.supports_simd ~threads:64) }
+          && problem.supports_simd ~threads:64);
+      (* The four-column kernels use two SIMDgroups, each assigning eight
+         lanes to four columns for two rows: sixteen output values per
+         64-thread threadgroup. *)
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:2
+          ~output_values_per_threadgroup:16 ~split_k_partitions:1
+          ~decoded_weight_reuse:2 ~activation_reuse:4
+          ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
   let full_simd_kquant_registration ~accepts_superblocks quant suffix :
       registration =
@@ -236,7 +416,19 @@ module Linear_tactic = struct
           && accepts_superblocks (problem.k / block_elements quant)
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
-          && problem.supports_simd ~threads:64) }
+          && problem.supports_simd ~threads:64);
+      (* Q4_K _m2_n2_l32 and Q5_K _m2_n1_l32 are explicit two-SIMDgroup
+         kernels.  Their runtime grids cover eight and four output values per
+         64-thread group respectively.  The Q4_K kernel reuses activations
+         across two columns; Q5_K keeps one column per SIMDgroup. *)
+      work_sharing =
+        Work_sharing.make
+          ~simdgroups_per_threadgroup:2
+          ~output_values_per_threadgroup:
+            (match quant with Ir.Dtype.Q4_K -> 8 | Ir.Dtype.Q5_K -> 4 | _ -> 0)
+          ~decoded_weight_reuse:2
+          ~activation_reuse:(match quant with Ir.Dtype.Q4_K -> 2 | Ir.Dtype.Q5_K -> 1 | _ -> 0)
+          ~split_k_partitions:1 ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
   let splitk_paired_quant_registration quant : registration =
     { build =
@@ -249,7 +441,16 @@ module Linear_tactic = struct
           && problem.k mod (block_elements quant * 4) = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
-          && problem.supports_simd ~threads:256) }
+          && problem.supports_simd ~threads:256);
+      (* Split-K _m2 launches two output columns across four reduction
+         partitions in eight SIMDgroups.  Each partition writes two f32
+         partials per column: 2 * 4 * 4 = 32 bytes per row, 64 bytes for two
+         rows. *)
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:8
+          ~output_values_per_threadgroup:4 ~split_k_partitions:4
+          ~decoded_weight_reuse:2 ~activation_reuse:1
+          ~threadgroup_sram_bytes:64 ~dispatches:1 }
 
   let splitk_quant_registration quant : registration =
     { build =
@@ -262,7 +463,14 @@ module Linear_tactic = struct
           && problem.k mod (block_elements quant * 4) = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
-          && problem.supports_simd ~threads:256) }
+          && problem.supports_simd ~threads:256);
+      (* Split-K launches two output columns across four reduction partitions
+         in eight SIMDgroups and stores 2 * 4 f32 partials (32 bytes). *)
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:8
+          ~output_values_per_threadgroup:2 ~split_k_partitions:4
+          ~decoded_weight_reuse:1 ~activation_reuse:1
+          ~threadgroup_sram_bytes:32 ~dispatches:1 }
 
   let q8_0_short_k_wide_n_registration : registration =
     { build =
@@ -275,7 +483,15 @@ module Linear_tactic = struct
           && problem.k mod block_elements Ir.Dtype.Q8_0 = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem Ir.Dtype.Q8_0
-          && problem.supports_simd ~threads:128) }
+          && problem.supports_simd ~threads:128);
+      (* The short-K/wide-N Q8 kernel uses four SIMDgroups, each accumulating
+         one row for one of two columns, followed by a four-way threadgroup
+         reduction backed by 2 * 4 f32 values (32 bytes). *)
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:4
+          ~output_values_per_threadgroup:2 ~split_k_partitions:1
+          ~decoded_weight_reuse:1 ~activation_reuse:2
+          ~threadgroup_sram_bytes:32 ~dispatches:1 }
 
   let registry : registration list =
     [ q8_0_short_k_wide_n_registration;
@@ -310,4 +526,202 @@ module Linear_tactic = struct
   let select ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype =
     select_all ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype
     |> function [] -> None | first :: _ -> Some first
+
+  let product a b = if a <= 0 || b <= 0 || a > max_int / b then None else Some (a * b)
+
+  let ceil_div value divisor =
+    if value <= 0 || divisor <= 0 then 0
+    else value / divisor + if value mod divisor = 0 then 0 else 1
+
+  let target_has_valid_resources (target : Target_hardware.t) =
+    target.memory.simd_lanes > 0
+    && target.memory.sram_capacity_bytes > 0
+    && target.execution.gpu_cores > 0
+    && target.execution.max_threads_per_threadgroup > 0
+    && Float.is_finite target.execution.memory_bandwidth_gbps
+    && target.execution.memory_bandwidth_gbps > 0.0
+    && Float.is_finite target.execution.fp16_tflops
+    && target.execution.fp16_tflops > 0.0
+    && Float.is_finite target.execution.dispatch_overhead_seconds
+    && target.execution.dispatch_overhead_seconds >= 0.0
+
+  let metal_target_tactic (target : Target_hardware.t) schema =
+    Block_schema.target_tactics schema
+    |> List.find_opt (fun target_tactic ->
+           Block_schema.Target_tactic.backend target_tactic
+           = Block_schema.Target_tactic.Metal
+           && Block_schema.Target_tactic.vector_width target_tactic
+              = target.memory.simd_lanes)
+
+  let candidate_for_registration ~(target : Target_hardware.t) ~problem ~schema
+      (registration : registration) =
+    if not (registration.accepts problem) then None
+    else
+      let tactic = registration.build problem in
+      match metal_target_tactic target schema with
+      | None -> None
+      | Some target_tactic ->
+          let (threadgroup_x, threadgroup_y, threadgroup_z) =
+            tactic.threadgroup
+          in
+          let threadgroup_threads =
+            threadgroup_x * threadgroup_y * threadgroup_z
+          in
+          let resource =
+            Candidate.Resource.make ~threadgroup_threads
+              registration.work_sharing
+          in
+          let simd_width =
+            Block_schema.Target_tactic.vector_width target_tactic
+          in
+          let simdgroups =
+            Candidate.Resource.simdgroups_per_threadgroup resource
+          in
+          let output_values_per_threadgroup =
+            Candidate.Resource.output_values_per_threadgroup resource
+          in
+          let decoded_weight_reuse =
+            Candidate.Resource.decoded_weight_reuse resource
+          in
+          let activation_reuse =
+            Candidate.Resource.activation_reuse resource
+          in
+          if threadgroup_threads
+             > target.execution.max_threads_per_threadgroup
+             || Candidate.Resource.threadgroup_sram_bytes resource
+                > target.memory.sram_capacity_bytes
+             || simd_width <= 0
+             || simdgroups <= 0
+             || simdgroups > max_int / simd_width
+             || simdgroups * simd_width <> threadgroup_threads
+             || output_values_per_threadgroup <= 0
+             || decoded_weight_reuse <= 0
+             || activation_reuse <= 0
+          then None
+          else
+            match product problem.m problem.n with
+            | None -> None
+            | Some output_values ->
+                let workgroups =
+                  ceil_div output_values output_values_per_threadgroup
+                in
+                let blocks = problem.k / Block_schema.block_elements schema in
+                let physical_storage_bytes =
+                  float_of_int blocks *. float_of_int problem.n
+                  *. float_of_int
+                       (Block_schema.Physical_layout.storage_bytes
+                          (Block_schema.physical_layout schema))
+                in
+                let input_bytes =
+                  float_of_int problem.m *. float_of_int problem.k *. 2.0
+                in
+                let output_bytes =
+                  float_of_int output_values *. 2.0
+                in
+                let weight_traffic_bytes =
+                  physical_storage_bytes
+                  *. float_of_int
+                       (ceil_div problem.m decoded_weight_reuse)
+                in
+                let activation_traffic_bytes =
+                  input_bytes
+                  *. float_of_int (ceil_div problem.n activation_reuse)
+                in
+                let flops =
+                  2.0 *. float_of_int problem.m *. float_of_int problem.n
+                  *. float_of_int problem.k
+                in
+                let peak_flops_per_second =
+                  target.execution.fp16_tflops *. 1.0e12
+                in
+                let bandwidth_bytes_per_second =
+                  target.execution.memory_bandwidth_gbps *. 1.0e9
+                in
+                let active_cores =
+                  min workgroups target.execution.gpu_cores
+                in
+                let core_utilization =
+                  float_of_int active_cores
+                  /. float_of_int target.execution.gpu_cores
+                in
+                let compute_seconds =
+                  flops /. peak_flops_per_second /. core_utilization
+                in
+                let memory_bytes =
+                  weight_traffic_bytes +. activation_traffic_bytes
+                  +. output_bytes
+                in
+                let memory_seconds =
+                  memory_bytes /. bandwidth_bytes_per_second
+                in
+                let roofline_seconds = max compute_seconds memory_seconds in
+                let dispatches =
+                  Candidate.Resource.dispatches resource
+                in
+                let dispatch_seconds =
+                  float_of_int dispatches
+                  *. target.execution.dispatch_overhead_seconds
+                in
+                let legality =
+                  Candidate.Legality.make ~resource
+                    ~simd_width:(Block_schema.Target_tactic.vector_width target_tactic)
+                    ~target_simd_width:target.memory.simd_lanes
+                    ~target_max_threads_per_threadgroup:
+                      target.execution.max_threads_per_threadgroup
+                    ~target_sram_capacity_bytes:
+                      target.memory.sram_capacity_bytes
+                in
+                let cost =
+                  Candidate.Cost.make ~flops ~physical_storage_bytes
+                    ~input_bytes ~output_bytes ~weight_traffic_bytes
+                    ~activation_traffic_bytes ~workgroups ~core_utilization
+                    ~dispatches ~compute_seconds ~memory_seconds
+                    ~roofline_seconds ~dispatch_seconds
+                in
+                if not
+                     (Float.is_finite (Candidate.Cost.total_seconds cost))
+                then None
+                else
+                  Some
+                    { Candidate.tactic = tactic; schema; target_tactic;
+                      legality; cost }
+
+  let select_costed ~(target : Target_hardware.t) ~m ~n ~k ~input_dtype
+      ~storage ~output_dtype =
+    if m <= 0 || n <= 0 || k <= 0 || not (target_has_valid_resources target)
+    then None
+    else
+      match Block_schema.of_storage storage with
+      | Error _ -> None
+      | Ok schema ->
+          let problem =
+            { supports_simd =
+                (fun ~threads ->
+                  threads > 0
+                  && threads <= target.execution.max_threads_per_threadgroup
+                  && threads mod target.memory.simd_lanes = 0);
+              m; n; k; input_dtype; storage; output_dtype }
+          in
+          let candidates =
+            List.filter_map
+              (candidate_for_registration ~target ~problem ~schema)
+              registry
+          in
+          let compare_candidates left right =
+            let cost_comparison =
+              Float.compare
+                (Candidate.Cost.total_seconds (Candidate.cost left))
+                (Candidate.Cost.total_seconds (Candidate.cost right))
+            in
+            if cost_comparison <> 0 then cost_comparison
+            else
+              String.compare
+                (name (Candidate.tactic left))
+                (name (Candidate.tactic right))
+          in
+          match List.sort compare_candidates candidates with
+          | [] -> None
+          | chosen :: alternatives ->
+              Some
+                { Selection.chosen; alternatives = chosen :: alternatives }
 end

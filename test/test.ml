@@ -5488,4 +5488,431 @@ let () =
   uoc03_assert_cut_boundaries linear_chain_decisions
     "UOC-03 linear-chain cuts report a nonempty typed boundary";
 
+  (* UOC-04: target-aware quantized Linear candidates expose their schema,
+     target tactic, launch resources, and a transparent cost breakdown. *)
+  let uoc04_make_target ~device_name ~simd_lanes
+      ~max_threads_per_threadgroup ~sram_capacity_bytes ~gpu_cores
+      ~memory_bandwidth_gbps ~fp16_tflops ~dispatch_overhead_seconds =
+    let memory =
+      Target_hardware.Memory_hierarchy.create ~simd_lanes ~sram_banks:32
+        ~sram_bank_width_bytes:4 ~sram_capacity_bytes
+        ~l1_cache_line_bytes:128 ~l1_cache_capacity_bytes:131072
+      |> expect_ok
+    in
+    let execution =
+      Target_hardware.Execution_profile.create ~gpu_cores
+        ~max_threads_per_threadgroup ~memory_bandwidth_gbps ~fp16_tflops
+        ~dispatch_overhead_seconds
+      |> expect_ok
+    in
+    Target_hardware.create ~device_name ~memory ~execution
+    |> expect_ok
+  in
+  let uoc04_target =
+    uoc04_make_target ~device_name:"UOC-04 full target" ~simd_lanes:32
+      ~max_threads_per_threadgroup:1024 ~sram_capacity_bytes:32768
+      ~gpu_cores:16 ~memory_bandwidth_gbps:273.0 ~fp16_tflops:18.7
+      ~dispatch_overhead_seconds:6.5e-6
+  in
+  let uoc04_selection =
+    Kernel_abi.Linear_tactic.select_costed ~target:uoc04_target ~m:2 ~n:64
+      ~k:256 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let uoc04_selection =
+    match uoc04_selection with
+    | Some selection -> selection
+    | None -> fail "UOC-04 exposes a legal costed quantized Linear selection"
+  in
+  let uoc04_candidates =
+    Kernel_abi.Linear_tactic.Selection.alternatives uoc04_selection
+  in
+  let uoc04_name candidate =
+    Kernel_abi.Linear_tactic.name
+      (Kernel_abi.Linear_tactic.Candidate.tactic candidate)
+  in
+  let uoc04_cost candidate =
+    Kernel_abi.Linear_tactic.Candidate.cost candidate
+  in
+  expect (List.length uoc04_candidates >= 2)
+    "UOC-04 retains multiple legal launch alternatives";
+  let uoc04_sorted =
+    let rec sorted = function
+      | left :: (right :: _ as rest) ->
+          let left_cost =
+            Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds
+              (uoc04_cost left)
+          in
+          let right_cost =
+            Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds
+              (uoc04_cost right)
+          in
+          let cost_order = Float.compare left_cost right_cost in
+          (cost_order < 0
+          || (cost_order = 0 && String.compare (uoc04_name left) (uoc04_name right) <= 0))
+          && sorted rest
+      | _ -> true
+    in
+    sorted uoc04_candidates
+  in
+  expect uoc04_sorted
+    "UOC-04 orders legal alternatives by cost and tactic name";
+  let uoc04_chosen = Kernel_abi.Linear_tactic.Selection.chosen uoc04_selection in
+  (match uoc04_candidates with
+  | first :: _ ->
+      expect (uoc04_name first = uoc04_name uoc04_chosen)
+        "UOC-04 exposes the first ordered alternative as the chosen tactic"
+  | [] -> fail "UOC-04 selection has no chosen candidate");
+  let uoc04_resource_matches candidates candidate_name predicate =
+    match List.find_opt (fun candidate -> uoc04_name candidate = candidate_name) candidates with
+    | None -> false
+    | Some candidate ->
+        predicate
+          (Kernel_abi.Linear_tactic.Candidate.Legality.resource
+             (Kernel_abi.Linear_tactic.Candidate.legality candidate))
+  in
+  expect
+    (uoc04_resource_matches uoc04_candidates
+       "llmopt_q4_k_linear_f16_m2_n2_l32"
+       (fun resource ->
+         Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_threads resource
+           = 64
+         && Kernel_abi.Linear_tactic.Candidate.Resource.simdgroups_per_threadgroup
+              resource
+            = 2
+         && Kernel_abi.Linear_tactic.Candidate.Resource.output_values_per_threadgroup
+              resource
+            = 8
+         && Kernel_abi.Linear_tactic.Candidate.Resource.decoded_weight_reuse
+              resource
+            = 2
+         && Kernel_abi.Linear_tactic.Candidate.Resource.activation_reuse resource
+            = 2)
+    && uoc04_resource_matches uoc04_candidates
+         "llmopt_q4_k_linear_f16_m2_x4"
+         (fun resource ->
+           Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_threads resource
+             = 64
+           && Kernel_abi.Linear_tactic.Candidate.Resource.simdgroups_per_threadgroup
+                resource
+              = 2
+           && Kernel_abi.Linear_tactic.Candidate.Resource.output_values_per_threadgroup
+                resource
+              = 16
+           && Kernel_abi.Linear_tactic.Candidate.Resource.decoded_weight_reuse
+                resource
+              = 2
+           && Kernel_abi.Linear_tactic.Candidate.Resource.activation_reuse resource
+              = 4))
+    "UOC-04 records exact Q4_K m2 launch and reuse facts";
+  let uoc04_splitk_candidates =
+    match
+      Kernel_abi.Linear_tactic.select_costed ~target:uoc04_target ~m:1 ~n:64
+        ~k:4096 ~input_dtype:Ir.Dtype.Float16
+        ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+        ~output_dtype:Ir.Dtype.Float16
+    with
+    | Some selection ->
+        Kernel_abi.Linear_tactic.Selection.alternatives selection
+    | None -> []
+  in
+  expect
+    (uoc04_resource_matches uoc04_splitk_candidates
+       "llmopt_q4_k_linear_f16_splitk"
+       (fun resource ->
+         Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_threads resource
+           = 256
+         && Kernel_abi.Linear_tactic.Candidate.Resource.simdgroups_per_threadgroup
+              resource
+            = 8
+         && Kernel_abi.Linear_tactic.Candidate.Resource.output_values_per_threadgroup
+              resource
+            = 2
+         && Kernel_abi.Linear_tactic.Candidate.Resource.split_k_partitions resource
+            = 4
+         && Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_sram_bytes
+              resource
+            = 32))
+    "UOC-04 records exact Q4_K Split-K launch facts";
+  List.iter
+    (fun candidate ->
+      let legality =
+        Kernel_abi.Linear_tactic.Candidate.legality candidate
+      in
+      let resource =
+        Kernel_abi.Linear_tactic.Candidate.Legality.resource legality
+      in
+      let schema = Kernel_abi.Linear_tactic.Candidate.schema candidate in
+      let target_tactic =
+        Kernel_abi.Linear_tactic.Candidate.target_tactic candidate
+      in
+      let cost = uoc04_cost candidate in
+      expect
+        (Block_schema.storage schema
+           = Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K
+        && Block_schema.Target_tactic.backend target_tactic
+           = Block_schema.Target_tactic.Metal
+        && Block_schema.Target_tactic.vector_width target_tactic
+           = uoc04_target.memory.simd_lanes
+        && Kernel_abi.Linear_tactic.Candidate.Legality.simd_width legality
+           = uoc04_target.memory.simd_lanes
+        && Kernel_abi.Linear_tactic.Candidate.Legality.target_simd_width legality
+           = uoc04_target.memory.simd_lanes
+        && Kernel_abi.Linear_tactic.Candidate.Legality.target_max_threads_per_threadgroup legality
+           = uoc04_target.execution.max_threads_per_threadgroup
+        && Kernel_abi.Linear_tactic.Candidate.Legality.target_sram_capacity_bytes legality
+           = uoc04_target.memory.sram_capacity_bytes
+        && Kernel_abi.Linear_tactic.Candidate.Resource.simdgroups_per_threadgroup resource
+           * Kernel_abi.Linear_tactic.Candidate.Legality.simd_width legality
+           = Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_threads resource
+        && Kernel_abi.Linear_tactic.Candidate.Resource.decoded_weight_reuse resource
+           > 0
+        && Kernel_abi.Linear_tactic.Candidate.Resource.activation_reuse resource
+           > 0
+        && Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_threads resource
+           <= uoc04_target.execution.max_threads_per_threadgroup
+        && Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_sram_bytes resource
+           <= uoc04_target.memory.sram_capacity_bytes)
+        "UOC-04 candidate provenance and exact target legality are inspectable";
+      let cost_values =
+        [ Kernel_abi.Linear_tactic.Candidate.Cost.flops cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.physical_storage_bytes cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.input_bytes cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.output_bytes cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.weight_traffic_bytes cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.activation_traffic_bytes cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.memory_bytes cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.core_utilization cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.compute_seconds cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.memory_seconds cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.roofline_seconds cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.dispatch_seconds cost;
+          Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds cost ]
+      in
+      expect
+        (List.for_all (fun value -> Float.is_finite value && value >= 0.0)
+           cost_values
+        && Kernel_abi.Linear_tactic.Candidate.Cost.memory_bytes cost
+           = Kernel_abi.Linear_tactic.Candidate.Cost.weight_traffic_bytes cost
+             +. Kernel_abi.Linear_tactic.Candidate.Cost.activation_traffic_bytes cost
+             +. Kernel_abi.Linear_tactic.Candidate.Cost.output_bytes cost
+        && Kernel_abi.Linear_tactic.Candidate.Cost.roofline_seconds cost
+           = max
+               (Kernel_abi.Linear_tactic.Candidate.Cost.compute_seconds cost)
+               (Kernel_abi.Linear_tactic.Candidate.Cost.memory_seconds cost)
+        && Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds cost
+           = Kernel_abi.Linear_tactic.Candidate.Cost.roofline_seconds cost
+             +. Kernel_abi.Linear_tactic.Candidate.Cost.dispatch_seconds cost)
+        "UOC-04 cost components are finite, nonnegative, and exactly composed")
+    uoc04_candidates;
+  let chosen_cost = uoc04_cost uoc04_chosen in
+  expect
+    (Kernel_abi.Linear_tactic.Candidate.Cost.physical_storage_bytes chosen_cost
+       = 64.0 *. 144.0
+    && Kernel_abi.Linear_tactic.Candidate.Cost.input_bytes chosen_cost = 1024.0
+    && Kernel_abi.Linear_tactic.Candidate.Cost.output_bytes chosen_cost = 256.0
+    && Kernel_abi.Linear_tactic.Candidate.Cost.weight_traffic_bytes chosen_cost
+       <= 2.0 *. 64.0 *. 144.0
+    && Kernel_abi.Linear_tactic.Candidate.Cost.activation_traffic_bytes chosen_cost
+       <= 64.0 *. 1024.0)
+    "UOC-04 cost uses schema physical bytes and problem dimensions";
+
+  (* A 64-thread target keeps the 64-thread Metal launch alternatives and
+     rejects every 256-thread registration. *)
+  let uoc04_narrow_target =
+    uoc04_make_target ~device_name:"UOC-04 64-thread target" ~simd_lanes:32
+      ~max_threads_per_threadgroup:64 ~sram_capacity_bytes:32768
+      ~gpu_cores:16 ~memory_bandwidth_gbps:273.0 ~fp16_tflops:18.7
+      ~dispatch_overhead_seconds:6.5e-6
+  in
+  let uoc04_narrow_selection =
+    Kernel_abi.Linear_tactic.select_costed ~target:uoc04_narrow_target ~m:2
+      ~n:64 ~k:256 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let uoc04_narrow_candidates =
+    match uoc04_narrow_selection with
+    | Some selection ->
+        Kernel_abi.Linear_tactic.Selection.alternatives selection
+    | None -> fail "UOC-04 retains the 64-thread Q4_K alternatives"
+  in
+  expect
+    (List.length uoc04_narrow_candidates < List.length uoc04_candidates
+    && List.exists
+         (fun candidate ->
+           Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_threads
+             (Kernel_abi.Linear_tactic.Candidate.Legality.resource
+                (Kernel_abi.Linear_tactic.Candidate.legality candidate))
+           = 64)
+         uoc04_narrow_candidates
+    && List.for_all
+         (fun candidate ->
+           Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_threads
+             (Kernel_abi.Linear_tactic.Candidate.Legality.resource
+                (Kernel_abi.Linear_tactic.Candidate.legality candidate))
+           <= 64)
+         uoc04_narrow_candidates)
+    "UOC-04 applies the probed max-threadgroup limit exactly";
+  let uoc04_simd16_target =
+    uoc04_make_target ~device_name:"UOC-04 SIMD16 target" ~simd_lanes:16
+      ~max_threads_per_threadgroup:1024 ~sram_capacity_bytes:32768
+      ~gpu_cores:16 ~memory_bandwidth_gbps:273.0 ~fp16_tflops:18.7
+      ~dispatch_overhead_seconds:6.5e-6
+  in
+  expect
+    (Kernel_abi.Linear_tactic.select_costed ~target:uoc04_simd16_target ~m:2
+       ~n:64 ~k:256 ~input_dtype:Ir.Dtype.Float16
+       ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+       ~output_dtype:Ir.Dtype.Float16
+     = None)
+    "UOC-04 rejects Metal tactics whose typed SIMD width misses the target";
+
+  (* Split-K's explicit threadgroup SRAM fact participates in legality. *)
+  let uoc04_low_sram_target =
+    uoc04_make_target ~device_name:"UOC-04 low-SRAM target" ~simd_lanes:32
+      ~max_threads_per_threadgroup:1024 ~sram_capacity_bytes:16
+      ~gpu_cores:16 ~memory_bandwidth_gbps:273.0 ~fp16_tflops:18.7
+      ~dispatch_overhead_seconds:6.5e-6
+  in
+  let uoc04_low_sram_selection =
+    Kernel_abi.Linear_tactic.select_costed ~target:uoc04_low_sram_target ~m:1
+      ~n:64 ~k:4096 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let uoc04_low_sram_names =
+    match uoc04_low_sram_selection with
+    | Some selection ->
+        Kernel_abi.Linear_tactic.Selection.alternatives selection
+        |> List.map uoc04_name
+    | None -> fail "UOC-04 retains a non-Split-K low-SRAM alternative"
+  in
+  expect
+    (uoc04_low_sram_names = [ "llmopt_q4_k_linear_f16" ]
+    && List.for_all
+         (fun candidate ->
+           Kernel_abi.Linear_tactic.Candidate.Resource.threadgroup_sram_bytes
+             (Kernel_abi.Linear_tactic.Candidate.Legality.resource
+                (Kernel_abi.Linear_tactic.Candidate.legality candidate))
+           <= 16)
+         (match uoc04_low_sram_selection with
+          | Some selection ->
+              Kernel_abi.Linear_tactic.Selection.alternatives selection
+          | None -> []))
+    "UOC-04 rejects Split-K when its explicit SRAM footprint exceeds capacity";
+
+  (* The paired and Split-K paired Q8 kernels have the same transparent
+     traffic and compute terms on a fully occupied one-core target; the
+     deterministic tie-break is then visibly the tactic name. *)
+  let uoc04_tie_target =
+    uoc04_make_target ~device_name:"UOC-04 tie target" ~simd_lanes:32
+      ~max_threads_per_threadgroup:1024 ~sram_capacity_bytes:32768
+      ~gpu_cores:1 ~memory_bandwidth_gbps:273.0 ~fp16_tflops:18.7
+      ~dispatch_overhead_seconds:6.5e-6
+  in
+  let uoc04_tie_selection =
+    Kernel_abi.Linear_tactic.select_costed ~target:uoc04_tie_target ~m:2
+      ~n:64 ~k:4096 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
+      ~output_dtype:Ir.Dtype.Float16
+    |> function
+    | Some selection -> selection
+    | None -> fail "UOC-04 constructs a tie-break selection"
+  in
+  let uoc04_tie_selection_repeat =
+    Kernel_abi.Linear_tactic.select_costed ~target:uoc04_tie_target ~m:2
+      ~n:64 ~k:4096 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
+      ~output_dtype:Ir.Dtype.Float16
+    |> function
+    | Some selection -> selection
+    | None -> fail "UOC-04 repeats a tie-break selection"
+  in
+  let uoc04_tie_candidates =
+    Kernel_abi.Linear_tactic.Selection.alternatives uoc04_tie_selection
+  in
+  let uoc04_tie_sequence candidates =
+    List.map
+      (fun candidate ->
+        (uoc04_name candidate,
+         Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds
+           (uoc04_cost candidate)))
+      candidates
+  in
+  let uoc04_tie_sequence_repeat =
+    uoc04_tie_sequence
+      (Kernel_abi.Linear_tactic.Selection.alternatives
+         uoc04_tie_selection_repeat)
+  in
+  expect
+    (List.length uoc04_tie_candidates >= 2
+    && (match uoc04_tie_candidates with
+       | first :: second :: _ ->
+           let equal_cost =
+             Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds
+               (uoc04_cost first)
+             = Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds
+                 (uoc04_cost second)
+           in
+           let tie_name_order =
+             String.compare (uoc04_name first) (uoc04_name second) <= 0
+           in
+           equal_cost && tie_name_order
+       | _ -> false)
+    && List.length uoc04_tie_candidates
+       = List.length uoc04_tie_sequence_repeat
+    && List.for_all2
+         (fun candidate (name, total_seconds) ->
+           uoc04_name candidate = name
+           && Kernel_abi.Linear_tactic.Candidate.Cost.total_seconds
+                (uoc04_cost candidate)
+              = total_seconds)
+         uoc04_tie_candidates uoc04_tie_sequence_repeat)
+    "UOC-04 breaks the equal-cost pair by name and is deterministic";
+
+  (* The costed adapter does not perturb the registry-order legacy adapter. *)
+  let legacy_q4_names =
+    Kernel_abi.Linear_tactic.select_all ~supports_simd:(fun ~threads:_ -> true)
+      ~m:2 ~n:64 ~k:256 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+      ~output_dtype:Ir.Dtype.Float16
+    |> List.map Kernel_abi.Linear_tactic.name
+  in
+  expect
+    (legacy_q4_names
+     = [ "llmopt_q4_k_linear_f16_m2_n2_l32";
+         "llmopt_q4_k_linear_f16_m2_x4";
+         "llmopt_q4_k_linear_f16_m2";
+         "llmopt_q4_k_linear_f16" ])
+    "UOC-04 retains the legacy registry-order candidate adapter";
+  expect
+    (Kernel_abi.Linear_tactic.select ~supports_simd:(fun ~threads:_ -> true)
+       ~m:2 ~n:64 ~k:256 ~input_dtype:Ir.Dtype.Float16
+       ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+       ~output_dtype:Ir.Dtype.Float16
+     |> Option.map Kernel_abi.Linear_tactic.name
+     = Some "llmopt_q4_k_linear_f16_m2_n2_l32")
+    "UOC-04 leaves the legacy first-selection adapter unchanged";
+
+  let uoc04_q8_selection =
+    Kernel_abi.Linear_tactic.select_costed ~target:uoc04_target ~m:1 ~n:64
+      ~k:256 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
+      ~output_dtype:Ir.Dtype.Float16
+    |> function
+    | Some selection -> selection
+    | None -> fail "UOC-04 exposes the direct Q8 candidate"
+  in
+  let uoc04_q8_target_tactic =
+    Kernel_abi.Linear_tactic.Candidate.target_tactic
+      (Kernel_abi.Linear_tactic.Selection.chosen uoc04_q8_selection)
+  in
+  expect
+    (not
+       (List.mem Block_schema.Target_tactic.Primitive.Metal_extract_bits
+          (Block_schema.Target_tactic.primitives uoc04_q8_target_tactic)))
+    "UOC-04 preserves direct-integer Metal primitive provenance";
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"
