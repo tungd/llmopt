@@ -252,7 +252,7 @@ Out of scope:
     fixture parses back to the same JSON; no Gemma build or generation was run.
   - **Commit:** `41a96ec` (`feat: emit optimization queue receipts`).
 
-- [ ] **UOC-07 — Execute and record the one-shot Gemma 4 12B transition run**
+- [x] **UOC-07 — Execute and record the one-shot Gemma 4 12B transition run**
 
   - **Where:** `bench/build_gemma4_engine.py`, `bin/bench_tokens.ml`,
     `bench/results/`, a new `.okf/experiments/exp-*.md`,
@@ -280,7 +280,24 @@ Out of scope:
   - **Proof:** Run `git diff --check` and strict OKF validation after recording
     the result. The measured receipt, not a threshold invented by this loop,
     supplies the transition outcome.
-  - **Commit:** Record after completion.
+  - **Evidence:** The build wrapper now requires `--target-profile` and passed
+    the once-measured Apple M4 Pro profile (`228.772094 GB/s`, `5.375012 us`
+    dispatch) into the pipeline. The only full build, both package checks, the
+    Model Program check, and the only 128-token benchmark all exited `0`.
+    Prefill/decode receipts record `48/48` accepted dependency edges,
+    `2664/2760` cuts, `0/0` unified lowerings, one named legacy gated matcher
+    each, `329/329` target-costed Linear tactics, `109/108` kernels,
+    `1113/1161` AOT stages, `2906/3146` dependencies, and `1014/1062`
+    barriers. Generation measured `4.474057 tok/s`, `7.506000 s` TTFT, and
+    `166.168352 ms` mean inter-token time versus the pinned `27.94 tok/s` and
+    `35.79 ms/token` reference; the output repeats and becomes token ID `0`
+    from completion position 29. The full receipts and exact deltas are in
+    `.okf/experiments/exp-0138-unified-compiler-gemma4-transition-2026-09-02.md`.
+    `ninja -f ninja.build`, `ninja -f ninja.build test` (OCaml plus 72 Python
+    tests), `git diff --check`, and strict OKF validation pass; validation keeps
+    the one unrelated pre-existing lifecycle warning.
+  - **Commits:** `73c63b5` (`feat: require measured Gemma target profile`),
+    `7e2105c` (`docs: record unified Gemma transition run`).
 
 ## Completion audit
 
