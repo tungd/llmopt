@@ -703,23 +703,40 @@ let w4_decode ~group_elements =
   Logical_decode.make ~block_elements:group_elements
     ~subblock_elements:group_elements ~equation
 
+let primitives ~decode ~backend =
+  match backend, decode with
+  | Target_tactic.Portable, _ -> [ Target_tactic.Primitive.Portable_scalar ]
+  | Target_tactic.Metal, Target_tactic.Direct_integer ->
+      [ Target_tactic.Primitive.Metal_half2;
+        Target_tactic.Primitive.Metal_simd_reduce ]
+  | Target_tactic.Metal, _ ->
+      [ Target_tactic.Primitive.Metal_extract_bits;
+        Target_tactic.Primitive.Metal_half2;
+        Target_tactic.Primitive.Metal_simd_reduce ]
+  | Target_tactic.Cuda, Target_tactic.Direct_integer ->
+      [ Target_tactic.Primitive.Cuda_shuffle ]
+  | Target_tactic.Cuda, _ ->
+      [ Target_tactic.Primitive.Cuda_byte_permute;
+        Target_tactic.Primitive.Cuda_shuffle ]
+  | Target_tactic.Hip, Target_tactic.Direct_integer ->
+      [ Target_tactic.Primitive.Hip_wave_reduce ]
+  | Target_tactic.Hip, _ ->
+      [ Target_tactic.Primitive.Hip_bitfield;
+        Target_tactic.Primitive.Hip_wave_reduce ]
+
 let tactics decode =
   [ Target_tactic.make ~backend:Target_tactic.Portable
       ~execution:Target_tactic.Scalar ~decode
-      ~primitives:[ Target_tactic.Primitive.Portable_scalar ];
+      ~primitives:(primitives ~decode ~backend:Target_tactic.Portable);
     Target_tactic.make ~backend:Target_tactic.Metal
       ~execution:(Target_tactic.Simd 32) ~decode
-      ~primitives:[ Target_tactic.Primitive.Metal_extract_bits;
-                    Target_tactic.Primitive.Metal_half2;
-                    Target_tactic.Primitive.Metal_simd_reduce ];
+      ~primitives:(primitives ~decode ~backend:Target_tactic.Metal);
     Target_tactic.make ~backend:Target_tactic.Cuda
       ~execution:(Target_tactic.Warp 32) ~decode
-      ~primitives:[ Target_tactic.Primitive.Cuda_byte_permute;
-                    Target_tactic.Primitive.Cuda_shuffle ];
+      ~primitives:(primitives ~decode ~backend:Target_tactic.Cuda);
     Target_tactic.make ~backend:Target_tactic.Hip
       ~execution:(Target_tactic.Wave 32) ~decode
-      ~primitives:[ Target_tactic.Primitive.Hip_bitfield;
-                    Target_tactic.Primitive.Hip_wave_reduce ] ]
+      ~primitives:(primitives ~decode ~backend:Target_tactic.Hip) ]
 
 let make ~storage ~quant_type ~physical ~logical ~decode =
   { storage; quant_type; physical; logical; tactics = tactics decode }

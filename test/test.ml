@@ -4368,6 +4368,51 @@ let () =
                  Block_schema.Target_tactic.Primitive.Hip_wave_reduce ])
        (Block_schema.target_tactics packed_schema))
     "target tactics expose backend-specific typed decode and reduction primitives";
+  let direct_schema =
+    Block_schema.of_storage
+      (Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
+    |> expect_schema_ok
+  in
+  let direct_tactic_primitives =
+    List.map
+      (fun tactic ->
+        ( Block_schema.Target_tactic.backend tactic,
+          Block_schema.Target_tactic.primitives tactic ))
+      (Block_schema.target_tactics direct_schema)
+  in
+  expect
+    (direct_tactic_primitives
+     = [ ( Block_schema.Target_tactic.Portable,
+           [ Block_schema.Target_tactic.Primitive.Portable_scalar ] );
+         ( Block_schema.Target_tactic.Metal,
+           [ Block_schema.Target_tactic.Primitive.Metal_half2;
+             Block_schema.Target_tactic.Primitive.Metal_simd_reduce ] );
+         ( Block_schema.Target_tactic.Cuda,
+           [ Block_schema.Target_tactic.Primitive.Cuda_shuffle ] );
+         ( Block_schema.Target_tactic.Hip,
+           [ Block_schema.Target_tactic.Primitive.Hip_wave_reduce ] ) ])
+    "direct integer tactics retain only their load/reduction primitives";
+  let direct_metal =
+    List.find
+      (fun tactic ->
+        Block_schema.Target_tactic.backend tactic
+        = Block_schema.Target_tactic.Metal)
+      (Block_schema.target_tactics direct_schema)
+  in
+  let packed_metal =
+    List.find
+      (fun tactic ->
+        Block_schema.Target_tactic.backend tactic
+        = Block_schema.Target_tactic.Metal)
+      (Block_schema.target_tactics packed_schema)
+  in
+  expect
+    (Block_schema.Target_tactic.primitives direct_metal
+       <> Block_schema.Target_tactic.primitives packed_metal
+    && not
+         (List.mem Block_schema.Target_tactic.Primitive.Metal_extract_bits
+            (Block_schema.Target_tactic.primitives direct_metal)))
+    "direct and packed Metal tactics do not share speculative bit extraction";
   let q6_schema =
     Block_schema.of_storage
       (Ir.Linear_storage.Block_quantized Ir.Dtype.Q6_K)
