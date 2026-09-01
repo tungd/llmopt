@@ -139,7 +139,7 @@ Out of scope:
     indexes are captured once during `of_graph`.
   - **Commit:** `597287a` (`feat: centralize compute plan dependency facts`).
 
-- [ ] **UOC-03 — Form fusion regions algorithmically and report every cut**
+- [x] **UOC-03 — Form fusion regions algorithmically and report every cut**
 
   - **Where:** create `lib/constructive_lowering.mli` and
     `lib/constructive_lowering.ml`; add their explicit Ninja edges in
@@ -157,7 +157,19 @@ Out of scope:
     found without fixed node IDs or adjacency assumptions; an independent Q/K/V
     antichain remains separate commands; stateful, opaque, and externally-used
     values produce explicit boundaries.
-  - **Commit:** Record after completion.
+  - **Evidence:** `ninja -f ninja.build test` passes all 72 Python tests and the
+    OCaml suite (`llmopt canonical W4A16/KVQ8 tests passed`); `git diff --check`
+    passes. Focused assertions cover provenance-bearing `Kernel_ir.Primitive`
+    assignments, a non-adjacent accepted Linear-to-Add edge whose immutable
+    `Compute_plan.Edge` exists, gate/up/Silu/multiply rejoin formation, separate
+    Q/K/V singleton regions in one ready antichain, graph-output and external
+    fan-out boundaries, stateful and opaque effect cuts, unsupported index-map
+    adjacency, malformed optional-bias numerical metadata, Linear-to-Linear
+    inlining cuts, and nonempty boundaries for every `Cut`. Structural Input and
+    Output edges are excluded from fusion candidates; `Legality.Illegal` carries
+    a nonempty boundary at the type level. The analyzer retains the target while
+    deriving regions and stages from immutable `Compute_plan` facts.
+  - **Commit:** `b8bc8ab` (`feat: form constructive fusion regions`).
 
 - [ ] **UOC-04 — Cost legal quant and launch alternatives with the probed target**
 
