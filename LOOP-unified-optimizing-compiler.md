@@ -198,7 +198,7 @@ Out of scope:
     rejection, deterministic tie-breaking, and unchanged legacy selection.
   - **Commit:** `1a71b1b` (`feat: add costed linear tactic selection`).
 
-- [ ] **UOC-05 — Route covered fusion through constructive regions**
+- [x] **UOC-05 — Route covered fusion through constructive regions**
 
   - **Where:** `lib/constructive_lowering.ml`, `lib/passes.mli`,
     `lib/passes.ml`, `lib/metal.ml`, `test/test.ml`.
@@ -215,7 +215,13 @@ Out of scope:
     unified path and assert source membership plus zero legacy fallbacks for
     covered cases. Unsupported shapes still execute through a named fallback
     and retain an explicit cut reason.
-  - **Commit:** Record after completion.
+  - **Evidence:** `ninja -f ninja.build test` passed the OCaml suite and all 72
+    Python tests; `ninja -f ninja.build` linked the default targets; and `git
+    diff --check` passed. Focused tests cover non-adjacent Linear+Add,
+    W4A16+Add, gated Linear/Silu/Mul boundaries, malformed fallback parity,
+    independent Q/K/V antichains, exact costed Metal tactic plus generic
+    package fallback, and preserved legacy registry selection.
+  - **Commit:** `09a05c5` (`feat: route covered fusion through constructive regions`).
 
 - [ ] **UOC-06 — Emit the optimization and AOT command-queue receipt**
 
