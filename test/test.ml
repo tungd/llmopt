@@ -1220,14 +1220,26 @@ let () =
     contains_substring source "kernel void llmopt_short_conv_silu_tm_f32")
     "Metal lowering emits token-major short-conv-SiLU";
 
-  [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2", 32;
-    Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_n2_l32", 256;
-    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_n1_l32", 1024;
-    Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_m2_x4", 256;
-    Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16_m2", 32;
-    Ir.Dtype.Q4_0, "llmopt_q4_0_linear_f16_m2", 32;
-    Ir.Dtype.IQ4_XS, "llmopt_iq4_xs_linear_f16_m2", 256 ]
-  |> List.iter (fun (quant, expected_name, k) ->
+  let costed_quant_tactic ~target ~m ~n ~k quant =
+    match
+      Kernel_abi.Linear_tactic.select_costed ~target ~m ~n ~k
+        ~input_dtype:Ir.Dtype.Float16
+        ~storage:(Ir.Linear_storage.Block_quantized quant)
+        ~output_dtype:Ir.Dtype.Float16
+    with
+    | Some selection ->
+        Kernel_abi.Linear_tactic.Selection.chosen selection
+        |> Kernel_abi.Linear_tactic.Candidate.tactic
+    | None -> fail "Metal test shape has no costed quantized tactic"
+  in
+  [ Ir.Dtype.Q8_0, 32; Ir.Dtype.Q4_K, 256; Ir.Dtype.Q5_K, 1024;
+    Ir.Dtype.Q6_K, 256; Ir.Dtype.Q5_0, 32; Ir.Dtype.Q4_0, 32;
+    Ir.Dtype.IQ4_XS, 256 ]
+  |> List.iter (fun (quant, k) ->
+         let expected =
+           costed_quant_tactic ~target:Target_hardware.default ~m:2 ~n:64 ~k
+             quant
+         in
          let tactic =
            Metal.Tactic.select_linear ~target:Target_hardware.default ~m:2
              ~n:64 ~k ~input_dtype:Ir.Dtype.Float16
@@ -1236,8 +1248,10 @@ let () =
            |> Option.get
          in
          expect
-           (Metal.Tactic.name tactic = expected_name)
-           "Metal tactics select paired-row quantized Linear from shape, layout, dtype, and target");
+           (Metal.Tactic.name tactic = Kernel_abi.Linear_tactic.name expected
+           && Metal.Tactic.threadgroup tactic
+              = Kernel_abi.Linear_tactic.threadgroup expected)
+           "Metal tactics use the costed paired-row quantized candidate");
   let q4_m1_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:64
       ~k:256 ~input_dtype:Ir.Dtype.Float16
@@ -1245,9 +1259,13 @@ let () =
       ~output_dtype:Ir.Dtype.Float16
     |> Option.get
   in
+  let q4_m1_expected =
+    costed_quant_tactic ~target:Target_hardware.default ~m:1 ~n:64 ~k:256
+      Ir.Dtype.Q4_K
+  in
   expect
-    (Metal.Tactic.name q4_m1_tactic = "llmopt_q4_k_linear_f16")
-    "Metal tactics retain the generic Q4_K Linear outside the paired-row shape";
+    (Metal.Tactic.name q4_m1_tactic = Kernel_abi.Linear_tactic.name q4_m1_expected)
+    "Metal tactics use the costed generic-shape Q4_K candidate";
   let gemma_q4_0_prefill_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:22 ~n:4096
       ~k:3840 ~input_dtype:Ir.Dtype.Float16
@@ -1255,10 +1273,14 @@ let () =
       ~output_dtype:Ir.Dtype.Float16
     |> Option.get
   in
+  let gemma_q4_0_expected =
+    costed_quant_tactic ~target:Target_hardware.default ~m:22 ~n:4096 ~k:3840
+      Ir.Dtype.Q4_0
+  in
   expect
     (Metal.Tactic.name gemma_q4_0_prefill_tactic
-    = "llmopt_q4_0_linear_f16")
-    "Gemma Q4_0 prefill selects the arbitrary-row Linear tactic";
+    = Kernel_abi.Linear_tactic.name gemma_q4_0_expected)
+    "Gemma Q4_0 prefill uses the costed arbitrary-row candidate";
   let captured_q4_0 = Ir.Graph.create () in
   let captured_q4_0_input =
     tensor_input captured_q4_0 ~name:"captured_q4_0_input"
@@ -1284,9 +1306,14 @@ let () =
     captured_q4_0 |> Metal.lower |> expect_ok |> Metal.Program.kernels
     |> List.map Kernel_abi.Entry.name
   in
+  let captured_q4_0_expected =
+    costed_quant_tactic ~target:Target_hardware.default ~m:2 ~n:4096 ~k:3840
+      Ir.Dtype.Q4_0
+  in
   expect
-    (List.mem "llmopt_q4_0_linear_f16_m2" captured_q4_0_kernels)
-    "captured two-row Q4_0 package retains its specialized tactic";
+    (List.mem (Kernel_abi.Linear_tactic.name captured_q4_0_expected)
+       captured_q4_0_kernels)
+    "captured two-row Q4_0 package emits the costed chosen tactic";
   expect
     (List.mem "llmopt_q4_0_linear_f16" captured_q4_0_kernels)
     "captured two-row Q4_0 package also retains the arbitrary-row fallback";
@@ -1297,18 +1324,20 @@ let () =
       ~output_dtype:Ir.Dtype.Float16
     |> Option.get
   in
+  let q8_lm_head_expected =
+    costed_quant_tactic ~target:Target_hardware.default ~m:1 ~n:49152 ~k:576
+      Ir.Dtype.Q8_0
+  in
   expect
     (Metal.Tactic.name q8_lm_head_tactic
-    = "llmopt_q8_0_linear_f16_m1_r2_sg4")
-    "Metal tactics split short-K wide-output Q8_0 Linear across four SIMDgroups";
+    = Kernel_abi.Linear_tactic.name q8_lm_head_expected)
+    "Metal tactics use the costed short-K wide-output Q8_0 candidate";
   expect
-    (Metal.Tactic.threadgroup q8_lm_head_tactic = (128, 1, 1))
-    "short-K wide-output Q8_0 Linear uses four SIMDgroups";
-  [ Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_splitk";
-    Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_splitk";
-    Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_splitk";
-    Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_splitk" ]
-  |> List.iter (fun (quant, expected_name) ->
+    (Metal.Tactic.threadgroup q8_lm_head_tactic
+     = Kernel_abi.Linear_tactic.threadgroup q8_lm_head_expected)
+    "short-K wide-output Q8_0 Linear uses the chosen launch geometry";
+  [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
+  |> List.iter (fun quant ->
          let splitk_tactic =
            Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:64
              ~k:4096 ~input_dtype:Ir.Dtype.Float16
@@ -1316,9 +1345,14 @@ let () =
              ~output_dtype:Ir.Dtype.Float16
            |> Option.get
          in
+         let expected =
+           costed_quant_tactic ~target:Target_hardware.default ~m:1 ~n:64
+             ~k:4096 quant
+         in
          expect
-           (Metal.Tactic.name splitk_tactic = expected_name)
-           "Metal tactics select Split-K parallel reductions for wide K >= 4096 Linear layers");
+           (Metal.Tactic.name splitk_tactic
+            = Kernel_abi.Linear_tactic.name expected)
+           "Metal tactics use the costed Split-K-compatible candidate" );
   let q5_unbalanced_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:2 ~n:64
       ~k:1536 ~input_dtype:Ir.Dtype.Float16
@@ -1326,10 +1360,14 @@ let () =
       ~output_dtype:Ir.Dtype.Float16
     |> Option.get
   in
+  let q5_unbalanced_expected =
+    costed_quant_tactic ~target:Target_hardware.default ~m:2 ~n:64 ~k:1536
+      Ir.Dtype.Q5_K
+  in
   expect
     (Metal.Tactic.name q5_unbalanced_tactic
-    = "llmopt_q5_k_linear_f16_m2_n1_l32")
-    "paired-token Q5_K execution covers block-aligned captured inner dimensions";
+    = Kernel_abi.Linear_tactic.name q5_unbalanced_expected)
+    "paired-token Q5_K execution uses the costed block-aligned candidate";
   let runtime_q5_unbalanced_tactic =
     Kernel_abi.Linear_tactic.select ~supports_simd:(fun ~threads:_ -> true)
       ~m:2 ~n:64 ~k:1536 ~input_dtype:Ir.Dtype.Float16
@@ -1337,10 +1375,19 @@ let () =
       ~output_dtype:Ir.Dtype.Float16
     |> Option.get
   in
+  let legacy_q5_first_name =
+    Kernel_abi.Linear_tactic.select_all
+      ~supports_simd:(fun ~threads:_ -> true) ~m:2 ~n:64 ~k:1536
+      ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q5_K)
+      ~output_dtype:Ir.Dtype.Float16
+    |> List.map Kernel_abi.Linear_tactic.name
+    |> List.hd
+  in
   expect
     (Kernel_abi.Linear_tactic.name runtime_q5_unbalanced_tactic
-    = Metal.Tactic.name q5_unbalanced_tactic)
-    "runtime binding and compiler lowering share one shape-aware Linear tactic registry";
+    = legacy_q5_first_name)
+    "runtime registry-order selection remains unchanged beside costed compiler selection";
   let simd16_target =
     let default = Target_hardware.default in
     { default with
@@ -1392,9 +1439,13 @@ let () =
   let q4_m2_kernel_names =
     Metal.Program.kernels q4_m2_program |> List.map Kernel_abi.Entry.name
   in
+  let q4_m2_expected =
+    costed_quant_tactic ~target:Target_hardware.default ~m:2 ~n:64 ~k:256
+      Ir.Dtype.Q4_K
+  in
   expect
-    (List.mem "llmopt_q4_k_linear_f16_m2_n2_l32" q4_m2_kernel_names)
-    "Metal lowering declares the selected full-SIMD two-token/two-column tactic";
+    (List.mem (Kernel_abi.Linear_tactic.name q4_m2_expected) q4_m2_kernel_names)
+    "Metal lowering declares the costed selected two-token Q4_K tactic";
   expect
     (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names)
     "Metal lowering retains the generic Q4_K Linear tactic for dynamic row specialization";
@@ -5487,6 +5538,233 @@ let () =
     "UOC-03 does not form a giant linear chain region";
   uoc03_assert_cut_boundaries linear_chain_decisions
     "UOC-03 linear-chain cuts report a nonempty typed boundary";
+
+  (* UOC-05 lowering starts from the immutable analysis result and preserves
+     the exact region members and output graph in a typed event. *)
+  let uoc05_lowering = Constructive_lowering.lower linear_add_analysis in
+  let uoc05_linear_add_member_ids =
+    Ir.Graph.nodes linear_add_graph
+    |> List.filter_map (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Linear _ | Ir.Op.Add _ -> Some (Ir.node_id node)
+           | _ -> None)
+  in
+  (match Constructive_lowering.Lowering.events uoc05_lowering with
+  | [ event ] ->
+      expect
+        (Constructive_lowering.Lowering.Event.kind event
+         = Constructive_lowering.Lowering.Kind.Linear_add
+        && List.map Compute_plan.Node_id.to_int
+             (Constructive_lowering.Lowering.Event.source_member_node_ids event)
+           = uoc05_linear_add_member_ids)
+        "UOC-05 lowers an accepted Linear-add region with exact source membership";
+      expect
+        (List.length (Ir.Graph.nodes (Constructive_lowering.Lowering.graph uoc05_lowering))
+         < List.length (Ir.Graph.nodes linear_add_graph))
+        "UOC-05 lowering exposes the rewritten output graph";
+      expect
+        (List.for_all2 Ir.Value.equal
+           (Constructive_lowering.Lowering.Event.inputs event)
+           [ linear_add_input; linear_add_weight; linear_add_residual ]
+        && List.for_all2 Ir.Value.equal
+             (Constructive_lowering.Lowering.Event.outputs event)
+             [ linear_add_output ])
+        "UOC-05 lowering events expose replacement boundary values"
+  | _ -> fail "UOC-05 expected one constructive Linear-add lowering event");
+
+  let uoc05_has_op graph predicate =
+    Ir.Graph.nodes graph |> List.exists (fun node -> predicate (Ir.node_op node))
+  in
+  let uoc05_optimization graph = Passes.optimize graph |> expect_ok in
+  let uoc05_quant_optimization = uoc05_optimization linear_add_graph in
+  expect
+    (List.length
+       (Constructive_lowering.Lowering.events
+          (Passes.Optimization.lowering uoc05_quant_optimization))
+     = 1
+    && Passes.Optimization.legacy_fallbacks uoc05_quant_optimization = []
+    && uoc05_has_op (Passes.Optimization.execution_graph uoc05_quant_optimization)
+         (function Ir.Op.Linear_add { m = 1; n = 128; k = 64 } -> true | _ -> false))
+    "UOC-05 optimize lowers non-adjacent quantized Linear-add without fallback";
+  let uoc05_w4_graph = Ir.Graph.create () in
+  let uoc05_w4_input =
+    uoc03_input uoc05_w4_graph "uoc05-w4-input" [ 1; 64 ] Ir.Dtype.Float16
+  in
+  let uoc05_w4_weight =
+    uoc03_input uoc05_w4_graph "uoc05-w4-weight" [ 64; 32 ] Ir.Dtype.UInt8
+  in
+  let uoc05_w4_scale =
+    uoc03_input uoc05_w4_graph "uoc05-w4-scale" [ 64; 1 ] Ir.Dtype.Float16
+  in
+  let uoc05_w4_linear =
+    uoc03_value uoc05_w4_graph [ 1; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append uoc05_w4_graph
+    ~op:(Ir.Op.W4a16_linear { m = 1; n = 64; k = 64; bias = false })
+    ~inputs:[ uoc05_w4_input; uoc05_w4_weight; uoc05_w4_scale ]
+    ~output:(Some uoc05_w4_linear);
+  let uoc05_w4_residual =
+    uoc03_input uoc05_w4_graph "uoc05-w4-residual" [ 1; 64 ] Ir.Dtype.Float16
+  in
+  let uoc05_w4_output =
+    uoc03_value uoc05_w4_graph [ 1; 64 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append uoc05_w4_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ uoc05_w4_linear; uoc05_w4_residual ]
+    ~output:(Some uoc05_w4_output);
+  Ir.Graph.add_output uoc05_w4_graph ~name:"uoc05-w4-result" uoc05_w4_output;
+  let uoc05_w4_optimization = uoc05_optimization uoc05_w4_graph in
+  expect
+    (List.exists
+       (fun event ->
+         Constructive_lowering.Lowering.Event.kind event
+         = Constructive_lowering.Lowering.Kind.W4a16_linear_add)
+       (Constructive_lowering.Lowering.events
+          (Passes.Optimization.lowering uoc05_w4_optimization))
+    && Passes.Optimization.legacy_fallbacks uoc05_w4_optimization = []
+    && uoc05_has_op (Passes.Optimization.execution_graph uoc05_w4_optimization)
+         (function
+         | Ir.Op.W4a16_linear { m = 1; n = 64; k = 64; bias = true } -> true
+         | _ -> false))
+    "UOC-05 optimize lowers W4A16 residual-add through the existing bias ABI";
+  let uoc05_gated_optimization = uoc05_optimization gated_graph in
+  expect
+    (List.exists
+       (fun event ->
+         Constructive_lowering.Lowering.Event.kind event
+         = Constructive_lowering.Lowering.Kind.Gated_linear
+         && List.length
+              (Constructive_lowering.Lowering.Event.inputs event)
+            = 3
+         && List.for_all2 Ir.Value.equal
+              (Constructive_lowering.Lowering.Event.inputs event)
+              [ gated_input; gated_weight; up_weight ]
+         && List.length
+              (Constructive_lowering.Lowering.Event.outputs event)
+            = 1
+         && List.for_all2 Ir.Value.equal
+              (Constructive_lowering.Lowering.Event.outputs event)
+              [ gated_output ])
+       (Constructive_lowering.Lowering.events
+          (Passes.Optimization.lowering uoc05_gated_optimization))
+    && Passes.Optimization.legacy_fallbacks uoc05_gated_optimization = []
+    && uoc05_has_op (Passes.Optimization.execution_graph uoc05_gated_optimization)
+         (function
+         | Ir.Op.Gated_linear
+             { m = 1; n = 128; k = 64;
+               activation = Ir.Gated_activation.Silu } -> true
+         | _ -> false))
+    "UOC-05 optimize lowers the executable gated Linear/Silu/Mul region";
+  let uoc05_bad_graph = Ir.Graph.create () in
+  let uoc05_bad_input =
+    uoc03_input uoc05_bad_graph "uoc05-bad-input" [ 1; 64 ] Ir.Dtype.Float16
+  in
+  let uoc05_bad_weight =
+    uoc03_input uoc05_bad_graph "uoc05-bad-weight" [ 128; 64 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q4_K)
+  in
+  let uoc05_bad_parameter =
+    uoc03_input uoc05_bad_graph "uoc05-bad-parameter" [ 1 ] Ir.Dtype.Float16
+  in
+  let uoc05_bad_linear =
+    uoc03_value uoc05_bad_graph [ 1; 128 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append uoc05_bad_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+    ~inputs:[ uoc05_bad_input; uoc05_bad_weight; uoc05_bad_parameter ]
+    ~output:(Some uoc05_bad_linear);
+  let uoc05_bad_residual =
+    uoc03_input uoc05_bad_graph "uoc05-bad-residual" [ 1; 128 ]
+      Ir.Dtype.Float16
+  in
+  let uoc05_bad_output =
+    uoc03_value uoc05_bad_graph [ 1; 128 ] Ir.Dtype.Float16
+  in
+  Ir.Graph.append uoc05_bad_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ uoc05_bad_linear; uoc05_bad_residual ]
+    ~output:(Some uoc05_bad_output);
+  Ir.Graph.add_output uoc05_bad_graph ~name:"uoc05-bad-result"
+    uoc05_bad_output;
+  let uoc05_bad_optimization = uoc05_optimization uoc05_bad_graph in
+  expect
+    (List.exists
+       (fun uncovered ->
+         Constructive_lowering.Lowering.Uncovered.kind uncovered
+         = Constructive_lowering.Lowering.Kind.Linear_add
+         && match
+              Constructive_lowering.Lowering.Uncovered.reason uncovered
+            with
+            | Constructive_lowering.Lowering.Uncovered.Cut legality ->
+                not (Constructive_lowering.Legality.is_legal legality)
+            | _ -> false)
+       (Constructive_lowering.Lowering.uncovered
+          (Passes.Optimization.lowering uoc05_bad_optimization))
+    && List.length (Passes.Optimization.legacy_fallbacks uoc05_bad_optimization) = 1
+    && (match Passes.Optimization.legacy_fallbacks uoc05_bad_optimization with
+       | [ fallback ] ->
+           Passes.Optimization.Legacy_fallback.name
+             (Passes.Optimization.Legacy_fallback.matcher fallback)
+           = "fuse_quant_linear_add"
+           && Passes.Optimization.Legacy_fallback.invocations fallback = 1
+       | _ -> false)
+    && not
+         (uoc05_has_op
+            (Passes.Optimization.execution_graph uoc05_bad_optimization)
+            (function Ir.Op.Linear_add _ -> true | _ -> false))
+    && Ir.Debug.to_sexp_string
+         (Passes.Optimization.semantic_graph uoc05_bad_optimization)
+       = Ir.Debug.to_sexp_string
+           (Pass_fuse_linear_bias.fuse_quant_linear_add uoc05_bad_graph))
+    "UOC-05 records malformed covered cuts and invokes one named fallback";
+
+  let uoc05_qkv_optimization = uoc05_optimization qkv_graph in
+  let uoc05_qkv_semantic =
+    Passes.Optimization.semantic_graph uoc05_qkv_optimization
+  in
+  let uoc05_qkv_linears =
+    Ir.Graph.nodes uoc05_qkv_semantic
+    |> List.filter_map (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Linear _ -> Some node
+           | _ -> None)
+  in
+  let uoc05_qkv_linear_request_ids =
+    Passes.Optimization.plan uoc05_qkv_optimization
+    |> Compute_plan.requests
+    |> List.filter_map (fun request ->
+           match Compute_plan.Request.op request with
+           | Ir.Op.Linear _ -> Some (Compute_plan.Request.id request)
+           | _ -> None)
+  in
+  let uoc05_qkv_stage_with id =
+    Passes.Optimization.plan uoc05_qkv_optimization
+    |> Compute_plan.stages
+    |> List.find_opt (fun stage ->
+           Compute_plan.Stage.requests stage
+           |> List.exists (fun request -> Compute_plan.Request.id request = id))
+  in
+  expect
+    (List.length uoc05_qkv_linears = 3
+    && List.length uoc05_qkv_linear_request_ids = 3
+    && Constructive_lowering.Lowering.events
+         (Passes.Optimization.lowering uoc05_qkv_optimization) = []
+    && Passes.Optimization.legacy_fallbacks uoc05_qkv_optimization = []
+    && not
+         (uoc05_has_op uoc05_qkv_semantic (function
+          | Ir.Op.Quant_qkv_linear _ | Ir.Op.W4a16_qkv_linear _ -> true
+          | _ -> false))
+    && match uoc05_qkv_linear_request_ids with
+       | first :: rest ->
+           List.for_all
+             (fun id ->
+               match uoc05_qkv_stage_with first, uoc05_qkv_stage_with id with
+               | Some first_stage, Some stage ->
+                   Compute_plan.Stage.index first_stage
+                   = Compute_plan.Stage.index stage
+               | _ -> false)
+             rest
+       | [] -> false)
+    "UOC-05 keeps independent Q/K/V linears as one antichain, without QKV fusion";
 
   (* UOC-04: target-aware quantized Linear candidates expose their schema,
      target tactic, launch resources, and a transparent cost breakdown. *)

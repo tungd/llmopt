@@ -28,6 +28,15 @@ val semantic_passes : Pass.t list
 val default_pipeline : Pass.Pipeline.t
 
 module Optimization : sig
+  module Legacy_fallback : sig
+    type matcher = Quant_linear_add | W4a16_linear_add | Quant_gated_linear
+    type t
+
+    val matcher : t -> matcher
+    val invocations : t -> int
+    val name : matcher -> string
+  end
+
   type t
 
   (** Canonical optimized graph, before execution barriers are inserted. *)
@@ -38,6 +47,15 @@ module Optimization : sig
 
   (** Structured fusion candidates; these do not mutate [semantic_graph]. *)
   val fusion_regions : t -> Kernel_ir.t list
+
+  (** Immutable dependency facts used to drive covered-region lowering. *)
+  val region_analysis : t -> Constructive_lowering.Analysis.t
+
+  (** Constructive rewrites and typed uncovered candidates. *)
+  val lowering : t -> Constructive_lowering.Lowering.t
+
+  (** Named legacy matchers invoked for explicitly uncovered covered families. *)
+  val legacy_fallbacks : t -> Legacy_fallback.t list
 
   (** Typed carried-state regions recovered from statically unrolled updates. *)
   val scan_regions : t -> Kernel_ir.Scan.t list

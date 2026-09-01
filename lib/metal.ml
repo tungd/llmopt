@@ -37,10 +37,15 @@ module Tactic = struct
     input_dtype = Ir.Dtype.Float16 && output_dtype = Ir.Dtype.Float16
 
   let select_linear ~target ~m ~n ~k ~input_dtype ~storage ~output_dtype =
-    Kernel_abi.Linear_tactic.select
-      ~supports_simd:(supports_simd target) ~m ~n ~k ~input_dtype ~storage
-      ~output_dtype
-    |> Option.map (fun tactic ->
+    Kernel_abi.Linear_tactic.select_costed ~target ~m ~n ~k ~input_dtype
+      ~storage ~output_dtype
+    |> Option.map (fun selection ->
+           let candidate =
+             Kernel_abi.Linear_tactic.Selection.chosen selection
+           in
+           let tactic =
+             Kernel_abi.Linear_tactic.Candidate.tactic candidate
+           in
            { name = Kernel_abi.Linear_tactic.name tactic;
              threadgroup = Kernel_abi.Linear_tactic.threadgroup tactic })
 

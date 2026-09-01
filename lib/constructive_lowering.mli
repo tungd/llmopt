@@ -89,6 +89,7 @@ module Analysis : sig
   type t
 
   val target : t -> Target_hardware.t
+  val graph : t -> Ir.Graph.t
   val assignments : t -> Assignment.t list
   val regions : t -> Region.t list
   val decisions : t -> Decision.t list
@@ -97,3 +98,47 @@ module Analysis : sig
 end
 
 val analyze : target:Target_hardware.t -> Compute_plan.t -> Analysis.t
+
+(** Deterministic rewrites derived from an [Analysis.t].  The lowering pass
+    never rediscovers graph adjacency: every event is backed by assignments and
+    accepted dependency decisions retained by the analysis. *)
+module Lowering : sig
+  module Kind : sig
+    type t = Linear_add | W4a16_linear_add | Gated_linear
+  end
+
+  module Event : sig
+    type t
+
+    val kind : t -> Kind.t
+    val source_member_node_ids : t -> Compute_plan.Node_id.t list
+    val source_assignments : t -> Assignment.t list
+    val inputs : t -> Ir.Value.t list
+    val outputs : t -> Ir.Value.t list
+    val replacement_node_id : t -> Compute_plan.Node_id.t
+    val replacement_node : t -> Ir.node
+  end
+
+  module Uncovered : sig
+    type reason =
+      | Cut of Legality.t
+      | Unsupported_pattern
+      | Overlap of Compute_plan.Node_id.t
+
+    type t
+
+    val kind : t -> Kind.t
+    val source : t -> Compute_plan.Node_id.t
+    val destination : t -> Compute_plan.Node_id.t
+    val source_member_node_ids : t -> Compute_plan.Node_id.t list
+    val reason : t -> reason
+  end
+
+  type t
+
+  val graph : t -> Ir.Graph.t
+  val events : t -> Event.t list
+  val uncovered : t -> Uncovered.t list
+end
+
+val lower : Analysis.t -> Lowering.t

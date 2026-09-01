@@ -118,6 +118,7 @@ end
 module Analysis = struct
   type t = {
     target : Target_hardware.t;
+    graph : Ir.Graph.t;
     assignments : Assignment.t list;
     regions : Region.t list;
     decisions : Decision.t list;
@@ -125,6 +126,7 @@ module Analysis = struct
   }
 
   let target analysis = analysis.target
+  let graph analysis = analysis.graph
   let assignments analysis = analysis.assignments
   let regions analysis = analysis.regions
   let decisions analysis = analysis.decisions
@@ -661,4 +663,569 @@ let analyze ~target plan =
   let decisions = decisions_of_edges plan normalized candidates in
   let adjacency = accepted_adjacency decisions in
   let regions = regions_of_components plan assignments adjacency in
-  { Analysis.target; assignments; regions; decisions; stages = Compute_plan.stages plan }
+  { Analysis.target; graph = Compute_plan.graph plan; assignments; regions;
+    decisions; stages = Compute_plan.stages plan }
+
+module Lowering = struct
+  module Kind = struct
+    type t = Linear_add | W4a16_linear_add | Gated_linear
+  end
+
+  module Event = struct
+    type t = {
+      kind : Kind.t;
+      source_assignments : Assignment.t list;
+      inputs : Ir.Value.t list;
+      outputs : Ir.Value.t list;
+      replacement_node : Ir.node;
+    }
+
+    let kind event = event.kind
+
+    let source_member_node_ids event =
+      List.map Assignment.node_id event.source_assignments
+
+    let source_assignments event = event.source_assignments
+    let inputs event = event.inputs
+    let outputs event = event.outputs
+    let replacement_node_id event = Ir.node_id event.replacement_node
+    let replacement_node event = event.replacement_node
+  end
+
+  module Uncovered = struct
+    type reason =
+      | Cut of Legality.t
+      | Unsupported_pattern
+      | Overlap of Node_id.t
+
+    type t = {
+      kind : Kind.t;
+      source : Node_id.t;
+      destination : Node_id.t;
+      source_member_node_ids : Node_id.t list;
+      reason : reason;
+    }
+
+    let kind uncovered = uncovered.kind
+    let source uncovered = uncovered.source
+    let destination uncovered = uncovered.destination
+    let source_member_node_ids uncovered = uncovered.source_member_node_ids
+    let reason uncovered = uncovered.reason
+  end
+
+  type t = {
+    graph : Ir.Graph.t;
+    events : Event.t list;
+    uncovered : Uncovered.t list;
+  }
+
+  let graph lowering = lowering.graph
+  let events lowering = lowering.events
+  let uncovered lowering = lowering.uncovered
+end
+
+type linear_info = {
+  assignment : Assignment.t;
+  m : int;
+  n : int;
+  k : int;
+  output : Ir.Value.t;
+  input : Ir.Value.t;
+  weight : Ir.Value.t;
+  quant : Ir.Dtype.quant_type option;
+  scale : Ir.Value.t option;
+}
+
+let supported_quant = function
+  | Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
+  | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS -> true
+
+let linear_info assignment =
+  match Ir.node_op (Assignment.source_node assignment),
+    Ir.node_inputs (Assignment.source_node assignment),
+    Assignment.outputs assignment,
+    Assignment.primitive assignment with
+  | ( Ir.Op.Linear { m; n; k; bias = false },
+      [ input; weight ],
+      [ output ],
+      Kernel_ir.Primitive.Linear
+        { storage = Ir.Linear_storage.Block_quantized quant; _ } )
+    when (match Ir.Value.dtype weight with
+      | Ir.Dtype.Quant actual -> actual = quant && supported_quant actual
+      | _ -> false) ->
+      Some
+        { assignment; m; n; k; output; input; weight; quant = Some quant;
+          scale = None }
+  | ( Ir.Op.W4a16_linear { m; n; k; bias = false },
+      [ input; weight; scale ],
+      [ output ],
+      Kernel_ir.Primitive.Linear
+        { storage = Ir.Linear_storage.Groupwise_packed
+            { bits = 4; group_elements = 64 }; _ } )
+    when Ir.Value.dtype weight = Ir.Dtype.UInt8
+         && Ir.Value.dtype scale = Ir.Dtype.Float16 ->
+      Some
+        { assignment; m; n; k; output; input; weight; quant = None;
+          scale = Some scale }
+  | _ -> None
+
+let add_info assignment =
+  let node = Assignment.source_node assignment in
+  match Ir.node_op node, Ir.node_inputs node, Assignment.outputs assignment with
+  | Ir.Op.Add _, [ left; right ], [ output ] -> Some (output, left, right)
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Binary (Ir.Pointwise.Add,
+             Ir.Pointwise.Tensor declared_left,
+             Ir.Pointwise.Tensor declared_right))),
+      [ left; right ],
+      [ output ] )
+    when (Ir.Value.equal declared_left left
+          && Ir.Value.equal declared_right right)
+         || (Ir.Value.equal declared_left right
+             && Ir.Value.equal declared_right left) ->
+      Some (output, left, right)
+  | _ -> None
+
+let silu_info assignment =
+  let node = Assignment.source_node assignment in
+  match Ir.node_op node, Ir.node_inputs node, Assignment.outputs assignment with
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Unary (Ir.Pointwise.Silu, declared))),
+      [ input ],
+      [ output ] )
+    when Ir.Value.equal declared input -> Some (input, output)
+  | _ -> None
+
+let mul_info assignment =
+  let node = Assignment.source_node assignment in
+  match Ir.node_op node, Ir.node_inputs node, Assignment.outputs assignment with
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Binary
+              ( Ir.Pointwise.Mul,
+                Ir.Pointwise.Tensor declared_left,
+                Ir.Pointwise.Tensor declared_right))),
+      [ left; right ],
+      [ output ] )
+    when (Ir.Value.equal declared_left left
+          && Ir.Value.equal declared_right right)
+         || (Ir.Value.equal declared_left right
+             && Ir.Value.equal declared_right left) ->
+      Some (left, right, output)
+  | _ -> None
+
+let same_values left right = Ir.Value.equal left right
+
+let assignment_by_output assignments value =
+  List.find_opt
+    (fun assignment ->
+      List.exists (fun output -> same_values output value)
+        (Assignment.outputs assignment))
+    assignments
+
+let assignment_id assignment = Assignment.node_id assignment
+
+let accepted_pair decisions source destination =
+  List.exists
+    (function
+      | Decision.Accepted candidate ->
+          Decision.source candidate = source
+          && Decision.destination candidate = destination
+      | Decision.Cut _ -> false)
+    decisions
+
+let graph_output_value graph value =
+  List.exists
+    (fun (_, output) -> Ir.Value.equal output value)
+    (Ir.Graph.outputs graph)
+
+let same_linear_add_metadata ~m ~n ~linear_output ~residual ~add_output =
+  Ir.Value.dtype linear_output = Ir.Dtype.Float16
+  && Ir.Value.dtype residual = Ir.Dtype.Float16
+  && Ir.Value.dtype add_output = Ir.Dtype.Float16
+  && same_shape linear_output residual
+  && same_shape linear_output add_output
+  && numel residual = m * n
+
+let executable_gated_quant quant m =
+  quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_0
+  || (m = 2 && (quant = Ir.Dtype.Q5_K || quant = Ir.Dtype.IQ4_XS))
+
+type event_match = {
+  kind : Lowering.Kind.t;
+  assignments : Assignment.t list;
+  replacement : Ir.node;
+}
+
+let ordered_subset assignments predicate =
+  List.filter predicate assignments
+
+let gated_match ~graph ~decisions assignments =
+  let muls = ordered_subset assignments (fun assignment ->
+      Option.is_some (mul_info assignment))
+  in
+  let try_match mul_assignment =
+    match mul_info mul_assignment with
+    | None -> None
+    | Some (left, right, _output) ->
+        let try_orientation activated up_value =
+          match assignment_by_output assignments activated with
+          | None -> None
+          | Some silu_assignment ->
+              (match silu_info silu_assignment with
+              | None -> None
+              | Some (gate_linear_value, silu_output) ->
+                  (match assignment_by_output assignments gate_linear_value,
+                    assignment_by_output assignments up_value with
+                  | Some gate_assignment, Some up_assignment ->
+                      (match linear_info gate_assignment, linear_info up_assignment with
+                      | Some gate, Some up ->
+                          (match gate.quant, up.quant with
+                          | Some gate_quant, Some up_quant
+                            when gate_quant = up_quant
+                                 && executable_gated_quant gate_quant gate.m
+                                 && gate.m = up.m && gate.n = up.n
+                                 && gate.k = up.k
+                                 && same_values gate.input up.input
+                                 && same_values gate.output gate_linear_value
+                                 && same_values up.output up_value
+                                 && accepted_pair decisions
+                                      (assignment_id gate_assignment)
+                                      (assignment_id silu_assignment)
+                                 && accepted_pair decisions
+                                      (assignment_id silu_assignment)
+                                      (assignment_id mul_assignment)
+                                 && accepted_pair decisions
+                                      (assignment_id up_assignment)
+                                      (assignment_id mul_assignment)
+                                 && not (graph_output_value graph gate.output)
+                                 && not (graph_output_value graph silu_output)
+                                 && not (graph_output_value graph up.output)
+                                 ->
+                              let selected_ids =
+                                [ assignment_id gate_assignment;
+                                  assignment_id up_assignment;
+                                  assignment_id silu_assignment;
+                                  assignment_id mul_assignment ]
+                                |> Node_set.of_list
+                              in
+                              let source_assignments =
+                                List.filter
+                                  (fun assignment ->
+                                    Node_set.mem (assignment_id assignment)
+                                      selected_ids)
+                                  assignments
+                              in
+                              let replacement =
+                                Ir.node_replace (Assignment.source_node mul_assignment)
+                                  ~op:
+                                    (Ir.Op.Gated_linear
+                                       { m = gate.m; n = gate.n; k = gate.k;
+                                         activation = Ir.Gated_activation.Silu })
+                                  ~inputs:[ gate.input; gate.weight; up.weight ]
+                              in
+                              Some
+                                { kind = Lowering.Kind.Gated_linear;
+                                  assignments = source_assignments; replacement }
+                          | _ -> None)
+                      | _ -> None)
+                  | _ -> None))
+        in
+        match try_orientation left right with
+        | Some result -> Some result
+        | None -> try_orientation right left
+  in
+  List.find_map try_match muls
+
+let linear_add_match ~decisions assignments =
+  let adds = ordered_subset assignments (fun assignment ->
+      Option.is_some (add_info assignment))
+  in
+  let try_add add_assignment =
+    match add_info add_assignment with
+    | None -> None
+    | Some (add_output, left, right) ->
+        let try_linear residual linear_value =
+          match assignment_by_output assignments linear_value with
+          | None -> None
+          | Some linear_assignment ->
+              if not (accepted_pair decisions (assignment_id linear_assignment)
+                        (assignment_id add_assignment))
+              then None
+              else
+                match linear_info linear_assignment with
+                | None -> None
+                | Some linear
+                  when same_linear_add_metadata ~m:linear.m ~n:linear.n
+                         ~linear_output:linear.output ~residual ~add_output
+                  ->
+                    let kind, inputs =
+                      match linear.quant, linear.scale with
+                      | Some _, None ->
+                          Lowering.Kind.Linear_add,
+                          [ linear.input; linear.weight; residual ]
+                      | None, Some scale ->
+                          Lowering.Kind.W4a16_linear_add,
+                          [ linear.input; linear.weight; scale; residual ]
+                      | _ -> Lowering.Kind.Linear_add, []
+                    in
+                    if inputs = [] then None
+                    else
+                      let replacement =
+                        Ir.node_replace (Assignment.source_node add_assignment)
+                          ~op:
+                            (match kind with
+                            | Lowering.Kind.Linear_add ->
+                                Ir.Op.Linear_add
+                                  { m = linear.m; n = linear.n; k = linear.k }
+                            | Lowering.Kind.W4a16_linear_add ->
+                                Ir.Op.W4a16_linear
+                                  { m = linear.m; n = linear.n; k = linear.k;
+                                    bias = true }
+                            | Lowering.Kind.Gated_linear ->
+                                Ir.Op.Linear_add
+                                  { m = linear.m; n = linear.n; k = linear.k })
+                          ~inputs
+                      in
+                      let source_assignments = [ linear_assignment; add_assignment ] in
+                      Some { kind; assignments = source_assignments; replacement }
+                | Some _ -> None
+        in
+        match try_linear right left with
+        | Some result -> Some result
+        | None -> try_linear left right
+  in
+  List.find_map try_add adds
+
+let covered_linear_operation = function
+  | Ir.Op.Linear { bias = false; _ } -> Some Lowering.Kind.Linear_add
+  | Ir.Op.W4a16_linear { bias = false; _ } ->
+      Some Lowering.Kind.W4a16_linear_add
+  | _ -> None
+
+let is_add_operation = function
+  | Ir.Op.Add _ -> true
+  | Ir.Op.Primitive
+      (Ir.Primitive.Pointwise
+         (Ir.Pointwise.Binary (Ir.Pointwise.Add, _, _))) -> true
+  | _ -> false
+
+let is_silu_operation = function
+  | Ir.Op.Primitive
+      (Ir.Primitive.Pointwise
+         (Ir.Pointwise.Unary (Ir.Pointwise.Silu, _))) -> true
+  | _ -> false
+
+let is_mul_operation = function
+  | Ir.Op.Primitive
+      (Ir.Primitive.Pointwise
+         (Ir.Pointwise.Binary (Ir.Pointwise.Mul, _, _))) -> true
+  | _ -> false
+
+let candidate_kind node_map source destination =
+  let source_op = Node_id_map.find_opt source node_map |> Option.map Ir.node_op in
+  let destination_op =
+    Node_id_map.find_opt destination node_map |> Option.map Ir.node_op
+  in
+  match source_op, destination_op with
+  | Some source_op, Some destination_op ->
+      (match covered_linear_operation source_op, is_add_operation destination_op with
+      | Some kind, true -> Some kind
+      | _ ->
+          match covered_linear_operation destination_op, is_add_operation source_op with
+          | Some kind, true -> Some kind
+          | _ when is_silu_operation source_op || is_silu_operation destination_op
+                 || is_mul_operation source_op || is_mul_operation destination_op ->
+              (match covered_linear_operation source_op,
+                covered_linear_operation destination_op with
+              | Some _, _ | _, Some _ -> Some Lowering.Kind.Gated_linear
+              | _ -> None)
+          | _ -> None)
+  | _ -> None
+
+let overlap claimed assignments =
+  List.find_opt
+    (fun assignment -> Node_set.mem (assignment_id assignment) claimed)
+    assignments
+
+let apply_events graph events =
+  let replacements, removed =
+    List.fold_left
+      (fun (replacements, removed) event ->
+        let replacement_id = Lowering.Event.replacement_node_id event in
+        let removed =
+          Lowering.Event.source_member_node_ids event
+          |> List.fold_left
+               (fun removed id ->
+                 if id = replacement_id then removed else Node_set.add id removed)
+               removed
+        in
+        Node_id_map.add replacement_id (Lowering.Event.replacement_node event)
+          replacements,
+        removed)
+      (Node_id_map.empty, Node_set.empty) events
+  in
+  Ir.Graph.with_nodes graph
+    (Ir.Graph.nodes graph
+    |> List.filter_map (fun node ->
+           let id = Ir.node_id node in
+           if Node_set.mem id removed then None
+           else
+             Some
+               (Node_id_map.find_opt id replacements
+               |> Option.value ~default:node)))
+
+let lower analysis =
+  let graph = Analysis.graph analysis in
+  let node_map =
+    Ir.Graph.nodes graph
+    |> List.fold_left
+         (fun map node -> Node_id_map.add (Ir.node_id node) node map)
+         Node_id_map.empty
+  in
+  let decisions = Analysis.decisions analysis in
+  let regions = Analysis.regions analysis in
+  let gated_matches =
+    regions
+    |> List.filter_map (fun region ->
+           gated_match ~graph ~decisions (Region.assignments region))
+  in
+  let claimed, gated_events =
+    List.fold_left
+      (fun (claimed, events) match_ ->
+        match overlap claimed match_.assignments with
+        | Some _ -> claimed, events
+        | None ->
+            let event =
+              { Lowering.Event.kind = match_.kind;
+                source_assignments = match_.assignments;
+                inputs = Ir.node_inputs match_.replacement;
+                outputs =
+                  Option.to_list (Ir.node_output match_.replacement)
+                  @ Ir.Op.additional_outputs
+                      (Ir.node_op match_.replacement);
+                replacement_node = match_.replacement }
+            in
+            let claimed =
+              List.fold_left
+                (fun claimed assignment ->
+                  Node_set.add (assignment_id assignment) claimed)
+                claimed match_.assignments
+            in
+            claimed, event :: events)
+      (Node_set.empty, []) gated_matches
+  in
+  let gated_events = List.rev gated_events in
+  let linear_matches =
+    regions
+    |> List.filter_map (fun region ->
+           linear_add_match ~decisions (Region.assignments region))
+  in
+  let claimed, linear_events, overlap_uncovered =
+    List.fold_left
+      (fun (claimed, events, uncovered) match_ ->
+        match overlap claimed match_.assignments with
+        | None ->
+            let event =
+              { Lowering.Event.kind = match_.kind;
+                source_assignments = match_.assignments;
+                inputs = Ir.node_inputs match_.replacement;
+                outputs =
+                  Option.to_list (Ir.node_output match_.replacement)
+                  @ Ir.Op.additional_outputs
+                      (Ir.node_op match_.replacement);
+                replacement_node = match_.replacement }
+            in
+            let claimed =
+              List.fold_left
+                (fun claimed assignment ->
+                  Node_set.add (assignment_id assignment) claimed)
+                claimed match_.assignments
+            in
+            claimed, event :: events, uncovered
+        | Some assignment ->
+            let source =
+              match match_.assignments with
+              | first :: _ -> assignment_id first
+              | [] -> assignment_id assignment
+            in
+            let destination =
+              match List.rev match_.assignments with
+              | last :: _ -> assignment_id last
+              | [] -> assignment_id assignment
+            in
+            claimed, events,
+            { Lowering.Uncovered.kind = match_.kind; source; destination;
+              source_member_node_ids =
+                List.map assignment_id match_.assignments;
+              reason = Lowering.Uncovered.Overlap (assignment_id assignment) }
+            :: uncovered)
+      (claimed, [], []) linear_matches
+  in
+  let linear_events = List.rev linear_events in
+  let events = gated_events @ linear_events in
+  let cut_uncovered =
+    decisions
+    |> List.filter_map (function
+           | Decision.Accepted _ -> None
+           | Decision.Cut (candidate, legality) ->
+               let source = Decision.source candidate in
+               let destination = Decision.destination candidate in
+               Option.map
+                 (fun kind ->
+                   { Lowering.Uncovered.kind = kind; source; destination;
+                     source_member_node_ids = [ source; destination ];
+                     reason = Lowering.Uncovered.Cut legality })
+                 (candidate_kind node_map source destination))
+  in
+  let unsupported_regions =
+    regions
+    |> List.concat_map (fun region ->
+           let assignments = Region.assignments region in
+           if Option.is_some (gated_match ~graph ~decisions assignments) then []
+           else
+             List.concat_map
+               (fun assignment ->
+                 match linear_info assignment with
+                 | None -> []
+                 | Some _linear ->
+                     assignments
+                     |> List.filter_map (fun destination ->
+                            match silu_info destination, mul_info destination with
+                            | Some _, _ | _, Some _
+                              when assignment_id destination <> assignment_id assignment
+                                   && accepted_pair decisions
+                                        (assignment_id assignment)
+                                        (assignment_id destination) ->
+                                Some
+                                  { Lowering.Uncovered.kind = Lowering.Kind.Gated_linear;
+                                    source = assignment_id assignment;
+                                    destination = assignment_id destination;
+                                    source_member_node_ids =
+                                      [ assignment_id assignment;
+                                        assignment_id destination ];
+                                    reason = Lowering.Uncovered.Unsupported_pattern }
+                            | _ -> None))
+               assignments)
+  in
+  let uncovered =
+    let seen = Hashtbl.create (List.length (cut_uncovered @ overlap_uncovered)) in
+    let unique candidates =
+      List.filter (fun candidate ->
+          let key =
+            ( Lowering.Uncovered.source candidate,
+              Lowering.Uncovered.destination candidate,
+              match Lowering.Uncovered.kind candidate with
+              | Lowering.Kind.Linear_add -> 0
+              | Lowering.Kind.W4a16_linear_add -> 1
+              | Lowering.Kind.Gated_linear -> 2 )
+          in
+          if Hashtbl.mem seen key then false
+          else (Hashtbl.add seen key (); true))
+        candidates
+    in
+    unique (cut_uncovered @ unsupported_regions @ overlap_uncovered)
+  in
+  { Lowering.graph = apply_events graph events; events; uncovered }
