@@ -4196,6 +4196,266 @@ let () =
   in
   expect (Result.is_error unaligned_err) "physical_bytes rejects unaligned element counts";
 
+  (* Unified block-schema contracts: physical storage, logical decode, and
+     deterministic target tactics share the Linear storage authority. *)
+  let expect_schema_ok = function
+    | Ok schema -> schema
+    | Error error -> fail (Block_schema.Error.to_string error)
+  in
+  let q4k_schema =
+    Block_schema.of_storage
+      (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+    |> expect_schema_ok
+  in
+  expect
+    (Block_schema.block_elements q4k_schema = 256
+    && Block_schema.block_bytes q4k_schema = 144)
+    "Q4_K schema preserves the 256-value/144-byte physical contract";
+  let q4k_physical = Block_schema.physical_layout q4k_schema in
+  expect
+    (Block_schema.Physical_layout.alignment q4k_physical = 2
+    && List.map Block_schema.Physical_layout.Field.id
+         (Block_schema.Physical_layout.fields q4k_physical)
+       = [ Block_schema.Physical_layout.Field.Block_scale;
+           Block_schema.Physical_layout.Field.Block_minimum;
+           Block_schema.Physical_layout.Field.Scale_minimum_table;
+           Block_schema.Physical_layout.Field.Quantized ])
+    "Q4_K schema exposes stable aligned header and quantized fields";
+  expect
+    (List.map
+       (fun field ->
+         ( Block_schema.Physical_layout.Field.id field,
+           Block_schema.Physical_layout.Field.offset field,
+           Block_schema.Physical_layout.Field.bytes field,
+           Block_schema.Physical_layout.Field.scalar field ))
+       (Block_schema.Physical_layout.fields q4k_physical)
+     = [ (Block_schema.Physical_layout.Field.Block_scale, 0, 2,
+          Block_schema.Physical_layout.Field.F16);
+         (Block_schema.Physical_layout.Field.Block_minimum, 2, 2,
+          Block_schema.Physical_layout.Field.F16);
+         (Block_schema.Physical_layout.Field.Scale_minimum_table, 4, 12,
+          Block_schema.Physical_layout.Field.U8);
+         (Block_schema.Physical_layout.Field.Quantized, 16, 128,
+          Block_schema.Physical_layout.Field.U8) ])
+    "Q4_K schema preserves exact field offsets and scalar widths";
+  expect
+    (List.exists
+       (fun range ->
+         Block_schema.Physical_layout.Bit_range.field range
+         = Block_schema.Physical_layout.Field.Scale_minimum_table
+         && Block_schema.Physical_layout.Bit_range.byte_offset range = 0
+         && Block_schema.Physical_layout.Bit_range.bit_width range = 6
+         && Block_schema.Physical_layout.Bit_range.count range = 4)
+       (Block_schema.Physical_layout.bit_ranges q4k_physical))
+    "Q4_K schema records six-bit sub-block scale ranges";
+  expect
+    (List.exists
+       (fun range ->
+         Block_schema.Physical_layout.Bit_range.field range
+         = Block_schema.Physical_layout.Field.Scale_minimum_table
+         && Block_schema.Physical_layout.Bit_range.byte_offset range = 4
+         && Block_schema.Physical_layout.Bit_range.bit_width range = 6
+         && Block_schema.Physical_layout.Bit_range.count range = 4)
+       (Block_schema.Physical_layout.bit_ranges q4k_physical))
+    "Q4_K schema records six-bit sub-block minimum ranges";
+  let q4k_decode = Block_schema.logical_decode q4k_schema in
+  expect
+    (Block_schema.Logical_decode.block_elements q4k_decode = 256
+    && Block_schema.Logical_decode.subblock_elements q4k_decode = 32
+    && List.length (Block_schema.Logical_decode.subblocks q4k_decode) = 8)
+    "Q4_K schema exposes eight 32-value logical sub-blocks";
+  (match Block_schema.Logical_decode.equation q4k_decode with
+  | Block_schema.Logical_decode.Affine
+      { code_bits = 4;
+        code_signedness = Block_schema.Physical_layout.Signedness.Unsigned;
+        scale =
+          Block_schema.Logical_decode.Product
+            [ Block_schema.Logical_decode.Per_block
+                { field = Block_schema.Physical_layout.Field.Block_scale;
+                  bits = 16 };
+              Block_schema.Logical_decode.Per_subblock
+                { field = Block_schema.Physical_layout.Field.Scale_minimum_table;
+                  bits = 6 } ];
+        minimum =
+          Block_schema.Logical_decode.Product
+            [ Block_schema.Logical_decode.Per_block
+                { field = Block_schema.Physical_layout.Field.Block_minimum;
+                  bits = 16 };
+              Block_schema.Logical_decode.Per_subblock
+                { field = Block_schema.Physical_layout.Field.Scale_minimum_table;
+                  bits = 6 } ] } ->
+      ()
+  | _ ->
+      fail
+        "Q4_K decode composes block and sub-block scale/minimum semantics");
+
+  let packed_schema =
+    Block_schema.of_storage packed_storage.layout |> expect_schema_ok
+  in
+  let packed_physical = Block_schema.physical_layout packed_schema in
+  expect
+    (Block_schema.block_elements packed_schema = 64
+    && Block_schema.block_bytes packed_schema = 32
+    && Block_schema.Physical_layout.storage_bytes packed_physical = 34)
+    "groupwise W4 schema records 64 values, packed bytes, and separate scale bytes";
+  let w4_group_scale =
+    Block_schema.Physical_layout.field packed_physical
+      Block_schema.Physical_layout.Field.Group_scale
+    |> Option.get
+  in
+  expect
+    (Block_schema.Physical_layout.Field.storage w4_group_scale
+       = Block_schema.Physical_layout.Field.Separate
+    && Block_schema.Physical_layout.Field.scalar w4_group_scale
+       = Block_schema.Physical_layout.Field.F16
+    && Block_schema.Physical_layout.Field.bytes w4_group_scale = 2)
+    "groupwise W4 schema records its separate float16 group scale";
+  let w4_ranges = Block_schema.Physical_layout.bit_ranges packed_physical in
+  expect
+    (List.exists
+       (fun range ->
+         Block_schema.Physical_layout.Bit_range.field range
+         = Block_schema.Physical_layout.Field.Quantized
+         && Block_schema.Physical_layout.Bit_range.bit_offset range = 0
+         && Block_schema.Physical_layout.Bit_range.bit_width range = 4
+         && Block_schema.Physical_layout.Bit_range.count range = 32)
+       w4_ranges
+    && List.exists
+         (fun range ->
+           Block_schema.Physical_layout.Bit_range.field range
+           = Block_schema.Physical_layout.Field.Quantized
+           && Block_schema.Physical_layout.Bit_range.bit_offset range = 4
+           && Block_schema.Physical_layout.Bit_range.bit_width range = 4
+           && Block_schema.Physical_layout.Bit_range.count range = 32)
+         w4_ranges)
+    "groupwise W4 schema records low/high packed nibbles";
+  (match
+     Block_schema.Logical_decode.equation (Block_schema.logical_decode packed_schema)
+   with
+  | Block_schema.Logical_decode.Signed_integer
+      { code_bits = 4;
+        code_signedness = Block_schema.Physical_layout.Signedness.Twos_complement;
+        scale =
+          Block_schema.Logical_decode.Separate_group
+            { field = Block_schema.Physical_layout.Field.Group_scale;
+              bits = 16 } } ->
+      ()
+  | _ -> fail "groupwise W4 decode retains signed nibble and separate-scale semantics");
+  expect
+    (List.map Block_schema.Target_tactic.name
+       (Block_schema.target_tactics packed_schema)
+     = [ "portable-scalar"; "metal-simd32"; "cuda-warp32"; "hip-wave32" ])
+    "block schemas enumerate target tactics in a stable order";
+  expect
+    (List.for_all
+       (fun tactic ->
+         match Block_schema.Target_tactic.backend tactic with
+         | Block_schema.Target_tactic.Portable ->
+             Block_schema.Target_tactic.primitives tactic
+             = [ Block_schema.Target_tactic.Primitive.Portable_scalar ]
+         | Block_schema.Target_tactic.Metal ->
+             Block_schema.Target_tactic.primitives tactic
+             = [ Block_schema.Target_tactic.Primitive.Metal_extract_bits;
+                 Block_schema.Target_tactic.Primitive.Metal_half2;
+                 Block_schema.Target_tactic.Primitive.Metal_simd_reduce ]
+         | Block_schema.Target_tactic.Cuda ->
+             Block_schema.Target_tactic.primitives tactic
+             = [ Block_schema.Target_tactic.Primitive.Cuda_byte_permute;
+                 Block_schema.Target_tactic.Primitive.Cuda_shuffle ]
+         | Block_schema.Target_tactic.Hip ->
+             Block_schema.Target_tactic.primitives tactic
+             = [ Block_schema.Target_tactic.Primitive.Hip_bitfield;
+                 Block_schema.Target_tactic.Primitive.Hip_wave_reduce ])
+       (Block_schema.target_tactics packed_schema))
+    "target tactics expose backend-specific typed decode and reduction primitives";
+  let q6_schema =
+    Block_schema.of_storage
+      (Ir.Linear_storage.Block_quantized Ir.Dtype.Q6_K)
+    |> expect_schema_ok
+  in
+  (match
+     Block_schema.Logical_decode.equation
+       (Block_schema.logical_decode q6_schema)
+   with
+  | Block_schema.Logical_decode.Signed_integer
+      { code_bits = 6;
+        code_signedness = Block_schema.Physical_layout.Signedness.Offset 32;
+        scale =
+          Block_schema.Logical_decode.Product
+            [ Block_schema.Logical_decode.Per_block
+                { field = Block_schema.Physical_layout.Field.Block_scale;
+                  bits = 16 };
+              Block_schema.Logical_decode.Per_subblock
+                { field = Block_schema.Physical_layout.Field.Scale_table;
+                  bits = 8 } ] } ->
+      ()
+  | _ -> fail "Q6_K decode composes block scale with signed sub-block scales");
+  let iq4_xs_schema =
+    Block_schema.of_storage
+      (Ir.Linear_storage.Block_quantized Ir.Dtype.IQ4_XS)
+    |> expect_schema_ok
+  in
+  (match
+     Block_schema.Logical_decode.equation
+       (Block_schema.logical_decode iq4_xs_schema)
+   with
+  | Block_schema.Logical_decode.Codebook
+      { code_bits = 4;
+        code_signedness = Block_schema.Physical_layout.Signedness.Unsigned;
+        values = [ -127; -104; -83; -65; -49; -35; -22; -10;
+                   1; 13; 25; 38; 53; 69; 89; 113 ];
+        scale =
+          Block_schema.Logical_decode.Product
+            [ Block_schema.Logical_decode.Per_block
+                { field = Block_schema.Physical_layout.Field.Block_scale;
+                  bits = 16 };
+              Block_schema.Logical_decode.Packed_power_of_two
+                { low_field = Block_schema.Physical_layout.Field.Codebook_scale_low;
+                  low_bits = 4;
+                  high_field = Block_schema.Physical_layout.Field.Codebook_scale_high;
+                  high_bits = 2;
+                  bias = 32;
+                  denominator = 8 } ] } ->
+      ()
+  | _ ->
+      fail
+        "IQ4_XS decode composes d with packed low/high sub-block exponents");
+  [ Ir.Dtype.Q8_0, 32, 34; Ir.Dtype.Q4_K, 256, 144;
+    Ir.Dtype.Q5_K, 256, 176; Ir.Dtype.Q6_K, 256, 210;
+    Ir.Dtype.Q5_0, 32, 22; Ir.Dtype.Q4_0, 32, 18;
+    Ir.Dtype.IQ4_XS, 256, 136 ]
+  |> List.iter (fun (quant, expected_elements, expected_bytes) ->
+         let schema =
+           Block_schema.of_storage (Ir.Linear_storage.Block_quantized quant)
+           |> expect_schema_ok
+         in
+         expect
+           (Block_schema.quant_type schema = Some quant
+           && Block_schema.block_elements schema = expected_elements
+           && Block_schema.block_bytes schema = expected_bytes
+           && Block_schema.block_elements schema
+              = Ir.Tensor_layout.block_elements quant
+           && Block_schema.block_bytes schema
+              = Ir.Tensor_layout.block_bytes quant)
+           "every IR block-quantized dtype has a validated block schema");
+  (match
+     Block_schema.of_storage (Ir.Linear_storage.Dense Ir.Dtype.Float16)
+   with
+  | Error (Block_schema.Error.Unsupported_storage _) -> ()
+  | _ -> fail "dense storage is rejected by the block-schema boundary");
+  (match
+     Block_schema.of_storage
+       (Ir.Linear_storage.Groupwise_packed { bits = 5; group_elements = 64 })
+   with
+  | Error (Block_schema.Error.Invalid_groupwise_bits 5) -> ()
+  | _ -> fail "invalid groupwise bit width is rejected as a typed error");
+  (match
+     Block_schema.of_storage
+       (Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 32 })
+   with
+  | Error (Block_schema.Error.Invalid_groupwise_group_elements 32) -> ()
+  | _ -> fail "invalid groupwise element count is rejected as a typed error");
+
   (* GGUF Parser & Ingestion Tests *)
   let gguf_buf = Binary.Writer.create () in
   Binary.Writer.raw_string gguf_buf "GGUF";
