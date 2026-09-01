@@ -201,15 +201,16 @@ Out of scope:
 - [ ] **UOC-05 — Route covered fusion through constructive regions**
 
   - **Where:** `lib/constructive_lowering.ml`, `lib/passes.mli`,
-    `lib/passes.ml`, `test/test.ml`.
+    `lib/passes.ml`, `lib/metal.ml`, `test/test.ml`.
   - **Symbols:** `Constructive_lowering.lower` and
     `Passes.Optimization.region_analysis`.
   - **Change:** Run dependency analysis before operation-specific epilogue and
-    linear fusion. Lower accepted linear-residual, linear-activation, and
-    gated-linear regions through the typed region result into the existing
-    executable IR/Metal ABI. Invoke existing matchers only for uncovered
-    candidates and record those invocations as legacy fallbacks; leave other
-    fusion families unchanged.
+    linear fusion. Lower accepted linear-residual and gated-linear regions
+    through the typed region result into the existing executable IR/Metal ABI;
+    “linear-activation” denotes the Linear-to-Silu edges inside that executable
+    gated Linear/Silu/Mul region, not standalone activation lowering. Invoke
+    existing matchers only for uncovered candidates and record those
+    invocations as legacy fallbacks; leave other fusion families unchanged.
   - **Proof:** Existing epilogue/gated/linear-add graph tests pass through the
     unified path and assert source membership plus zero legacy fallbacks for
     covered cases. Unsupported shapes still execute through a named fallback
