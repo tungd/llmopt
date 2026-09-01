@@ -169,7 +169,8 @@ Out of scope:
     Output edges are excluded from fusion candidates; `Legality.Illegal` carries
     a nonempty boundary at the type level. The analyzer retains the target while
     deriving regions and stages from immutable `Compute_plan` facts.
-  - **Commit:** `b8bc8ab` (`feat: form constructive fusion regions`).
+  - **Commits:** `b8bc8ab` (`feat: form constructive fusion regions`),
+    `7abc781` (`fix: validate RMSNorm fusion metadata`).
 
 - [ ] **UOC-04 — Cost legal quant and launch alternatives with the probed target**
 
