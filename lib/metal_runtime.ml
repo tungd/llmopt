@@ -2620,6 +2620,15 @@ let update_slice_kernel destination source output =
            (Ir.Dtype.to_string source_dtype)
            (Ir.Dtype.to_string output_dtype))
 
+type assignment_execution =
+  | Assignment_linear_add of Kernel_ir.Fused_tactic.linear * Ir.Value.t * Ir.Value.t
+  | Assignment_gated_product of {
+      gate : Kernel_ir.Fused_tactic.linear;
+      up : Kernel_ir.Fused_tactic.linear;
+      activation : Kernel_ir.Primitive.unary;
+      output : Ir.Value.t;
+    }
+
 let assignment_execution command =
   match
     Option.bind (Serving_schedule.Command.fusion_region command)
@@ -2628,34 +2637,11 @@ let assignment_execution command =
   | Some
       (Kernel_ir.Fused_tactic.Linear_additive
         { linear; additive; output }) ->
-      (match linear.storage with
-      | Ir.Linear_storage.Block_quantized _ ->
-          Some
-            ( Ir.Op.Linear_add
-                { m = linear.m; n = linear.n; k = linear.k },
-              [ linear.input; linear.weight; additive ],
-              Some output )
-      | Ir.Linear_storage.Groupwise_packed _ ->
-          Some
-            ( Ir.Op.W4a16_linear
-                { m = linear.m; n = linear.n; k = linear.k; bias = true },
-              linear.input :: linear.weight :: linear.parameters @ [ additive ],
-              Some output )
-      | Ir.Linear_storage.Dense _ -> None)
+      Some (Assignment_linear_add (linear, additive, output))
   | Some
       (Kernel_ir.Fused_tactic.Gated_product
         { gate; up; activation; output }) ->
-      let activation =
-        match activation with
-        | Kernel_ir.Primitive.Silu -> Ir.Gated_activation.Silu
-        | Kernel_ir.Primitive.Gelu -> Ir.Gated_activation.Gelu
-        | Kernel_ir.Primitive.Sigmoid -> Ir.Gated_activation.Sigmoid
-      in
-      Some
-        ( Ir.Op.Gated_linear
-            { m = gate.m; n = gate.n; k = gate.k; activation },
-          [ gate.input; gate.weight; up.weight ],
-          Some output )
+      Some (Assignment_gated_product { gate; up; activation; output })
   | None -> None
 
 let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
@@ -2693,14 +2679,10 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
           }
     | command :: rest ->
         let node_id = Serving_schedule.Command.node_id command in
-        let op, command_inputs, command_output =
-          match assignment_execution command with
-          | Some execution -> execution
-          | None ->
-              ( Serving_schedule.Command.op command,
-                Serving_schedule.Command.inputs command,
-                Serving_schedule.Command.output command )
-        in
+        let assignment = assignment_execution command in
+        let op = Serving_schedule.Command.op command in
+        let command_inputs = Serving_schedule.Command.inputs command in
+        let command_output = Serving_schedule.Command.output command in
         let continue state = run state rest in
         let unsupported () =
           Error
@@ -2717,7 +2699,142 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             { state with
               kernels_rev = List.rev_append kernels state.kernels_rev }
         in
-        (match op, command_inputs, command_output with
+        let dispatch_assignment = function
+          | Assignment_linear_add (linear, additive, output) ->
+              (match linear.Kernel_ir.Fused_tactic.storage with
+              | Ir.Linear_storage.Block_quantized quant ->
+                  let* () =
+                    validate_linear_shapes ~m:linear.m ~n:linear.n ~k:linear.k
+                      linear.input linear.weight output
+                  in
+                  let* () =
+                    if
+                      same_value_metadata additive output
+                      && Ir.Value.dtype linear.input = Ir.Dtype.Float16
+                      && Ir.Value.dtype output = Ir.Dtype.Float16
+                    then Ok ()
+                    else Error "assignment Linear-add metadata is inconsistent"
+                  in
+                  let* buffers =
+                    find_values state [ linear.input; linear.weight; additive ]
+                  in
+                  let* input_buffer, weight_buffer, additive_buffer =
+                    match buffers with
+                    | [ input_buffer; weight_buffer; additive_buffer ] ->
+                        Ok (input_buffer, weight_buffer, additive_buffer)
+                    | _ -> Error "assignment Linear-add buffers are inconsistent"
+                  in
+                  dispatched
+                    (dispatch_quant_linear ~batch runtime state output
+                       ~m:linear.m ~n:linear.n ~k:linear.k ~quant ~input_buffer
+                       ~weight_buffer ~additive_buffer ~epilogue_mode:2)
+              | Ir.Linear_storage.Groupwise_packed
+                  { bits = 4; group_elements = 64 } ->
+                  let* scale =
+                    match linear.parameters with
+                    | [ scale ] -> Ok scale
+                    | _ -> Error "assignment W4A16 Linear-add requires one scale"
+                  in
+                  let* input = find_value state linear.input in
+                  let* weight = find_value state linear.weight in
+                  let* scale_buffer = find_value state scale in
+                  let* additive_buffer = find_value state additive in
+                  let bias_row_stride =
+                    if
+                      Tensor_shape.numel (Ir.Value.logical_shape additive)
+                      = linear.m * linear.n
+                    then linear.n
+                    else 0
+                  in
+                  let* parameters =
+                    Parameters.u32s
+                      [ linear.m; linear.n; linear.k; 1; bias_row_stride ]
+                  in
+                  let name, rows =
+                    if linear.m = 1 then
+                      "llmopt_w4a16_linear_f16_g64", linear.m * linear.n
+                    else
+                      "llmopt_w4a16_linear_f16_g64_m4",
+                      ((linear.m + 3) / 4) * linear.n
+                  in
+                  let* grid_x = linear_f16_grid rows in
+                  dispatched
+                    (dispatch_output ~name runtime state output
+                       ~operation:Kernel_abi.Operation.W4a16_linear
+                       ~input_dtype:Ir.Dtype.Float16
+                       ~buffers:[ input; weight; scale_buffer; additive_buffer ]
+                       ~parameters ~grid:(grid_x, 1, 1))
+              | Ir.Linear_storage.Groupwise_packed _ ->
+                  Error "assignment Linear-add has unsupported packed storage"
+              | Ir.Linear_storage.Dense _ ->
+                  Error "assignment Linear-add requires quantized storage")
+          | Assignment_gated_product { gate; up; activation; output } ->
+              let* () =
+                validate_linear_shapes ~m:gate.m ~n:gate.n ~k:gate.k
+                  gate.input gate.weight output
+              in
+              let* () =
+                validate_linear_shapes ~m:up.m ~n:up.n ~k:up.k up.input
+                  up.weight output
+              in
+              let* quant =
+                match gate.storage, up.storage with
+                | ( Ir.Linear_storage.Block_quantized gate_quant,
+                    Ir.Linear_storage.Block_quantized up_quant )
+                  when gate_quant = up_quant -> Ok gate_quant
+                | _ -> Error "assignment gated product requires matching block quantization"
+              in
+              let* buffers = find_values state [ gate.input; gate.weight; up.weight ] in
+              let activation_tag =
+                match activation with
+                | Kernel_ir.Primitive.Silu -> 0
+                | Kernel_ir.Primitive.Gelu -> 1
+                | Kernel_ir.Primitive.Sigmoid -> 2
+              in
+              let* parameters = Parameters.u32s [ gate.m; gate.n; gate.k; activation_tag ] in
+              let name =
+                match quant, gate.m with
+                | Ir.Dtype.Q4_K, 2 -> "llmopt_q4_k_gated_linear_f16_m2_x1_l32"
+                | Ir.Dtype.Q4_K, _ -> "llmopt_q4_k_gated_linear_f16"
+                | Ir.Dtype.Q5_K, 2 -> "llmopt_q5_k_gated_linear_f16_m2_x1_l32"
+                | Ir.Dtype.Q5_0, 1
+                  when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
+                    "llmopt_q5_0_gated_linear_f16_llama_mv"
+                | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
+                | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
+                | Ir.Dtype.IQ4_XS, 2 -> "llmopt_iq4_xs_gated_linear_f16_m2"
+                | _ -> ""
+              in
+              if name = "" then Error "assignment gated product has no Metal tactic"
+              else
+                let* grid_x =
+                  match quant, gate.m with
+                  | (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K), 2 ->
+                      short_row_quant_grid (gate.m * gate.n)
+                  | Ir.Dtype.Q5_0, 1
+                    when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
+                      let groups = (gate.n + 3) / 4 in
+                      if groups > max_int / 64 then Error "assignment gated grid overflows"
+                      else Ok (groups * 64)
+                  | Ir.Dtype.Q5_0, _ ->
+                      let groups = ((gate.m * gate.n) + 3) / 4 in
+                      if groups > max_int / 256 then Error "assignment gated grid overflows"
+                      else Ok (groups * 256)
+                  | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid gate.n
+                  | (Ir.Dtype.Q4_K | Ir.Dtype.Q4_0), _ ->
+                      linear_f16_grid (gate.m * gate.n)
+                  | _ -> Error "assignment gated product has unsupported geometry"
+                in
+                dispatched
+                  (dispatch_output ~name runtime state output
+                     ~operation:Kernel_abi.Operation.Gated_linear
+                     ~input_dtype:(Ir.Dtype.Quant quant) ~buffers ~parameters
+                     ~grid:(grid_x, 1, 1))
+        in
+        (match assignment with
+        | Some assignment -> dispatch_assignment assignment
+        | None ->
+          (match op, command_inputs, command_output with
         | Ir.Op.Input { name; source = Ir.Input_source.Runtime }, [], Some output ->
             (match String_map.find_opt name runtime_inputs with
             | None -> Error ("runtime input is not bound: " ^ name)
@@ -4258,7 +4375,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             continue state
         | Ir.Op.Barrier_create _, [], None ->
             continue state
-        | _ -> unsupported ())
+        | _ -> unsupported ()))
   in
   let* execution =
     run

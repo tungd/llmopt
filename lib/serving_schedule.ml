@@ -245,6 +245,29 @@ let fresh_outputs seen_values outputs =
   List.length ids = List.length (List.sort_uniq Int.compare ids)
   && List.for_all (fun id -> not (Int_set.mem id seen_values)) ids
 
+let validate_fusion_command command region =
+  let region_inputs =
+    Kernel_ir.inputs region
+    |> List.map (fun ({ Kernel_ir.value; _ } : Kernel_ir.input) -> value)
+  in
+  let region_output =
+    match Kernel_ir.results region with
+    | [ result ] -> Some (Kernel_ir.result_value result)
+    | _ -> None
+  in
+  let same_values left right =
+    List.length left = List.length right
+    && List.for_all2 Ir.Value.equal left right
+  in
+  if Option.is_none (Kernel_ir.Fused_tactic.select region) then
+    Error "fusion command has no executable assignment tactic"
+  else if not (same_values command.Command.inputs region_inputs) then
+    Error "fusion command inputs differ from its assignment-region boundary"
+  else
+    match command.Command.output, region_output with
+    | Some actual, Some expected when Ir.Value.equal actual expected -> Ok ()
+    | _ -> Error "fusion command output differs from its assignment-region result"
+
 let validate_command seen_values command =
   let input_ids = List.map value_id command.Command.inputs in
   match List.find_opt (fun id -> not (Int_set.mem id seen_values)) input_ids with
@@ -252,7 +275,10 @@ let validate_command seen_values command =
       Error
         (Printf.sprintf "schedule node %d reads undefined value %d"
            command.Command.node_id id)
-  | None ->
+  | None -> (
+      match command.Command.fusion_region with
+      | Some region -> validate_fusion_command command region
+      | None ->
       let referenced_ids =
         match command.Command.op with
         | Ir.Op.Opaque { arguments; keyword_arguments; _ } ->
@@ -966,9 +992,18 @@ let validate_command seen_values command =
             in
             if
               metadata_matches
-              && Tensor_shape.equal
-                   (Ir.Value.logical_shape query)
-                   (Ir.Value.logical_shape output)
+              && (Tensor_shape.equal
+                    (Ir.Value.logical_shape query)
+                    (Ir.Value.logical_shape output)
+                 || match query_shape,
+                          Tensor_shape.dimensions (Ir.Value.logical_shape output)
+                    with
+                    | [ query_batches; query_heads; query_tokens; head_dim ],
+                      [ output_batches; output_tokens; hidden ] ->
+                        output_batches = query_batches
+                        && output_tokens = query_tokens
+                        && hidden = query_heads * head_dim
+                    | _ -> false)
               && Ir.Value.dtype query = Ir.Dtype.Float16
               && Ir.Value.dtype current_key = Ir.Dtype.Float16
               && Ir.Value.dtype current_value = Ir.Dtype.Float16
@@ -1335,17 +1370,15 @@ let validate_command seen_values command =
               (Printf.sprintf
                  "schedule node %d position/mask primitive arity is inconsistent"
                  command.Command.node_id)
-        | _ -> Ok ()
+        | _ -> Ok ())
 
 let create commands =
-  let rec loop seen_nodes seen_values previous_node_id = function
+  let rec loop seen_nodes seen_values = function
     | [] -> Ok { commands }
     | command :: rest ->
         if Int_set.mem command.Command.node_id seen_nodes then
           Error
             (Printf.sprintf "schedule repeats node id %d" command.Command.node_id)
-        else if command.Command.node_id <= previous_node_id then
-          Error "schedule node ids must be strictly increasing"
         else
           let* () = validate_command seen_values command in
           let seen_values =
@@ -1355,40 +1388,9 @@ let create commands =
               (Option.to_list command.Command.output
               @ Ir.Op.additional_outputs command.Command.op)
           in
-          loop (Int_set.add command.Command.node_id seen_nodes) seen_values
-            command.Command.node_id
-            rest
+          loop (Int_set.add command.Command.node_id seen_nodes) seen_values rest
   in
-  loop Int_set.empty Int_set.empty (-1) commands
-
-let operation_accepts_region operation region =
-  match Kernel_ir.Fused_tactic.select region, operation with
-  | ( Some (Kernel_ir.Fused_tactic.Linear_additive { linear; _ }),
-      Ir.Op.Linear_add { m; n; k } ) ->
-      (match linear.storage with
-      | Ir.Linear_storage.Block_quantized _ ->
-          linear.m = m && linear.n = n && linear.k = k
-      | _ -> false)
-  | ( Some (Kernel_ir.Fused_tactic.Linear_additive { linear; _ }),
-      Ir.Op.W4a16_linear { m; n; k; bias = true } ) ->
-      (match linear.storage with
-      | Ir.Linear_storage.Groupwise_packed _ ->
-          linear.m = m && linear.n = n && linear.k = k
-      | _ -> false)
-  | ( Some
-        (Kernel_ir.Fused_tactic.Gated_product
-          { gate; up; activation; _ }),
-      Ir.Op.Gated_linear { m; n; k; activation = operation_activation } ) ->
-      let activation_matches =
-        match activation, operation_activation with
-        | Kernel_ir.Primitive.Silu, Ir.Gated_activation.Silu
-        | Kernel_ir.Primitive.Gelu, Ir.Gated_activation.Gelu
-        | Kernel_ir.Primitive.Sigmoid, Ir.Gated_activation.Sigmoid -> true
-        | _ -> false
-      in
-      activation_matches && gate.m = m && gate.n = n && gate.k = k
-      && up.m = m && up.n = n && up.k = k
-  | _ -> false
+  loop Int_set.empty Int_set.empty commands
 
 let attach_fusion_region commands region =
   let region_inputs =
@@ -1400,15 +1402,11 @@ let attach_fusion_region commands region =
     | [ result ] -> Some (Kernel_ir.result_value result)
     | _ -> None
   in
-  let same_values left right =
-    List.length left = List.length right
-    && List.for_all2 Ir.Value.equal left right
-  in
+  let member_ids = Kernel_ir.member_node_ids region |> Int_set.of_list in
   let matches =
     commands
     |> List.filter (fun command ->
-           operation_accepts_region command.Command.op region
-           && same_values command.Command.inputs region_inputs
+           Int_set.mem command.Command.node_id member_ids
            &&
            match command.Command.output, region_output with
            | Some command_output, Some region_output ->
@@ -1416,19 +1414,37 @@ let attach_fusion_region commands region =
            | None, None -> true
            | _ -> false)
   in
-  match matches with
-  | [ matched ] ->
+  match matches, region_output with
+  | [ matched ], Some output ->
+      (* Fusion commands execute the assignment region.  A value-free carrier
+         prevents serialization from retaining assignment-local temporaries. *)
+      let carrier = Ir.Op.Primitive (Ir.Primitive.Cast (Ir.Value.dtype output)) in
       Ok
         (commands
-        |> List.map (fun command ->
+        |> List.filter_map (fun command ->
                if command.Command.node_id = matched.Command.node_id then
-                 { command with Command.fusion_region = Some region }
-               else command))
-  | [] ->
+                 Some
+                   { command with
+                     Command.op = carrier;
+                     Command.inputs = region_inputs;
+                     output = region_output;
+                     fusion_region = Some region }
+               else if Int_set.mem command.Command.node_id member_ids then None
+               else Some command))
+  | [ _ ], None ->
       Error
-        (Printf.sprintf "fusion region %s has no executable schedule command"
-           (Kernel_ir.name region))
-  | _ ->
+        (Printf.sprintf "fusion region %s has no result" (Kernel_ir.name region))
+  | [], _ ->
+      Error
+        (Printf.sprintf
+           "fusion region %s has no executable schedule command (members=%s result=%s)"
+           (Kernel_ir.name region)
+           (Kernel_ir.member_node_ids region |> List.map string_of_int
+          |> String.concat ",")
+           (match region_output with
+           | None -> "none"
+           | Some value -> string_of_int (value_id value)))
+  | _, _ ->
       Error
         (Printf.sprintf "fusion region %s maps to multiple schedule commands"
            (Kernel_ir.name region))
@@ -2068,6 +2084,35 @@ module Sequence = struct
             in
             map [] command.Command.inputs
           in
+          (match command.Command.fusion_region with
+          | Some region ->
+              let* original, result =
+                match command.Command.output with
+                | Some original ->
+                    let* result = specialized_generic_value substitutions original in
+                    Ok (original, result)
+                | None -> Error "fusion command has no specialized result"
+              in
+              let values =
+                Value_map.add (Ir.Value.id original) result values
+              in
+              let* fusion_region =
+                Kernel_ir.specialize
+                  ~dimension:(substitute substitutions)
+                  ~value:(mapped values) region
+              in
+              let op =
+                Ir.Op.Primitive (Ir.Primitive.Cast (Ir.Value.dtype result))
+              in
+              map_commands values
+                ({ command with
+                   Command.op = op;
+                   inputs;
+                   output = Some result;
+                   fusion_region = Some fusion_region }
+                :: output)
+                rest
+          | None ->
           let* op =
             match projection with
             | Some projection
@@ -2118,24 +2163,15 @@ module Sequence = struct
                   in
                   Ok (Some value, values)
           in
-          let* fusion_region =
-            match command.Command.fusion_region with
-            | None -> Ok None
-            | Some region ->
-                Kernel_ir.specialize
-                  ~dimension:(substitute substitutions)
-                  ~value:(mapped values) region
-                |> Result.map Option.some
-          in
           map_commands
             values
             ({ command with
                Command.op = op;
                inputs;
                output = result;
-               fusion_region }
+               fusion_region = None }
             :: output)
-            rest
+            rest)
     in
     map_commands Value_map.empty [] commands
 

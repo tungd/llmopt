@@ -1270,7 +1270,9 @@ let lower analysis =
     in
     unique (cut_uncovered @ unsupported_regions @ overlap_uncovered)
   in
-  { Lowering.graph = apply_events graph events; events; uncovered }
+  (* The executable graph retains primitive assignments. Fusion regions carry
+     the replacement semantics into schedule and backend lowering directly. *)
+  { Lowering.graph = graph; events; uncovered }
 
 let executable_region event =
   let ( let* ) = Result.bind in

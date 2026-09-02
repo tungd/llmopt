@@ -13,12 +13,15 @@ let run_plan plan =
   let stages = Compute_plan.stages plan in
   if stages = [] then graph
   else
-    let next_node_id = ref 0 in
+    let next_node_id =
+      ref
+        (Ir.Graph.nodes graph
+        |> List.fold_left (fun maximum node -> max maximum (Ir.node_id node)) (-1)
+        |> ( + ) 1)
+    in
     let had_previous_gpu_stage = ref false in
     let scheduled_rev = ref [] in
     let emit_node node =
-      let node = Ir.node_reindex node !next_node_id in
-      incr next_node_id;
       scheduled_rev := node :: !scheduled_rev
     in
     let emit_barrier () =

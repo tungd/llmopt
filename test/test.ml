@@ -5483,8 +5483,8 @@ let () =
         "UOC-05 lowers an accepted Linear-add region with exact source membership";
       expect
         (List.length (Ir.Graph.nodes (Constructive_lowering.Lowering.graph uoc05_lowering))
-         < List.length (Ir.Graph.nodes linear_add_graph))
-        "UOC-05 lowering exposes the rewritten output graph";
+         = List.length (Ir.Graph.nodes linear_add_graph))
+        "UOC-05 lowering preserves primitive assignments in the output graph";
       expect
         (List.for_all2 Ir.Value.equal
            (Constructive_lowering.Lowering.Event.inputs event)
@@ -5520,8 +5520,9 @@ let () =
                 Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add ]
        | _ -> false)
     && Passes.Optimization.legacy_fallbacks uoc05_quant_optimization = []
-    && uoc05_has_op (Passes.Optimization.execution_graph uoc05_quant_optimization)
-         (function Ir.Op.Linear_add { m = 1; n = 128; k = 64 } -> true | _ -> false))
+    && not
+         (uoc05_has_op (Passes.Optimization.execution_graph uoc05_quant_optimization)
+            (function Ir.Op.Linear_add _ -> true | _ -> false)))
     "UOC-05 optimize retains executable primitive bindings for Linear-add";
   let uoc05_w4_graph = Ir.Graph.create () in
   let uoc05_w4_input =
@@ -5561,9 +5562,14 @@ let () =
     && Passes.Optimization.legacy_fallbacks uoc05_w4_optimization = []
     && uoc05_has_op (Passes.Optimization.execution_graph uoc05_w4_optimization)
          (function
-         | Ir.Op.W4a16_linear { m = 1; n = 64; k = 64; bias = true } -> true
-         | _ -> false))
-    "UOC-05 optimize lowers W4A16 residual-add through the existing bias ABI";
+         | Ir.Op.W4a16_linear { m = 1; n = 64; k = 64; bias = false } -> true
+         | _ -> false)
+    && not
+         (uoc05_has_op (Passes.Optimization.execution_graph uoc05_w4_optimization)
+            (function
+            | Ir.Op.W4a16_linear { bias = true; _ } -> true
+            | _ -> false)))
+    "UOC-05 keeps W4A16 residual-add as assignments until schedule lowering";
   let uoc05_gated_optimization = uoc05_optimization gated_graph in
   expect
     (List.exists
@@ -5585,12 +5591,9 @@ let () =
        (Constructive_lowering.Lowering.events
           (Passes.Optimization.lowering uoc05_gated_optimization))
     && Passes.Optimization.legacy_fallbacks uoc05_gated_optimization = []
-    && uoc05_has_op (Passes.Optimization.execution_graph uoc05_gated_optimization)
-         (function
-         | Ir.Op.Gated_linear
-             { m = 1; n = 128; k = 64;
-               activation = Ir.Gated_activation.Silu } -> true
-         | _ -> false))
+    && not
+         (uoc05_has_op (Passes.Optimization.execution_graph uoc05_gated_optimization)
+            (function Ir.Op.Gated_linear _ -> true | _ -> false)))
     "UOC-05 optimize lowers the executable gated Linear/Silu/Mul region";
 
   (* Gemma 4's captured feed-forward branch uses Q4_0 gate/up weights and
@@ -5674,11 +5677,10 @@ let () =
        (Constructive_lowering.Lowering.events
           (Passes.Optimization.lowering uoc05_gelu_q4_optimization))
     && Passes.Optimization.legacy_fallbacks uoc05_gelu_q4_optimization = []
-    && uoc05_has_op uoc05_gelu_q4_execution (function
-         | Ir.Op.Gated_linear
-             { m = 1; n = 128; k = 64;
-               activation = Ir.Gated_activation.Gelu } -> true
-         | _ -> false))
+    && not
+         (uoc05_has_op uoc05_gelu_q4_execution (function
+            | Ir.Op.Gated_linear _ -> true
+            | _ -> false)))
     "UOC-05 constructively lowers Q4_0 Linear/GELU/Mul without a legacy matcher";
   let uoc05_gelu_q4_program =
     Metal.lower
