@@ -71,7 +71,7 @@ The current `llmopt` quantization stack has three structural limitations:
 │    • Q5_K (Superblock-256, 5-bit nibbles + high plane + scales/mins)        │
 │    • Q6_K (Superblock-256, 6-bit nibbles + high plane + int8 scales)        │
 │ 6. Bit-Exact Unit Tests: Validates dequant against llama.cpp reference      │
-│ 7. Model Program & Serving: Bakes into prebaked Metal ICB serving bundle   │
+│ 7. Model Program & Serving: Links precompiled Metal command artifacts      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 

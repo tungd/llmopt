@@ -1,0 +1,78 @@
+{
+  "kind": "unified-compiler-gemma4-repair",
+  "date": "2026-09-02",
+  "base_commit": "718ed6442b6b47806fb589ee2726ac17e85160f6",
+  "device": "Apple M4 Pro",
+  "compiler": {
+    "receipt_schema": 2,
+    "prefill": {
+      "accepted": 144,
+      "cut": 2568,
+      "unified": 48,
+      "legacy_invocations": 0,
+      "legacy_rewrites": 0,
+      "costed_linear_tactics": 233,
+      "aot_stages": 1017,
+      "dependencies": 2714,
+      "barriers": 918,
+      "kernels": 110
+    },
+    "decode": {
+      "accepted": 144,
+      "cut": 2664,
+      "unified": 48,
+      "legacy_invocations": 0,
+      "legacy_rewrites": 0,
+      "costed_linear_tactics": 233,
+      "aot_stages": 1065,
+      "dependencies": 2954,
+      "barriers": 966,
+      "kernels": 109
+    },
+    "transition_delta": {
+      "stages_per_graph": -96,
+      "dependencies_per_graph": -192,
+      "barriers_per_graph": -96
+    }
+  },
+  "device_fixtures": {
+    "q4_0_gelu_gated": {
+      "shape": [37, 3840, 2],
+      "result": "byte-exact-to-materialized-gpu-chain"
+    },
+    "gqa_attention": {
+      "query_heads": 2,
+      "kv_heads": 1,
+      "query_tokens": 2,
+      "head_dimension": 256,
+      "mask": "causal-fp16",
+      "result": "exact"
+    },
+    "rms_rope_qk": {
+      "query_heads": 2,
+      "kv_heads": 1,
+      "query_tokens": 2,
+      "head_dimension": 256,
+      "result": "byte-exact-to-separate-rms-rope-kernels"
+    }
+  },
+  "runtime": {
+    "prebaked_realization": "precompiled-direct-command-list",
+    "removed_realization": "metal-indirect-command-buffer",
+    "collapse_isolation": "the same long-decode dispatch list returned token 31436 directly and token 0 through ICB",
+    "post_fix_repeat_runs_identical": true,
+    "post_fix_zero_tokens": 0,
+    "post_fix_tokens_per_second": [2.80, 2.74]
+  },
+  "reference_boundary": {
+    "prompt_token_count": 37,
+    "llama_cpp_first_five": [100, 45518, 107, 14947, 135383],
+    "pre_repair_llmopt_first_five": [258882, 86559, 43208, 146894, 141156],
+    "repaired_fused_first_five": [505, 98677, 236888, 207451, 236779],
+    "single_token_bos_argmax": {
+      "llmopt": 236749,
+      "llama_cpp": 236749
+    },
+    "claim": "queue collapse fixed; full-model token parity remains a separate pre-existing divergence"
+  }
+}

@@ -45,7 +45,7 @@ the runtime is a thin executor over a solidified artifact.[^local-aot] The
 | Kernel selection | Candidate tactics **benchmarked on the real device at build time** | Learned GBDT cost model predicting tile geometry |
 | Dynamic shapes | Optimization profiles (min/opt/max) baked AOT | Prefill template buckets; decode still specialized per sequence length at runtime |
 | Hot kernels | Hand-written CUDA C++ per architecture (attention, MoE, quant-dequant) | Generated MSL from fusion passes |
-| Command replay | CUDA Graphs | Prebaked `MTLIndirectCommandBuffer` |
+| Command replay | CUDA Graphs | Precompiled direct Metal command list; ICB is an optional specialization tactic |
 | Batching | In-flight (continuous) batching in the runtime | Queue exists; decode still executes one sequence per dispatch |
 
 # Why it matters for llmopt

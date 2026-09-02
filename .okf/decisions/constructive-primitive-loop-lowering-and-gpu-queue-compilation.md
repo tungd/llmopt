@@ -167,7 +167,11 @@ logical schema.
 "Queue" in this decision means the GPU command queue compiled during AOT, not
 the serving request queue. The compiler converts dependency and hazard results
 into ordered or concurrent dispatches, command dependencies, and barriers, then
-solidifies them into a Metal ICB or the corresponding backend artifact.
+materializes that plan as a backend command artifact. A Metal realization may
+use a precompiled direct command list or an ICB when all buffer bindings,
+parameters, launch dimensions, and synchronization semantics are valid for the
+specialization being executed; ICB is not part of the compiler's semantic
+contract.
 
 The serving SRPT queue remains a runtime policy above this artifact. It chooses
 which request work to execute; it does not rediscover kernel dependencies or
@@ -186,7 +190,7 @@ unconnected compiler:
 | `Target_hardware` | Hardware-probe profile and analytical target costs. |
 | `Kernel_abi` | Candidate target tactics; selection moves from ordered heuristics to explicit costed alternatives. |
 | `Serving_schedule` | Materialized dispatch and dependency schedule. |
-| `Metal_runtime.Prebaked` | AOT Metal ICB realization of the compiled GPU command queue. |
+| `Metal_runtime.Prebaked` | Precompiled direct Metal command-list realization; an ICB is an optional backend tactic only when its specialization contract is satisfied. |
 
 The detached arrayjit experiment ending at commit `3729eda` is evidence that
 W4A16 and physical Q4_K assignments can keep dequantization intermediates
@@ -232,7 +236,7 @@ receipt must record:
 - the exact source commit and hardware profile;
 - assignment-region coverage and source FX member nodes;
 - accepted and cut fusion candidates with reasons;
-- unified versus legacy lowering counts;
+- unified lowerings plus separate legacy-matcher invocation and rewrite counts;
 - emitted kernels, dispatch stages, command dependencies, and barriers;
 - the correctness result required by the existing Gemma protocol;
 - measured timing and comparison deltas without introducing a new threshold.

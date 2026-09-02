@@ -78,7 +78,7 @@ Build an optimizing LLM compiler and zero-JIT serving system whose frontend is P
 1. **Topology Authority in Captured Graphs**: PyTorch FX capture defines graph topology, operation semantics, and tensor dataflow. The compiler and serving runtime contain zero model-family switches, zero hardcoded layer loops, and zero dispatch on GGUF `general.architecture` strings.
 2. **First-Class GGUF & Unsloth Dynamic (UD) Quantization**: Ingest real-world quantized model distributions directly from memory-mapped GGUF files (`Q4_0`, `Q8_0`, `Q5_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`), specializing dequantizers and linear kernels at compile time.
 3. **Fewest-Hops SRAM Megakernels**: Eliminate DRAM round-trips by fusing multi-operator subgraphs (SwiGLU, RMSNorm-RoPE, rotary QK, ShortConv-SiLU, Linear-residuals, and stateful triangular recurrences) into SRAM-resident SIMD dispatches.
-4. **Zero-Overhead Serving Runtime**: Host continuous batching with age-weighted SRPT queueing, compressed radix prefix caching, Prebaked Indirect Command Buffers (ICB), and sub-20µs ARM NEON SIMD stochastic sampling under the unified `model.llmopt` (ABI v2) contract.
+4. **Zero-Overhead Serving Runtime**: Host continuous batching with age-weighted SRPT queueing, compressed radix prefix caching, precompiled AOT Metal command lists, and sub-20µs ARM NEON SIMD stochastic sampling under the unified `model.llmopt` (ABI v2) contract.
 
 ---
 
@@ -100,7 +100,7 @@ Build an optimizing LLM compiler and zero-JIT serving system whose frontend is P
 | **DAG Co-Scheduling** | Identify ready antichains in dependency DAG for concurrent execution | `Pass_co_schedule` places barriers and emits `MTLDispatchTypeConcurrent` stages | **Implemented** |
 | **Tactic Selection** | Centralized registry for shape/dtype/layout-aware kernel tactics | `Kernel_abi` resolves multi-token ($M=2$) and multi-column ($N=2$) weight-reuse tactics across layouts | **Implemented** |
 | **Memory Planning** | Deterministic static interval-graph liveness workspace allocation | `Serving_memory_plan` computes 256-byte aligned offsets in one retained Metal buffer; zero dynamic runtime malloc | **Implemented** |
-| **Zero-JIT Runtime** | Direct execution of versioned package schedules without JIT overhead | `Serving_package` (ABI v25) and `Serving_schedule` (ABI v27) execute via `Metal_runtime` with Prebaked ICBs | **Implemented** |
+| **Zero-JIT Runtime** | Direct execution of versioned package schedules without JIT overhead | `Serving_package` (ABI v25) and `Serving_schedule` (ABI v27) execute via precompiled direct `Metal_runtime` dispatch lists with current dynamic parameters | **Implemented** |
 | **Prefix Caching** | Tree-structured prefix reuse with LRU eviction and hybrid checkpoints | `Radix_cache` and `Serving_cache` manage physical token pools and recurrent state checkpoints | **Implemented** |
 | **Continuous Batching** | Age-weighted SRPT queue prioritizing decode steps over prefills | `Serving_queue` minimizes TTFT and TPOT variance under concurrent load | **Implemented** |
 | **NEON SIMD Sampling** | Sub-20µs single-pass streaming min-heap stochastic sampling | `lib/sampling.ml` and `native/ocaml_metal_stubs.m` support temperature, top-k, top-p, min-p, and seeded PRNG | **Implemented** |
@@ -116,10 +116,10 @@ claim that the ad hoc fusion passes or monolithic Metal emitter have already
 been retired. The approved successor is
 [Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](/decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md): one modeled assignment/dependency/effect system produces legal fusion regions and independent antichain stages, target hardware probes feed cost selection, block-quant schemas retain target-aware SIMD tactics, and the chosen dispatch/dependency graph becomes an AOT GPU command queue.
 
-The parked Gemma 4 12B target-prefill/decode/verification run is the authority
-for whether the transition has succeeded. Its future receipt must separate
-compiler-path coverage, queue structure, correctness, and measured performance;
-no static source check or older Gemma result substitutes for that run.
+The Gemma 4 12B transition and repair receipts separate compiler-path coverage,
+AOT queue structure, runtime correction, same-GGUF output comparison, and
+measured timing. The repair is recorded in
+[exp-0139](experiments/exp-0139-unified-compiler-gemma4-repair-2026-09-02.md).
 
 ---
 
@@ -185,4 +185,4 @@ With single-pass forward parity, megakernel compilation, and Medusa tree specula
 3. **Continuous Batching Multi-Tenant Serving Sweeps**:
    - Conduct end-to-end load tests using `Serving_queue` SRPT priority scheduling under concurrent Poisson request distributions, measuring TTFT, TPOT, and ERS under saturated system load.
 4. **Dynamic Sequence-Bucket AOT Pre-Compilation**:
-   - Solidify prefill execution buckets ($M \in \{64, 128, 256, 512, 1024, 2048\}$) into retained Prebaked ICB command lists, eliminating runtime shape recompilation entirely.
+   - Solidify prefill execution buckets ($M \in \{64, 128, 256, 512, 1024, 2048\}$) into retained precompiled command lists. An ICB may be selected only for a bucket whose buffers, dimensions, dynamic parameters, and barriers are valid for that exact specialization.

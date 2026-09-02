@@ -3,7 +3,8 @@ type: Decision
 title: 'Ahead-Of-Time Decode Solidification and Zero-JIT Serving Architecture'
 description: 'Move all graph specialization, memory planning, and shape binding into the offline AOT compiler pipeline so the serving runtime is a model-agnostic, zero-JIT execution engine capable of hosting any PyTorch model trivially.'
 tags: [decision, compiler, aot, serving, zero-jit, paged-attention, fusions, portability]
-status: stable
+status: deprecated
+superseded_by: /decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md
 generated: { by: 'process:antigravity', at: '2026-08-28T02:00:00+07:00' }
 sources:
   - id: user-vision
@@ -25,6 +26,12 @@ sources:
 ---
 
 # Decision
+
+> Superseded realization note (2026-09-02): the constructive compiler decision
+> retains the AOT schedule boundary but does not define that queue as a Metal
+> ICB. The current Metal backend uses precompiled direct command lists after an
+> ICB-specific long-decode collapse; serving-request scheduling remains a
+> separate queue.
 
 All graph transformations, memory planning, buffer offset assignments, and operator fusions MUST execute **Ahead-Of-Time (AOT)** in the compiler pipeline (`llmopt-fx` / `llmopt-compile`). 
 

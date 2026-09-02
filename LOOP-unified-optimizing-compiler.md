@@ -304,6 +304,15 @@ Out of scope:
 
 ## Completion audit
 
+### 2026-09-02 repair follow-up
+
+The immutable UOC-07 attempt remains unchanged. The follow-up in
+`.okf/experiments/exp-0139-unified-compiler-gemma4-repair-2026-09-02.md`
+adds constructive Q4_0/GELU coverage, separates legacy matcher invocations from
+rewrites, records the resulting AOT queue deltas, replaces the failing ICB
+realization with a precompiled direct command list, and retains the remaining
+same-GGUF multi-token reference divergence as a separate observation.
+
 This loop is complete when every item has an evidence entry and commit, the
 repository tests and OKF validation results are recorded, and the single Gemma
 attempt has an immutable receipt. Checklist completion means the experiment was

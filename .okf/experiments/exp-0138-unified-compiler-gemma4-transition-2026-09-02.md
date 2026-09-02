@@ -142,3 +142,11 @@ compiler coverage, output tokens, and timings are the result: zero unified
 lowerings for the target graphs, one retained legacy gated matcher per graph,
 a degenerate completion, and the deltas above. No new performance or success
 threshold is attached to those observations.
+
+## Follow-up clarification
+
+The original schema-1 `legacy-count: 1` recorded matcher invocation, not a
+proved graph rewrite. Receipt schema 2 now reports invocations and rewrites
+separately. The transition artifact and its counts remain unchanged; the
+constructive-coverage and decode-collapse repairs are recorded in
+[exp-0139](exp-0139-unified-compiler-gemma4-repair-2026-09-02.md).

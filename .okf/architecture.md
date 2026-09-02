@@ -123,7 +123,7 @@ sources:
    ┌─────────────────────────────────────────────────────────────┐
    │                 Native Zero-JIT Serving Runtime             │
    │  - Continuous Batching (SRPT)      - Async Webs_iomux Server│
-   │  - Radix KV / Recurrent Cache      - Prebaked Metal ICBs    │
+   │  - Radix KV / Recurrent Cache      - Compiled Metal Commands│
    │  - Streaming NEON SIMD Sampler     - GGUF / UD Direct Mmap  │
    └─────────────────────────────────────────────────────────────┘
 ```
@@ -205,10 +205,12 @@ schemas retain exact physical/logical semantics plus target-aware SIMD tactics;
 the portable scalar form is a correctness fallback, not the optimization target.
 
 The resulting dispatches, dependencies, and barriers form an AOT GPU command
-queue which is solidified into the Metal ICB. This compiler queue is distinct
-from the runtime SRPT serving request queue. Existing `pass_fuse_*.ml` and
-`metal.ml` paths remain explicit legacy fallbacks until generated-plan evidence
-shows the unified path covers their semantics.
+queue which the Metal backend realizes as a precompiled direct command list.
+ICB remains an optional backend tactic for a specialization whose buffers,
+parameters, dimensions, and barriers can be bound correctly. This compiler
+queue is distinct from the runtime SRPT serving request queue. Existing
+`pass_fuse_*.ml` and `metal.ml` paths remain explicit legacy fallbacks until
+generated-plan evidence shows the unified path covers their semantics.
 
 ## 3.3. Tactic Registry & Microarchitectural Hardware Discovery
 
@@ -249,7 +251,7 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
 * **Native Metal Runtime ([`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
   - Encodes entire schedule execution into consolidated command buffers.
   - Reuses cached `MTLComputePipelineState` objects with automatic tactic candidate fallback.
-  - Supports **Prebaked Indirect Command Buffers (ICB)** where pipeline states, arguments, and threadgroup launch dimensions are baked once offline, reducing CPU driver encoding time to $< 16\text{ µs}$ per decode step.
+  - Supports precompiled direct dispatch lists whose dynamic paged-attention and checkpoint parameters are patched for each execution. The earlier ICB realization was removed after it produced a deterministic long-decode collapse despite explicit ICB barriers; the AOT schedule and serving-request queue remain separate contracts.
 
 ## 3.6. Serving Engine, Cache Hierarchy, and Speculative Primitives
 

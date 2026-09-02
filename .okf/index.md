@@ -36,7 +36,7 @@ configuration.
 * [DAG Concurrency Analysis & Co-Scheduling](decisions/dag-co-scheduling-optimizer-pass.md) - SSA dependency DAG analysis, ready antichain concurrency, and barrier placement.
 * [Fewest-Hops Whole-Block Megakernel Compiler](decisions/fewest-hops-megakernel-compiler.md) - fusing multi-layer blocks into ~40 hops with zero DRAM activation roundtrips.
 * [Macro-Operator Fusions](decisions/macro-operator-fusions.md) - high-impact fusions for SwiGLU, RMSNorm-RoPE, QKV, ShortConv, and on-GPU Argmax.
-* [AOT Decode Solidification & Zero-JIT Serving](decisions/aot-decode-solidification-zero-jit-serving.md) - zero-overhead serving with prebaked Indirect Command Buffers (ICB).
+* [Superseded AOT Decode Solidification & Zero-JIT Serving](decisions/aot-decode-solidification-zero-jit-serving.md) - historical ICB realization; the AOT schedule boundary continues under the constructive compiler decision and direct Metal command lists.
 * [GGUF and Unsloth Dynamic (UD) Quantization Support](decisions/gguf-unsloth-dynamic-quantization.md) - GGUF ingestion, dequantization, and AOT code specialization.
 * [Corrected hardware and speculative primitive inventory](decisions/speculative-pipelining-hardware-acceleration.md) - implemented bitfield, Split-K, tree-attention, and cache primitives; unsupported end-to-end pipelining claims are retracted.
 * [Gemma 4 target-coupled MTP runtime contract](decisions/gemma4-mtp-runtime-contract.md) - linked target/assistant entrypoints, heterogeneous KV state, proposal, verification, and acceptance semantics.
@@ -53,6 +53,8 @@ configuration.
 * [Ahrefs OCANNL & arrayjit](prior-art/ocannl-arrayjit.md) - loop-nest optimization, tiling, and multi-backend compiler analysis.
 
 ## Experiments and benchmarks
+
+* [Unified compiler Gemma 4 repair and queue-collapse diagnosis](experiments/exp-0139-unified-compiler-gemma4-repair-2026-09-02.md) - constructive Q4_0/GELU lowering, unambiguous fallback accounting, AOT queue deltas, Metal command repair, and exact-reference boundaries.
 
 * [FX linear smoke](experiments/exp-0001-fx-linear.md) - first cross-language probe.
 * [Cross-runtime benchmark protocol](benchmarks/benchmark-protocol.md) - llama.cpp target, native llmopt side comparison, and MPS reference record format.
