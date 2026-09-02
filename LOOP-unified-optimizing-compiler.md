@@ -304,6 +304,22 @@ Out of scope:
 
 ## Completion audit
 
+### 2026-09-03 constructive execution follow-up
+
+The stale-binary diagnostic is not the current result. After rebuilding, the
+exact 37-token prompt was executed against the pinned 6,716,356,800-byte Gemma
+GGUF. The latest assignment-backed bundle validates as Model Program ABI v7,
+contains 337 primitive regions per entrypoint (48 gated-Linear, 96
+RMSNorm-RoPE, and 193 RMSNorm), and selects token `100`, equal to the recorded
+llama.cpp policy token. Ranked IDs agree through rank eight; bit-exact logit
+parity is not claimed. The immutable receipt is
+`bench/results/uoc-constructive-rms-rope-gemma4-2026-09-03.txt`.
+
+RMSNorm, RMSNorm-RoPE, and ShortConv-SiLU now select and execute dependency
+slices from primitive assignments without macro graph replacement. GQA layout
+and gated delta remain the active operation-specific migrations; this follow-up
+does not mark those two items complete.
+
 ### 2026-09-02 repair follow-up
 
 The immutable UOC-07 attempt remains unchanged. The follow-up in
