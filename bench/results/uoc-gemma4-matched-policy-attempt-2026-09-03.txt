@@ -1,0 +1,65 @@
+Gemma 4 matched-policy diagnostic
+date: 2026-09-03
+source commit at launch: de426ab
+target profile: bench/results/uoc-gemma4-target-hardware-2026-09-02.json
+target GGUF: /Users/tung/.cache/huggingface/hub/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/980b060c40a8539ac159e0501a3e0f66a6365af3/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
+target GGUF bytes: 6716356800
+target GGUF sha256: 90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370
+output: _artifacts/gemma4-12b-qat-matched-policy-2026-09-02
+
+prompt token IDs:
+2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107
+
+preflight correction:
+- The original builder invocation captured the source prefill/decode graphs and
+  wrote the 6.2 GiB augmented weight archive, then exited 64 because the stale
+  llmopt-pipeline binary did not recognize --suppress-token-id.
+- The repository was rebuilt with `ninja -f ninja.build` before the retained
+  graphs and archive were packaged again.
+- FX inference-capture control nodes for torch._C._set_grad_enabled were removed
+  during FX planning; their unused synthetic outputs no longer survive as
+  opaque runtime commands.
+- The executable legacy pass pipeline was restored before this comparison.
+  Therefore this is the authoritative matched-policy arithmetic diagnostic, but
+  it is not evidence that constructive Kernel_ir regions drive code generation.
+
+package result:
+- prefill: 5895 FX nodes -> 3251 IR nodes
+- decode: 6087 FX nodes -> 3491 IR nodes
+- Model Program: valid ABI v7
+- attention state: 48 layers
+- runtime specialization: 22-token probe, captured decode past 2,
+  48 paged-Q8 attention commands
+- model suppression policy: 258882,258883
+
+llama.cpp command:
+_build/bin/llama-logits-probe <pinned-gguf> <prompt-token-ids> 258882,258883 10
+
+llama.cpp result:
+- prompt-token-count: 37
+- raw-top-k: 100:28.4734364,3041:13.3879843,1751:12.8434191,38073:12.0650969,594:11.7884197,119216:11.6078863,236811:11.2084084,1502:11.2047653,95340:11.1759949,120509:11.1635275
+- policy-top-k: 100:28.4734364,3041:13.3879843,1751:12.8434191,38073:12.0650969,594:11.7884197,119216:11.6078863,236811:11.2084084,1502:11.2047653,95340:11.1759949,120509:11.1635275
+
+LLMOpt command:
+_build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-matched-policy-2026-09-02 --prompt-token-ids <prompt-token-ids> --top-k-logits 10
+
+LLMOpt result:
+- load-seconds: 0.083030
+- probe-seconds: 7.500555
+- prompt-token-count: 37
+- raw-top-k: 258882:29.765625,258883:26.265625,236888:20.234375,34969:19.65625,164748:19.34375,135061:19.09375,162078:19.09375,148428:18.875,104346:18.859375,20512:18.609375
+- policy-top-k: 236888:20.234375,34969:19.65625,164748:19.34375,135061:19.09375,162078:19.09375,148428:18.875,104346:18.859375,20512:18.609375,236786:18.5625,76936:18.5
+
+comparison:
+- raw argmax: llama.cpp=100; LLMOpt=258882
+- matched-policy argmax: llama.cpp=100; LLMOpt=236888
+- raw top-10 intersection: empty
+- matched-policy top-10 intersection: empty
+- suppression changes the LLMOpt choice from 258882 to 236888, so the model
+  policy is now applied, but it does not account for the first-token divergence.
+- The remaining mismatch is arithmetic/model execution, not token suppression.
+
+Evidence: both runtimes evaluated the same 37 token IDs against the same pinned
+GGUF and suppression set; assumption: locating the first divergent intermediate
+requires an intermediate-tensor comparison because final-logit ranks alone do
+not distinguish embedding, rotary, attention, or later-layer arithmetic.

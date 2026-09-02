@@ -18,9 +18,18 @@ sources:
   - id: f32-constant-probe
     resource: /bench/results/gemma4-f32-reference-constant-probe-2026-09-02.json
     title: F32 embedding and rotary constant repair plus one-token diagnostic
+  - id: matched-policy-correction
+    resource: /experiments/exp-0140-gemma4-matched-policy-diagnostic-2026-09-03.md
+    title: Matched-policy result and constructive-transition correction
 ---
 
 # Scope
+
+> Correction (2026-09-03): the zero-legacy and unified-lowering accounting
+> below did not mean that `Kernel_ir` drove backend code generation. The copied
+> operation-family matchers still produced macro `Ir.Op` nodes, so the legacy
+> passes have been restored. The authoritative matched-policy result and the
+> corrected compiler boundary are recorded in exp-0140.
 
 This follow-up diagnoses the unfavorable observations in the immutable
 transition receipt without redefining its one-shot result. It treats fusion

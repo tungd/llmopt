@@ -9,7 +9,7 @@ type t = {
 
 let create ~model ?architecture ?family ~vocab_size ~max_positions
     ~chat_format ~bos_token_id ~message_start_token_id ~message_end_token_id
-    ?(minimum_prefill_tokens = 1) () =
+    ?(suppress_token_ids = []) ?(minimum_prefill_tokens = 1) () =
   if minimum_prefill_tokens <= 0 then
     Error "model profile minimum_prefill_tokens must be positive"
   else
@@ -18,7 +18,7 @@ let create ~model ?architecture ?family ~vocab_size ~max_positions
     in
     let* generation =
       Model_program.Generation.create ~vocab_size ~max_positions
-        ~bos_token_id ~eos_token_id:message_end_token_id ()
+        ~bos_token_id ~eos_token_id:message_end_token_id ~suppress_token_ids ()
     in
     let* chat =
       Model_program.Processor.Chat.create ~format:chat_format ~bos_token_id

@@ -167,6 +167,7 @@ type options = {
   bos_token_id : int option;
   message_start_token_id : int option;
   message_end_token_id : int option;
+  suppress_token_ids : int list;
   minimum_prefill_tokens : int;
   input_ids_name : string option;
   position_ids_input : string option;
@@ -184,6 +185,7 @@ let usage () =
      --model <id> --vocab-size <count> --max-positions <count> \
      --chat-format chatml --bos-token-id <id> \
      --message-start-token-id <id> --message-end-token-id <id> \
+     [--suppress-token-id <id>]... \
      [--architecture <name>] [--family <name>] [--target-profile <path>] \
      [--verification <graph.llmopt> --verification-captured-past <count> \
       --verification-captured-query <count>] \
@@ -258,6 +260,11 @@ let parse_arguments () =
         loop { opts with message_start_token_id = Some (nonnegative v) } rest
     | "--message-end-token-id" :: v :: rest ->
         loop { opts with message_end_token_id = Some (nonnegative v) } rest
+    | "--suppress-token-id" :: v :: rest ->
+        loop
+          { opts with
+            suppress_token_ids = nonnegative v :: opts.suppress_token_ids }
+          rest
     | "--minimum-prefill-tokens" :: v :: rest ->
         loop { opts with minimum_prefill_tokens = positive v } rest
     | "--input-ids" :: v :: rest ->
@@ -306,6 +313,7 @@ let parse_arguments () =
             bos_token_id = None;
             message_start_token_id = None;
             message_end_token_id = None;
+            suppress_token_ids = [];
             minimum_prefill_tokens = 1;
             input_ids_name = None;
             position_ids_input = None;
@@ -365,6 +373,7 @@ let model_profile opts =
         ?family:opts.family ~vocab_size ~max_positions
         ~chat_format
         ~bos_token_id ~message_start_token_id ~message_end_token_id
+        ~suppress_token_ids:(List.rev opts.suppress_token_ids)
         ~minimum_prefill_tokens:opts.minimum_prefill_tokens ()
 
 let state_bindings opts =
@@ -419,7 +428,8 @@ let run () =
   Printf.printf "[llmopt-pipeline] Compiling prefill engine & shaders...\n%!";
   let* prefill_pkg, p_fx, p_ir =
     compile_single_graph ~target ~weights_path:opts.weights
-      ~graph_path:opts.prefill_graph ~output_dir:prefill_dir ~greedy:opts.greedy
+      ~graph_path:opts.prefill_graph ~output_dir:prefill_dir
+      ~greedy:(opts.greedy && opts.suppress_token_ids = [])
   in
   Printf.printf "[llmopt-pipeline] Prefill: %d FX nodes -> %d IR nodes\n%!" p_fx p_ir;
 
@@ -428,7 +438,8 @@ let run () =
   Printf.printf "[llmopt-pipeline] Compiling decode engine & shaders...\n%!";
   let* decode_pkg, d_fx, d_ir =
     compile_single_graph ~target ~weights_path:opts.weights
-      ~graph_path:opts.decode_graph ~output_dir:decode_dir ~greedy:opts.greedy
+      ~graph_path:opts.decode_graph ~output_dir:decode_dir
+      ~greedy:(opts.greedy && opts.suppress_token_ids = [])
   in
   Printf.printf "[llmopt-pipeline] Decode: %d FX nodes -> %d IR nodes\n%!" d_fx d_ir;
 
@@ -441,7 +452,7 @@ let run () =
           "[llmopt-pipeline] Compiling prompt-lookup verification engine & shaders...\n%!";
         let* package, fx_nodes, ir_nodes =
           compile_single_graph ~target ~weights_path:opts.weights ~graph_path
-            ~output_dir ~greedy:opts.greedy
+            ~output_dir ~greedy:(opts.greedy && opts.suppress_token_ids = [])
         in
         Printf.printf
           "[llmopt-pipeline] Verification: %d FX nodes -> %d IR nodes\n%!"

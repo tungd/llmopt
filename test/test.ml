@@ -85,123 +85,6 @@ let tokenizer_fixture () =
   merge space "a";
   Binary.Writer.contents writer
 
-let legacy_model_program_v2_bytes program =
-  let writer = Binary.Writer.create () in
-  let write_option write = function
-    | None -> Binary.Writer.u8 writer 0
-    | Some value ->
-        Binary.Writer.u8 writer 1;
-        write value
-  in
-  let write_artifact artifact =
-    Binary.Writer.string writer (Model_program.Artifact.path artifact)
-  in
-  let write_entrypoint entry =
-    write_artifact (Model_program.Entrypoint.package entry);
-    Binary.Writer.string writer (Model_program.Entrypoint.input_ids entry);
-    let head = Model_program.Entrypoint.head entry in
-    write_option (Binary.Writer.string writer)
-      (Model_program.Entrypoint.Head.logits head);
-    write_option (Binary.Writer.string writer)
-      (Model_program.Entrypoint.Head.token_id head)
-  in
-  Binary.Writer.raw_string writer "LLMOPT-MODEL\000";
-  Binary.Writer.u16 writer 2;
-  let identity = Model_program.identity program in
-  Binary.Writer.string writer (Model_program.Identity.model identity);
-  write_option (Binary.Writer.string writer)
-    (Model_program.Identity.architecture identity);
-  write_option (Binary.Writer.string writer)
-    (Model_program.Identity.family identity);
-  let processor = Model_program.processor program in
-  write_artifact (Model_program.Processor.tokenizer processor);
-  write_option
-    (fun chat ->
-      Binary.Writer.u8 writer 1;
-      Binary.Writer.u32 writer
-        (Model_program.Processor.Chat.bos_token_id chat);
-      Binary.Writer.u32 writer
-        (Model_program.Processor.Chat.message_start_token_id chat);
-      Binary.Writer.u32 writer
-        (Model_program.Processor.Chat.message_end_token_id chat))
-    (Model_program.Processor.chat processor);
-  write_entrypoint (Model_program.prefill program);
-  write_entrypoint (Model_program.decode program);
-  let generation = Model_program.generation program in
-  Binary.Writer.u64 writer
-    (Model_program.Generation.vocab_size generation);
-  Binary.Writer.u64 writer
-    (Model_program.Generation.max_positions generation);
-  write_option (Binary.Writer.i64 writer)
-    (Model_program.Generation.eos_token_id generation);
-  write_option (Binary.Writer.i64 writer)
-    (Model_program.Generation.bos_token_id generation);
-  let state = Model_program.state program in
-  let layout = Model_program.State.layout state in
-  let kv_heads, head_dim =
-    Model_program.State.Cache_layout.uniform_attention layout
-    |> Option.get
-  in
-  Binary.Writer.u16 writer
-    (Model_program.State.Cache_layout.attention_layers layout);
-  Binary.Writer.u16 writer kv_heads;
-  Binary.Writer.u16 writer head_dim;
-  Binary.Writer.u16 writer
-    (Model_program.State.Cache_layout.recurrent_layers layout);
-  Binary.Writer.u16 writer
-    (Model_program.State.Cache_layout.recurrent_dim layout);
-  Binary.Writer.u16 writer
-    (Model_program.State.Cache_layout.recurrent_window layout);
-  let attentions = Model_program.State.attentions state in
-  Binary.Writer.u16 writer (List.length attentions);
-  List.iter
-    (fun binding ->
-      Binary.Writer.u16 writer
-        (Model_program.State.Attention_binding.cache_layer binding);
-      List.iter (Binary.Writer.string writer)
-        [ Model_program.State.Attention_binding.key_input binding;
-          Model_program.State.Attention_binding.value_input binding;
-          Model_program.State.Attention_binding.key_output binding;
-          Model_program.State.Attention_binding.value_output binding ])
-    attentions;
-  let recurrents = Model_program.State.recurrents state in
-  Binary.Writer.u16 writer (List.length recurrents);
-  List.iter
-    (fun binding ->
-      Binary.Writer.u16 writer
-        (Model_program.State.Recurrent_binding.cache_layer binding);
-      Binary.Writer.string writer
-        (Model_program.State.Recurrent_binding.state_input binding);
-      Binary.Writer.string writer
-        (Model_program.State.Recurrent_binding.state_output binding))
-    recurrents;
-  let specialization = Model_program.specialization program in
-  Binary.Writer.u32 writer
-    (Model_program.Specialization.min_prefill_tokens specialization);
-  write_option (Binary.Writer.string writer)
-    (Model_program.Specialization.rope_cosine_input specialization);
-  write_option (Binary.Writer.string writer)
-    (Model_program.Specialization.rope_sine_input specialization);
-  write_option (Binary.Writer.string writer)
-    (Model_program.Specialization.paged_slots_input specialization);
-  Binary.Writer.contents writer
-
-let legacy_model_program_v3_bytes program =
-  let bytes = Model_program.to_bytes program in
-  let optional_suffix_bytes = 6 in
-  let length = Bytes.length bytes in
-  if length < optional_suffix_bytes then
-    fail "expected an ABI-v6 Model Program optional-field suffix";
-  for index = length - optional_suffix_bytes to length - 1 do
-    if Bytes.get bytes index <> '\000' then
-      fail "expected an ABI-v6 Model Program without optional extensions"
-  done;
-  let legacy = Bytes.sub bytes 0 (length - optional_suffix_bytes) in
-  let version_offset = String.length "LLMOPT-MODEL\000" in
-  Bytes.set legacy version_offset '\003';
-  Bytes.set legacy (version_offset + 1) '\000';
-  legacy
-
 let contains_substring source needle =
   let source_length = String.length source in
   let needle_length = String.length needle in
@@ -3426,6 +3309,25 @@ let () =
   (* Greedy sampling must choose token 10 *)
   let greedy_choice = expect_ok (Sampling.sample ~params:Sampling.Params.greedy ~vocabulary:vocab_test synthetic_logits) in
   expect (greedy_choice = 10) "greedy sampling selects highest logit token 10";
+  let suppressed_greedy_choice =
+    expect_ok
+      (Sampling.sample ~params:Sampling.Params.greedy ~vocabulary:vocab_test
+         ~suppress_token_ids:[ 10 ] synthetic_logits)
+  in
+  expect (suppressed_greedy_choice = 20)
+    "greedy sampling skips model-suppressed tokens";
+  let suppressed_rows =
+    expect_ok
+      (Sampling.Greedy.f16_all_rows ~vocabulary:vocab_test
+         ~suppress_token_ids:[ 10 ] synthetic_logits)
+  in
+  expect_int_array suppressed_rows [| 20 |]
+    "multi-row greedy verification skips model-suppressed tokens";
+  expect
+    (Sampling.Float16_logits.top ~count:1 ~vocabulary:vocab_test
+       ~suppress_token_ids:[ 10 ] synthetic_logits
+    |> expect_ok = [ 20, 9.0 ])
+    "float16 top logits are ranked after generation-policy suppression";
 
   (* Seeded stochastic sampling should deterministically select among top candidates (10 or 20) *)
   let stoch_choice1 = expect_ok (Sampling.sample ~params:custom_params ~vocabulary:vocab_test synthetic_logits) in
@@ -3482,8 +3384,18 @@ let () =
   let generation =
     expect_ok
       (Model_program.Generation.create ~vocab_size:32000 ~max_positions:4096
-         ~eos_token_id:2 ~bos_token_id:1 ())
+         ~eos_token_id:2 ~bos_token_id:1 ~suppress_token_ids:[ 883; 882 ] ())
   in
+  expect
+    (Result.is_error
+       (Model_program.Generation.create ~vocab_size:8 ~max_positions:16
+          ~suppress_token_ids:[ 3; 3 ] ()))
+    "generation rejects duplicate suppressed token IDs";
+  expect
+    (Result.is_error
+       (Model_program.Generation.create ~vocab_size:8 ~max_positions:16
+          ~suppress_token_ids:[ 8 ] ()))
+    "generation rejects suppressed token IDs outside the vocabulary";
   let layout =
     expect_ok
       (Model_program.State.Cache_layout.create ~attention_layers:2 ~kv_heads:4
@@ -3534,21 +3446,6 @@ let () =
   (* Round-trip serialization *)
   let program_bytes = Model_program.to_bytes program in
   let restored = expect_ok (Model_program.of_bytes program_bytes) in
-  let restored_v2 =
-    program |> legacy_model_program_v2_bytes |> Model_program.of_bytes
-    |> expect_ok
-  in
-  let restored_v3 =
-    program |> legacy_model_program_v3_bytes |> Model_program.of_bytes
-    |> expect_ok
-  in
-  expect
-    (Model_program.State.Cache_layout.uniform_attention
-       (Model_program.State.layout (Model_program.state restored_v2))
-    = Some (4, 64))
-    "reads the ABI-v2 uniform cache layout into per-layer geometry";
-  expect (Model_program.mtp restored_v3 = None)
-    "reads the ABI-v3 heterogeneous cache layout without an MTP entrypoint";
   let obsolete_program = Bytes.copy program_bytes in
   let version_offset = String.length "LLMOPT-MODEL\000" in
   Bytes.set obsolete_program version_offset '\001';
@@ -3594,6 +3491,11 @@ let () =
     (Model_program.Generation.bos_token_id (Model_program.generation restored)
     = Some 1)
     "restored bos matches";
+  expect
+    (Model_program.Generation.suppress_token_ids
+       (Model_program.generation restored)
+    = [ 882; 883 ])
+    "restored generation suppression policy matches";
   expect
     (Model_program.State.Cache_layout.attention_layers
        (Model_program.State.layout (Model_program.state restored))

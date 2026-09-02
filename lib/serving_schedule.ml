@@ -1884,54 +1884,49 @@ module Sequence = struct
         commands
     with
     | None -> Ok None
-    | Some logits ->
-        let* linear_node, indexed, m, n, k =
-          match producer commands logits with
-          | Some
-              {
-                Command.node_id = linear_node;
-                op;
-                inputs = indexed :: _;
-                output = Some _;
-              } ->
-              (match projection_dimensions op with
-              | Some (m, n, k) -> Ok (linear_node, indexed, m, n, k)
-              | None ->
-                  Error
-                    "prefill logits is not produced by a supported projection command")
-          | _ ->
-              Error
-                "prefill logits is not produced by a supported projection command"
-        in
-        (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
-        | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
-        | [ 1; tokens; output_width ]
-          when tokens = m && output_width = n && use_count commands logits = 1 ->
-            let* index_node, source =
-              match producer commands indexed with
-              | Some
-                  {
-                    Command.node_id = index_node;
-                    op =
-                      Ir.Op.Primitive
-                        (Ir.Primitive.Movement (Ir.Movement.Index index));
-                    inputs = [ source ];
-                    output = Some _;
-                  }
-                when use_count commands indexed = 1
-                     && is_identity_index source index ->
-                  Ok (index_node, source)
-              | _ ->
-                  Error
-                    "prefill logits projection is not fed by a sole-consumer identity index"
-            in
-            (match Tensor_shape.dimensions (Ir.Value.logical_shape source) with
-            | [ 1; source_tokens; width ]
-              when source_tokens = tokens && width = k ->
-                Ok (Some { index_node; linear_node })
-            | _ ->
-                Error "prefill logits index has an unexpected source shape")
-        | _ -> Error "prefill logits has an unexpected projection shape")
+    | Some logits -> (
+        match producer commands logits with
+        | Some
+            {
+              Command.node_id = linear_node;
+              op;
+              inputs = indexed :: _;
+              output = Some _;
+            } -> (
+            match projection_dimensions op with
+            | None -> Ok None
+            | Some (m, n, k) ->
+                (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
+                | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
+                | [ 1; tokens; output_width ]
+                  when tokens = m && output_width = n
+                       && use_count commands logits = 1 ->
+                    let* index_node, source =
+                      match producer commands indexed with
+                      | Some
+                          {
+                            Command.node_id = index_node;
+                            op =
+                              Ir.Op.Primitive
+                                (Ir.Primitive.Movement (Ir.Movement.Index index));
+                            inputs = [ source ];
+                            output = Some _;
+                          }
+                        when use_count commands indexed = 1
+                             && is_identity_index source index ->
+                          Ok (index_node, source)
+                      | _ ->
+                          Error
+                            "prefill logits projection is not fed by a sole-consumer identity index"
+                    in
+                    (match Tensor_shape.dimensions (Ir.Value.logical_shape source) with
+                    | [ 1; source_tokens; width ]
+                      when source_tokens = tokens && width = k ->
+                        Ok (Some { index_node; linear_node })
+                    | _ ->
+                        Error "prefill logits index has an unexpected source shape")
+                | _ -> Error "prefill logits has an unexpected projection shape"))
+        | _ -> Ok None)
 
   let last_token_index = function
     | [ input ] ->

@@ -40,21 +40,33 @@ module Native_engine = struct
   let tokens step = Serving_engine.Step.tokens step.serving_step
 
   let next_token_serving ?(params = Sampling.Params.greedy) serving_step =
-    match Serving_engine.Step.token_id serving_step with
-    | Some buffer ->
+    let suppress_token_ids =
+      Serving_engine.Step.suppress_token_ids serving_step
+    in
+    match
+      ( Sampling.Params.is_greedy params,
+        suppress_token_ids,
+        Serving_engine.Step.logits serving_step,
+        Serving_engine.Step.token_id serving_step )
+    with
+    | true, [], _, Some buffer ->
         let* bytes = Metal_runtime.Buffer.contents buffer in
         if Bytes.length bytes = 4 then Sampling.Greedy.on_device bytes
         else Sampling.Greedy.on_device_last bytes
-    | None ->
-        (match Serving_engine.Step.logits serving_step with
-        | Some buffer ->
-            let vocabulary = Serving_engine.Step.vocabulary serving_step in
-            if Sampling.Params.is_greedy params then
-              Metal_runtime.Buffer.argmax_f16 buffer ~vocabulary
-            else
-              let* bytes = Metal_runtime.Buffer.contents buffer in
-              Sampling.sample ~params ~vocabulary bytes
-        | None -> Error "serving step has neither token_id nor logits output")
+    | true, [], Some buffer, None ->
+        Metal_runtime.Buffer.argmax_f16 buffer
+          ~vocabulary:(Serving_engine.Step.vocabulary serving_step)
+    | _, suppress_token_ids, Some buffer, _ ->
+        let vocabulary = Serving_engine.Step.vocabulary serving_step in
+        let* bytes = Metal_runtime.Buffer.contents buffer in
+        Sampling.sample ~params ~vocabulary ~suppress_token_ids bytes
+    | true, _ :: _, None, Some _ ->
+        Error
+          "precomputed token_id cannot apply model-suppressed tokens without logits"
+    | false, _, None, Some _ ->
+        Error "stochastic sampling requires logits instead of token_id-only output"
+    | _, _, None, None ->
+        Error "serving step has neither token_id nor logits output"
 
   let next_token ?params step =
     next_token_serving ?params step.serving_step

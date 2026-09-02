@@ -122,6 +122,13 @@ def preserve_reference_constant_precision(model: Any) -> None:
             setattr(rotary, name, getattr(rotary, name).float())
 
 
+def gguf_suppress_token_ids(reader: Any) -> tuple[int, ...]:
+    field = reader.fields.get("tokenizer.ggml.suppress_tokens")
+    if field is None:
+        return ()
+    return tuple(int(token_id) for token_id in field.contents())
+
+
 def write_augmented_archive(source: Path, destination: Path, config: Any) -> None:
     reader = GGUFReader(str(source), "r")
     specs: list[TensorSpec] = []
@@ -313,6 +320,7 @@ def main() -> None:
         _target_arguments(geometry, query_tokens=1, past_tokens=2),
     )
     reader = GGUFReader(str(args.target_gguf), "r")
+    suppress_token_ids = gguf_suppress_token_ids(reader)
     inventory = {tensor.name: tensor for tensor in reader.tensors}
     prefill_path = source_dir / "prefill.graph.llmopt"
     decode_path = source_dir / "decode.graph.llmopt"
@@ -344,6 +352,8 @@ def main() -> None:
         "--sliding-attention-mask-input", "sliding_attention_mask",
         "--sliding-window", "1024",
     ]
+    for token_id in suppress_token_ids:
+        command.extend(["--suppress-token-id", str(token_id)])
     for layer in range(48):
         command.extend([
             "--attention-state",

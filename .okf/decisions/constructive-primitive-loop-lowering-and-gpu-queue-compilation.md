@@ -32,6 +32,9 @@ sources:
   - id: gemma-repair
     resource: /experiments/exp-0139-unified-compiler-gemma4-repair-2026-09-02.md
     title: Gemma compiler repair and corrected reference boundary
+  - id: matched-policy-diagnostic
+    resource: /experiments/exp-0140-gemma4-matched-policy-diagnostic-2026-09-03.md
+    title: Matched-policy result and constructive-transition correction
 ---
 
 # Decision
@@ -221,12 +224,20 @@ effect assignments selected by the shared dependency and cost model. Adding a
 new named constructive matcher for each family would preserve the ad hoc
 architecture under a different module.
 
-Gemma 4 12B generated-token parity is not established. The builder's FP16
-rounding of embedding and rotary constants has been corrected, but the only
-post-correction raw argmax is token `258882`, which the GGUF instructs
-llama.cpp to suppress. A matched-policy argmax or raw-logit comparison is the
-diagnostic seam that can distinguish generation policy from arithmetic drift;
-the prior first-token observation cannot do so by itself.[^gemma-repair]
+The attempted `assignment_*_tactics` migration did exactly that and has been
+removed. Although `Kernel_ir` regions were formed and printed, backend code
+generation and runtime dispatch still consumed macro `Ir.Op` operations. A
+region receipt is not a lowering path: a covered pass can be retired only after
+its assignment bindings select and emit the executable kernel and schedule
+command that replace it.[^matched-policy-diagnostic]
+
+Gemma 4 12B generated-token parity is not established. Under the same 37 prompt
+IDs and GGUF suppression set, llama.cpp selects token `100`, while LLMOpt moves
+from raw token `258882` to policy token `236888`; their raw and policy top-10
+sets are disjoint. Suppression is therefore no longer the unexplained boundary:
+the remaining first-token mismatch is in model arithmetic, and a particular
+operator or layer requires intermediate-tensor comparison to identify.
+[^gemma-repair][^matched-policy-diagnostic]
 
 Full-model code generation currently targets Metal. The repository's Vulkan
 work is experimental primitive-backend evidence, not a second full-model
@@ -289,3 +300,4 @@ Their experiments and rationale remain historical evidence.[^constructive-loweri
 [^gguf-quant]: GGUF and Unsloth Dynamic quantization contract.
 [^gemma-transition]: Gemma 4 12B QAT and MTP comparison protocol.
 [^gemma-repair]: Gemma compiler repair and corrected reference boundary.
+[^matched-policy-diagnostic]: Matched-policy result and constructive-transition correction.

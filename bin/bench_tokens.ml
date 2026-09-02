@@ -4,6 +4,7 @@ type options = {
   model_dir : string;
   prompt_tokens : int array;
   max_new_tokens : int;
+  top_k_logits : int option;
   token_capacity : int;
   checkpoint_capacity : int;
 }
@@ -11,7 +12,7 @@ type options = {
 let usage () =
   prerr_endline
     "usage: llmopt-bench-tokens --model-dir <dir> --prompt-token-ids <csv> \
-     --max-new-tokens <count> [--token-capacity <count>] \
+     (--max-new-tokens <count> | --top-k-logits <count>) [--token-capacity <count>] \
      [--checkpoint-capacity <count>]";
   exit 64
 
@@ -40,6 +41,8 @@ let arguments () =
         loop { options with prompt_tokens = prompt_tokens value } rest
     | "--max-new-tokens" :: value :: rest ->
         loop { options with max_new_tokens = positive value } rest
+    | "--top-k-logits" :: value :: rest ->
+        loop { options with top_k_logits = Some (positive value) } rest
     | "--token-capacity" :: value :: rest ->
         loop { options with token_capacity = positive value } rest
     | "--checkpoint-capacity" :: value :: rest ->
@@ -53,19 +56,27 @@ let arguments () =
           { model_dir = "";
             prompt_tokens = [||];
             max_new_tokens = 0;
+            top_k_logits = None;
             token_capacity = 4_096;
             checkpoint_capacity = 512 }
           rest
       in
       if
         options.model_dir = "" || Array.length options.prompt_tokens = 0
-        || options.max_new_tokens = 0
+        || (options.max_new_tokens = 0 && Option.is_none options.top_k_logits)
+        || (options.max_new_tokens > 0 && Option.is_some options.top_k_logits)
       then usage ()
       else options
   | [] -> usage ()
 
 let ids values =
   values |> Array.to_list |> List.map string_of_int |> String.concat ","
+
+let ranked values =
+  values
+  |> List.map (fun (token_id, logit) ->
+         Printf.sprintf "%d:%.9g" token_id logit)
+  |> String.concat ","
 
 let run () =
   let options = arguments () in
@@ -80,6 +91,37 @@ let run () =
       ~checkpoint_capacity:options.checkpoint_capacity ()
   in
   let load_seconds = Unix.gettimeofday () -. load_started in
+  match options.top_k_logits with
+  | Some count ->
+      let probe_started = Unix.gettimeofday () in
+      let* prompt = Serving_engine.prompt engine ~tokens:options.prompt_tokens in
+      let step = Serving_engine.Prompt.step prompt in
+      let* logits =
+        match Serving_engine.Step.logits step with
+        | Some logits -> Ok logits
+        | None -> Error "top-k probe requires a logits output"
+      in
+      let* bytes = Metal_runtime.Buffer.contents logits in
+      let vocabulary = Serving_engine.Step.vocabulary step in
+      let suppress_token_ids = Serving_engine.Step.suppress_token_ids step in
+      let* raw =
+        Sampling.Float16_logits.top ~count ~vocabulary bytes
+      in
+      let* policy =
+        Sampling.Float16_logits.top ~count ~vocabulary ~suppress_token_ids bytes
+      in
+      Printf.printf "load-seconds: %.6f\n" load_seconds;
+      Printf.printf "probe-seconds: %.6f\n"
+        (Unix.gettimeofday () -. probe_started);
+      Printf.printf "prompt-token-count: %d\n"
+        (Array.length options.prompt_tokens);
+      Printf.printf "prompt-tokens: %s\n" (ids options.prompt_tokens);
+      Printf.printf "suppressed-token-ids: %s\n"
+        (suppress_token_ids |> List.map string_of_int |> String.concat ",");
+      Printf.printf "raw-top-k: %s\n" (ranked raw);
+      Printf.printf "policy-top-k: %s\n" (ranked policy);
+      Ok ()
+  | None ->
   let* config =
     Generation_core.Config.create ~max_new_tokens:options.max_new_tokens
   in

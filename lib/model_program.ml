@@ -261,9 +261,11 @@ module Generation = struct
     max_positions : int;
     eos_token_id : int option;
     bos_token_id : int option;
+    suppress_token_ids : int list;
   }
 
-  let create ~vocab_size ~max_positions ?eos_token_id ?bos_token_id () =
+  let create ~vocab_size ~max_positions ?eos_token_id ?bos_token_id
+      ?(suppress_token_ids = []) () =
     if vocab_size <= 0 then
       Error "model-program vocab_size must be positive"
     else if max_positions <= 0 then
@@ -283,12 +285,38 @@ module Generation = struct
             Error "model-program bos_token_id cannot be negative"
         | Some id -> Ok (Some id)
       in
-      Ok { vocab_size; max_positions; eos_token_id; bos_token_id }
+      let suppress_token_ids = List.sort Int.compare suppress_token_ids in
+      let rec validate_suppressed previous = function
+        | [] -> Ok ()
+        | id :: _ when id < 0 || id >= vocab_size ->
+            Error
+              (Printf.sprintf
+                 "model-program suppressed token id %d is outside vocabulary [0,%d)"
+                 id vocab_size)
+        | id :: _ when previous = Some id ->
+            Error
+              (Printf.sprintf
+                 "model-program suppressed token id %d is duplicated" id)
+        | id :: rest -> validate_suppressed (Some id) rest
+      in
+      let* () = validate_suppressed None suppress_token_ids in
+      if List.length suppress_token_ids >= vocab_size then
+        Error "model-program cannot suppress the complete vocabulary"
+      else
+        Ok
+          {
+            vocab_size;
+            max_positions;
+            eos_token_id;
+            bos_token_id;
+            suppress_token_ids;
+          }
 
   let vocab_size generation = generation.vocab_size
   let max_positions generation = generation.max_positions
   let eos_token_id generation = generation.eos_token_id
   let bos_token_id generation = generation.bos_token_id
+  let suppress_token_ids generation = generation.suppress_token_ids
 end
 
 module State = struct
@@ -619,11 +647,7 @@ type t = {
   prompt_lookup : Prompt_lookup.t option;
 }
 
-let current_abi_version = 6
-let mtp_abi_version = 4
-let prompt_lookup_abi_version = 5
-let legacy_uniform_cache_abi_version = 2
-let legacy_heterogeneous_cache_abi_version = 3
+let current_abi_version = 7
 
 let validate program =
   if program.prefill.Entrypoint.kind <> Entrypoint.Prefill then
@@ -633,16 +657,41 @@ let validate program =
   else if Option.is_none (Processor.chat program.processor) then
     Error "model-program requires an explicit chat contract"
   else
-    match Processor.chat program.processor with
-    | Some chat
-      when
-        List.exists
-          (fun id -> id >= Generation.vocab_size program.generation)
-          [ Processor.Chat.bos_token_id chat;
-            Processor.Chat.message_start_token_id chat;
-            Processor.Chat.message_end_token_id chat ] ->
-        Error "model-program chat token id exceeds vocabulary"
-    | Some _ | None -> Ok ()
+    let* () =
+      match Processor.chat program.processor with
+      | Some chat
+        when
+          List.exists
+            (fun id -> id >= Generation.vocab_size program.generation)
+            [ Processor.Chat.bos_token_id chat;
+              Processor.Chat.message_start_token_id chat;
+              Processor.Chat.message_end_token_id chat ] ->
+          Error "model-program chat token id exceeds vocabulary"
+      | Some _ | None -> Ok ()
+    in
+    if Generation.suppress_token_ids program.generation = [] then Ok ()
+    else
+      let has_logits entrypoint =
+        entrypoint |> Entrypoint.head |> Entrypoint.Head.logits
+        |> Option.is_some
+      in
+      let prompt_lookup_has_logits =
+        match program.prompt_lookup with
+        | None -> true
+        | Some prompt_lookup ->
+            prompt_lookup |> Prompt_lookup.entrypoint |> Entrypoint.head
+            |> Entrypoint.Head.logits |> Option.is_some
+      in
+      if not (has_logits program.prefill) then
+        Error
+          "model-program suppression requires prefill logits instead of a token_id-only head"
+      else if not (has_logits program.decode) then
+        Error
+          "model-program suppression requires decode logits instead of a token_id-only head"
+      else if not prompt_lookup_has_logits then
+        Error
+          "model-program suppression requires prompt-lookup verification logits instead of a token_id-only head"
+      else Ok ()
 
 let make ~identity ~processor ~prefill ~decode ~generation ~state ~specialization =
   let program =
@@ -859,6 +908,11 @@ let to_bytes program =
 
   (* Optional cached multi-token verifier (ABI v5). *)
   write_option writer write_prompt_lookup program.prompt_lookup;
+  let suppress_token_ids =
+    Generation.suppress_token_ids program.generation
+  in
+  Binary.Writer.u32 writer (List.length suppress_token_ids);
+  List.iter (Binary.Writer.u32 writer) suppress_token_ids;
 
   Binary.Writer.contents writer
 
@@ -870,13 +924,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid model-program magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if
-      version <> current_abi_version
-      && version <> mtp_abi_version
-      && version <> prompt_lookup_abi_version
-      && version <> legacy_uniform_cache_abi_version
-      && version <> legacy_heterogeneous_cache_abi_version
-    then
+    if version <> current_abi_version then
       Error (Printf.sprintf "unsupported model-program version: %d" version)
     else
       let* model = Binary.Reader.string reader in
@@ -910,47 +958,29 @@ let of_bytes bytes =
       let* max_positions = Binary.Reader.u64 reader in
       let* eos_token_id = read_option reader Binary.Reader.i64 in
       let* bos_token_id = read_option reader Binary.Reader.i64 in
-      let* generation = Generation.create ~vocab_size ~max_positions ?eos_token_id ?bos_token_id () in
-
       let* attentions_layout =
-        if version = legacy_uniform_cache_abi_version then
-          let* attention_layers = Binary.Reader.u16 reader in
-          let* kv_heads = Binary.Reader.u16 reader in
-          let* head_dim = Binary.Reader.u16 reader in
-          if attention_layers = 0 then
-            if kv_heads = 0 && head_dim = 0 then Ok []
-            else
-              Error
-                "cache layout with zero attention layers must have zero kv_heads and head_dim"
+        let* attention_layers = Binary.Reader.u16 reader in
+        let rec read_layers acc remaining =
+          if remaining = 0 then Ok (List.rev acc)
           else
-            let* layer =
-              State.Cache_layout.Attention_layer.create ~kv_heads ~head_dim ()
+            let* storage_tag = Binary.Reader.u8 reader in
+            let* storage =
+              match storage_tag with
+              | 1 -> Ok State.Cache_layout.Attention_layer.Q8_group_64
+              | tag ->
+                  Error
+                    (Printf.sprintf
+                       "unsupported cache attention storage tag: %d" tag)
             in
-            Ok (List.init attention_layers (Fun.const layer))
-        else
-          let* attention_layers = Binary.Reader.u16 reader in
-          let rec read_layers acc remaining =
-            if remaining = 0 then Ok (List.rev acc)
-            else
-              let* storage_tag = Binary.Reader.u8 reader in
-              let* storage =
-                match storage_tag with
-                | 1 ->
-                    Ok State.Cache_layout.Attention_layer.Q8_group_64
-                | tag ->
-                    Error
-                      (Printf.sprintf
-                         "unsupported cache attention storage tag: %d" tag)
-              in
-              let* kv_heads = Binary.Reader.u16 reader in
-              let* head_dim = Binary.Reader.u16 reader in
-              let* layer =
-                State.Cache_layout.Attention_layer.create ~storage ~kv_heads
-                  ~head_dim ()
-              in
-              read_layers (layer :: acc) (remaining - 1)
-          in
-          read_layers [] attention_layers
+            let* kv_heads = Binary.Reader.u16 reader in
+            let* head_dim = Binary.Reader.u16 reader in
+            let* layer =
+              State.Cache_layout.Attention_layer.create ~storage ~kv_heads
+                ~head_dim ()
+            in
+            read_layers (layer :: acc) (remaining - 1)
+        in
+        read_layers [] attention_layers
       in
       let* recurrent_layers = Binary.Reader.u16 reader in
       let* recurrent_dim = Binary.Reader.u16 reader in
@@ -991,26 +1021,10 @@ let of_bytes bytes =
       let* rope_cosine_input = read_option reader Binary.Reader.string in
       let* rope_sine_input = read_option reader Binary.Reader.string in
       let* paged_slots_input = read_option reader Binary.Reader.string in
-      let* position_ids_input =
-        if version >= current_abi_version then
-          read_option reader Binary.Reader.string
-        else Ok None
-      in
-      let* full_attention_mask_input =
-        if version >= current_abi_version then
-          read_option reader Binary.Reader.string
-        else Ok None
-      in
-      let* sliding_attention_mask_input =
-        if version >= current_abi_version then
-          read_option reader Binary.Reader.string
-        else Ok None
-      in
-      let* sliding_window =
-        if version >= current_abi_version then
-          read_option reader Binary.Reader.u32
-        else Ok None
-      in
+      let* position_ids_input = read_option reader Binary.Reader.string in
+      let* full_attention_mask_input = read_option reader Binary.Reader.string in
+      let* sliding_attention_mask_input = read_option reader Binary.Reader.string in
+      let* sliding_window = read_option reader Binary.Reader.u32 in
       let* specialization =
         Specialization.create ~min_prefill_tokens ?rope_cosine_input
           ?rope_sine_input ?paged_slots_input ?position_ids_input
@@ -1018,18 +1032,25 @@ let of_bytes bytes =
           ?sliding_window ()
       in
 
-      let* mtp =
-        if version >= mtp_abi_version then read_option reader read_mtp
-        else Ok None
-      in
+      let* mtp = read_option reader read_mtp in
+      let* prompt_lookup = read_option reader read_prompt_lookup in
 
-      let* prompt_lookup =
-        if version >= prompt_lookup_abi_version then
-          read_option reader read_prompt_lookup
-        else Ok None
+      let* suppress_token_ids =
+        let* count = Binary.Reader.u32 reader in
+        let rec read acc remaining =
+          if remaining = 0 then Ok (List.rev acc)
+          else
+            let* token_id = Binary.Reader.u32 reader in
+            read (token_id :: acc) (remaining - 1)
+        in
+        read [] count
       in
 
       let* () = Binary.Reader.finish reader in
+      let* generation =
+        Generation.create ~vocab_size ~max_positions ?eos_token_id ?bos_token_id
+          ~suppress_token_ids ()
+      in
       let* program =
         make ~identity ~processor ~prefill ~decode ~generation ~state
           ~specialization

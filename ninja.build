@@ -45,6 +45,10 @@ rule python_test
   description = run Python FX and benchsuite tests
   pool = console
 
+rule llama_logits_probe
+  command = mkdir -p _build/bin && c++ -std=c++17 -O2 $in $$(pkg-config --cflags --libs llama) -Wl,-rpath,$$(pkg-config --variable=libdir llama) -o $out
+  description = build llama.cpp logits probe
+
 rule fx_graph
   command = mkdir -p $$(dirname $out) && PYTHONPATH=python python3.13 python/examples/json_to_fx_graph.py --input $in --output $out
   description = encode binary FX graph $out
@@ -475,6 +479,8 @@ build _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json: lfm25_prefill
 build capture-lfm25-prefill-decode: phony _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json
 
 build all: phony _build/bin/llmopt-test _build/bin/llmopt-fx _build/bin/llmopt-pipeline _build/bin/llmopt-package-check _build/bin/llmopt-model-check _build/bin/llmopt-package-run _build/bin/llmopt-ocaml-metal-smoke _build/bin/llmopt-native-schedule-fixture _build/bin/llmopt-ocaml-metal-primitives-smoke _build/bin/llmopt-tokenize _build/bin/llmopt-generate _build/bin/llmopt-bench-tokens _build/bin/llmopt-serve _build/bin/llmopt-inspect-gguf _build/bin/llmopt-bench-quant _build/bin/llmopt-hardware-probe
+build _build/bin/llama-logits-probe: llama_logits_probe bench/llama_logits_probe.cpp
+build llama-logits-probe: phony _build/bin/llama-logits-probe
 build probe-lfm25: phony _build/bin/llmopt-demo _build/bin/llmopt-lfm-serving-check _build/bin/llmopt-lfm-serving-smoke
 build ocaml-test: run_test _build/bin/llmopt-test
 build python-test: python_test

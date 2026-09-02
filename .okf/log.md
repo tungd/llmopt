@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-09-03
+* **Gemma matched-policy diagnostic**: After rebuilding the stale pipeline, the retained 37-token Gemma graphs and archive produced a valid ABI-v7 bundle with suppression IDs `258882,258883`. llama.cpp selects token `100` at logit `28.4734364`; LLMOpt changes from raw token `258882` to policy token `236888` at `20.234375`, and both raw and policy top-10 sets are disjoint. Suppression is active, while first-token model arithmetic still differs.
+* **Constructive-transition correction**: Removed the attempted `assignment_*_tactics` facade and restored all six executable `pass_fuse_*` modules. The copied sequence matchers had still emitted macro `Ir.Op` nodes, while `Kernel_ir` regions were only printed and receipted; no pass is now reported retired until assignment bindings drive emitted kernels and schedule commands.
+
 ## 2026-09-02
 * **Gemma reference-boundary correction**: The Gemma engine builder now preserves embedding scale and full/sliding rotary inverse frequencies as FP32 instead of rounding them into the FP16 model cast. Fresh prefill/decode packages validate with zero opaque commands, but the one 37-token retry still returns raw token `258882` versus llama.cpp generated token `100`; the GGUF declares `258882` as one of two llama.cpp suppression tokens, so the prior token-1 comparison did not isolate an arithmetic full-forward mismatch.
 * **Unified compiler repair**: Constructive lowering now covers the captured Gemma Q4_0 `Linear -> GELU -> Mul` join, preserves the later down projection as a distinct operation, and records zero legacy invocations and rewrites in receipt schema 2. Prefill/decode each gain 48 unified lowerings and remove 96 AOT stages, 192 dependencies, and 96 barriers relative to the transition artifact.

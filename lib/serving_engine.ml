@@ -30,6 +30,7 @@ type contract = {
   attentions : attention_binding list;
   recurrents : recurrent_binding list;
   vocab_size : int;
+  suppress_token_ids : int list;
 }
 
 module Step = struct
@@ -38,6 +39,7 @@ module Step = struct
     token_id : Metal_runtime.Buffer.t option;
     tokens : int array;
     vocabulary : int;
+    suppress_token_ids : int list;
     cached_prefix : int;
     kernels : string list;
   }
@@ -46,6 +48,7 @@ module Step = struct
   let token_id step = step.token_id
   let tokens step = Array.copy step.tokens
   let vocabulary step = step.vocabulary
+  let suppress_token_ids step = step.suppress_token_ids
   let cached_prefix step = step.cached_prefix
   let kernels step = step.kernels
 end
@@ -220,7 +223,8 @@ let of_state_recurrent (b : Model_program.State.Recurrent_binding.t) : recurrent
   }
 
 let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
-    ~recurrent_shape ~vocab_size ~auxiliary_inputs ~prefill ~decode =
+    ~recurrent_shape ~vocab_size ~suppress_token_ids ~auxiliary_inputs ~prefill
+    ~decode =
   let prefill_inputs = runtime_inputs prefill in
   let decode_inputs = runtime_inputs decode in
   let prefill_outputs = named_outputs prefill in
@@ -387,6 +391,7 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
         attentions;
         recurrents;
         vocab_size;
+        suppress_token_ids;
       }
 
 let contract ?program ~config ~prefill ~decode () =
@@ -425,6 +430,13 @@ let contract ?program ~config ~prefill ~decode () =
             | _ -> 32000)
         | None -> 32000)
   in
+  let suppress_token_ids =
+    match program with
+    | Some p ->
+        Model_program.Generation.suppress_token_ids
+          (Model_program.generation p)
+    | None -> []
+  in
   let recurrent_shape =
     if Model_program.State.Cache_layout.recurrent_layers layout > 0 then
       let dim = Model_program.State.Cache_layout.recurrent_dim layout in
@@ -446,8 +458,8 @@ let contract ?program ~config ~prefill ~decode () =
     |> List.filter_map Fun.id
   in
   contract_of_parts ~input_ids ~attentions ~recurrents
-    ~attention_layout:layout ~recurrent_shape ~vocab_size ~auxiliary_inputs
-    ~prefill ~decode
+    ~attention_layout:layout ~recurrent_shape ~vocab_size ~suppress_token_ids
+    ~auxiliary_inputs ~prefill ~decode
 
 let validate_packages ?program ~config ~prefill ~decode () =
   let* () = validate_package prefill "prefill" in
@@ -1089,6 +1101,7 @@ let prefill engine ~tokens =
         token_id;
         tokens = Array.copy tokens;
         vocabulary = engine.contract.vocab_size;
+        suppress_token_ids = engine.contract.suppress_token_ids;
         cached_prefix;
         kernels = Metal_runtime.Execution.kernels execution;
       }
@@ -1397,6 +1410,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token ~retain_inserted_match
                 token_id = token_id_buffer;
                 tokens;
                 vocabulary = engine.contract.vocab_size;
+                suppress_token_ids = engine.contract.suppress_token_ids;
                 cached_prefix;
                 kernels = Metal_runtime.Execution.kernels execution;
               },
@@ -1609,6 +1623,7 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
               token_id;
               tokens = Array.copy tokens;
               vocabulary = engine.contract.vocab_size;
+              suppress_token_ids = engine.contract.suppress_token_ids;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;
             }
@@ -1756,6 +1771,7 @@ let suffix_prefill ?(cache_result = true) engine match_ ~tokens ~cached_tokens =
               token_id;
               tokens = Array.copy tokens;
               vocabulary = engine.contract.vocab_size;
+              suppress_token_ids = engine.contract.suppress_token_ids;
               cached_prefix;
               kernels = Metal_runtime.Execution.kernels execution;
             }
@@ -2246,25 +2262,31 @@ module Prompt_lookup = struct
                   in
                   let head = Model_program.Entrypoint.head entrypoint in
                   let* predictions =
-                    match Model_program.Entrypoint.Head.token_id head with
-                    | Some name ->
+                    match
+                      ( engine.contract.suppress_token_ids,
+                        Model_program.Entrypoint.Head.logits head,
+                        Model_program.Entrypoint.Head.token_id head )
+                    with
+                    | [], _, Some name ->
                         (match Metal_runtime.Execution.output execution ~name with
                         | None -> Error "prompt-lookup execution omitted token_id"
                         | Some token_ids ->
                             let* bytes = Metal_runtime.Buffer.contents token_ids in
                             Sampling.Greedy.on_device_all bytes)
-                    | None ->
-                        (match Model_program.Entrypoint.Head.logits head with
-                        | None ->
-                            Error
-                              "prompt-lookup verification has neither token_id nor logits"
-                        | Some name ->
-                            (match Metal_runtime.Execution.output execution ~name with
-                            | None -> Error "prompt-lookup execution omitted logits"
-                            | Some logits ->
-                                let* bytes = Metal_runtime.Buffer.contents logits in
-                                Sampling.Greedy.f16_all_rows
-                                  ~vocabulary:engine.contract.vocab_size bytes))
+                    | suppress_token_ids, Some name, _ ->
+                        (match Metal_runtime.Execution.output execution ~name with
+                        | None -> Error "prompt-lookup execution omitted logits"
+                        | Some logits ->
+                            let* bytes = Metal_runtime.Buffer.contents logits in
+                            Sampling.Greedy.f16_all_rows
+                              ~vocabulary:engine.contract.vocab_size
+                              ~suppress_token_ids bytes)
+                    | _ :: _, None, Some _ ->
+                        Error
+                          "prompt-lookup token_id output cannot apply model-suppressed tokens without logits"
+                    | _, None, None ->
+                        Error
+                          "prompt-lookup verification has neither token_id nor logits"
                   in
                   let* acceptance =
                     Speculative_acceptance.greedy ~draft_tokens

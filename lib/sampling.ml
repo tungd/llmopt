@@ -31,6 +31,57 @@ module Float16_logits = struct
     let ( let* ) = Result.bind in
     let* row_offset, row_bytes = row_offset ~vocabulary bytes in
     Ok (Bytes.sub bytes row_offset row_bytes)
+
+  let suppress ~vocabulary ~suppress_token_ids row =
+    let seen = Array.make vocabulary false in
+    let rec mark count = function
+      | [] ->
+          if count >= vocabulary then
+            Error "cannot suppress the complete sampling vocabulary"
+          else Ok ()
+      | token_id :: _ when token_id < 0 || token_id >= vocabulary ->
+          Error
+            (Printf.sprintf "suppressed token id %d is outside vocabulary [0,%d)"
+               token_id vocabulary)
+      | token_id :: rest ->
+          let count = if seen.(token_id) then count else count + 1 in
+          seen.(token_id) <- true;
+          mark count rest
+    in
+    let ( let* ) = Result.bind in
+    let* () = mark 0 suppress_token_ids in
+    if suppress_token_ids = [] then Ok row
+    else
+      let masked = Bytes.copy row in
+      Array.iteri
+        (fun token_id suppressed ->
+          if suppressed then Bytes.set_uint16_le masked (2 * token_id) 0xfc00)
+        seen;
+      Ok masked
+
+  let top ?(suppress_token_ids = []) ~count ~vocabulary bytes =
+    let ( let* ) = Result.bind in
+    if count <= 0 then Error "float16 logits top count must be positive"
+    else
+      let* row = last_row ~vocabulary bytes in
+      let* row = suppress ~vocabulary ~suppress_token_ids row in
+      let ranked =
+        Array.init vocabulary (fun token_id ->
+            token_id, (Bytes.get_uint16_le row (2 * token_id) |> float16))
+      in
+      (match Array.find_opt (fun (_, value) -> Float.is_nan value) ranked with
+      | Some (token_id, _) ->
+          Error
+            (Printf.sprintf "float16 logits contain NaN at token %d" token_id)
+      | None ->
+          Array.sort
+            (fun (left_token, left_value) (right_token, right_value) ->
+              let by_value = Float.compare right_value left_value in
+              if by_value <> 0 then by_value
+              else Int.compare left_token right_token)
+            ranked;
+          Ok
+            (Array.sub ranked 0 (min count vocabulary) |> Array.to_list))
 end
 
 module Params = struct
@@ -98,9 +149,12 @@ module Greedy = struct
 
   external f16_argmax_native : bytes -> int -> int = "caml_llmopt_f16_argmax"
 
-  let f16_last_row ~vocabulary bytes =
+  let f16_last_row ?(suppress_token_ids = []) ~vocabulary bytes =
     let ( let* ) = Result.bind in
     let* row = Float16_logits.last_row ~vocabulary bytes in
+    let* row =
+      Float16_logits.suppress ~vocabulary ~suppress_token_ids row
+    in
     try Ok (f16_argmax_native row vocabulary)
     with _ ->
       let value token = Bytes.get_uint16_le row (2 * token) |> float16 in
@@ -120,7 +174,7 @@ module Greedy = struct
         in
         select 0 first 1
 
-  let f16_all_rows ~vocabulary bytes =
+  let f16_all_rows ?(suppress_token_ids = []) ~vocabulary bytes =
     let ( let* ) = Result.bind in
     let* _, row_bytes = Float16_logits.row_offset ~vocabulary bytes in
     let rows = Bytes.length bytes / row_bytes in
@@ -128,7 +182,7 @@ module Greedy = struct
       if index = rows then Ok output
       else
         let row = Bytes.sub bytes (index * row_bytes) row_bytes in
-        let* token = f16_last_row ~vocabulary row in
+        let* token = f16_last_row ~vocabulary ~suppress_token_ids row in
         output.(index) <- token;
         collect (index + 1) output
     in
@@ -139,14 +193,15 @@ external f16_sample_native :
   bytes -> int -> float -> int -> float -> float -> int -> int
   = "caml_llmopt_sample_f16_bytecode" "caml_llmopt_sample_f16_native"
 
-let sample ~params ~vocabulary bytes =
+let sample ?(suppress_token_ids = []) ~params ~vocabulary bytes =
   let ( let* ) = Result.bind in
   let* row = Float16_logits.last_row ~vocabulary bytes in
+  let* row = Float16_logits.suppress ~vocabulary ~suppress_token_ids row in
   if Params.is_greedy params then
-    Greedy.f16_last_row ~vocabulary bytes
+    Greedy.f16_last_row ~vocabulary row
   else
     try
       Ok
         (f16_sample_native row vocabulary params.temperature params.top_k
            params.top_p params.min_p params.seed)
-    with _ -> Greedy.f16_last_row ~vocabulary bytes
+    with _ -> Greedy.f16_last_row ~vocabulary row

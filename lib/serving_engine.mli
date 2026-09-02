@@ -5,6 +5,7 @@ module Step : sig
   val token_id : t -> Metal_runtime.Buffer.t option
   val tokens : t -> int array
   val vocabulary : t -> int
+  val suppress_token_ids : t -> int list
   val cached_prefix : t -> int
   val kernels : t -> string list
 end

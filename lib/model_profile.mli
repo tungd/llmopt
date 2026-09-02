@@ -10,6 +10,7 @@ val create :
   bos_token_id:int ->
   message_start_token_id:int ->
   message_end_token_id:int ->
+  ?suppress_token_ids:int list ->
   ?minimum_prefill_tokens:int ->
   unit ->
   (t, string) result

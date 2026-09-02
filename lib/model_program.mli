@@ -138,6 +138,7 @@ module Generation : sig
     max_positions:int ->
     ?eos_token_id:int ->
     ?bos_token_id:int ->
+    ?suppress_token_ids:int list ->
     unit ->
     (t, string) result
 
@@ -145,6 +146,7 @@ module Generation : sig
   val max_positions : t -> int
   val eos_token_id : t -> int option
   val bos_token_id : t -> int option
+  val suppress_token_ids : t -> int list
 end
 
 module State : sig

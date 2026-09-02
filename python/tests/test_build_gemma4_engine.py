@@ -13,6 +13,7 @@ from build_gemma4_engine import (
     SPECIAL_SLIDING_INV_FREQ,
     external_binding,
     gemma_reference_constants,
+    gguf_suppress_token_ids,
     preserve_reference_constant_precision,
 )
 
@@ -41,6 +42,17 @@ def gemma_config() -> Gemma4TextConfig:
 
 
 class BuildGemma4EngineTests(unittest.TestCase):
+    def test_gguf_suppression_policy_is_forwarded_in_declared_order(self) -> None:
+        reader = types.SimpleNamespace(
+            fields={
+                "tokenizer.ggml.suppress_tokens": types.SimpleNamespace(
+                    contents=lambda: [258883, 258882]
+                )
+            }
+        )
+
+        self.assertEqual(gguf_suppress_token_ids(reader), (258883, 258882))
+
     def test_reference_constants_remain_float32(self) -> None:
         constants = {spec.name: spec for spec in gemma_reference_constants(gemma_config())}
 

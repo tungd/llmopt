@@ -1418,6 +1418,14 @@ let plan fx_graph =
             && Fx.Node.shape node = None
           then Ok ()
           else if
+            target = "torch._c._set_grad_enabled"
+            &&
+            (match Fx.Node.arguments node with
+            | [ Fx.Argument.Bool _ ] -> true
+            | _ -> false)
+            && Fx.Node.keyword_arguments node = []
+          then Ok ()
+          else if
             target_is target [ "chunk"; "torch.chunk"; "aten.chunk.default" ]
           then lower_chunk ()
           else if

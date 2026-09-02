@@ -225,6 +225,9 @@ let run root =
   Printf.printf "  Generation: vocab_size=%d, max_positions=%d\n"
     (Model_program.Generation.vocab_size gen)
     (Model_program.Generation.max_positions gen);
+  Printf.printf "  Suppressed token IDs: [%s]\n"
+    (Model_program.Generation.suppress_token_ids gen
+    |> List.map string_of_int |> String.concat ",");
   let attention_summary =
     match Model_program.State.Cache_layout.uniform_attention layout with
     | Some (kv_heads, head_dim) ->
