@@ -13,7 +13,7 @@ module Slot = struct
 end
 
 module Primitive = struct
-  type unary = Silu
+  type unary = Silu | Gelu | Sigmoid
   type binary = Mul | Add
   type linear = {
     m : int;
@@ -41,6 +41,8 @@ module Primitive = struct
     | Linear { m; n; k; bias = true; _ } ->
         Printf.sprintf "linear+bias[%dx%dx%d]" m n k
     | Unary Silu -> "silu"
+    | Unary Gelu -> "gelu"
+    | Unary Sigmoid -> "sigmoid"
     | Binary Mul -> "mul"
     | Binary Add -> "add"
 end
@@ -904,7 +906,7 @@ let validate_primitive map binding =
                 then Ok ()
                 else invalid "linear metadata is inconsistent")
         | Ok _, _ -> invalid "linear expects activation and weight inputs")
-  | Primitive.Unary Primitive.Silu -> (
+  | Primitive.Unary _ -> (
       match one_output binding, one binding.inputs with
       | Error error, _ | _, Error error -> Error error
       | Ok output, Ok input -> (
@@ -914,7 +916,7 @@ let validate_primitive map binding =
             when dtype = Ir.Dtype.Float16 && is_float dtype
                  && same_shape shape output.shape && dtype = output.dtype ->
               Ok ()
-          | Ok _ -> invalid "SiLU metadata is inconsistent"))
+          | Ok _ -> invalid "unary metadata is inconsistent"))
   | Primitive.Binary _ -> (
       match one_output binding, two binding.inputs with
       | Error error, _ | _, Error error -> Error error

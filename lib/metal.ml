@@ -3262,6 +3262,55 @@ kernel void llmopt_q4_0_linear_f16_m2(
   }
 }
 
+kernel void llmopt_q4_0_gated_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q4_0* gate_weight [[buffer(1)]],
+    device const block_q4_0* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_elements = params.m * params.n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / params.n;
+  const uint col = simd_idx - row * params.n;
+  const uint num_blocks = params.k >> 5;
+  device const block_q4_0* gate_row = gate_weight + col * num_blocks;
+  device const block_q4_0* up_row = up_weight + col * num_blocks;
+  device const half* in_ptr = input + row * params.k;
+  float gate_acc = 0.0f;
+  float up_acc = 0.0f;
+  for (uint b = 0; b < num_blocks; ++b) {
+    device const block_q4_0& gate = gate_row[b];
+    device const block_q4_0& up = up_row[b];
+    const uint8_t gate_byte =
+      lane < 16u ? gate.qs[lane] : gate.qs[lane - 16u];
+    const uint8_t up_byte =
+      lane < 16u ? up.qs[lane] : up.qs[lane - 16u];
+    const uint8_t gate_nibble =
+      lane < 16u ? (gate_byte & 0x0fu) : (gate_byte >> 4);
+    const uint8_t up_nibble =
+      lane < 16u ? (up_byte & 0x0fu) : (up_byte >> 4);
+    const half in_val = in_ptr[b * 32u + lane];
+    const half gate_d = gate.d;
+    const half up_d = up.d;
+    const int gate_q = int(gate_nibble) - 8;
+    const int up_q = int(up_nibble) - 8;
+    gate_acc += float(in_val) * (float(gate_d) * float(gate_q));
+    up_acc += float(in_val) * (float(up_d) * float(up_q));
+  }
+  gate_acc = simd_sum(gate_acc);
+  up_acc = simd_sum(up_acc);
+  if (lane == 0u) {
+    const half gate_projection = half(gate_acc);
+    const half up_projection = half(up_acc);
+    product[row * params.n + col] =
+      llmopt_gated_product(
+        float(gate_projection), float(up_projection), params.has_bias);
+  }
+}
+
 kernel void llmopt_q4_0_dual_swiglu_f16(
     device const half* normalized [[buffer(0)]],
     device const block_q4_0* gate_weight [[buffer(1)]],
@@ -3685,6 +3734,10 @@ let block32_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_linear_f16_m2"
       ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_gated_linear_f16"
+      ~operation:Kernel_abi.Operation.Gated_linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q8_0_dual_swiglu_f16"
@@ -9375,7 +9428,7 @@ let has_quant_linear graph =
              (match Ir.Value.dtype gate_weight with
              | Ir.Dtype.Quant
                  (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q5_0
-                 | Ir.Dtype.IQ4_XS) ->
+                 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS) ->
                  true
              | _ -> false)
              && Ir.Value.dtype up_weight = Ir.Value.dtype gate_weight

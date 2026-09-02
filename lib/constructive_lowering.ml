@@ -364,6 +364,13 @@ let normalize node =
           (match rms_metadata_compatible (node_id node) inputs output with
           | Ok () -> assignment node (Kernel_ir.Primitive.rms_norm ~epsilon) output
           | Error boundary -> Ineligible boundary)
+      | Ir.Op.Gelu, inputs ->
+          (match unary_metadata_compatible (node_id node) inputs output with
+          | Ok () ->
+              assignment node
+                (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Gelu)
+                output
+          | Error boundary -> Ineligible boundary)
       | Ir.Op.Add _, inputs ->
           (match binary_metadata_compatible (node_id node) inputs output with
           | Ok () ->
@@ -373,12 +380,19 @@ let normalize node =
           | Error boundary -> Ineligible boundary)
       | Ir.Op.Primitive (Ir.Primitive.Pointwise operation), inputs -> (
           match operation with
-          | Ir.Pointwise.Unary (Ir.Pointwise.Silu, value)
+          | Ir.Pointwise.Unary
+              ((Ir.Pointwise.Silu | Ir.Pointwise.Sigmoid as operator), value)
             when (match inputs with [ input ] -> Ir.Value.equal input value | _ -> false) ->
               (match unary_metadata_compatible (node_id node) inputs output with
               | Ok () ->
+                  let primitive =
+                    match operator with
+                    | Ir.Pointwise.Silu -> Kernel_ir.Primitive.Silu
+                    | Ir.Pointwise.Sigmoid -> Kernel_ir.Primitive.Sigmoid
+                    | _ -> assert false
+                  in
                   assignment node
-                    (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu)
+                    (Kernel_ir.Primitive.unary primitive)
                     output
               | Error boundary -> Ineligible boundary)
           | Ir.Pointwise.Binary (operator, _, _)
@@ -787,7 +801,7 @@ let add_info assignment =
       Some (output, left, right)
   | _ -> None
 
-let silu_info assignment =
+let gated_activation_info assignment =
   let node = Assignment.source_node assignment in
   match Ir.node_op node, Ir.node_inputs node, Assignment.outputs assignment with
   | ( Ir.Op.Primitive
@@ -795,7 +809,17 @@ let silu_info assignment =
            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, declared))),
       [ input ],
       [ output ] )
-    when Ir.Value.equal declared input -> Some (input, output)
+    when Ir.Value.equal declared input ->
+      Some (Ir.Gated_activation.Silu, input, output)
+  | Ir.Op.Gelu, [ input ], [ output ] ->
+      Some (Ir.Gated_activation.Gelu, input, output)
+  | ( Ir.Op.Primitive
+        (Ir.Primitive.Pointwise
+           (Ir.Pointwise.Unary (Ir.Pointwise.Sigmoid, declared))),
+      [ input ],
+      [ output ] )
+    when Ir.Value.equal declared input ->
+      Some (Ir.Gated_activation.Sigmoid, input, output)
   | _ -> None
 
 let mul_info assignment =
@@ -849,9 +873,20 @@ let same_linear_add_metadata ~m ~n ~linear_output ~residual ~add_output =
   && same_shape linear_output add_output
   && numel residual = m * n
 
-let executable_gated_quant quant m =
-  quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_0
-  || (m = 2 && (quant = Ir.Dtype.Q5_K || quant = Ir.Dtype.IQ4_XS))
+let executable_gated_quant target quant m =
+  let required_threads =
+    if m = 2 && (quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_K) then 64
+    else 256
+  in
+  let target_supports =
+    target.Target_hardware.memory.simd_lanes = 32
+    && required_threads
+       <= target.Target_hardware.execution.max_threads_per_threadgroup
+  in
+  target_supports
+  && (quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_0
+      || quant = Ir.Dtype.Q4_0
+      || (m = 2 && (quant = Ir.Dtype.Q5_K || quant = Ir.Dtype.IQ4_XS)))
 
 type event_match = {
   kind : Lowering.Kind.t;
@@ -862,7 +897,7 @@ type event_match = {
 let ordered_subset assignments predicate =
   List.filter predicate assignments
 
-let gated_match ~graph ~decisions assignments =
+let gated_match ~target ~graph ~decisions assignments =
   let muls = ordered_subset assignments (fun assignment ->
       Option.is_some (mul_info assignment))
   in
@@ -873,10 +908,10 @@ let gated_match ~graph ~decisions assignments =
         let try_orientation activated up_value =
           match assignment_by_output assignments activated with
           | None -> None
-          | Some silu_assignment ->
-              (match silu_info silu_assignment with
+          | Some activation_assignment ->
+              (match gated_activation_info activation_assignment with
               | None -> None
-              | Some (gate_linear_value, silu_output) ->
+              | Some (activation, gate_linear_value, activated_output) ->
                   (match assignment_by_output assignments gate_linear_value,
                     assignment_by_output assignments up_value with
                   | Some gate_assignment, Some up_assignment ->
@@ -885,7 +920,7 @@ let gated_match ~graph ~decisions assignments =
                           (match gate.quant, up.quant with
                           | Some gate_quant, Some up_quant
                             when gate_quant = up_quant
-                                 && executable_gated_quant gate_quant gate.m
+                                 && executable_gated_quant target gate_quant gate.m
                                  && gate.m = up.m && gate.n = up.n
                                  && gate.k = up.k
                                  && same_values gate.input up.input
@@ -893,22 +928,22 @@ let gated_match ~graph ~decisions assignments =
                                  && same_values up.output up_value
                                  && accepted_pair decisions
                                       (assignment_id gate_assignment)
-                                      (assignment_id silu_assignment)
+                                      (assignment_id activation_assignment)
                                  && accepted_pair decisions
-                                      (assignment_id silu_assignment)
+                                      (assignment_id activation_assignment)
                                       (assignment_id mul_assignment)
                                  && accepted_pair decisions
                                       (assignment_id up_assignment)
                                       (assignment_id mul_assignment)
                                  && not (graph_output_value graph gate.output)
-                                 && not (graph_output_value graph silu_output)
+                                 && not (graph_output_value graph activated_output)
                                  && not (graph_output_value graph up.output)
                                  ->
                               let selected_ids =
-                                [ assignment_id gate_assignment;
-                                  assignment_id up_assignment;
-                                  assignment_id silu_assignment;
-                                  assignment_id mul_assignment ]
+                                  [ assignment_id gate_assignment;
+                                    assignment_id up_assignment;
+                                    assignment_id activation_assignment;
+                                    assignment_id mul_assignment ]
                                 |> Node_set.of_list
                               in
                               let source_assignments =
@@ -923,7 +958,7 @@ let gated_match ~graph ~decisions assignments =
                                   ~op:
                                     (Ir.Op.Gated_linear
                                        { m = gate.m; n = gate.n; k = gate.k;
-                                         activation = Ir.Gated_activation.Silu })
+                                         activation })
                                   ~inputs:[ gate.input; gate.weight; up.weight ]
                               in
                               Some
@@ -1012,10 +1047,12 @@ let is_add_operation = function
          (Ir.Pointwise.Binary (Ir.Pointwise.Add, _, _))) -> true
   | _ -> false
 
-let is_silu_operation = function
+let is_gated_activation_operation = function
   | Ir.Op.Primitive
       (Ir.Primitive.Pointwise
-         (Ir.Pointwise.Unary (Ir.Pointwise.Silu, _))) -> true
+         (Ir.Pointwise.Unary
+            ((Ir.Pointwise.Silu | Ir.Pointwise.Sigmoid), _)))
+  | Ir.Op.Gelu -> true
   | _ -> false
 
 let is_mul_operation = function
@@ -1033,16 +1070,14 @@ let candidate_kind node_map source destination =
   | Some source_op, Some destination_op ->
       (match covered_linear_operation source_op, is_add_operation destination_op with
       | Some kind, true -> Some kind
-      | _ ->
-          match covered_linear_operation destination_op, is_add_operation source_op with
-          | Some kind, true -> Some kind
-          | _ when is_silu_operation source_op || is_silu_operation destination_op
-                 || is_mul_operation source_op || is_mul_operation destination_op ->
-              (match covered_linear_operation source_op,
-                covered_linear_operation destination_op with
-              | Some _, _ | _, Some _ -> Some Lowering.Kind.Gated_linear
-              | _ -> None)
-          | _ -> None)
+      | _ when
+          (Option.is_some (covered_linear_operation source_op)
+           && (is_gated_activation_operation destination_op
+               || is_mul_operation destination_op))
+          || (is_gated_activation_operation source_op
+              && is_mul_operation destination_op) ->
+          Some Lowering.Kind.Gated_linear
+      | _ -> None)
   | _ -> None
 
 let overlap claimed assignments =
@@ -1079,6 +1114,7 @@ let apply_events graph events =
 
 let lower analysis =
   let graph = Analysis.graph analysis in
+  let target = Analysis.target analysis in
   let node_map =
     Ir.Graph.nodes graph
     |> List.fold_left
@@ -1090,7 +1126,7 @@ let lower analysis =
   let gated_matches =
     regions
     |> List.filter_map (fun region ->
-           gated_match ~graph ~decisions (Region.assignments region))
+           gated_match ~target ~graph ~decisions (Region.assignments region))
   in
   let claimed, gated_events =
     List.fold_left
@@ -1184,7 +1220,10 @@ let lower analysis =
     regions
     |> List.concat_map (fun region ->
            let assignments = Region.assignments region in
-           if Option.is_some (gated_match ~graph ~decisions assignments) then []
+           if
+             Option.is_some
+               (gated_match ~target ~graph ~decisions assignments)
+           then []
            else
              List.concat_map
                (fun assignment ->
@@ -1193,7 +1232,10 @@ let lower analysis =
                  | Some _linear ->
                      assignments
                      |> List.filter_map (fun destination ->
-                            match silu_info destination, mul_info destination with
+                            match
+                              gated_activation_info destination,
+                              mul_info destination
+                            with
                             | Some _, _ | _, Some _
                               when assignment_id destination <> assignment_id assignment
                                    && accepted_pair decisions

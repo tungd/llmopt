@@ -15,7 +15,7 @@ module Slot : sig
 end
 
 module Primitive : sig
-  type unary = Silu
+  type unary = Silu | Gelu | Sigmoid
   type binary = Mul | Add
 
   (** [m] rows of activation, [n] output columns, [k] input columns. *)

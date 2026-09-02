@@ -5655,6 +5655,105 @@ let () =
                activation = Ir.Gated_activation.Silu } -> true
          | _ -> false))
     "UOC-05 optimize lowers the executable gated Linear/Silu/Mul region";
+
+  (* Gemma 4's captured feed-forward branch uses Q4_0 gate/up weights and
+     GELU.  It is the same shared-input dependency join as the SiLU fixture,
+     so the constructive assignment model must retain the activation instead
+     of routing the region through the topology-specific legacy matcher. *)
+  let uoc05_gelu_q4_graph = Ir.Graph.create () in
+  let uoc05_gelu_q4_input =
+    uoc03_input uoc05_gelu_q4_graph "uoc05-gelu-q4-input" [ 1; 64 ]
+      Ir.Dtype.Float16
+  in
+  let uoc05_gelu_q4_weight name =
+    uoc03_input uoc05_gelu_q4_graph name [ 128; 64 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let uoc05_gelu_q4_gate_weight =
+    uoc05_gelu_q4_weight "uoc05-gelu-q4-gate.weight"
+  in
+  let uoc05_gelu_q4_up_weight =
+    uoc05_gelu_q4_weight "uoc05-gelu-q4-up.weight"
+  in
+  let uoc05_gelu_q4_append op inputs =
+    let output =
+      uoc03_value uoc05_gelu_q4_graph [ 1; 128 ] Ir.Dtype.Float16
+    in
+    Ir.Graph.append uoc05_gelu_q4_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let uoc05_gelu_q4_gate =
+    uoc05_gelu_q4_append
+      (Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+      [ uoc05_gelu_q4_input; uoc05_gelu_q4_gate_weight ]
+  in
+  let uoc05_gelu_q4_up =
+    uoc05_gelu_q4_append
+      (Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+      [ uoc05_gelu_q4_input; uoc05_gelu_q4_up_weight ]
+  in
+  let uoc05_gelu_q4_activated =
+    uoc05_gelu_q4_append
+      Ir.Op.Gelu
+      [ uoc05_gelu_q4_gate ]
+  in
+  let uoc05_gelu_q4_output =
+    uoc05_gelu_q4_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor uoc05_gelu_q4_activated,
+                 Ir.Pointwise.Tensor uoc05_gelu_q4_up ))))
+      [ uoc05_gelu_q4_activated; uoc05_gelu_q4_up ]
+  in
+  let uoc05_gelu_q4_down_weight =
+    uoc03_input uoc05_gelu_q4_graph "uoc05-gelu-q4-down.weight" [ 64; 128 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let uoc05_gelu_q4_down =
+    let output =
+      uoc03_value uoc05_gelu_q4_graph [ 1; 64 ] Ir.Dtype.Float16
+    in
+    Ir.Graph.append uoc05_gelu_q4_graph
+      ~op:(Ir.Op.Linear { m = 1; n = 64; k = 128; bias = false })
+      ~inputs:[ uoc05_gelu_q4_output; uoc05_gelu_q4_down_weight ]
+      ~output:(Some output);
+    output
+  in
+  Ir.Graph.add_output uoc05_gelu_q4_graph ~name:"uoc05-gelu-q4-result"
+    uoc05_gelu_q4_down;
+  let uoc05_gelu_q4_optimization =
+    uoc05_optimization uoc05_gelu_q4_graph
+  in
+  let uoc05_gelu_q4_execution =
+    Passes.Optimization.execution_graph uoc05_gelu_q4_optimization
+  in
+  expect
+    (List.exists
+       (fun event ->
+         Constructive_lowering.Lowering.Event.kind event
+         = Constructive_lowering.Lowering.Kind.Gated_linear)
+       (Constructive_lowering.Lowering.events
+          (Passes.Optimization.lowering uoc05_gelu_q4_optimization))
+    && Passes.Optimization.legacy_fallbacks uoc05_gelu_q4_optimization = []
+    && uoc05_has_op uoc05_gelu_q4_execution (function
+         | Ir.Op.Gated_linear
+             { m = 1; n = 128; k = 64;
+               activation = Ir.Gated_activation.Gelu } -> true
+         | _ -> false))
+    "UOC-05 constructively lowers Q4_0 Linear/GELU/Mul without a legacy matcher";
+  let uoc05_gelu_q4_program = Metal.lower uoc05_gelu_q4_execution |> expect_ok in
+  expect
+    (Metal.Program.kernels uoc05_gelu_q4_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q4_0_gated_linear_f16"
+           && Kernel_abi.Entry.operation entry
+              = Kernel_abi.Operation.Gated_linear))
+    "Q4_0 constructive GELU lowering declares its gated Metal tactic";
+  let _uoc05_gelu_q4_schedule =
+    Serving_schedule.of_graph uoc05_gelu_q4_execution |> expect_ok
+  in
   let uoc05_bad_graph = Ir.Graph.create () in
   let uoc05_bad_input =
     uoc03_input uoc05_bad_graph "uoc05-bad-input" [ 1; 64 ] Ir.Dtype.Float16
@@ -5706,6 +5805,7 @@ let () =
              (Passes.Optimization.Legacy_fallback.matcher fallback)
            = "fuse_quant_linear_add"
            && Passes.Optimization.Legacy_fallback.invocations fallback = 1
+           && Passes.Optimization.Legacy_fallback.rewrites fallback = 0
        | _ -> false)
     && not
          (uoc05_has_op
@@ -6233,7 +6333,8 @@ let () =
        = List.length (Passes.Receipt.decisions uoc06_linear_receipt)
     && Passes.Receipt.legacy_count uoc06_linear_receipt = 0
     && List.length (Passes.Receipt.legacy_counts uoc06_linear_receipt) = 3
-    && List.for_all (fun (_, count) -> count = 0)
+    && List.for_all
+         (fun (_, invocations, rewrites) -> invocations = 0 && rewrites = 0)
          (Passes.Receipt.legacy_counts uoc06_linear_receipt)
     && List.length (Passes.Receipt.events uoc06_linear_receipt) = 1
     && List.length (Passes.Receipt.kernels uoc06_linear_receipt) > 0

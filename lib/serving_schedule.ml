@@ -368,7 +368,9 @@ let validate_command seen_values command =
               && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n
               && Ir.Value.dtype input = Ir.Dtype.Float16
               && (match Ir.Value.dtype gate_weight with
-                 | Ir.Dtype.Quant (Ir.Dtype.Q4_K | Ir.Dtype.Q5_0) -> true
+                 | Ir.Dtype.Quant
+                     (Ir.Dtype.Q4_K | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0) ->
+                     true
                  | Ir.Dtype.Quant
                      (Ir.Dtype.Q5_K | Ir.Dtype.IQ4_XS) ->
                      m = 2
