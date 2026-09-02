@@ -82,8 +82,12 @@ module Receipt : sig
   val unified_count : t -> int
   val accepted_count : t -> int
   val cut_count : t -> int
+
+  (** Number of graph rewrites produced by invoked legacy matchers. *)
   val legacy_count : t -> int
-  val legacy_counts : t -> (Legacy_matcher.t * int) list
+  val legacy_invocation_count : t -> int
+  val legacy_rewrite_count : t -> int
+  val legacy_counts : t -> (Legacy_matcher.t * int * int) list
   val linear_selections : t -> Linear_selection.t list
   val kernels : t -> Kernel_abi.Entry.t list
   val queue_stages : t -> Queue_stage.t list
@@ -105,6 +109,7 @@ module Optimization : sig
 
     val matcher : t -> matcher
     val invocations : t -> int
+    val rewrites : t -> int
     val name : matcher -> string
   end
 

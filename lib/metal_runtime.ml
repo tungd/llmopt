@@ -3130,6 +3130,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               | Ir.Dtype.Quant quant, up_dtype
                 when up_dtype = Ir.Dtype.Quant quant
                      && (quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_0
+                        || quant = Ir.Dtype.Q4_0
                         || (m = 2
                            && (quant = Ir.Dtype.Q5_K
                               || quant = Ir.Dtype.IQ4_XS))) ->
@@ -3161,6 +3162,7 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                      = Some "1" ->
                   "llmopt_q5_0_gated_linear_f16_llama_mv"
               | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
+              | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
               | Ir.Dtype.IQ4_XS, 2 ->
                   "llmopt_iq4_xs_gated_linear_f16_m2"
               | _ -> assert false
@@ -3182,7 +3184,8 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                     Error "Q5_0 gated Linear grid dimension overflows"
                   else Ok (groups * 256)
               | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
-              | Ir.Dtype.Q4_K, _ -> linear_f16_grid (m * n)
+              | (Ir.Dtype.Q4_K | Ir.Dtype.Q4_0), _ ->
+                  linear_f16_grid (m * n)
               | _ -> assert false
             in
             dispatched

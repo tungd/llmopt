@@ -174,8 +174,9 @@ module Receipt = struct
     unified_count : int;
     accepted_count : int;
     cut_count : int;
-    legacy_count : int;
-    legacy_counts : (Legacy_matcher.t * int) list;
+    legacy_invocation_count : int;
+    legacy_rewrite_count : int;
+    legacy_counts : (Legacy_matcher.t * int * int) list;
     linear_selections : Linear_selection.t list;
     kernels : Kernel_abi.Entry.t list;
     queue_stages : Queue_stage.t list;
@@ -190,7 +191,9 @@ module Receipt = struct
   let unified_count receipt = receipt.unified_count
   let accepted_count receipt = receipt.accepted_count
   let cut_count receipt = receipt.cut_count
-  let legacy_count receipt = receipt.legacy_count
+  let legacy_count receipt = receipt.legacy_rewrite_count
+  let legacy_invocation_count receipt = receipt.legacy_invocation_count
+  let legacy_rewrite_count receipt = receipt.legacy_rewrite_count
   let legacy_counts receipt = receipt.legacy_counts
   let linear_selections receipt = receipt.linear_selections
   let kernels receipt = receipt.kernels
@@ -583,13 +586,14 @@ module Receipt = struct
   let to_yojson receipt =
     let legacy_counts =
       receipt.legacy_counts
-      |> List.map (fun (matcher, invocations) ->
+      |> List.map (fun (matcher, invocations, rewrites) ->
              `Assoc
                [ ("matcher", `String (legacy_matcher_to_string matcher));
-                 ("invocations", `Int invocations) ])
+                 ("invocations", `Int invocations);
+                 ("rewrites", `Int rewrites) ])
     in
     `Assoc
-      [ ("schema-version", `Int 1);
+      [ ("schema-version", `Int 2);
         ("target", Target_hardware.to_json receipt.target);
         ( "fusion",
           `Assoc
@@ -604,7 +608,10 @@ module Receipt = struct
             [ ("unified-count", `Int receipt.unified_count);
               ("accepted-count", `Int receipt.accepted_count);
               ("cut-count", `Int receipt.cut_count);
-              ("legacy-count", `Int receipt.legacy_count);
+              ("legacy-count", `Int receipt.legacy_rewrite_count);
+              ( "legacy-invocation-count",
+                `Int receipt.legacy_invocation_count );
+              ("legacy-rewrite-count", `Int receipt.legacy_rewrite_count);
               ("legacy-counts", `List legacy_counts) ] );
         ( "linear-tactics",
           `List (List.map linear_selection_to_json receipt.linear_selections) );
@@ -751,16 +758,23 @@ module Receipt = struct
     let legacy_counts =
       List.map
         (fun matcher ->
-          let invocations =
+          let invocations, rewrites =
             legacy_counts
-            |> List.find_opt (fun (candidate, _) -> candidate = matcher)
-            |> function Some (_, count) -> count | None -> 0
+            |> List.find_opt (fun (candidate, _, _) -> candidate = matcher)
+            |> function
+            | Some (_, invocations, rewrites) -> invocations, rewrites
+            | None -> 0, 0
           in
-          matcher, invocations)
+          matcher, invocations, rewrites)
         all_legacy_matchers
     in
-    let legacy_count =
-      List.fold_left (fun count (_, invocations) -> count + invocations) 0
+    let legacy_invocation_count =
+      List.fold_left
+        (fun count (_, invocations, _) -> count + invocations)
+        0 legacy_counts
+    in
+    let legacy_rewrite_count =
+      List.fold_left (fun count (_, _, rewrites) -> count + rewrites) 0
         legacy_counts
     in
     { target;
@@ -770,7 +784,8 @@ module Receipt = struct
       unified_count = List.length events;
       accepted_count;
       cut_count;
-      legacy_count;
+      legacy_invocation_count;
+      legacy_rewrite_count;
       legacy_counts;
       linear_selections = linear_selections_of_plan target execution_plan;
       kernels;
@@ -804,10 +819,11 @@ module Optimization = struct
   module Legacy_fallback = struct
     type matcher = Quant_linear_add | W4a16_linear_add | Quant_gated_linear
 
-    type t = { matcher : matcher; invocations : int }
+    type t = { matcher : matcher; invocations : int; rewrites : int }
 
     let matcher fallback = fallback.matcher
     let invocations fallback = fallback.invocations
+    let rewrites fallback = fallback.rewrites
 
     let name = function
       | Quant_linear_add -> "fuse_quant_linear_add"
@@ -852,7 +868,8 @@ module Optimization = struct
       |> List.map (fun fallback ->
              ( receipt_legacy_matcher
                  (Legacy_fallback.matcher fallback),
-               Legacy_fallback.invocations fallback ))
+               Legacy_fallback.invocations fallback,
+               Legacy_fallback.rewrites fallback ))
     in
     Receipt.make ~target:optimization.target
       ~analysis:optimization.region_analysis ~lowering:optimization.lowering
@@ -902,12 +919,34 @@ let invoke_legacy_fallback matcher graph =
   | Optimization.Legacy_fallback.Quant_gated_linear ->
       Pass_fuse_linear_bias.fuse_quant_gated_linear graph
 
+let legacy_rewrite_count matcher graph =
+  Ir.Graph.nodes graph
+  |> List.fold_left
+       (fun count node ->
+         let matched =
+           match matcher, Ir.node_op node with
+           | Optimization.Legacy_fallback.Quant_linear_add,
+             Ir.Op.Linear_add _ -> true
+           | Optimization.Legacy_fallback.W4a16_linear_add,
+             Ir.Op.W4a16_linear { bias = true; _ } -> true
+           | Optimization.Legacy_fallback.Quant_gated_linear,
+             Ir.Op.Gated_linear _ -> true
+           | _ -> false
+         in
+         if matched then count + 1 else count)
+       0
+
 let apply_legacy_fallbacks graph lowering =
   legacy_fallback_kinds lowering
   |> List.fold_left
        (fun (graph, fallbacks) matcher ->
-         ( invoke_legacy_fallback matcher graph,
-           { Optimization.Legacy_fallback.matcher; invocations = 1 }
+         let before = legacy_rewrite_count matcher graph in
+         let rewritten = invoke_legacy_fallback matcher graph in
+         let after = legacy_rewrite_count matcher rewritten in
+         ( rewritten,
+           { Optimization.Legacy_fallback.matcher;
+             invocations = 1;
+             rewrites = max 0 (after - before) }
            :: fallbacks ))
        (graph, [])
   |> fun (graph, fallbacks) -> graph, List.rev fallbacks
