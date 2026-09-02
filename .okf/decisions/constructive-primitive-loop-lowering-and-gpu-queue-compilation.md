@@ -38,6 +38,9 @@ sources:
   - id: assignment-backed-execution
     resource: /experiments/exp-0141-assignment-backed-gemma4-execution-2026-09-03.md
     title: Primitive-assignment-backed Gemma package and model run
+  - id: constructive-rms-rope
+    resource: /experiments/exp-0142-constructive-rms-rope-gemma4-2026-09-03.md
+    title: Constructive RMSNorm and RoPE Gemma execution
 ---
 
 # Decision
@@ -216,16 +219,13 @@ semantic coverage and the generated plan records the new path. The target
 architecture supersedes them; the decision does not claim they are already
 absent.
 
-# Outstanding transition gaps
+# Current transition boundary
 
-The current constructive implementation is narrower than this decision. Its
-replacement kinds cover Linear-add and gated-Linear regions, while named
-RMSNorm/RoPE, ShortConv/SiLU, GQA layout, and gated-delta transformations still
-run through operation-specific passes. Extending the implementation means
-emitting those graphs from pointwise, reduction, index, movement, state, and
-effect assignments selected by the shared dependency and cost model. Adding a
-new named constructive matcher for each family would preserve the ad hoc
-architecture under a different module.
+The constructive implementation covers Linear-add, gated-Linear, raw RMSNorm,
+RMSNorm-RoPE, and ShortConv-SiLU regions. It selects these from primitive slot
+dependencies inside legal maximal components and extracts exact inner slices,
+including internal fan-out. GQA layout and gated-delta transformations remain
+the two operation-specific compiler paths.
 
 The attempted `assignment_*_tactics` migration did exactly that and has been
 removed. Although `Kernel_ir` regions were formed and printed, backend code
@@ -234,22 +234,20 @@ region receipt is not a lowering path: a covered pass can be retired only after
 its assignment bindings select and emit the executable kernel and schedule
 command that replace it.[^matched-policy-diagnostic]
 
-That executable seam now exists for accepted Linear/add and
-dual-Linear/activation/multiply regions. Their primitive programs survive
+That executable seam now exists for accepted Linear/add,
+dual-Linear/activation/multiply, RMSNorm, RMSNorm-RoPE, and ShortConv-SiLU
+regions. Their primitive programs survive
 Serving Schedule ABI 28 serialization and specialization, drive Metal tactic
 selection, and supply runtime buffers, dimensions, storage, activation, and
-result metadata. The assignment-backed Gemma bundle contains 48 regions per
-entrypoint and reproduces the prior LLMOpt top-10 logits exactly. The remaining
-RMSNorm/RoPE, ShortConv/SiLU, GQA-layout, and gated-delta passes are still
-legacy-backed and remain active.[^assignment-backed-execution]
+result metadata. The latest Gemma bundle contains 337 regions per entrypoint:
+48 gated-Linear, 96 RMSNorm-RoPE, and 193 standalone RMSNorm regions. GQA
+layout and gated delta remain active legacy transformations.
+[^assignment-backed-execution][^constructive-rms-rope]
 
-Gemma 4 12B generated-token parity is not established. Under the same 37 prompt
-IDs and GGUF suppression set, llama.cpp selects token `100`, while LLMOpt moves
-from raw token `258882` to policy token `236888`; their raw and policy top-10
-sets are disjoint. Suppression is therefore no longer the unexplained boundary:
-the remaining first-token mismatch is in model arithmetic, and a particular
-operator or layer requires intermediate-tensor comparison to identify.
-[^gemma-repair][^matched-policy-diagnostic]
+Gemma 4 12B next-token parity is established for the exact 37 prompt IDs and
+GGUF suppression set: both llama.cpp and the assignment-backed LLMOpt engine
+select token `100`. Ranked top-logit IDs agree through rank eight and then
+differ, so bit-exact full-logit parity is not claimed.[^constructive-rms-rope]
 
 Full-model code generation currently targets Metal. The repository's Vulkan
 work is experimental primitive-backend evidence, not a second full-model

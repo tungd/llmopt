@@ -1,6 +1,7 @@
 # Experiments
 
 * [Unified compiler Gemma 4 repair and queue-collapse diagnosis](exp-0139-unified-compiler-gemma4-repair-2026-09-02.md) - constructive Q4_0/GELU coverage, AOT queue deltas, direct-command repair, widened native fixtures, F32 Gemma constants, and the unmatched generation-policy boundary.
+* [Constructive RMSNorm and RoPE Gemma execution](exp-0142-constructive-rms-rope-gemma4-2026-09-03.md) - 337 primitive regions per entrypoint execute from assignment bindings and select token 100 on the pinned prompt.
 
 * [FX linear smoke](exp-0001-fx-linear.md) - first Python-to-OCaml code-generation probe.
 * [LFM2.5 naive MPS execution](exp-0002-lfm25-mps.md) - complete model forward against eager MPS.

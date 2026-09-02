@@ -1,0 +1,18 @@
+Constructive RMSNorm/RoPE Gemma 4 12B result — 2026-09-03
+
+Model: unsloth/gemma-4-12B-it-qat-GGUF
+GGUF bytes: 6716356800
+GGUF SHA-256: 90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370
+Prompt token IDs: 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107
+Suppressed token IDs: 258882,258883
+Artifact: _artifacts/gemma4-12b-qat-constructive-rope-2026-09-03
+Model Program: valid ABI v7
+Primitive regions per entrypoint: 337
+Fusion events per entrypoint: gated-linear=48, rms-rope=96, rms-normalize=193
+LLMOpt probe-seconds: 9.887640
+LLMOpt raw/policy top 10:
+100:28.46875,3041:13.390625,1751:12.84375,38073:12.0625,594:11.8125,119216:11.6015625,236811:11.2109375,1502:11.1953125,236829:11.1875,95340:11.1796875
+llama.cpp policy IDs: 100,3041,1751,38073,594,119216,236811,1502,95340,120509
+
+Both runtimes select token 100. Their ranked IDs share the first eight
+positions; this is next-token equality, not bit-exact logit parity.
