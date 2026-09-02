@@ -605,18 +605,24 @@ let () =
         full head_dimension ]
     |> expect_ok
   in
-  let expand_gqa input =
-    generalized_append (Ir.Movement.Index gqa_index) input
-      [ batches; kv_heads; 1; tokens; head_dimension ]
-    |> fun indexed ->
-    generalized_append Ir.Movement.Expand indexed
+  let expand_gqa new_axis input =
+    let with_group_axis =
+      match new_axis with
+      | `Index ->
+          generalized_append (Ir.Movement.Index gqa_index) input
+            [ batches; kv_heads; 1; tokens; head_dimension ]
+      | `Unsqueeze ->
+          generalized_append (Ir.Movement.Unsqueeze 2) input
+            [ batches; kv_heads; 1; tokens; head_dimension ]
+    in
+    generalized_append Ir.Movement.Expand with_group_axis
       [ batches; kv_heads; groups; tokens; head_dimension ]
     |> fun expanded ->
     generalized_append Ir.Movement.Reshape expanded
       [ batches; heads; tokens; head_dimension ]
   in
-  let expanded_key = expand_gqa generalized_key in
-  let expanded_value = expand_gqa generalized_value in
+  let expanded_key = expand_gqa `Index generalized_key in
+  let expanded_value = expand_gqa `Unsqueeze generalized_value in
   let attention_output = generalized_fresh [ batches; heads; tokens; head_dimension ] in
   let generalized_attention =
     Ir.Attention.create ~scale:0.125 ~causal:false |> expect_ok

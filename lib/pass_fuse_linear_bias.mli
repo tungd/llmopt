@@ -9,13 +9,6 @@ val fuse_quant_gated_linear : Ir.Graph.t -> Ir.Graph.t
 val fuse_w4a16_qkv : Ir.Graph.t -> Ir.Graph.t
 val fuse_quant_qkv : Ir.Graph.t -> Ir.Graph.t
 
-val eliminate_attention_transpose : Ir.Graph.t -> Ir.Graph.t
-
-val eliminate_kv_transpose : Ir.Graph.t -> Ir.Graph.t
-val eliminate_value_transpose : Ir.Graph.t -> Ir.Graph.t
-
-val eliminate_gqa_expansion : Ir.Graph.t -> Ir.Graph.t
-
 (** Canonicalize attention operands and results by composing typed logical-axis
     provenance across movement primitives. *)
 val canonicalize_layouts : Ir.Graph.t -> Ir.Graph.t

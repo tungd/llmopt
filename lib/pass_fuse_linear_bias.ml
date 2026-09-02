@@ -584,6 +584,13 @@ module Layout_model = struct
 
   let product = function [ axis ] -> axis | axes -> Product (flatten axes)
 
+  let rec insert index item = function
+    | axes when index < 0 -> None
+    | axes when index = 0 -> Some (item :: axes)
+    | axis :: axes ->
+        Option.map (fun axes -> axis :: axes) (insert (index - 1) item axes)
+    | [] -> None
+
   let reshape_axes input_dimensions input_axes output_dimensions =
     let rec take target accumulated axes dimensions taken =
       match axes, dimensions with
@@ -673,13 +680,7 @@ module Layout_model = struct
                         if input_dimensions = output_dimensions then Some traced.axes
                         else None
                     | Ir.Movement.Unsqueeze axis ->
-                        if axis < 0 || axis > List.length traced.axes then None
-                        else
-                          Some
-                            (List.mapi
-                               (fun index existing ->
-                                 if index = axis then Broadcast else existing)
-                               (traced.axes @ [ Broadcast ]))
+                        insert axis Broadcast traced.axes
                     | Ir.Movement.Roll _ | Ir.Movement.Concat _ -> None
                   in
                   Option.map
@@ -853,12 +854,5 @@ module Layout_model = struct
 end
 
 let canonicalize_layouts graph = Layout_model.canonicalize_attention graph
-
-(* Transitional source compatibility: all former layout entry points now use
-   the same provenance model instead of their historical chain matchers. *)
-let eliminate_attention_transpose = canonicalize_layouts
-let eliminate_kv_transpose = canonicalize_layouts
-let eliminate_value_transpose = canonicalize_layouts
-let eliminate_gqa_expansion = canonicalize_layouts
 
 let pass = Pass.create ~name ~description ~run
