@@ -584,14 +584,30 @@ let () =
     generalized_input "generalized_query"
       [ batches; heads; tokens; head_dimension ] Ir.Dtype.Float16
   in
+  let generalized_key_token_major =
+    generalized_input "generalized_key_token_major"
+      [ batches; tokens; kv_heads; head_dimension ] Ir.Dtype.Float16
+  in
+  let generalized_value_token_major =
+    generalized_input "generalized_value_token_major"
+      [ batches; tokens; kv_heads; head_dimension ] Ir.Dtype.Float16
+  in
   let generalized_key =
-    generalized_input "generalized_key"
-      [ batches; kv_heads; tokens; head_dimension ] Ir.Dtype.Float16
+    generalized_append
+      (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })
+      generalized_key_token_major
+      [ batches; kv_heads; tokens; head_dimension ]
   in
   let generalized_value =
-    generalized_input "generalized_value"
-      [ batches; kv_heads; tokens; head_dimension ] Ir.Dtype.Float16
+    generalized_append
+      (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 })
+      generalized_value_token_major
+      [ batches; kv_heads; tokens; head_dimension ]
   in
+  Ir.Graph.add_output generalized_attention_graph ~name:"cached_key"
+    generalized_key;
+  Ir.Graph.add_output generalized_attention_graph ~name:"cached_value"
+    generalized_value;
   let generalized_mask =
     generalized_input "generalized_mask" [ batches; 1; tokens; tokens ]
       Ir.Dtype.Bool
@@ -672,9 +688,13 @@ let () =
     (Ir.Graph.nodes generalized_attention_graph
     |> List.for_all (fun node ->
            match Ir.node_op node with
-           | Ir.Op.Primitive (Ir.Primitive.Movement _) -> false
+           | Ir.Op.Primitive
+               (Ir.Primitive.Movement
+                 (Ir.Movement.Index _ | Ir.Movement.Expand
+                 | Ir.Movement.Reshape | Ir.Movement.Contiguous
+                 | Ir.Movement.Unsqueeze _)) -> false
            | _ -> true))
-    "attention layout fusion removes the materialized GQA and token-first chains";
+    "attention layout fusion removes GQA and token-first chains at shared cache boundaries";
   let generalized_attention_schedule =
     generalized_attention_graph |> Serving_schedule.of_graph |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
@@ -685,6 +705,8 @@ let () =
          ~minimum_tokens:1 ~captured_tokens:tokens ~tokens:5
     |> expect_ok
   in
+  specialized_attention_schedule |> Serving_memory_plan.create |> expect_ok
+  |> ignore;
   expect
     (specialized_attention_schedule |> Serving_schedule.commands
     |> List.find_map (fun command ->

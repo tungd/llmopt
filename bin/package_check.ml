@@ -1,10 +1,21 @@
 let usage () =
-  prerr_endline "usage: llmopt-package-check <package-directory>";
+  prerr_endline
+    "usage: llmopt-package-check <package-directory> [--prefill-specialization <captured-tokens> <tokens>]";
   exit 64
 
+let positive value =
+  match int_of_string_opt value with
+  | Some value when value > 0 -> value
+  | _ -> usage ()
+
 let () =
-  if Array.length Sys.argv <> 2 then usage ();
-  let root = Sys.argv.(1) in
+  let root, prefill_specialization =
+    match Array.to_list Sys.argv with
+    | [ _; root ] -> root, None
+    | [ _; root; "--prefill-specialization"; captured; tokens ] ->
+        root, Some (positive captured, positive tokens)
+    | _ -> usage ()
+  in
   let manifest = Filename.concat root "package.llmopt" in
   match Serving_package.of_file manifest with
   | Error message ->
@@ -43,7 +54,21 @@ let () =
             |> Option.map List.length |> Option.map string_of_int
             |> Option.value ~default:"none"
           in
-          let schedule = Serving_package.schedule package in
+          let schedule =
+            let schedule = Serving_package.schedule package in
+            match prefill_specialization with
+            | None -> schedule
+            | Some (captured_tokens, tokens) ->
+                (match
+                   Serving_schedule.Sequence.specialize_prefill
+                     ~all_token_outputs:true ~minimum_tokens:1
+                     ~captured_tokens ~tokens schedule
+                 with
+                | Ok schedule -> schedule
+                | Error message ->
+                    prerr_endline message;
+                    exit 6)
+          in
           let memory_plan =
             match Serving_memory_plan.create schedule with
             | Ok plan -> plan

@@ -643,7 +643,16 @@ module Layout_model = struct
              else axis)
            axes)
 
-  let trace producers value =
+  let trace producers users value =
+    let base value =
+      { source = value;
+        axes = List.mapi (fun index _ -> Source index) (dimensions value);
+        members = [] }
+    in
+    let is_shared value =
+      Value_map.find_opt (Ir.Value.id value) users
+      |> Option.value ~default:[] |> List.length |> fun count -> count > 1
+    in
     let rec visit seen value =
       let id = Ir.Value.id value in
       if Value_map.mem id seen then None
@@ -653,7 +662,9 @@ module Layout_model = struct
         | Some node -> (
             match Ir.node_op node, Ir.node_inputs node with
             | Ir.Op.Primitive (Ir.Primitive.Movement movement), [ input ] ->
-                Option.bind (visit seen input) (fun traced ->
+                Option.bind
+                  (if is_shared input then Some (base input) else visit seen input)
+                  (fun traced ->
                   let input_dimensions = dimensions input in
                   let output_dimensions = dimensions value in
                   let axes =
@@ -693,15 +704,8 @@ module Layout_model = struct
                     { traced with members = traced.members @ [ node ] })
                   (visit seen input)
             | _ ->
-                Some
-                  { source = value;
-                    axes = List.mapi (fun index _ -> Source index) (dimensions value);
-                    members = [] })
-        | None ->
-            Some
-              { source = value;
-                axes = List.mapi (fun index _ -> Source index) (dimensions value);
-                members = [] }
+                Some (base value))
+        | None -> Some (base value)
     in
     visit Value_map.empty value
 
@@ -748,7 +752,7 @@ module Layout_model = struct
            match Ir.node_output node with
            | None -> None
            | Some output ->
-               Option.bind (trace producers output) (fun traced ->
+               Option.bind (trace producers users output) (fun traced ->
                  if Ir.Value.equal traced.source attention_output
                     && flattened_token_output traced
                     && exclusive users traced
@@ -768,8 +772,8 @@ module Layout_model = struct
              match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
              | Ir.Op.Primitive (Ir.Primitive.Attention config),
                [ query; key; value; mask ], Some output ->
-                 let key_trace = trace producers key in
-                 let value_trace = trace producers value in
+                 let key_trace = trace producers users key in
+                 let value_trace = trace producers users value in
                  let key, value, input_traces =
                    match key_trace, value_trace with
                    | Some key_trace, Some value_trace
@@ -807,7 +811,7 @@ module Layout_model = struct
                [ query; key; value; gate; beta ], Some output ->
                  let traces =
                    [ query; key; value; gate; beta ]
-                   |> List.map (trace producers)
+                   |> List.map (trace producers users)
                  in
                  if
                    List.for_all Option.is_some traces
