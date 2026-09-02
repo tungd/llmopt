@@ -194,6 +194,23 @@ def write_augmented_archive(source: Path, destination: Path, config: Any) -> Non
     os.replace(temporary, destination)
 
 
+def prepare_weight_archive(
+    target_gguf: Path,
+    generated_path: Path,
+    reuse_weights: Path | None,
+    config: Any,
+) -> Path:
+    """Return a compatible archive, generating it only when none was supplied."""
+
+    if reuse_weights is not None:
+        weights = reuse_weights.resolve()
+        if not weights.is_file():
+            raise FileNotFoundError(f"reused weight archive does not exist: {weights}")
+        return weights
+    write_augmented_archive(target_gguf, generated_path, config)
+    return generated_path
+
+
 def semantic_runtime_name(name: str) -> str:
     if name == "l_input_ids_":
         return "input_ids"
@@ -375,6 +392,11 @@ def main() -> None:
     parser.add_argument("--target-profile", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
+        "--reuse-weights",
+        type=Path,
+        help="reuse an existing augmented target.weights.llmopt archive",
+    )
+    parser.add_argument(
         "--retain-hidden-output",
         action="store_true",
         help="retain diagnostic.hidden in both entrypoints for arithmetic localization",
@@ -435,8 +457,12 @@ def main() -> None:
         decode_path,
     )
 
-    weights = source_dir / "target.weights.llmopt"
-    write_augmented_archive(args.target_gguf, weights, config)
+    weights = prepare_weight_archive(
+        args.target_gguf,
+        source_dir / "target.weights.llmopt",
+        args.reuse_weights,
+        config,
+    )
     command = [
         str(REPO_ROOT / "_build/bin/llmopt-pipeline"),
         "--weights", str(weights),

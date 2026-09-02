@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import struct
+import tempfile
 import types
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from transformers import Gemma4TextConfig
@@ -14,6 +17,7 @@ from build_gemma4_engine import (
     external_binding,
     gemma_reference_constants,
     gguf_suppress_token_ids,
+    prepare_weight_archive,
     preserve_reference_constant_precision,
     retain_diagnostic_hidden_output,
     retain_layer_zero_diagnostic_outputs,
@@ -44,6 +48,22 @@ def gemma_config() -> Gemma4TextConfig:
 
 
 class BuildGemma4EngineTests(unittest.TestCase):
+    def test_existing_augmented_weights_can_be_reused_without_rewriting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            existing = root / "existing.weights.llmopt"
+            existing.write_bytes(b"existing")
+            with patch("build_gemma4_engine.write_augmented_archive") as write:
+                selected = prepare_weight_archive(
+                    root / "model.gguf",
+                    root / "generated.weights.llmopt",
+                    existing,
+                    object(),
+                )
+
+        self.assertEqual(selected, existing.resolve())
+        write.assert_not_called()
+
     def test_hidden_output_is_retained_under_diagnostic_namespace(self) -> None:
         manifest = {
             "outputs": ["softcapped_logits", "cache"],
