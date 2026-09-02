@@ -69,12 +69,6 @@ type rope_table = {
   row_bytes : int;
 }
 
-type prebaked_decode = {
-  plan : Metal_runtime.Prebaked.t;
-  execution : Metal_runtime.Execution.t;
-  schedule : Serving_schedule.t;
-}
-
 type t = {
   program : Model_program.t option;
   config : Serving_cache.Config.t;
@@ -86,7 +80,6 @@ type t = {
   contract : contract;
   decode_workspace : Metal_runtime.Buffer.t option;
   decode_token_buffer : Metal_runtime.Buffer.t option;
-  decode_prebaked_output : Metal_runtime.Buffer.t;
   rope_table : rope_table option;
   decode_schedules : (int, Serving_schedule.t) Hashtbl.t;
   prefill_schedules : (int, Serving_schedule.t * Serving_memory_plan.t) Hashtbl.t;
@@ -99,7 +92,6 @@ type t = {
     Serving_replay.Decode_buffers.t
     option;
   mutable decode_checkpoint : Kv_cache.Checkpoint.t option;
-  mutable decode_prebaked_long : prebaked_decode option;
 }
 
 type engine = t
@@ -727,9 +719,6 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
       Metal_runtime.Buffer.create ~runtime:decode ~bytes:8
       |> Result.map Option.some
     in
-    let* decode_prebaked_output =
-      Metal_runtime.Buffer.create ~runtime:decode ~bytes:4
-    in
     Ok
       {
         program;
@@ -742,7 +731,6 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         contract;
         decode_workspace;
         decode_token_buffer;
-        decode_prebaked_output;
         rope_table;
         decode_schedules = Hashtbl.create 64;
         prefill_schedules = Hashtbl.create 64;
@@ -750,7 +738,6 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         verification_schedules = Hashtbl.create 64;
         decode_recurrent_buffers = None;
         decode_checkpoint = None;
-        decode_prebaked_long = None;
       }
 
 let create ~config ~prefill ~decode =
@@ -1293,39 +1280,6 @@ let unpack_decode_checkpoint engine checkpoint buffers =
       in
       unpack recurrent)
 
-let execute_prebaked_decode engine ~schedule ~inputs ~token ~past_tokens
-    ~checkpoint ~cache_pack =
-  let execute plan execution =
-    let checkpoint =
-      checkpoint |> Option.map Kv_cache.Checkpoint.to_int
-      |> Option.value ~default:(-1)
-    in
-    let* _ =
-      Metal_runtime.Prebaked.execute plan ~token ~past_tokens ~checkpoint
-    in
-    Ok execution
-  in
-  match engine.decode_prebaked_long with
-  | Some prebaked -> execute prebaked.plan prebaked.execution
-  | None ->
-      let* dispatches, execution =
-        Metal_runtime.precompile_decode_batch
-          ?workspace:engine.decode_workspace ~cache:engine.physical_cache
-          ~cache_pack engine.decode ~schedule ~inputs
-      in
-      let* token_buffer =
-        match engine.decode_token_buffer with
-        | Some buffer -> Ok buffer
-        | None -> Error "prebaked decode requires a stable token buffer"
-      in
-      let* plan =
-        Metal_runtime.Prebaked.create ~runtime:engine.decode ~dispatches
-          ~token_buffer ~output_buffer:engine.decode_prebaked_output
-      in
-      let prebaked = { plan; execution; schedule } in
-      engine.decode_prebaked_long <- Some prebaked;
-      execute plan execution
-
 let decode_matched engine match_ ~schedule ~prefix ~token ~retain_inserted_match =
   let past_tokens = Array.length prefix in
   let matched = Serving_cache.Match.tokens match_ in
@@ -1409,14 +1363,9 @@ let decode_matched engine match_ ~schedule ~prefix ~token ~retain_inserted_match
                     (Serving_replay.Decode_buffers.recurrent buffers)
             in
             let* execution =
-              if past_tokens >= 64 && engine.contract.recurrents = []
-              then
-                execute_prebaked_decode engine ~schedule ~inputs ~token
-                  ~past_tokens ~checkpoint:reservation.checkpoint ~cache_pack
-              else
-                Metal_runtime.execute_decode_step
-                  ?workspace:engine.decode_workspace engine.decode
-                  ~cache:engine.physical_cache ~schedule ~inputs ~cache_pack
+              Metal_runtime.execute_decode_step
+                ?workspace:engine.decode_workspace engine.decode
+                ~cache:engine.physical_cache ~schedule ~inputs ~cache_pack
             in
             let* token_id =
               optional_output execution engine.contract.decode_head.token_id
@@ -1822,15 +1771,7 @@ let decode engine ~prefix ~token =
     Serving_cache.match_prefix engine.logical_cache ~reserve_tail:0 prefix
   in
     with_match engine match_ (fun () ->
-      let lazy_schedule =
-        Sys.getenv_opt "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE" = Some "1"
-      in
-      let* schedule =
-        match lazy_schedule, engine.decode_prebaked_long with
-        | true, Some prebaked when engine.contract.recurrents = [] ->
-            Ok prebaked.schedule
-        | _ -> decode_schedule engine (Array.length prefix)
-      in
+      let* schedule = decode_schedule engine (Array.length prefix) in
       let* step, _ =
         decode_matched engine match_ ~schedule ~prefix ~token
           ~retain_inserted_match:false
@@ -1875,15 +1816,7 @@ module Sequence = struct
         let engine = sequence.engine in
         let prefix = sequence.step.Step.tokens in
         let* () = validate_tokens engine [| token |] in
-        let lazy_schedule =
-          Sys.getenv_opt "LLMOPT_EXPERIMENTAL_LAZY_SCHEDULE" = Some "1"
-        in
-        let* schedule =
-          match lazy_schedule, engine.decode_prebaked_long with
-          | true, Some prebaked when engine.contract.recurrents = [] ->
-              Ok prebaked.schedule
-          | _ -> decode_schedule engine (Array.length prefix)
-        in
+        let* schedule = decode_schedule engine (Array.length prefix) in
         (match
            decode_matched engine current_match ~schedule ~prefix ~token
              ~retain_inserted_match:true
