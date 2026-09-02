@@ -253,11 +253,12 @@ GGUF suppression set: both llama.cpp and the assignment-backed LLMOpt engine
 select token `100`. Ranked top-logit IDs agree through rank eight and then
 differ, so bit-exact full-logit parity is not claimed.[^constructive-rms-rope]
 
-That token-100 result predates final GQA provenance and pass retirement. The
-first post-retirement execution stopped before Metal dispatch on an unequal
-specialized GQA reshape alias. Shared-boundary provenance fixes the diagnosed
-cause and the corrected artifact passes exact 37-token static specialization,
-but it has not yet produced final logits.[^modeled-layout-retirement]
+That first token-100 result predates final GQA provenance and pass retirement.
+The initial post-retirement execution stopped before Metal dispatch on an
+unequal specialized GQA reshape alias. Shared-boundary provenance fixes the
+diagnosed cause; the corrected artifact passes exact 37-token specialization
+and both it and pinned llama.cpp select raw and policy token `100`. Ranks one
+through eight agree in order while tail logits remain non-bit-exact.[^modeled-layout-retirement]
 
 Full-model code generation currently targets Metal. The repository's Vulkan
 work is experimental primitive-backend evidence, not a second full-model

@@ -330,11 +330,11 @@ one-attempt instruction, the corrected artifact was not model-executed again in
 this turn; its final matched-policy token remains open in the immutable receipt
 `bench/results/uoc-final-constructive-gemma4-attempt-2026-09-03.txt`.
 
-- [ ] **UOC-08 — Execute the corrected post-retirement Gemma artifact once**
-  - Run the exact 37-token LLMOpt top-k probe on commit `124fa1a` or its
-    documentation-only descendant, then run the pinned llama.cpp probe and
-    record the observed logits without substituting the earlier artifact's
-    token-100 result.
+- [x] **UOC-08 — Execute the corrected post-retirement Gemma artifact once**
+  - The exact 37-token LLMOpt and pinned llama.cpp probes both select raw and
+    policy token `100`. Ranks one through eight agree, nine top-10 IDs overlap,
+    and the immutable final receipt is
+    `bench/results/uoc-final-constructive-gemma4-parity-2026-09-03.txt`.
 
 ### 2026-09-02 repair follow-up
 

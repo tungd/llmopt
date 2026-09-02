@@ -18,6 +18,9 @@ sources:
   - id: final-attempt
     resource: /bench/results/uoc-final-constructive-gemma4-attempt-2026-09-03.txt
     title: Post-retirement Gemma attempt and specialization correction
+  - id: final-parity
+    resource: /bench/results/uoc-final-constructive-gemma4-parity-2026-09-03.txt
+    title: Corrected post-retirement Gemma matched-policy parity
 ---
 
 # Result
@@ -46,6 +49,14 @@ GQA suffix. The corrected prefill has 5,273 rather than 5,753 commands, and the
 new package checker successfully constructs the exact 37-token specialized
 workspace plan.
 
+The corrected artifact then completed one LLMOpt execution and one pinned
+llama.cpp execution on the same 37 token IDs and suppression set. Both raw and
+policy argmax are token `100`. Ranked IDs agree in order through rank eight and
+share nine of ten top-10 IDs; LLMOpt includes `236829` at rank nine while
+llama.cpp includes `120509` at rank ten. The remaining observed difference is
+therefore non-bit-exact final-logit magnitude and tail ordering, not suppression
+or next-token selection.
+
 The retired `pass_fuse_rms_norm`, `pass_fuse_rms_rope`,
 `pass_fuse_short_conv`, and `pass_fuse_gated_delta` modules, public aliases,
 and Ninja link dependencies are removed. Focused OCaml coverage proves direct
@@ -57,6 +68,6 @@ ABI-v7 bundle retains 337 primitive regions per entrypoint: 48 gated-Linear,
 
 Evidence: the compiler and tests build without the four retired modules, the
 selected gated-delta command contains a deserialized
-`Kernel_ir.Fused_tactic.Gated_delta`, and the corrected package passes static
-`2 -> 37` specialization; assumption: its model token remains unknown because
-the one post-retirement execution stopped before dispatch and was not retried.
+`Kernel_ir.Fused_tactic.Gated_delta`, the corrected package passes static
+`2 -> 37` specialization, and its matched execution selects token `100` on
+both engines; assumption: none for the reported next-token and top-10 result.

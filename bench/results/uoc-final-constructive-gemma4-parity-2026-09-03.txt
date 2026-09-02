@@ -1,0 +1,75 @@
+Final constructive compiler Gemma matched-policy parity
+=======================================================
+
+Source and artifact
+-------------------
+
+Compiler source commit: 124fa1a
+Execution-time branch head: c9286c6 (documentation-only descendant)
+Artifact: _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03
+GGUF: /Users/tung/.cache/huggingface/hub/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/980b060c40a8539ac159e0501a3e0f66a6365af3/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
+GGUF bytes: 6716356800
+GGUF sha256: 90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370
+Target profile: bench/results/uoc-gemma4-target-hardware-2026-09-02.json
+Prompt token IDs: 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107
+Suppressed token IDs: 258882,258883
+
+Static artifact result
+----------------------
+
+Model Program ABI: 7
+Primitive regions per entrypoint: 337
+Region inventory per entrypoint: 48 gated-linear, 96 rms-rope, 193 rms-normalize
+Prefill package after exact 2-to-37 specialization: 5273 commands, 110 kernels, zero opaque commands, 55566080-byte reused workspace, 377358592 bytes without reuse, 1178 allocations
+Decode package: 5321 commands, 109 kernels, zero opaque commands, 2182400-byte reused workspace, 11267840 bytes without reuse, 1274 allocations
+
+LLMOpt execution
+-----------------
+
+Command: _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03 --prompt-token-ids <the exact CSV above> --top-k-logits 10
+Exit status: 0
+Load seconds: 0.091700
+Probe seconds: 10.581340
+Raw top 10: 100:28.46875,3041:13.390625,1751:12.84375,38073:12.0625,594:11.8125,119216:11.6015625,236811:11.2109375,1502:11.1953125,236829:11.1875,95340:11.1796875
+Policy top 10: 100:28.46875,3041:13.390625,1751:12.84375,38073:12.0625,594:11.8125,119216:11.6015625,236811:11.2109375,1502:11.1953125,236829:11.1875,95340:11.1796875
+
+llama.cpp execution
+-------------------
+
+Command: _build/bin/llama-logits-probe <the pinned GGUF above> <the exact CSV above> 258882,258883 10
+Exit status: 0
+Raw top 10: 100:28.4734364,3041:13.3879843,1751:12.8434191,38073:12.0650969,594:11.7884197,119216:11.6078863,236811:11.2084084,1502:11.2047653,95340:11.1759949,120509:11.1635275
+Policy top 10: 100:28.4734364,3041:13.3879843,1751:12.8434191,38073:12.0650969,594:11.7884197,119216:11.6078863,236811:11.2084084,1502:11.2047653,95340:11.1759949,120509:11.1635275
+
+Comparison
+----------
+
+Raw argmax parity: yes, token 100
+Policy argmax parity: yes, token 100
+Suppression effect on argmax: none; neither suppressed ID is in either top 10
+Ordered rank parity: ranks 1 through 8
+Shared top-10 IDs: 9 of 10
+LLMOpt-only top-10 ID: 236829 at rank 9
+llama.cpp-only top-10 ID: 120509 at rank 10
+Shared-ID LLMOpt-minus-llama.cpp logit deltas:
+  100: -0.0046864
+  3041: +0.0026407
+  1751: +0.0003309
+  38073: -0.0025969
+  594: +0.0240803
+  119216: -0.0063238
+  236811: +0.0025916
+  1502: -0.0094528
+  95340: +0.0036926
+
+Localization
+------------
+
+The final compiler and llama.cpp agree on raw and policy next-token selection.
+The remaining measured divergence is localized to non-bit-exact final logits
+and ranking below the first eight IDs; this probe does not identify an
+operator-level source for those small accumulated numeric differences.
+
+Evidence: both executables completed against the same 37 token IDs, pinned
+GGUF, and suppression set and selected token 100; assumption: none for the
+reported next-token and top-10 comparison.
