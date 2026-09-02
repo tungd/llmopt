@@ -1,0 +1,53 @@
+Constructive compiler post-retirement Gemma attempt
+===================================================
+
+Pinned inputs
+-------------
+
+GGUF: /Users/tung/.cache/huggingface/hub/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/980b060c40a8539ac159e0501a3e0f66a6365af3/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
+GGUF bytes: 6716356800
+GGUF sha256: 90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370
+Target profile: bench/results/uoc-gemma4-target-hardware-2026-09-02.json
+Prompt token IDs: 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107
+Suppressed token IDs: 258882,258883
+
+Attempted final execution
+-------------------------
+
+Source commit: feed1eb
+Artifact: _artifacts/gemma4-12b-qat-final-constructive-2026-09-03
+Build result: success; 5895/6087 FX nodes became 8977/8545 prefill/decode IR nodes.
+Model Program check: ABI v7 valid, 337 primitive assignment regions per entrypoint.
+Package checks: prefill 5753 commands, decode 5321 commands, zero opaque commands.
+LLMOpt top-k command result: exit 2 before Metal dispatch.
+Exact error: workspace alias value 776 changes storage size from 5607424 to 303104
+llama.cpp command: not run because the LLMOpt execution produced no logits.
+Parity result: none for this post-retirement artifact.
+
+Diagnosis and correction
+------------------------
+
+The captured two-token graph also has a fixed GQA group factor of two. Sequence
+specialization substituted both dimensions with 37 after layout provenance
+crossed a shared cache-output branch, changing an expanded tensor without an
+equal reshape extent. Commit 124fa1a stops provenance at shared dependency
+values, preserves the cache-producing transpose, removes only the GQA suffix,
+and adds a shared-cache regression plus a specialized package check.
+
+Corrected static result
+-----------------------
+
+Source commit: 124fa1a
+Artifact: _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03
+Build result: success; 5895/6087 FX nodes became 8497/8545 prefill/decode IR nodes.
+Model Program check: ABI v7 valid, suppression IDs 258882,258883, 337 primitive assignment regions per entrypoint.
+Primitive regions per entrypoint: 48 gated-linear, 96 rms-rope, 193 rms-normalize.
+Specialized prefill package check: captured tokens 2, requested tokens 37, 5273 commands, zero opaque commands, 55566080-byte reused workspace, 377358592 bytes without reuse, 1178 allocations.
+Decode package check: 5321 commands, zero opaque commands, 2182400-byte reused workspace, 11267840 bytes without reuse, 1274 allocations.
+Tests: all 79 Python tests and the OCaml/Metal suite pass.
+Model execution after correction: not run in this turn under the one-attempt instruction.
+
+Evidence: the attempted final execution failed before Metal dispatch and the
+corrected artifact passes the exact 2-to-37 static specialization seam;
+assumption: the corrected artifact's token and logit result remain unknown
+until its single model execution is authorized in a later turn.

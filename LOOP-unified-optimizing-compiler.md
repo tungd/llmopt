@@ -308,7 +308,7 @@ Out of scope:
 
 The stale-binary diagnostic is not the current result. After rebuilding, the
 exact 37-token prompt was executed against the pinned 6,716,356,800-byte Gemma
-GGUF. The latest assignment-backed bundle validates as Model Program ABI v7,
+GGUF. That assignment-backed bundle validates as Model Program ABI v7,
 contains 337 primitive regions per entrypoint (48 gated-Linear, 96
 RMSNorm-RoPE, and 193 RMSNorm), and selects token `100`, equal to the recorded
 llama.cpp policy token. Ranked IDs agree through rank eight; bit-exact logit
@@ -321,6 +321,20 @@ replacement. GQA replication, token-major attention values and outputs, and
 token-major gated-delta inputs are canonicalized by a shared typed
 axis-provenance model. The four obsolete pass modules and their compatibility
 aliases are removed from source and Ninja linkage.
+
+The first model execution after that retirement stopped before Metal dispatch
+on unequal GQA reshape alias sizes. Commit `124fa1a` fixes the shared-cache
+provenance boundary, removes 480 prefill commands from the corrected artifact,
+and passes an exact two-to-37-token specialized workspace check. Per the
+one-attempt instruction, the corrected artifact was not model-executed again in
+this turn; its final matched-policy token remains open in the immutable receipt
+`bench/results/uoc-final-constructive-gemma4-attempt-2026-09-03.txt`.
+
+- [ ] **UOC-08 — Execute the corrected post-retirement Gemma artifact once**
+  - Run the exact 37-token LLMOpt top-k probe on commit `124fa1a` or its
+    documentation-only descendant, then run the pinned llama.cpp probe and
+    record the observed logits without substituting the earlier artifact's
+    token-100 result.
 
 ### 2026-09-02 repair follow-up
 

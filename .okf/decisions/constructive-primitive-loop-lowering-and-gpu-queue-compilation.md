@@ -41,6 +41,9 @@ sources:
   - id: constructive-rms-rope
     resource: /experiments/exp-0142-constructive-rms-rope-gemma4-2026-09-03.md
     title: Constructive RMSNorm and RoPE Gemma execution
+  - id: modeled-layout-retirement
+    resource: /experiments/exp-0143-modeled-layout-and-gated-delta-retirement-2026-09-03.md
+    title: Modeled layout and gated-delta pass retirement
 ---
 
 # Decision
@@ -250,6 +253,12 @@ GGUF suppression set: both llama.cpp and the assignment-backed LLMOpt engine
 select token `100`. Ranked top-logit IDs agree through rank eight and then
 differ, so bit-exact full-logit parity is not claimed.[^constructive-rms-rope]
 
+That token-100 result predates final GQA provenance and pass retirement. The
+first post-retirement execution stopped before Metal dispatch on an unequal
+specialized GQA reshape alias. Shared-boundary provenance fixes the diagnosed
+cause and the corrected artifact passes exact 37-token static specialization,
+but it has not yet produced final logits.[^modeled-layout-retirement]
+
 Full-model code generation currently targets Metal. The repository's Vulkan
 work is experimental primitive-backend evidence, not a second full-model
 serving path, and CUDA/HIP full-model backends are not implemented. Multi-backend
@@ -313,3 +322,4 @@ Their experiments and rationale remain historical evidence.[^constructive-loweri
 [^gemma-repair]: Gemma compiler repair and corrected reference boundary.
 [^matched-policy-diagnostic]: Matched-policy result and constructive-transition correction.
 [^assignment-backed-execution]: Primitive-assignment-backed Gemma package and model run.
+[^modeled-layout-retirement]: Modeled layout retirement, failed final execution, and corrected specialization evidence.
