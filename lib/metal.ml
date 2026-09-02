@@ -9683,7 +9683,73 @@ let lower_primary graph =
                  ~output_dtype:Ir.Dtype.Float32 ])
   | Some (Linear _) -> Error "primary Metal linear supports float32 only"
 
-let lower ?(target = Target_hardware.default) graph =
+module Region_node_set = Set.Make (Int)
+
+let region_node_ids regions =
+  regions
+  |> List.concat_map Kernel_ir.member_node_ids
+  |> Region_node_set.of_list
+
+let without_region_nodes graph regions =
+  let removed = region_node_ids regions in
+  Ir.Graph.with_nodes graph
+    (Ir.Graph.nodes graph
+    |> List.filter (fun node ->
+           not (Region_node_set.mem (Ir.node_id node) removed)))
+
+let region_tactics ~target regions =
+  let select_linear linear output =
+    Tactic.select_linear ~target ~m:linear.Kernel_ir.Fused_tactic.m
+      ~n:linear.n ~k:linear.k ~input_dtype:(Ir.Value.dtype linear.input)
+      ~storage:linear.storage ~output_dtype:(Ir.Value.dtype output)
+  in
+  regions
+  |> List.fold_left
+       (fun (quant, quant_add, has_w4) region ->
+         match Kernel_ir.Fused_tactic.select region with
+         | Some
+             (Kernel_ir.Fused_tactic.Linear_additive
+               { linear; output; _ }) ->
+             (match linear.storage, select_linear linear output with
+             | Ir.Linear_storage.Block_quantized storage, Some tactic ->
+                 (storage, tactic) :: quant,
+                 (storage, tactic) :: quant_add,
+                 has_w4
+             | Ir.Linear_storage.Groupwise_packed _, _ ->
+                 quant, quant_add, true
+             | _ -> quant, quant_add, has_w4)
+         | Some
+             (Kernel_ir.Fused_tactic.Gated_product
+               { gate; up; output; _ }) ->
+             let add linear quant =
+               match linear.Kernel_ir.Fused_tactic.storage,
+                 select_linear linear output
+               with
+               | Ir.Linear_storage.Block_quantized storage, Some tactic ->
+                   (storage, tactic) :: quant
+               | _ -> quant
+             in
+             let quant = quant |> add gate |> add up in
+             let has_w4 =
+               has_w4
+               || (match gate.storage, up.storage with
+                  | ( Ir.Linear_storage.Groupwise_packed _,
+                      Ir.Linear_storage.Groupwise_packed _ ) -> true
+                  | _ -> false)
+             in
+             quant, quant_add, has_w4
+         | None -> quant, quant_add, has_w4)
+       ([], [], false)
+  |> fun (quant, quant_add, has_w4) ->
+  ( List.sort_uniq Stdlib.compare quant,
+    List.sort_uniq Stdlib.compare quant_add,
+    has_w4 )
+
+let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
+  let graph = without_region_nodes graph fusion_regions in
+  let region_quant_tactics, region_quant_add_tactics, regions_have_w4 =
+    region_tactics ~target fusion_regions
+  in
   let materialized_movement = has_materialized_movement graph in
   let update_slice =
     has_primitive graph (function Ir.Primitive.Update_slice _ -> true | _ -> false)
@@ -9702,12 +9768,18 @@ let lower ?(target = Target_hardware.default) graph =
     |> String.concat "\n"
   in
   let selected_attention_entries = attention_tactic_entries attention_tactics in
-  let quant_tactics = quant_linear_tactics ~target graph in
+  let quant_tactics =
+    quant_linear_tactics ~target graph @ region_quant_tactics
+    |> List.sort_uniq Stdlib.compare
+  in
   let selected_quant_entries = quant_tactic_entries quant_tactics in
   let quant_qkv = has_quant_qkv_linear graph in
   let quant_qkv_source = if quant_qkv then quant_qkv_source else "" in
   let quant_qkv_entries = if quant_qkv then quant_qkv_entries else [] in
-  let quant_add_tactics = quant_linear_add_tactics ~target graph in
+  let quant_add_tactics =
+    quant_linear_add_tactics ~target graph @ region_quant_add_tactics
+    |> List.sort_uniq Stdlib.compare
+  in
   let quant_add_source =
     quant_add_tactics |> List.map quant_linear_add_source
     |> String.concat "\n"
@@ -9719,7 +9791,9 @@ let lower ?(target = Target_hardware.default) graph =
   in
   let gated_delta_entries = List.map gated_delta_entry gated_delta_tactics in
   let components =
-    [ has_w4a16_linear graph, w4a16_source, w4a16_entries;
+    [ ( has_w4a16_linear graph || regions_have_w4,
+        w4a16_source,
+        w4a16_entries );
       ( has_w4a16_qkv_linear graph,
         w4a16_qkv_linear_source,
         w4a16_qkv_linear_entries );
@@ -9729,7 +9803,7 @@ let lower ?(target = Target_hardware.default) graph =
       ( has_w4a16_lm_head_argmax graph,
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
-      ( has_quant_linear graph || quant_qkv,
+      ( has_quant_linear graph || region_quant_tactics <> [] || quant_qkv,
         quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source
         ^ q4_k_source ^ q5_k_source ^ q6_k_source ^ iq4_xs_source
         ^ quant_qkv_source ^ quant_add_source,

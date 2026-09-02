@@ -1001,11 +1001,11 @@ let optimize ?(target = Target_hardware.default) graph =
   let* analysis_plan = Compute_plan.of_graph analysis_graph in
   let region_analysis = Constructive_lowering.analyze ~target analysis_plan in
   let lowering = Constructive_lowering.lower region_analysis in
+  let* fusion_regions = Constructive_lowering.executable_regions lowering in
   let lowered_graph = Constructive_lowering.Lowering.graph lowering in
   let lowered_graph, legacy_fallbacks =
     apply_legacy_fallbacks lowered_graph lowering
   in
-  let fusion_regions = [] in
   let scan_regions = Kernel_ir.Scan.recover analysis_graph in
   let max_scan_width =
     let capacity = target.memory.sram_capacity_bytes / 4 in

@@ -168,12 +168,12 @@ let () =
                     |> String.concat "\n")
                   ^ "\n")
           in
-          (match Serving_schedule.of_graph planned with
+          (match Serving_schedule.of_graph ~fusion_regions planned with
           | Error message ->
               prerr_endline ("schedule creation failed: " ^ message);
               exit 4
           | Ok schedule ->
-          match Metal.lower ~target planned with
+          match Metal.lower ~target ~fusion_regions planned with
           | Error message ->
               prerr_endline ("Metal emission failed: " ^ message);
               exit 5

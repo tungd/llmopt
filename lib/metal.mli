@@ -29,7 +29,11 @@ module Tactic : sig
   val threadgroup : t -> int * int * int
 end
 
-val lower : ?target:Target_hardware.t -> Ir.Graph.t -> (Program.t, string) result
+val lower :
+  ?target:Target_hardware.t ->
+  ?fusion_regions:Kernel_ir.t list ->
+  Ir.Graph.t ->
+  (Program.t, string) result
 val add_cache_kernels : Program.t -> Program.t
 val add_block32_kernels : Program.t -> Program.t
 val add_kquant_kernels : Program.t -> Program.t
@@ -53,5 +57,4 @@ val attention_source : string
 val emit_parametric_w4a16_linear : name:string -> epilogue:Epilogue.t -> string
 val emit_parametric_q4_k_linear : name:string -> epilogue:Epilogue.t -> string
 val emit_simdgroup_matrix_gemm : name:string -> epilogue:Epilogue.t -> string
-
 

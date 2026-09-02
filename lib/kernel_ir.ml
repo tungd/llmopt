@@ -761,6 +761,8 @@ type t = {
   resource : Resource.t;
 }
 
+type region = t
+
 type error =
   | Empty_name
   | Invalid_member_node_id of int
@@ -1110,11 +1112,8 @@ let bindings region = region.bindings
 let results region = region.results
 let effects region = region.effects
 let resource region = region.resource
-let result_slot result = result.slot
-let result_value result = result.value
-let result_storage result = result.storage
 
-let error_to_string = function
+let render_error = function
   | Empty_name -> "kernel IR region name cannot be empty"
   | Invalid_member_node_id id ->
       Printf.sprintf "kernel IR member node ID %d is negative" id
@@ -1129,6 +1128,214 @@ let error_to_string = function
   | Invalid_binding message -> "invalid kernel IR binding: " ^ message
   | Invalid_result message -> "invalid kernel IR result: " ^ message
   | Invalid_effect message -> "invalid kernel IR effect: " ^ message
+
+let specialize ~dimension ~value region =
+  let ( let* ) = Result.bind in
+  let map_shape shape =
+    shape |> Tensor_shape.dimensions |> List.map dimension
+    |> Tensor_shape.create |> Result.map_error Tensor_shape.error_to_string
+  in
+  let map_primitive = function
+    | Primitive.Linear linear ->
+        Primitive.Linear
+          { linear with
+            m = dimension linear.m;
+            n = dimension linear.n;
+            k = dimension linear.k }
+    | primitive -> primitive
+  in
+  let* inputs =
+    region.inputs
+    |> List.fold_left
+         (fun result ({ slot; value = original } : input) ->
+           let* inputs = result in
+           let* value = value original in
+           Ok ({ slot; value } :: inputs))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  let* bindings =
+    region.bindings
+    |> List.fold_left
+         (fun result binding ->
+           let* bindings = result in
+           let* outputs =
+             binding.outputs
+             |> List.fold_left
+                  (fun result ({ slot; shape; dtype } : output_spec) ->
+                    let* outputs = result in
+                    let* shape = map_shape shape in
+                    Ok ({ slot; shape; dtype } :: outputs))
+                  (Ok [])
+             |> Result.map List.rev
+           in
+           let* binding =
+             make_binding ~outputs ~primitive:(map_primitive binding.primitive)
+               ~inputs:binding.inputs
+           in
+           Ok (binding :: bindings))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  let* results =
+    region.results
+    |> List.fold_left
+         (fun result ({ slot; value = original; storage } : result) ->
+           let* results = result in
+           let* value = value original in
+           Ok ({ slot; value; storage } :: results))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  create ~name:region.name ~member_node_ids:region.member_node_ids ~inputs
+    ~bindings ~results ~effects:region.effects ~resource:region.resource
+  |> Result.map_error render_error
+
+module Fused_tactic = struct
+  type linear = {
+    m : int;
+    n : int;
+    k : int;
+    storage : Ir.Linear_storage.layout;
+    input : Ir.Value.t;
+    weight : Ir.Value.t;
+    parameters : Ir.Value.t list;
+  }
+
+  type t =
+    | Linear_additive of {
+        linear : linear;
+        additive : Ir.Value.t;
+        output : Ir.Value.t;
+      }
+    | Gated_product of {
+        gate : linear;
+        up : linear;
+        activation : Primitive.unary;
+        output : Ir.Value.t;
+      }
+
+  let input_map region =
+    List.fold_left
+      (fun values ({ slot; value } : input) -> Slot_map.add slot value values)
+      Slot_map.empty region.inputs
+
+  let input_value values slot = Slot_map.find_opt slot values
+
+  let external_values values slots =
+    let rec collect reversed = function
+      | [] -> Some (List.rev reversed)
+      | slot :: rest ->
+          (match input_value values slot with
+          | None -> None
+          | Some value -> collect (value :: reversed) rest)
+    in
+    collect [] slots
+
+  let output_slot binding =
+    match binding.outputs with [ output ] -> Some output.slot | _ -> None
+
+  let linear values binding =
+    match binding.primitive, external_values values binding.inputs with
+    | Primitive.Linear { m; n; k; bias = false; storage },
+      Some (input :: weight :: parameters) ->
+        Some { m; n; k; storage; input; weight; parameters }
+    | _ -> None
+
+  let result_value region slot =
+    region.results
+    |> List.find_opt (fun result -> Slot.equal result.slot slot)
+    |> Option.map (fun result -> result.value)
+
+  let linear_additive region values =
+    let linear_bindings =
+      region.bindings
+      |> List.filter_map (fun binding ->
+             match linear values binding, output_slot binding with
+             | Some linear, Some output -> Some (linear, output)
+             | _ -> None)
+    in
+    let additions =
+      region.bindings
+      |> List.filter_map (fun binding ->
+             match binding.primitive, binding.inputs, output_slot binding with
+             | Primitive.Binary Primitive.Add, [ left; right ], Some output ->
+                 Some (left, right, output)
+             | _ -> None)
+    in
+    match linear_bindings, additions with
+    | [ (linear, linear_output) ], [ (left, right, output) ] ->
+        let additive_slot =
+          if Slot.equal left linear_output then Some right
+          else if Slot.equal right linear_output then Some left
+          else None
+        in
+        (match additive_slot, result_value region output with
+        | Some additive_slot, Some output ->
+            input_value values additive_slot
+            |> Option.map (fun additive ->
+                   Linear_additive { linear; additive; output })
+        | _ -> None)
+    | _ -> None
+
+  let gated_product region values =
+    let linears =
+      region.bindings
+      |> List.filter_map (fun binding ->
+             match linear values binding, output_slot binding with
+             | Some linear, Some output -> Some (linear, output)
+             | _ -> None)
+    in
+    let unaries =
+      region.bindings
+      |> List.filter_map (fun binding ->
+             match binding.primitive, binding.inputs, output_slot binding with
+             | Primitive.Unary activation, [ input ], Some output ->
+                 Some (activation, input, output)
+             | _ -> None)
+    in
+    let products =
+      region.bindings
+      |> List.filter_map (fun binding ->
+             match binding.primitive, binding.inputs, output_slot binding with
+             | Primitive.Binary Primitive.Mul, [ left; right ], Some output ->
+                 Some (left, right, output)
+             | _ -> None)
+    in
+    match linears, unaries, products with
+    | [ first; second ], [ (activation, activated_input, activated_output) ],
+      [ (left, right, product_output) ] ->
+        let oriented =
+          if Slot.equal (snd first) activated_input then
+            Some (fst first, fst second, snd second)
+          else if Slot.equal (snd second) activated_input then
+            Some (fst second, fst first, snd first)
+          else None
+        in
+        (match oriented, result_value region product_output with
+        | Some (gate, up, up_output), Some output
+          when
+            ((Slot.equal left activated_output && Slot.equal right up_output)
+            || (Slot.equal right activated_output && Slot.equal left up_output))
+            && gate.m = up.m && gate.n = up.n && gate.k = up.k
+            && gate.storage = up.storage
+            && gate.parameters = [] && up.parameters = []
+            && Ir.Value.equal gate.input up.input ->
+              Some (Gated_product { gate; up; activation; output })
+        | _ -> None)
+    | _ -> None
+
+  let select region =
+    let values = input_map region in
+    match linear_additive region values with
+    | Some tactic -> Some tactic
+    | None -> gated_product region values
+end
+let result_slot result = result.slot
+let result_value result = result.value
+let result_storage result = result.storage
+
+let error_to_string = render_error
 
 let pp_slot formatter slot = Format.fprintf formatter "s%d" (Slot.to_int slot)
 

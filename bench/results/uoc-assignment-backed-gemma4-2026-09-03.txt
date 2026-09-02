@@ -1,0 +1,27 @@
+Gemma 4 primitive-assignment backend execution
+date: 2026-09-03
+base commit: 9ebc823
+target profile: bench/results/uoc-gemma4-target-hardware-2026-09-02.json
+target GGUF sha256: 90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370
+artifact: _artifacts/gemma4-12b-qat-assignment-backed-2026-09-03-v2
+
+package result:
+- prefill: 5895 FX nodes -> 3251 IR nodes
+- decode: 6087 FX nodes -> 3491 IR nodes
+- Model Program ABI: 7
+- Serving Schedule ABI: 28
+- primitive assignment regions after package deserialize: prefill=48, decode=48
+- suppressed token IDs: 258882,258883
+
+model result for the exact 37 token IDs recorded by exp-0140:
+- load-seconds: 0.086424
+- probe-seconds: 7.207631
+- raw-top-k: 258882:29.765625,258883:26.265625,236888:20.234375,34969:19.65625,164748:19.34375,135061:19.09375,162078:19.09375,148428:18.875,104346:18.859375,20512:18.609375
+- policy-top-k: 236888:20.234375,34969:19.65625,164748:19.34375,135061:19.09375,162078:19.09375,148428:18.875,104346:18.859375,20512:18.609375,236786:18.5625,76936:18.5
+
+comparison:
+- All raw and policy top-10 pairs are bit-identical to the legacy-backed LLMOpt diagnostic.
+- llama.cpp policy argmax remains token 100, so full-model parity remains divergent.
+- No remaining pass_fuse_* module was deleted.
+
+Evidence: package readback preserved 96 primitive regions and the assignment-backed runtime reproduced the prior LLMOpt logits exactly; assumption: the unchanged llama.cpp mismatch has the same first divergent intermediate, which final logits alone cannot locate.

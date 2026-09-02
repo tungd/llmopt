@@ -6,12 +6,14 @@ module Command = struct
     op : Ir.Op.t;
     inputs : Ir.Value.t list;
     output : Ir.Value.t option;
+    fusion_region : Kernel_ir.t option;
   }
 
   let node_id command = command.node_id
   let op command = command.op
   let inputs command = command.inputs
   let output command = command.output
+  let fusion_region command = command.fusion_region
 end
 
 module Stage = struct
@@ -1359,16 +1361,98 @@ let create commands =
   in
   loop Int_set.empty Int_set.empty (-1) commands
 
-let of_graph graph =
-  graph |> Ir.Graph.nodes
-  |> List.map (fun node ->
-         {
-           Command.node_id = Ir.node_id node;
-           op = Ir.node_op node;
-           inputs = Ir.node_inputs node;
-           output = Ir.node_output node;
-         })
-  |> create
+let operation_accepts_region operation region =
+  match Kernel_ir.Fused_tactic.select region, operation with
+  | ( Some (Kernel_ir.Fused_tactic.Linear_additive { linear; _ }),
+      Ir.Op.Linear_add { m; n; k } ) ->
+      (match linear.storage with
+      | Ir.Linear_storage.Block_quantized _ ->
+          linear.m = m && linear.n = n && linear.k = k
+      | _ -> false)
+  | ( Some (Kernel_ir.Fused_tactic.Linear_additive { linear; _ }),
+      Ir.Op.W4a16_linear { m; n; k; bias = true } ) ->
+      (match linear.storage with
+      | Ir.Linear_storage.Groupwise_packed _ ->
+          linear.m = m && linear.n = n && linear.k = k
+      | _ -> false)
+  | ( Some
+        (Kernel_ir.Fused_tactic.Gated_product
+          { gate; up; activation; _ }),
+      Ir.Op.Gated_linear { m; n; k; activation = operation_activation } ) ->
+      let activation_matches =
+        match activation, operation_activation with
+        | Kernel_ir.Primitive.Silu, Ir.Gated_activation.Silu
+        | Kernel_ir.Primitive.Gelu, Ir.Gated_activation.Gelu
+        | Kernel_ir.Primitive.Sigmoid, Ir.Gated_activation.Sigmoid -> true
+        | _ -> false
+      in
+      activation_matches && gate.m = m && gate.n = n && gate.k = k
+      && up.m = m && up.n = n && up.k = k
+  | _ -> false
+
+let attach_fusion_region commands region =
+  let region_inputs =
+    Kernel_ir.inputs region
+    |> List.map (fun ({ Kernel_ir.value; _ } : Kernel_ir.input) -> value)
+  in
+  let region_output =
+    match Kernel_ir.results region with
+    | [ result ] -> Some (Kernel_ir.result_value result)
+    | _ -> None
+  in
+  let same_values left right =
+    List.length left = List.length right
+    && List.for_all2 Ir.Value.equal left right
+  in
+  let matches =
+    commands
+    |> List.filter (fun command ->
+           operation_accepts_region command.Command.op region
+           && same_values command.Command.inputs region_inputs
+           &&
+           match command.Command.output, region_output with
+           | Some command_output, Some region_output ->
+               Ir.Value.equal command_output region_output
+           | None, None -> true
+           | _ -> false)
+  in
+  match matches with
+  | [ matched ] ->
+      Ok
+        (commands
+        |> List.map (fun command ->
+               if command.Command.node_id = matched.Command.node_id then
+                 { command with Command.fusion_region = Some region }
+               else command))
+  | [] ->
+      Error
+        (Printf.sprintf "fusion region %s has no executable schedule command"
+           (Kernel_ir.name region))
+  | _ ->
+      Error
+        (Printf.sprintf "fusion region %s maps to multiple schedule commands"
+           (Kernel_ir.name region))
+
+let of_graph ?(fusion_regions = []) graph =
+  let commands =
+    graph |> Ir.Graph.nodes
+    |> List.map (fun node ->
+           {
+             Command.node_id = Ir.node_id node;
+             op = Ir.node_op node;
+             inputs = Ir.node_inputs node;
+             output = Ir.node_output node;
+             fusion_region = None;
+           })
+  in
+  let* commands =
+    List.fold_left
+      (fun commands region ->
+        let* commands = commands in
+        attach_fusion_region commands region)
+      (Ok commands) fusion_regions
+  in
+  create commands
 
 let tensor_inputs schedule =
   schedule.commands
@@ -2040,9 +2124,23 @@ module Sequence = struct
                   in
                   Ok (Some value, values)
           in
+          let* fusion_region =
+            match command.Command.fusion_region with
+            | None -> Ok None
+            | Some region ->
+                Kernel_ir.specialize
+                  ~dimension:(substitute substitutions)
+                  ~value:(mapped values) region
+                |> Result.map Option.some
+          in
           map_commands
             values
-            ({ command with Command.op = op; inputs; output = result } :: output)
+            ({ command with
+               Command.op = op;
+               inputs;
+               output = result;
+               fusion_region }
+            :: output)
             rest
     in
     map_commands Value_map.empty [] commands
@@ -2210,14 +2308,16 @@ module Sequence = struct
                         { name = rope_cosine_input;
                           source = Ir.Input_source.Runtime };
                     inputs = [];
-                    output = Some cosine };
+                    output = Some cosine;
+                    fusion_region = None };
                   { Command.node_id = 1;
                     op =
                       Ir.Op.Input
                         { name = rope_sine_input;
                           source = Ir.Input_source.Runtime };
                     inputs = [];
-                    output = Some sine } ]
+                    output = Some sine;
+                    fusion_region = None } ]
               in
               create (prune (inputs @ commands))
 
@@ -2396,13 +2496,15 @@ module Sequence = struct
               Ir.Op.Input
                 { name = q8_attention_pool_input; source = Ir.Input_source.Runtime };
             inputs = [];
-            output = Some pool };
+            output = Some pool;
+            fusion_region = None };
           { Command.node_id = 1;
             op =
               Ir.Op.Input
                 { name = q8_attention_slots_input; source = Ir.Input_source.Runtime };
             inputs = [];
-            output = Some slots } ]
+            output = Some slots;
+            fusion_region = None } ]
       in
       create (prune (inputs @ commands))
 
@@ -2451,6 +2553,7 @@ module Sequence = struct
                           };
                       inputs = [];
                       output = Some input_val;
+                      fusion_region = None;
                     }
                   in
                   let updated_cmd =
@@ -2515,6 +2618,7 @@ module Sequence = struct
           op = Ir.Op.Input { name = suffix_mask_input; source = Ir.Input_source.Runtime };
           inputs = [];
           output = Some mask;
+          fusion_region = None;
         }
       in
       create (prune (mask_input :: commands))
@@ -2719,6 +2823,298 @@ let find_value values id =
   match Hashtbl.find_opt values id with
   | Some value -> Ok value
   | None -> Error (Printf.sprintf "schedule argument references undefined value %d" id)
+
+let write_slot writer slot =
+  Binary.Writer.u32 writer (Kernel_ir.Slot.to_int slot)
+
+let read_slot reader =
+  let* slot = Binary.Reader.u32 reader in
+  Kernel_ir.Slot.of_int slot
+
+let write_linear_storage writer = function
+  | Ir.Linear_storage.Dense dtype ->
+      Binary.Writer.u8 writer 0;
+      Binary.Writer.u8 writer (dtype_tag dtype)
+  | Ir.Linear_storage.Block_quantized quant ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.u8 writer (dtype_tag (Ir.Dtype.Quant quant))
+  | Ir.Linear_storage.Groupwise_packed { bits; group_elements } ->
+      Binary.Writer.u8 writer 2;
+      Binary.Writer.u8 writer bits;
+      Binary.Writer.u32 writer group_elements
+
+let read_linear_storage reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 ->
+      let* dtype_tag = Binary.Reader.u8 reader in
+      let* dtype = dtype_of_tag dtype_tag in
+      Ok (Ir.Linear_storage.Dense dtype)
+  | 1 ->
+      let* dtype_tag = Binary.Reader.u8 reader in
+      let* dtype = dtype_of_tag dtype_tag in
+      (match dtype with
+      | Ir.Dtype.Quant quant -> Ok (Ir.Linear_storage.Block_quantized quant)
+      | _ -> Error "kernel assignment block storage is not quantized")
+  | 2 ->
+      let* bits = Binary.Reader.u8 reader in
+      let* group_elements = Binary.Reader.u32 reader in
+      Ok (Ir.Linear_storage.Groupwise_packed { bits; group_elements })
+  | _ -> Error (Printf.sprintf "unknown kernel assignment storage tag: %d" tag)
+
+let write_kernel_primitive writer = function
+  | Kernel_ir.Primitive.Rms_norm { epsilon } ->
+      Binary.Writer.u8 writer 0;
+      Binary.Writer.float64 writer epsilon
+  | Kernel_ir.Primitive.Linear { m; n; k; bias; storage } ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.u32 writer m;
+      Binary.Writer.u32 writer n;
+      Binary.Writer.u32 writer k;
+      Binary.Writer.bool writer bias;
+      write_linear_storage writer storage
+  | Kernel_ir.Primitive.Unary unary ->
+      Binary.Writer.u8 writer 2;
+      Binary.Writer.u8 writer
+        (match unary with
+        | Kernel_ir.Primitive.Silu -> 0
+        | Kernel_ir.Primitive.Gelu -> 1
+        | Kernel_ir.Primitive.Sigmoid -> 2)
+  | Kernel_ir.Primitive.Binary binary ->
+      Binary.Writer.u8 writer 3;
+      Binary.Writer.u8 writer
+        (match binary with
+        | Kernel_ir.Primitive.Mul -> 0
+        | Kernel_ir.Primitive.Add -> 1)
+
+let read_kernel_primitive reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 ->
+      let* epsilon = Binary.Reader.float64 reader in
+      if Float.is_finite epsilon then Ok (Kernel_ir.Primitive.rms_norm ~epsilon)
+      else Error "kernel assignment RMSNorm epsilon is not finite"
+  | 1 ->
+      let* m = Binary.Reader.u32 reader in
+      let* n = Binary.Reader.u32 reader in
+      let* k = Binary.Reader.u32 reader in
+      let* bias = Binary.Reader.bool reader in
+      let* storage = read_linear_storage reader in
+      Ok (Kernel_ir.Primitive.linear ~m ~n ~k ~bias ~storage)
+  | 2 ->
+      let* unary = Binary.Reader.u8 reader in
+      (match unary with
+      | 0 -> Ok (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu)
+      | 1 -> Ok (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Gelu)
+      | 2 -> Ok (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Sigmoid)
+      | _ -> Error (Printf.sprintf "unknown kernel assignment unary tag: %d" unary))
+  | 3 ->
+      let* binary = Binary.Reader.u8 reader in
+      (match binary with
+      | 0 -> Ok (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul)
+      | 1 -> Ok (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add)
+      | _ -> Error (Printf.sprintf "unknown kernel assignment binary tag: %d" binary))
+  | _ -> Error (Printf.sprintf "unknown kernel assignment primitive tag: %d" tag)
+
+let write_slots writer slots =
+  Binary.Writer.u32 writer (List.length slots);
+  List.iter (write_slot writer) slots
+
+let read_slots reader =
+  let* count = Binary.Reader.u32 reader in
+  let rec loop reversed remaining =
+    if remaining = 0 then Ok (List.rev reversed)
+    else
+      let* slot = read_slot reader in
+      loop (slot :: reversed) (remaining - 1)
+  in
+  loop [] count
+
+let write_fusion_region writer region =
+  Binary.Writer.string writer (Kernel_ir.name region);
+  Binary.Writer.u32 writer (List.length (Kernel_ir.member_node_ids region));
+  List.iter (Binary.Writer.u32 writer) (Kernel_ir.member_node_ids region);
+  Binary.Writer.u32 writer (List.length (Kernel_ir.inputs region));
+  Kernel_ir.inputs region
+  |> List.iter (fun ({ Kernel_ir.slot; value } : Kernel_ir.input) ->
+         write_slot writer slot;
+         Binary.Writer.u32 writer (value_id value));
+  Binary.Writer.u32 writer (List.length (Kernel_ir.bindings region));
+  Kernel_ir.bindings region
+  |> List.iter (fun binding ->
+         let outputs = Kernel_ir.binding_outputs binding in
+         Binary.Writer.u32 writer (List.length outputs);
+         outputs
+         |> List.iter (fun output ->
+                write_slot writer (Kernel_ir.output_slot output);
+                Binary.Writer.u8 writer
+                  (dtype_tag (Kernel_ir.output_dtype output));
+                write_shape writer (Kernel_ir.output_shape output));
+         write_kernel_primitive writer (Kernel_ir.binding_primitive binding);
+         write_slots writer (Kernel_ir.binding_inputs binding));
+  Binary.Writer.u32 writer (List.length (Kernel_ir.results region));
+  Kernel_ir.results region
+  |> List.iter (fun result ->
+         write_slot writer (Kernel_ir.result_slot result);
+         Binary.Writer.u32 writer
+           (value_id (Kernel_ir.result_value result));
+         match Kernel_ir.result_storage result with
+         | Kernel_ir.Fresh -> Binary.Writer.u8 writer 0
+         | Kernel_ir.Alias_input slot ->
+             Binary.Writer.u8 writer 1;
+             write_slot writer slot
+         | Kernel_ir.In_place_input slot ->
+             Binary.Writer.u8 writer 2;
+             write_slot writer slot);
+  let effects = Kernel_ir.effects region in
+  let accesses = Kernel_ir.Effect.accesses effects in
+  Binary.Writer.u32 writer (List.length accesses);
+  accesses
+  |> List.iter (fun (access : Kernel_ir.Effect.access) ->
+         write_slot writer access.slot;
+         Binary.Writer.u8 writer
+           (match access.mode with
+           | Kernel_ir.Effect.Read -> 0
+           | Kernel_ir.Effect.Write -> 1
+           | Kernel_ir.Effect.Read_write -> 2);
+         match access.alias with
+         | Kernel_ir.Effect.Distinct -> Binary.Writer.u8 writer 0
+         | Kernel_ir.Effect.May_alias -> Binary.Writer.u8 writer 1
+         | Kernel_ir.Effect.Alias_of slot ->
+             Binary.Writer.u8 writer 2;
+             write_slot writer slot);
+  write_slots writer (Kernel_ir.Effect.state_inputs effects);
+  write_slots writer (Kernel_ir.Effect.state_outputs effects);
+  Binary.Writer.u32 writer (List.length (Kernel_ir.Effect.barriers effects));
+  List.iter (Binary.Writer.u32 writer) (Kernel_ir.Effect.barriers effects);
+  let resource = Kernel_ir.resource region in
+  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.scalar_ops resource);
+  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.bytes_read resource);
+  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.bytes_written resource);
+  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.temporary_bytes resource);
+  Binary.Writer.u32 writer
+    (Kernel_ir.Resource.synchronization_points resource)
+
+let read_fusion_region values reader =
+  let* name = Binary.Reader.string reader in
+  let* member_count = Binary.Reader.u32 reader in
+  let rec members reversed remaining =
+    if remaining = 0 then Ok (List.rev reversed)
+    else
+      let* member = Binary.Reader.u32 reader in
+      members (member :: reversed) (remaining - 1)
+  in
+  let* member_node_ids = members [] member_count in
+  let* input_count = Binary.Reader.u32 reader in
+  let rec inputs reversed remaining =
+    if remaining = 0 then Ok (List.rev reversed)
+    else
+      let* slot = read_slot reader in
+      let* value_id = Binary.Reader.u32 reader in
+      let* value = find_value values value_id in
+      inputs (({ Kernel_ir.slot; value } : Kernel_ir.input) :: reversed)
+        (remaining - 1)
+  in
+  let* inputs = inputs [] input_count in
+  let* binding_count = Binary.Reader.u32 reader in
+  let rec bindings reversed remaining =
+    if remaining = 0 then Ok (List.rev reversed)
+    else
+      let* output_count = Binary.Reader.u32 reader in
+      let rec outputs reversed remaining =
+        if remaining = 0 then Ok (List.rev reversed)
+        else
+          let* slot = read_slot reader in
+          let* dtype_tag = Binary.Reader.u8 reader in
+          let* dtype = dtype_of_tag dtype_tag in
+          let* shape = read_shape reader in
+          outputs
+            (({ Kernel_ir.slot; shape; dtype } : Kernel_ir.output_spec)
+            :: reversed)
+            (remaining - 1)
+      in
+      let* outputs = outputs [] output_count in
+      let* primitive = read_kernel_primitive reader in
+      let* input_slots = read_slots reader in
+      let* binding =
+        Kernel_ir.make_binding ~outputs ~primitive ~inputs:input_slots
+      in
+      bindings (binding :: reversed) (remaining - 1)
+  in
+  let* bindings = bindings [] binding_count in
+  let* result_count = Binary.Reader.u32 reader in
+  let rec results reversed remaining =
+    if remaining = 0 then Ok (List.rev reversed)
+    else
+      let* slot = read_slot reader in
+      let* value_id = Binary.Reader.u32 reader in
+      let* value = find_value values value_id in
+      let* storage_tag = Binary.Reader.u8 reader in
+      let* storage =
+        match storage_tag with
+        | 0 -> Ok Kernel_ir.Fresh
+        | 1 -> read_slot reader |> Result.map (fun slot -> Kernel_ir.Alias_input slot)
+        | 2 ->
+            read_slot reader
+            |> Result.map (fun slot -> Kernel_ir.In_place_input slot)
+        | _ -> Error (Printf.sprintf "unknown kernel result storage tag: %d" storage_tag)
+      in
+      results (({ Kernel_ir.slot; value; storage } : Kernel_ir.result) :: reversed)
+        (remaining - 1)
+  in
+  let* results = results [] result_count in
+  let* access_count = Binary.Reader.u32 reader in
+  let rec accesses reversed remaining =
+    if remaining = 0 then Ok (List.rev reversed)
+    else
+      let* slot = read_slot reader in
+      let* mode_tag = Binary.Reader.u8 reader in
+      let* mode =
+        match mode_tag with
+        | 0 -> Ok Kernel_ir.Effect.Read
+        | 1 -> Ok Kernel_ir.Effect.Write
+        | 2 -> Ok Kernel_ir.Effect.Read_write
+        | _ -> Error (Printf.sprintf "unknown kernel effect mode tag: %d" mode_tag)
+      in
+      let* alias_tag = Binary.Reader.u8 reader in
+      let* alias =
+        match alias_tag with
+        | 0 -> Ok Kernel_ir.Effect.Distinct
+        | 1 -> Ok Kernel_ir.Effect.May_alias
+        | 2 -> read_slot reader |> Result.map (fun slot -> Kernel_ir.Effect.Alias_of slot)
+        | _ -> Error (Printf.sprintf "unknown kernel effect alias tag: %d" alias_tag)
+      in
+      accesses
+        (({ Kernel_ir.Effect.slot; mode; alias } : Kernel_ir.Effect.access)
+        :: reversed)
+        (remaining - 1)
+  in
+  let* accesses = accesses [] access_count in
+  let* state_inputs = read_slots reader in
+  let* state_outputs = read_slots reader in
+  let* barrier_count = Binary.Reader.u32 reader in
+  let rec barriers reversed remaining =
+    if remaining = 0 then Ok (List.rev reversed)
+    else
+      let* barrier = Binary.Reader.u32 reader in
+      barriers (barrier :: reversed) (remaining - 1)
+  in
+  let* barriers = barriers [] barrier_count in
+  let* effects =
+    Kernel_ir.Effect.create ~accesses ~state_inputs ~state_outputs ~barriers ()
+  in
+  let* scalar_ops = Binary.Reader.u64_int64 reader in
+  let* bytes_read = Binary.Reader.u64_int64 reader in
+  let* bytes_written = Binary.Reader.u64_int64 reader in
+  let* temporary_bytes = Binary.Reader.u64_int64 reader in
+  let* synchronization_points = Binary.Reader.u32 reader in
+  let* resource =
+    Kernel_ir.Resource.create ~scalar_ops ~bytes_read ~bytes_written
+      ~temporary_bytes ~synchronization_points
+  in
+  Kernel_ir.create ~name ~member_node_ids ~inputs ~bindings ~results ~effects
+    ~resource
+  |> Result.map_error Kernel_ir.error_to_string
 
 let rec read_argument ~depth values reader =
   if depth > 64 then Error "schedule argument nesting is too deep"
@@ -3574,7 +3970,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 27;
+  Binary.Writer.u16 writer 28;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -3584,7 +3980,8 @@ let to_bytes schedule =
         (fun value -> Binary.Writer.u32 writer (value_id value))
         command.Command.inputs;
       write_option writer write_value command.Command.output;
-      write_op writer command.Command.op)
+      write_op writer command.Command.op;
+      write_option writer write_fusion_region command.Command.fusion_region)
     schedule.commands;
   Binary.Writer.contents writer
 
@@ -3594,7 +3991,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 27 then
+    if version <> 28 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 
@@ -3617,7 +4014,13 @@ let of_bytes bytes =
           let* inputs = inputs [] input_count in
           let* output = read_option reader read_value in
           let* op = read_op values reader in
-          let command = { Command.node_id; op; inputs; output } in
+          List.iter
+            (fun value -> Hashtbl.replace values (value_id value) value)
+            (Option.to_list output @ Ir.Op.additional_outputs op);
+          let* fusion_region =
+            read_option reader (read_fusion_region values)
+          in
+          let command = { Command.node_id; op; inputs; output; fusion_region } in
           let* () = validate_command !seen_values command
           in
           List.iter

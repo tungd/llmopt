@@ -35,6 +35,9 @@ sources:
   - id: matched-policy-diagnostic
     resource: /experiments/exp-0140-gemma4-matched-policy-diagnostic-2026-09-03.md
     title: Matched-policy result and constructive-transition correction
+  - id: assignment-backed-execution
+    resource: /experiments/exp-0141-assignment-backed-gemma4-execution-2026-09-03.md
+    title: Primitive-assignment-backed Gemma package and model run
 ---
 
 # Decision
@@ -231,6 +234,15 @@ region receipt is not a lowering path: a covered pass can be retired only after
 its assignment bindings select and emit the executable kernel and schedule
 command that replace it.[^matched-policy-diagnostic]
 
+That executable seam now exists for accepted Linear/add and
+dual-Linear/activation/multiply regions. Their primitive programs survive
+Serving Schedule ABI 28 serialization and specialization, drive Metal tactic
+selection, and supply runtime buffers, dimensions, storage, activation, and
+result metadata. The assignment-backed Gemma bundle contains 48 regions per
+entrypoint and reproduces the prior LLMOpt top-10 logits exactly. The remaining
+RMSNorm/RoPE, ShortConv/SiLU, GQA-layout, and gated-delta passes are still
+legacy-backed and remain active.[^assignment-backed-execution]
+
 Gemma 4 12B generated-token parity is not established. Under the same 37 prompt
 IDs and GGUF suppression set, llama.cpp selects token `100`, while LLMOpt moves
 from raw token `258882` to policy token `236888`; their raw and policy top-10
@@ -301,3 +313,4 @@ Their experiments and rationale remain historical evidence.[^constructive-loweri
 [^gemma-transition]: Gemma 4 12B QAT and MTP comparison protocol.
 [^gemma-repair]: Gemma compiler repair and corrected reference boundary.
 [^matched-policy-diagnostic]: Matched-policy result and constructive-transition correction.
+[^assignment-backed-execution]: Primitive-assignment-backed Gemma package and model run.

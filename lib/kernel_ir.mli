@@ -164,6 +164,7 @@ type result = {
 }
 
 type t
+type region = t
 
 type error =
   | Empty_name
@@ -193,6 +194,42 @@ val bindings : t -> binding list
 val results : t -> result list
 val effects : t -> Effect.t
 val resource : t -> Resource.t
+
+val specialize :
+  dimension:(int -> int) ->
+  value:(Ir.Value.t -> (Ir.Value.t, string) Stdlib.result) ->
+  t ->
+  (t, string) Stdlib.result
+
+(** Backend tactics selected from primitive dataflow, never from source-AST
+    adjacency. The values in a selected tactic are the executable region
+    boundary bindings. *)
+module Fused_tactic : sig
+  type linear = {
+    m : int;
+    n : int;
+    k : int;
+    storage : Ir.Linear_storage.layout;
+    input : Ir.Value.t;
+    weight : Ir.Value.t;
+    parameters : Ir.Value.t list;
+  }
+
+  type t =
+    | Linear_additive of {
+        linear : linear;
+        additive : Ir.Value.t;
+        output : Ir.Value.t;
+      }
+    | Gated_product of {
+        gate : linear;
+        up : linear;
+        activation : Primitive.unary;
+        output : Ir.Value.t;
+      }
+
+  val select : region -> t option
+end
 
 val result_slot : result -> Slot.t
 val result_value : result -> Ir.Value.t

@@ -26,6 +26,15 @@ let runtime_input_shape schedule name =
   Serving_schedule.runtime_inputs schedule
   |> List.assoc_opt name |> Option.map dimensions
 
+let fusion_region_count schedule =
+  Serving_schedule.commands schedule
+  |> List.fold_left
+       (fun count command ->
+         if Option.is_some (Serving_schedule.Command.fusion_region command) then
+           count + 1
+         else count)
+       0
+
 let validate_runtime_specializations program prefill_pkg decode_pkg =
   let prefill_schedule = Serving_package.schedule prefill_pkg in
   let decode_schedule = Serving_package.schedule decode_pkg in
@@ -252,6 +261,9 @@ let run root =
   Printf.printf
     "  Runtime specialization: tokens=%d, captured_decode_past=%d, paged_q8_attention=%d\n"
     probe_tokens captured_past paged_attention;
+  Printf.printf "  Primitive assignment regions: prefill=%d, decode=%d\n"
+    (fusion_region_count (Serving_package.schedule prefill_pkg))
+    (fusion_region_count (Serving_package.schedule decode_pkg));
   Ok ()
 
 let () =

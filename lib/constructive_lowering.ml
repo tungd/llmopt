@@ -1271,3 +1271,130 @@ let lower analysis =
     unique (cut_uncovered @ unsupported_regions @ overlap_uncovered)
   in
   { Lowering.graph = apply_events graph events; events; uncovered }
+
+let executable_region event =
+  let ( let* ) = Result.bind in
+  let next_slot = ref 0 in
+  let fresh_slot () =
+    let slot = Kernel_ir.Slot.of_int_exn !next_slot in
+    incr next_slot;
+    slot
+  in
+  let add_value slots value =
+    let id = value_id value in
+    match Value_id_map.find_opt id slots with
+    | Some slot -> slots, slot
+    | None ->
+        let slot = fresh_slot () in
+        Value_id_map.add id slot slots, slot
+  in
+  let input_slots, inputs_rev =
+    Lowering.Event.inputs event
+    |> List.fold_left
+         (fun (slots, inputs) value ->
+           let slots, slot = add_value slots value in
+           slots, ({ Kernel_ir.slot; value } : Kernel_ir.input) :: inputs)
+         (Value_id_map.empty, [])
+  in
+  let rec bindings slots reversed = function
+    | [] -> Ok (slots, List.rev reversed)
+    | assignment :: rest ->
+        let* input_slots =
+          Assignment.inputs assignment
+          |> List.fold_left
+               (fun result value ->
+                 let* input_slots = result in
+                 match Value_id_map.find_opt (value_id value) slots with
+                 | Some slot -> Ok (slot :: input_slots)
+                 | None ->
+                     Error
+                       (Printf.sprintf
+                          "constructive assignment node %d references value %d before it is defined"
+                          (Assignment.node_id assignment |> Node_id.to_int)
+                          (value_id value |> Ir.Value_id.to_int)))
+               (Ok [])
+          |> Result.map List.rev
+        in
+        let slots, outputs_rev =
+          Assignment.outputs assignment
+          |> List.fold_left
+               (fun (slots, outputs) value ->
+                 let slots, slot = add_value slots value in
+                 ( slots,
+                   ({ Kernel_ir.slot;
+                      shape = Ir.Value.logical_shape value;
+                      dtype = Ir.Value.dtype value } : Kernel_ir.output_spec)
+                   :: outputs ))
+               (slots, [])
+        in
+        let* binding =
+          Kernel_ir.make_binding ~outputs:(List.rev outputs_rev)
+            ~primitive:(Assignment.primitive assignment) ~inputs:input_slots
+        in
+        bindings slots (binding :: reversed) rest
+  in
+  let* slots, bindings =
+    bindings input_slots [] (Lowering.Event.source_assignments event)
+  in
+  let* results =
+    Lowering.Event.outputs event
+    |> List.fold_left
+         (fun result value ->
+           let* results = result in
+           match Value_id_map.find_opt (value_id value) slots with
+           | None ->
+               Error
+                 (Printf.sprintf
+                    "constructive region result value %d has no assignment slot"
+                    (value_id value |> Ir.Value_id.to_int))
+           | Some slot ->
+               Ok
+                 (({ Kernel_ir.slot; value; storage = Kernel_ir.Fresh }
+                    : Kernel_ir.result)
+                 :: results))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  let input_accesses =
+    List.rev inputs_rev
+    |> List.map (fun ({ Kernel_ir.slot; _ } : Kernel_ir.input) ->
+           ({ Kernel_ir.Effect.slot;
+              mode = Kernel_ir.Effect.Read;
+              alias = Kernel_ir.Effect.Distinct }
+             : Kernel_ir.Effect.access))
+  in
+  let result_accesses =
+    results
+    |> List.map (fun result ->
+           ({ Kernel_ir.Effect.slot = Kernel_ir.result_slot result;
+              mode = Kernel_ir.Effect.Write;
+              alias = Kernel_ir.Effect.Distinct }
+             : Kernel_ir.Effect.access))
+  in
+  let* effects =
+    Kernel_ir.Effect.create ~accesses:(input_accesses @ result_accesses) ()
+  in
+  let name =
+    match Lowering.Event.kind event with
+    | Lowering.Kind.Linear_add -> "linear-add"
+    | Lowering.Kind.W4a16_linear_add -> "w4a16-linear-add"
+    | Lowering.Kind.Gated_linear -> "gated-linear"
+  in
+  Kernel_ir.create ~name
+    ~member_node_ids:
+      (Lowering.Event.source_member_node_ids event
+      |> List.map Node_id.to_int)
+    ~inputs:(List.rev inputs_rev) ~bindings ~results ~effects
+    ~resource:Kernel_ir.Resource.zero
+  |> Result.map_error Kernel_ir.error_to_string
+
+let executable_regions lowering =
+  let ( let* ) = Result.bind in
+  Lowering.events lowering
+  |> List.fold_left
+       (fun result event ->
+         let* regions = result in
+         let* region = executable_region event in
+         Ok (region :: regions))
+       (Ok [])
+  |> Result.map List.rev

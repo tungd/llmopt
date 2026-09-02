@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-09-03
+* **Primitive assignment execution**: Serving Schedule ABI 28 now preserves validated primitive binding programs, specializes their shapes, and lets Metal runtime derive covered fused execution from deserialized bindings. A fresh Gemma package contains 48 such regions in both prefill and decode; its actual 37-token top-10 logits exactly match the prior LLMOpt diagnostic while remaining disjoint from llama.cpp.
 * **Gemma matched-policy diagnostic**: After rebuilding the stale pipeline, the retained 37-token Gemma graphs and archive produced a valid ABI-v7 bundle with suppression IDs `258882,258883`. llama.cpp selects token `100` at logit `28.4734364`; LLMOpt changes from raw token `258882` to policy token `236888` at `20.234375`, and both raw and policy top-10 sets are disjoint. Suppression is active, while first-token model arithmetic still differs.
 * **Constructive-transition correction**: Removed the attempted `assignment_*_tactics` facade and restored all six executable `pass_fuse_*` modules. The copied sequence matchers had still emitted macro `Ir.Op` nodes, while `Kernel_ir` regions were only printed and receipted; no pass is now reported retired until assignment bindings drive emitted kernels and schedule commands.
 

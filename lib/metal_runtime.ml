@@ -2620,6 +2620,44 @@ let update_slice_kernel destination source output =
            (Ir.Dtype.to_string source_dtype)
            (Ir.Dtype.to_string output_dtype))
 
+let assignment_execution command =
+  match
+    Option.bind (Serving_schedule.Command.fusion_region command)
+      Kernel_ir.Fused_tactic.select
+  with
+  | Some
+      (Kernel_ir.Fused_tactic.Linear_additive
+        { linear; additive; output }) ->
+      (match linear.storage with
+      | Ir.Linear_storage.Block_quantized _ ->
+          Some
+            ( Ir.Op.Linear_add
+                { m = linear.m; n = linear.n; k = linear.k },
+              [ linear.input; linear.weight; additive ],
+              Some output )
+      | Ir.Linear_storage.Groupwise_packed _ ->
+          Some
+            ( Ir.Op.W4a16_linear
+                { m = linear.m; n = linear.n; k = linear.k; bias = true },
+              linear.input :: linear.weight :: linear.parameters @ [ additive ],
+              Some output )
+      | Ir.Linear_storage.Dense _ -> None)
+  | Some
+      (Kernel_ir.Fused_tactic.Gated_product
+        { gate; up; activation; output }) ->
+      let activation =
+        match activation with
+        | Kernel_ir.Primitive.Silu -> Ir.Gated_activation.Silu
+        | Kernel_ir.Primitive.Gelu -> Ir.Gated_activation.Gelu
+        | Kernel_ir.Primitive.Sigmoid -> Ir.Gated_activation.Sigmoid
+      in
+      Some
+        ( Ir.Op.Gated_linear
+            { m = gate.m; n = gate.n; k = gate.k; activation },
+          [ gate.input; gate.weight; up.weight ],
+          Some output )
+  | None -> None
+
 let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
   let runtime = execution_batch.Execution_batch.runtime in
   let batch = execution_batch.commands in
@@ -2655,9 +2693,14 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
           }
     | command :: rest ->
         let node_id = Serving_schedule.Command.node_id command in
-        let op = Serving_schedule.Command.op command in
-        let command_inputs = Serving_schedule.Command.inputs command in
-        let command_output = Serving_schedule.Command.output command in
+        let op, command_inputs, command_output =
+          match assignment_execution command with
+          | Some execution -> execution
+          | None ->
+              ( Serving_schedule.Command.op command,
+                Serving_schedule.Command.inputs command,
+                Serving_schedule.Command.output command )
+        in
         let continue state = run state rest in
         let unsupported () =
           Error

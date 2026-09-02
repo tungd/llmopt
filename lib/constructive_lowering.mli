@@ -142,3 +142,9 @@ module Lowering : sig
 end
 
 val lower : Analysis.t -> Lowering.t
+
+(** Materialize every accepted lowering event as validated primitive
+    assignments. These regions are the backend input for covered operations;
+    the replacement graph remains only the compatibility view used by
+    backends that have not migrated yet. *)
+val executable_regions : Lowering.t -> (Kernel_ir.t list, string) result

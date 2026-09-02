@@ -103,8 +103,8 @@ let compile_single_graph ~target ~weights_path ~graph_path ~output_dir ~greedy =
         ^ (regions |> List.map Kernel_ir.to_string |> String.concat "\n")
         ^ "\n"
   in
-  let* schedule = Serving_schedule.of_graph planned in
-  let* metal_program = Metal.lower ~target planned in
+  let* schedule = Serving_schedule.of_graph ~fusion_regions planned in
+  let* metal_program = Metal.lower ~target ~fusion_regions planned in
   let tensor_store =
     Serving_package.Tensor_store.weights ~file:(artifact "weights.llmopt")
   in

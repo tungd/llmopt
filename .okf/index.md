@@ -56,6 +56,7 @@ configuration.
 
 * [Unified compiler Gemma 4 repair and queue-collapse diagnosis](experiments/exp-0139-unified-compiler-gemma4-repair-2026-09-02.md) - constructive Q4_0/GELU lowering, unambiguous fallback accounting, AOT queue deltas, Metal command repair, and exact-reference boundaries.
 * [Gemma 4 matched-policy diagnostic and constructive-transition correction](experiments/exp-0140-gemma4-matched-policy-diagnostic-2026-09-03.md) - same-prompt top-10 logits prove suppression is applied but arithmetic still diverges, and restore legacy passes after rejecting receipt-only Kernel_ir regions as backend lowering.
+* [Primitive-assignment-backed Gemma execution](experiments/exp-0141-assignment-backed-gemma4-execution-2026-09-03.md) - 48 prefill and 48 decode regions survive schedule serialization and drive Metal runtime execution with exact legacy-backed LLMOpt logits.
 
 * [FX linear smoke](experiments/exp-0001-fx-linear.md) - first cross-language probe.
 * [Cross-runtime benchmark protocol](benchmarks/benchmark-protocol.md) - llama.cpp target, native llmopt side comparison, and MPS reference record format.

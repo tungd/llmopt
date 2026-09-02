@@ -5479,15 +5479,29 @@ let () =
   in
   let uoc05_optimization graph = Passes.optimize graph |> expect_ok in
   let uoc05_quant_optimization = uoc05_optimization linear_add_graph in
+  let uoc05_quant_regions =
+    Passes.Optimization.fusion_regions uoc05_quant_optimization
+  in
   expect
     (List.length
        (Constructive_lowering.Lowering.events
           (Passes.Optimization.lowering uoc05_quant_optimization))
      = 1
+    && (match uoc05_quant_regions with
+       | [ region ] ->
+           List.length (Kernel_ir.bindings region) = 2
+           && List.map Kernel_ir.binding_primitive
+                (Kernel_ir.bindings region)
+              =
+              [ Kernel_ir.Primitive.linear ~m:1 ~n:128 ~k:64 ~bias:false
+                  ~storage:
+                    (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K);
+                Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add ]
+       | _ -> false)
     && Passes.Optimization.legacy_fallbacks uoc05_quant_optimization = []
     && uoc05_has_op (Passes.Optimization.execution_graph uoc05_quant_optimization)
          (function Ir.Op.Linear_add { m = 1; n = 128; k = 64 } -> true | _ -> false))
-    "UOC-05 optimize lowers non-adjacent quantized Linear-add without fallback";
+    "UOC-05 optimize retains executable primitive bindings for Linear-add";
   let uoc05_w4_graph = Ir.Graph.create () in
   let uoc05_w4_input =
     uoc03_input uoc05_w4_graph "uoc05-w4-input" [ 1; 64 ] Ir.Dtype.Float16
@@ -5645,7 +5659,13 @@ let () =
                activation = Ir.Gated_activation.Gelu } -> true
          | _ -> false))
     "UOC-05 constructively lowers Q4_0 Linear/GELU/Mul without a legacy matcher";
-  let uoc05_gelu_q4_program = Metal.lower uoc05_gelu_q4_execution |> expect_ok in
+  let uoc05_gelu_q4_program =
+    Metal.lower
+      ~fusion_regions:
+        (Passes.Optimization.fusion_regions uoc05_gelu_q4_optimization)
+      uoc05_gelu_q4_execution
+    |> expect_ok
+  in
   expect
     (Metal.Program.kernels uoc05_gelu_q4_program
     |> List.exists (fun entry ->
@@ -5654,8 +5674,26 @@ let () =
               = Kernel_abi.Operation.Gated_linear))
     "Q4_0 constructive GELU lowering declares its gated Metal tactic";
   let _uoc05_gelu_q4_schedule =
-    Serving_schedule.of_graph uoc05_gelu_q4_execution |> expect_ok
+    Serving_schedule.of_graph
+      ~fusion_regions:
+        (Passes.Optimization.fusion_regions uoc05_gelu_q4_optimization)
+      uoc05_gelu_q4_execution
+    |> expect_ok
   in
+  expect
+    (Serving_schedule.commands _uoc05_gelu_q4_schedule
+    |> List.exists (fun command ->
+           Option.is_some (Serving_schedule.Command.fusion_region command)))
+    "UOC-05 executable schedule retains its primitive assignment region";
+  let uoc05_gelu_q4_restored_schedule =
+    _uoc05_gelu_q4_schedule |> Serving_schedule.to_bytes
+    |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands uoc05_gelu_q4_restored_schedule
+    |> List.exists (fun command ->
+           Option.is_some (Serving_schedule.Command.fusion_region command)))
+    "UOC-05 schedule serialization preserves primitive assignment execution";
   let uoc05_bad_graph = Ir.Graph.create () in
   let uoc05_bad_input =
     uoc03_input uoc05_bad_graph "uoc05-bad-input" [ 1; 64 ] Ir.Dtype.Float16
