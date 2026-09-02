@@ -2628,6 +2628,20 @@ type assignment_execution =
       activation : Kernel_ir.Primitive.unary;
       output : Ir.Value.t;
     }
+  | Assignment_rms_normalize of {
+      input : Ir.Value.t;
+      weight : Ir.Value.t;
+      output : Ir.Value.t;
+      epsilon : float;
+    }
+  | Assignment_rms_rope of {
+      config : Ir.Rms_rope.t;
+      input : Ir.Value.t;
+      weight : Ir.Value.t;
+      cosine : Ir.Value.t;
+      sine : Ir.Value.t;
+      output : Ir.Value.t;
+    }
 
 let assignment_execution command =
   match
@@ -2642,6 +2656,16 @@ let assignment_execution command =
       (Kernel_ir.Fused_tactic.Gated_product
         { gate; up; activation; output }) ->
       Some (Assignment_gated_product { gate; up; activation; output })
+  | Some
+      (Kernel_ir.Fused_tactic.Rms_normalize
+        { input; weight; output; epsilon }) ->
+      Some (Assignment_rms_normalize { input; weight; output; epsilon })
+  | Some
+      (Kernel_ir.Fused_tactic.Rms_rope
+        { config; input; weight; cosine; sine; output }) ->
+      Some
+        (Assignment_rms_rope
+           { config; input; weight; cosine; sine; output })
   | None -> None
 
 let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
@@ -2700,6 +2724,83 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               kernels_rev = List.rev_append kernels state.kernels_rev }
         in
         let dispatch_assignment = function
+          | Assignment_rms_rope
+              { config; input; weight; cosine; sine; output } ->
+              let* batches, tokens, heads, width =
+                match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
+                | [ batches; tokens; heads; width ]
+                  when batches > 0 && tokens > 0 && heads > 0 && width > 0 ->
+                    Ok (batches, tokens, heads, width)
+                | _ -> Error "assignment RMSNorm-RoPE input must have rank four"
+              in
+              let* trig_batches =
+                rotary_trig_batches ~batches ~tokens ~width cosine sine
+              in
+              let half_dimension = Ir.Rms_rope.half_dimension config in
+              if
+                width <> 2 * half_dimension
+                || Tensor_shape.dimensions (Ir.Value.logical_shape weight)
+                   <> [ width ]
+                || Tensor_shape.dimensions (Ir.Value.logical_shape output)
+                   <> [ batches; heads; tokens; width ]
+              then Error "assignment RMSNorm-RoPE metadata is inconsistent"
+              else
+                let* buffers =
+                  find_values state [ input; weight; cosine; sine ]
+                in
+                let* parameters =
+                  Parameters.rms_rope ~batches ~tokens ~heads ~width
+                    ~half_dimension ~trig_batches
+                    ~epsilon:(Ir.Rms_rope.epsilon config)
+                in
+                let* name =
+                  match Ir.Value.dtype weight with
+                  | Ir.Dtype.Float16 -> Ok "llmopt_rms_rope_f16_simd_h64"
+                  | Ir.Dtype.Float32 -> Ok "llmopt_rms_rope_f16_wf32_simd"
+                  | dtype ->
+                      Error
+                        ("unsupported assignment RMSNorm-RoPE weight dtype: "
+                        ^ Ir.Dtype.to_string dtype)
+                in
+                let* grid_x = simd_rows_grid (batches * heads * tokens) in
+                dispatched
+                  (dispatch_output ~name runtime state output
+                     ~operation:Kernel_abi.Operation.Rms_rope
+                     ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
+                     ~grid:(grid_x, 1, 1))
+          | Assignment_rms_normalize { input; weight; output; epsilon } ->
+              let input_shape = Ir.Value.logical_shape input in
+              let* width =
+                match List.rev (Tensor_shape.dimensions input_shape) with
+                | width :: _ when width > 0 -> Ok width
+                | _ -> Error "assignment RMSNorm has no final dimension"
+              in
+              let rows = Tensor_shape.numel input_shape / width in
+              let* buffers = find_values state [ input; weight ] in
+              let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
+              let input_dtype = Ir.Value.dtype input in
+              let weight_dtype = Ir.Value.dtype weight in
+              let wide =
+                use_wide_rows ~rows ~width
+                && input_dtype = Ir.Dtype.Float16
+                && weight_dtype = Ir.Dtype.Float32
+              in
+              let* entry, simd =
+                select_rms_norm_kernel runtime ~wide input_dtype weight_dtype
+                  (Ir.Value.dtype output)
+              in
+              let* grid_x =
+                if wide then wide_rows_grid rows
+                else if simd then simd_rows_grid rows
+                else Ok rows
+              in
+              let* output_buffer = workspace_buffer state output in
+              let* kernel =
+                dispatch ~batch runtime entry
+                  ~buffers:(buffers @ [ output_buffer ]) ~parameters
+                  ~grid:(grid_x, 1, 1)
+              in
+              dispatched (Ok (bind_value state output output_buffer, kernel))
           | Assignment_linear_add (linear, additive, output) ->
               (match linear.Kernel_ir.Fused_tactic.storage with
               | Ir.Linear_storage.Block_quantized quant ->
@@ -2785,11 +2886,16 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 | _ -> Error "assignment gated product requires matching block quantization"
               in
               let* buffers = find_values state [ gate.input; gate.weight; up.weight ] in
-              let activation_tag =
+              let* activation_tag =
                 match activation with
-                | Kernel_ir.Primitive.Silu -> 0
-                | Kernel_ir.Primitive.Gelu -> 1
-                | Kernel_ir.Primitive.Sigmoid -> 2
+                | Kernel_ir.Primitive.Silu -> Ok 0
+                | Kernel_ir.Primitive.Gelu -> Ok 1
+                | Kernel_ir.Primitive.Sigmoid -> Ok 2
+                | Kernel_ir.Primitive.Neg | Kernel_ir.Primitive.Rsqrt
+                | Kernel_ir.Primitive.Cos | Kernel_ir.Primitive.Sin
+                | Kernel_ir.Primitive.Tanh | Kernel_ir.Primitive.Exp
+                | Kernel_ir.Primitive.Softplus | Kernel_ir.Primitive.Pow _ ->
+                    Error "assignment gated product has unsupported activation"
               in
               let* parameters = Parameters.u32s [ gate.m; gate.n; gate.k; activation_tag ] in
               let name =

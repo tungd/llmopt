@@ -2526,6 +2526,102 @@ let () =
            | Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32) -> false
            | _ -> true))
     "RMSNorm pass removes the single-use widening cast";
+  let constructive_rms_regions =
+    let graph = Ir.Graph.create () in
+    let input =
+      tensor_input graph ~name:"constructive-rms-input"
+        ~source:Ir.Input_source.Runtime ~shape:[ 1; 64 ]
+        ~dtype:Ir.Dtype.Float16
+    in
+    let weight =
+      tensor_input graph ~name:"constructive-rms-weight"
+        ~source:(Ir.Input_source.Tensor_store { key = "constructive-rms-weight" })
+        ~shape:[ 64 ] ~dtype:Ir.Dtype.Float32
+    in
+    let append dtype op inputs shape =
+      let output =
+        Ir.Graph.fresh_tensor_value graph ~shape:(Tensor_shape.of_ints_exn shape)
+          ~dtype
+      in
+      Ir.Graph.append graph ~op ~inputs ~output:(Some output);
+      output
+    in
+    let input_f32 =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+        [ input ] [ 1; 64 ]
+    in
+    let squared =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary
+                 (Ir.Pointwise.Pow (Ir.Scalar.Int 2), input_f32))))
+        [ input_f32 ] [ 1; 64 ]
+    in
+    let mean =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Reduce
+              { Ir.Reduction.operator = Ir.Reduction.Mean;
+                axes = [ 1 ]; keepdim = true }))
+        [ squared ] [ 1; 1 ]
+    in
+    let stabilized =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Add, Ir.Pointwise.Tensor mean,
+                   Ir.Pointwise.Scalar (Ir.Scalar.Float 1e-5) ))))
+        [ mean ] [ 1; 1 ]
+    in
+    let inverse =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, stabilized))))
+        [ stabilized ] [ 1; 1 ]
+    in
+    let normalized =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor input_f32,
+                   Ir.Pointwise.Tensor inverse ))))
+        [ input_f32; inverse ] [ 1; 64 ]
+    in
+    let scaled =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor normalized,
+                   Ir.Pointwise.Tensor weight ))))
+        [ normalized; weight ] [ 1; 64 ]
+    in
+    let output =
+      append Ir.Dtype.Float16
+        (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float16))
+        [ scaled ] [ 1; 64 ]
+    in
+    Ir.Graph.add_output graph ~name:"constructive-rms" output;
+    let analysis =
+      graph |> Compute_plan.of_graph |> expect_ok
+      |> Constructive_lowering.analyze ~target:Target_hardware.default
+    in
+    analysis |> Constructive_lowering.lower
+    |> Constructive_lowering.executable_regions |> expect_ok
+  in
+  expect
+    (List.exists
+       (fun region ->
+         match Kernel_ir.Fused_tactic.select region with
+         | Some (Kernel_ir.Fused_tactic.Rms_normalize _) -> true
+         | _ -> false)
+       constructive_rms_regions)
+    "constructive assignments recover RMSNorm from scalar/reduction dataflow";
 
   let rope_graph = Ir.Graph.create () in
   let rope_input =
@@ -2734,6 +2830,34 @@ let () =
       [ 1; 4; 2; 64 ] Ir.Dtype.Float16
   in
   Ir.Graph.add_output token_rope_graph ~name:"attention" token_attention;
+  let constructive_rope_regions =
+    let analysis =
+      token_rope_graph |> Compute_plan.of_graph |> expect_ok
+      |> Constructive_lowering.analyze ~target:Target_hardware.default
+    in
+    let lowering = Constructive_lowering.lower analysis in
+    let event_count =
+      Constructive_lowering.Lowering.events lowering |> List.length
+    in
+    let regions =
+      lowering |> Constructive_lowering.executable_regions |> expect_ok
+    in
+    event_count, regions
+  in
+  let constructive_rope_event_count, constructive_rope_regions =
+    constructive_rope_regions
+  in
+  expect
+    (constructive_rope_regions
+    |> List.exists (fun region ->
+           match Kernel_ir.Fused_tactic.select region with
+           | Some (Kernel_ir.Fused_tactic.Rms_rope _) -> true
+           | _ -> false))
+    (Printf.sprintf
+       "constructive assignments recover RMSNorm-RoPE from dependency dataflow: %s"
+       (Printf.sprintf "events=%d regions=%s" constructive_rope_event_count
+          (constructive_rope_regions |> List.map Kernel_ir.to_string
+          |> String.concat " || ")));
   let token_rope_fused = Passes.fuse_rms_rope token_rope_graph in
   expect
     (Ir.Graph.nodes token_rope_fused
@@ -5361,15 +5485,21 @@ let () =
   let index_analysis = uoc03_analysis index_graph in
   let index_decisions = Constructive_lowering.Analysis.decisions index_analysis in
   expect
-    (uoc03_has_boundary index_decisions (function
-      | Constructive_lowering.Boundary.Unsupported_index_map _ -> true
-      | _ -> false))
-    "UOC-03 reports unsupported index-map adjacency";
+    (List.exists
+       (fun assignment ->
+         match Constructive_lowering.Assignment.primitive assignment with
+         | Kernel_ir.Primitive.Movement (Ir.Movement.Index _) -> true
+         | _ -> false)
+       (Constructive_lowering.Analysis.assignments index_analysis)
+    && uoc03_has_boundary index_decisions (function
+         | Constructive_lowering.Boundary.Unsupported_operation _ -> true
+         | _ -> false))
+    "UOC-03 models affine index maps and cuts only at the unsupported consumer";
   uoc03_assert_cut_boundaries index_decisions
     "UOC-03 index-map cuts report a nonempty typed boundary";
 
-  (* Fan-out retains the external-use boundary and prevents either source
-     edge from being folded into a region. *)
+  (* Eligible fan-out consumers join one multi-result region instead of
+     arbitrarily fusing only one branch. *)
   let fanout_graph = Ir.Graph.create () in
   let fanout_input = uoc03_input fanout_graph "fanout-input" [ 1; 64 ] Ir.Dtype.Float16 in
   let fanout_weight = uoc03_input fanout_graph "fanout-weight" [ 128; 64 ] (Ir.Dtype.Quant Ir.Dtype.Q4_K) in
@@ -5390,18 +5520,16 @@ let () =
   let fanout_analysis = uoc03_analysis fanout_graph in
   let fanout_decisions = Constructive_lowering.Analysis.decisions fanout_analysis in
   expect
-    (uoc03_has_boundary fanout_decisions (function
-      | Constructive_lowering.Boundary.External_use _ -> true
-      | _ -> false))
-    "UOC-03 reports external fan-out instead of fusing one consumer";
-  expect
-    (not
-       (List.exists
-          (function Constructive_lowering.Decision.Accepted _ -> true | _ -> false)
-          fanout_decisions))
-    "UOC-03 keeps externally-used fan-out assignments separate";
-  uoc03_assert_cut_boundaries fanout_decisions
-    "UOC-03 fan-out cuts report a nonempty typed boundary";
+    (fanout_decisions
+    |> List.filter (function
+         | Constructive_lowering.Decision.Accepted _ -> true
+         | Constructive_lowering.Decision.Cut _ -> false)
+    |> List.length = 2
+    && Constructive_lowering.Analysis.regions fanout_analysis
+       |> List.exists (fun region ->
+              List.length (Constructive_lowering.Region.assignments region) = 3
+              && List.length (Constructive_lowering.Region.outputs region) = 2))
+    "UOC-03 joins all eligible fan-out consumers into one multi-result region";
 
   (* Optional bias metadata is part of numerical legality, not merely a
      parameter-count convention. *)

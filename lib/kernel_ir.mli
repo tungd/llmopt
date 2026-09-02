@@ -15,8 +15,35 @@ module Slot : sig
 end
 
 module Primitive : sig
-  type unary = Silu | Gelu | Sigmoid
-  type binary = Mul | Add
+  type unary =
+    | Neg
+    | Rsqrt
+    | Silu
+    | Gelu
+    | Cos
+    | Sin
+    | Tanh
+    | Exp
+    | Sigmoid
+    | Softplus
+    | Pow of Ir.Scalar.t
+
+  type binary =
+    | Mul
+    | Add
+    | Sub
+    | Div
+    | Logical_and
+    | Equal
+    | Not_equal
+    | Less_equal
+    | Greater
+
+  type scalar_binary = {
+    operator : binary;
+    scalar : Ir.Scalar.t;
+    scalar_on_left : bool;
+  }
 
   (** [m] rows of activation, [n] output columns, [k] input columns. *)
   type linear = {
@@ -32,6 +59,11 @@ module Primitive : sig
     | Linear of linear
     | Unary of unary
     | Binary of binary
+    | Scalar_binary of scalar_binary
+    | Reduce of Ir.Reduction.t
+    | Cast of Ir.Dtype.t
+    | Movement of Ir.Movement.t
+    | Short_conv of Ir.Short_conv.t
 
   val rms_norm : epsilon:float -> t
   val linear :
@@ -43,6 +75,11 @@ module Primitive : sig
     t
   val unary : unary -> t
   val binary : binary -> t
+  val scalar_binary : operator:binary -> scalar:Ir.Scalar.t -> scalar_on_left:bool -> t
+  val reduce : Ir.Reduction.t -> t
+  val cast : Ir.Dtype.t -> t
+  val movement : Ir.Movement.t -> t
+  val short_conv : Ir.Short_conv.t -> t
   val to_string : t -> string
 end
 
@@ -138,6 +175,9 @@ type output_spec = {
   slot : Slot.t;
   shape : Tensor_shape.t;
   dtype : Ir.Dtype.t;
+  (** Source-value provenance is present while compiling constructive
+      assignments and omitted after package deserialization. *)
+  value : Ir.Value.t option;
 }
 
 type binding
@@ -154,6 +194,7 @@ val binding_primitive : binding -> Primitive.t
 val output_slot : output_spec -> Slot.t
 val output_shape : output_spec -> Tensor_shape.t
 val output_dtype : output_spec -> Ir.Dtype.t
+val output_value : output_spec -> Ir.Value.t option
 
 type storage = Fresh | Alias_input of Slot.t | In_place_input of Slot.t
 
@@ -227,8 +268,26 @@ module Fused_tactic : sig
         activation : Primitive.unary;
         output : Ir.Value.t;
       }
+    | Rms_normalize of {
+        input : Ir.Value.t;
+        weight : Ir.Value.t;
+        output : Ir.Value.t;
+        epsilon : float;
+      }
+    | Rms_rope of {
+        config : Ir.Rms_rope.t;
+        input : Ir.Value.t;
+        weight : Ir.Value.t;
+        cosine : Ir.Value.t;
+        sine : Ir.Value.t;
+        output : Ir.Value.t;
+      }
 
   val select : region -> t option
+  (** Select tactics rooted at the region results and at internal assignment
+      results, in sink-first order.  This permits a legal maximal component to
+      contain several independently executable constructive subregions. *)
+  val select_all : region -> t list
 end
 
 val result_slot : result -> Slot.t

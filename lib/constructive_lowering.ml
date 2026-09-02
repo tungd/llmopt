@@ -75,6 +75,7 @@ module Boundary = struct
         operation : Ir.Op.t;
       }
     | Unsupported_index_map of Node_id.t
+    | Layout_boundary of Node_id.t
     | Missing_normalization of {
         source : Node_id.t;
         destination : Node_id.t;
@@ -254,11 +255,15 @@ let binary_operands_match inputs operation =
 let binary_metadata_compatible node inputs output =
   match inputs with
   | [ left; right ]
-    when Ir.Value.dtype left = Ir.Dtype.Float16
-         && Ir.Value.dtype right = Ir.Dtype.Float16
-         && Ir.Value.dtype output = Ir.Dtype.Float16
-         && same_shape left right
-         && same_shape left output -> Ok ()
+    when Ir.Value.dtype left = Ir.Value.dtype right
+         && is_float (Ir.Value.dtype left)
+         && (match
+               Tensor_shape.broadcast (Ir.Value.logical_shape left)
+                 (Ir.Value.logical_shape right)
+             with
+            | Ok shape -> Tensor_shape.equal shape (Ir.Value.logical_shape output)
+            | Error _ -> false)
+         && Ir.Value.dtype output = Ir.Value.dtype left -> Ok ()
   | [ left; right ]
     when Ir.Value.dtype left <> Ir.Value.dtype right
          || Ir.Value.dtype left <> Ir.Dtype.Float16
@@ -272,8 +277,8 @@ let binary_metadata_compatible node inputs output =
 let unary_metadata_compatible node inputs output =
   match inputs with
   | [ input ]
-    when Ir.Value.dtype input = Ir.Dtype.Float16
-         && Ir.Value.dtype output = Ir.Dtype.Float16
+    when is_float (Ir.Value.dtype input)
+         && Ir.Value.dtype output = Ir.Value.dtype input
          && same_shape input output -> Ok ()
   | [ input ]
     when Ir.Value.dtype input <> Ir.Value.dtype output ->
@@ -322,6 +327,42 @@ let assignment node primitive output =
       primitive;
       inputs = Ir.node_inputs node;
       outputs = [ output ] }
+
+let kernel_unary = function
+  | Ir.Pointwise.Neg -> Kernel_ir.Primitive.Neg
+  | Ir.Pointwise.Rsqrt -> Kernel_ir.Primitive.Rsqrt
+  | Ir.Pointwise.Silu -> Kernel_ir.Primitive.Silu
+  | Ir.Pointwise.Cos -> Kernel_ir.Primitive.Cos
+  | Ir.Pointwise.Sin -> Kernel_ir.Primitive.Sin
+  | Ir.Pointwise.Tanh -> Kernel_ir.Primitive.Tanh
+  | Ir.Pointwise.Exp -> Kernel_ir.Primitive.Exp
+  | Ir.Pointwise.Sigmoid -> Kernel_ir.Primitive.Sigmoid
+  | Ir.Pointwise.Softplus -> Kernel_ir.Primitive.Softplus
+  | Ir.Pointwise.Pow scalar -> Kernel_ir.Primitive.Pow scalar
+
+let kernel_binary = function
+  | Ir.Pointwise.Mul | Ir.Pointwise.Silu_mul | Ir.Pointwise.Gelu_mul
+  | Ir.Pointwise.Sigmoid_mul -> Kernel_ir.Primitive.Mul
+  | Ir.Pointwise.Add -> Kernel_ir.Primitive.Add
+  | Ir.Pointwise.Sub -> Kernel_ir.Primitive.Sub
+  | Ir.Pointwise.Div -> Kernel_ir.Primitive.Div
+  | Ir.Pointwise.Logical_and -> Kernel_ir.Primitive.Logical_and
+  | Ir.Pointwise.Equal -> Kernel_ir.Primitive.Equal
+  | Ir.Pointwise.Not_equal -> Kernel_ir.Primitive.Not_equal
+  | Ir.Pointwise.Less_equal -> Kernel_ir.Primitive.Less_equal
+  | Ir.Pointwise.Greater -> Kernel_ir.Primitive.Greater
+
+let pointwise_tensor_values = function
+  | Ir.Pointwise.Unary (_, value) -> [ value ]
+  | Ir.Pointwise.Binary (_, left, right) ->
+      [ left; right ]
+      |> List.filter_map (function
+           | Ir.Pointwise.Tensor value -> Some value
+           | Ir.Pointwise.Scalar _ -> None)
+
+let same_value_lists left right =
+  List.length left = List.length right
+  && List.for_all2 Ir.Value.equal left right
 
 let normalize node =
   match output_of_node node with
@@ -378,40 +419,47 @@ let normalize node =
                 (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add)
                 output
           | Error boundary -> Ineligible boundary)
-      | Ir.Op.Primitive (Ir.Primitive.Pointwise operation), inputs -> (
+      | Ir.Op.Primitive (Ir.Primitive.Pointwise operation), inputs
+        when same_value_lists inputs (pointwise_tensor_values operation) -> (
           match operation with
-          | Ir.Pointwise.Unary
-              ((Ir.Pointwise.Silu | Ir.Pointwise.Sigmoid as operator), value)
-            when (match inputs with [ input ] -> Ir.Value.equal input value | _ -> false) ->
+          | Ir.Pointwise.Unary (operator, _) ->
               (match unary_metadata_compatible (node_id node) inputs output with
               | Ok () ->
-                  let primitive =
-                    match operator with
-                    | Ir.Pointwise.Silu -> Kernel_ir.Primitive.Silu
-                    | Ir.Pointwise.Sigmoid -> Kernel_ir.Primitive.Sigmoid
-                    | _ -> assert false
-                  in
                   assignment node
-                    (Kernel_ir.Primitive.unary primitive)
-                    output
+                    (Kernel_ir.Primitive.unary (kernel_unary operator)) output
               | Error boundary -> Ineligible boundary)
-          | Ir.Pointwise.Binary (operator, _, _)
-            when binary_operands_match inputs operation ->
-              (match binary_metadata_compatible (node_id node) inputs output with
-              | Ok () ->
-                  let primitive =
-                    match operator with
-                    | Ir.Pointwise.Add ->
-                        Some (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add)
-                    | Ir.Pointwise.Mul ->
-                        Some (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul)
-                    | _ -> None
-                  in
-                  (match primitive with
-                  | Some primitive -> assignment node primitive output
-                  | None -> Ineligible (unsupported_boundary node))
-              | Error boundary -> Ineligible boundary)
-          | _ -> Ineligible (unsupported_boundary node))
+          | Ir.Pointwise.Binary (operator, left, right) -> (
+              match left, right with
+              | Ir.Pointwise.Tensor _, Ir.Pointwise.Tensor _ ->
+                  (match binary_metadata_compatible (node_id node) inputs output with
+                  | Ok () ->
+                      assignment node
+                        (Kernel_ir.Primitive.binary (kernel_binary operator))
+                        output
+                  | Error boundary -> Ineligible boundary)
+              | Ir.Pointwise.Scalar scalar, Ir.Pointwise.Tensor _
+              | Ir.Pointwise.Tensor _, Ir.Pointwise.Scalar scalar ->
+                  (match unary_metadata_compatible (node_id node) inputs output with
+                  | Ok () ->
+                      assignment node
+                        (Kernel_ir.Primitive.scalar_binary
+                           ~operator:(kernel_binary operator) ~scalar
+                           ~scalar_on_left:
+                             (match left with
+                             | Ir.Pointwise.Scalar _ -> true
+                             | Ir.Pointwise.Tensor _ -> false))
+                        output
+                  | Error boundary -> Ineligible boundary)
+              | Ir.Pointwise.Scalar _, Ir.Pointwise.Scalar _ ->
+                  Ineligible (unsupported_boundary node)))
+      | Ir.Op.Primitive (Ir.Primitive.Reduce reduction), [ _ ] ->
+          assignment node (Kernel_ir.Primitive.reduce reduction) output
+      | Ir.Op.Primitive (Ir.Primitive.Cast dtype), [ _ ] ->
+          assignment node (Kernel_ir.Primitive.cast dtype) output
+      | Ir.Op.Primitive (Ir.Primitive.Movement movement), _ ->
+          assignment node (Kernel_ir.Primitive.movement movement) output
+      | Ir.Op.Primitive (Ir.Primitive.Short_conv convolution), [ _; _ ] ->
+          assignment node (Kernel_ir.Primitive.short_conv convolution) output
       | _ -> Ineligible (unsupported_boundary node))
 
 let normalize_requests requests =
@@ -466,13 +514,15 @@ let graph_output graph value =
     (fun (_, output) -> Ir.Value.equal output value)
     (Ir.Graph.outputs graph)
 
-let external_use_boundaries plan destination assignment =
+let external_use_boundaries plan normalized destination assignment =
   Assignment.outputs assignment
   |> List.filter_map (fun value ->
          let consumers =
            Compute_plan.consumers plan value
            |> List.map Compute_plan.Use.consumer
            |> List.filter (fun consumer -> consumer <> destination)
+           |> List.filter (fun consumer ->
+                  Option.is_none (assignment_of normalized consumer))
          in
          if consumers = [] then None
          else Some (Boundary.External_use { value; consumers }))
@@ -516,17 +566,30 @@ let candidate_boundaries plan normalized candidate =
   in
   let external_boundaries =
     match source_assignment with
-    | Some assignment -> external_use_boundaries plan destination assignment
+    | Some assignment ->
+        external_use_boundaries plan normalized destination assignment
     | None -> []
   in
   let effect_boundaries = effect_boundary plan candidate |> Option.to_list in
   let inlining_boundaries =
     match source_assignment, destination_assignment with
-    | Some _, Some destination_assignment ->
-        (match Assignment.primitive destination_assignment with
-        | Kernel_ir.Primitive.Unary _ | Kernel_ir.Primitive.Binary _ -> []
-        | Kernel_ir.Primitive.Rms_norm _ | Kernel_ir.Primitive.Linear _ ->
-            [ Boundary.Unsupported_index_map destination ])
+    | Some source_assignment, Some _ ->
+        (match Assignment.primitive source_assignment with
+        | Kernel_ir.Primitive.Movement (Ir.Movement.Unsqueeze _) ->
+            [ Boundary.Layout_boundary source ]
+        | _ ->
+            (match destination_assignment with
+            | Some destination_assignment ->
+                (match Assignment.primitive destination_assignment with
+                | Kernel_ir.Primitive.Unary _ | Kernel_ir.Primitive.Binary _
+                | Kernel_ir.Primitive.Scalar_binary _
+                | Kernel_ir.Primitive.Reduce _ | Kernel_ir.Primitive.Cast _
+                | Kernel_ir.Primitive.Movement _
+                | Kernel_ir.Primitive.Short_conv _ -> []
+                | Kernel_ir.Primitive.Rms_norm _
+                | Kernel_ir.Primitive.Linear _ ->
+                    [ Boundary.Unsupported_index_map destination ])
+            | None -> []))
     | _ -> []
   in
   source_boundaries @ destination_boundaries @ graph_boundaries
@@ -682,7 +745,7 @@ let analyze ~target plan =
 
 module Lowering = struct
   module Kind = struct
-    type t = Linear_add | W4a16_linear_add | Gated_linear
+    type t = Linear_add | W4a16_linear_add | Gated_linear | Rms_norm | Rms_rope
   end
 
   module Event = struct
@@ -1021,7 +1084,9 @@ let linear_add_match ~decisions assignments =
                                     bias = true }
                             | Lowering.Kind.Gated_linear ->
                                 Ir.Op.Linear_add
-                                  { m = linear.m; n = linear.n; k = linear.k })
+                                  { m = linear.m; n = linear.n; k = linear.k }
+                            | Lowering.Kind.Rms_norm | Lowering.Kind.Rms_rope ->
+                                assert false)
                           ~inputs
                       in
                       let source_assignments = [ linear_assignment; add_assignment ] in
@@ -1112,6 +1177,113 @@ let apply_events graph events =
                (Node_id_map.find_opt id replacements
                |> Option.value ~default:node)))
 
+let kernel_region_of_assignments ~name ~inputs ~outputs assignments =
+  let ( let* ) = Result.bind in
+  let next_slot = ref 0 in
+  let fresh_slot () =
+    let slot = Kernel_ir.Slot.of_int_exn !next_slot in
+    incr next_slot;
+    slot
+  in
+  let add_value slots value =
+    let id = value_id value in
+    match Value_id_map.find_opt id slots with
+    | Some slot -> slots, slot
+    | None ->
+        let slot = fresh_slot () in
+        Value_id_map.add id slot slots, slot
+  in
+  let input_slots, inputs_rev =
+    inputs
+    |> List.fold_left
+         (fun (slots, inputs) value ->
+           let slots, slot = add_value slots value in
+           slots, ({ Kernel_ir.slot; value } : Kernel_ir.input) :: inputs)
+         (Value_id_map.empty, [])
+  in
+  let rec bindings slots reversed = function
+    | [] -> Ok (slots, List.rev reversed)
+    | assignment :: rest ->
+        let* assignment_inputs =
+          Assignment.inputs assignment
+          |> List.fold_left
+               (fun result value ->
+                 let* assignment_inputs = result in
+                 match Value_id_map.find_opt (value_id value) slots with
+                 | Some slot -> Ok (slot :: assignment_inputs)
+                 | None ->
+                     Error
+                       (Printf.sprintf
+                          "constructive assignment node %d references value %d before it is defined"
+                          (Assignment.node_id assignment |> Node_id.to_int)
+                          (value_id value |> Ir.Value_id.to_int)))
+               (Ok [])
+          |> Result.map List.rev
+        in
+        let slots, outputs_rev =
+          Assignment.outputs assignment
+          |> List.fold_left
+               (fun (slots, outputs) value ->
+                 let slots, slot = add_value slots value in
+                 ( slots,
+                   ({ Kernel_ir.slot;
+                      shape = Ir.Value.logical_shape value;
+                      dtype = Ir.Value.dtype value;
+                      value = Some value } : Kernel_ir.output_spec)
+                   :: outputs ))
+               (slots, [])
+        in
+        let* binding =
+          Kernel_ir.make_binding ~outputs:(List.rev outputs_rev)
+            ~primitive:(Assignment.primitive assignment) ~inputs:assignment_inputs
+        in
+        bindings slots (binding :: reversed) rest
+  in
+  let* slots, bindings = bindings input_slots [] assignments in
+  let* results =
+    outputs
+    |> List.fold_left
+         (fun result value ->
+           let* results = result in
+           match Value_id_map.find_opt (value_id value) slots with
+           | None ->
+               Error
+                 (Printf.sprintf
+                    "constructive region result value %d has no assignment slot"
+                    (value_id value |> Ir.Value_id.to_int))
+           | Some slot ->
+               Ok
+                 (({ Kernel_ir.slot; value; storage = Kernel_ir.Fresh }
+                    : Kernel_ir.result)
+                 :: results))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  let input_accesses =
+    List.rev inputs_rev
+    |> List.map (fun ({ Kernel_ir.slot; _ } : Kernel_ir.input) ->
+           ({ Kernel_ir.Effect.slot;
+              mode = Kernel_ir.Effect.Read;
+              alias = Kernel_ir.Effect.Distinct }
+             : Kernel_ir.Effect.access))
+  in
+  let result_accesses =
+    results
+    |> List.map (fun result ->
+           ({ Kernel_ir.Effect.slot = Kernel_ir.result_slot result;
+              mode = Kernel_ir.Effect.Write;
+              alias = Kernel_ir.Effect.Distinct }
+             : Kernel_ir.Effect.access))
+  in
+  let* effects =
+    Kernel_ir.Effect.create ~accesses:(input_accesses @ result_accesses) ()
+  in
+  Kernel_ir.create ~name
+    ~member_node_ids:(List.map (fun assignment -> assignment_id assignment) assignments)
+    ~inputs:(List.rev inputs_rev) ~bindings ~results ~effects
+    ~resource:Kernel_ir.Resource.zero
+  |> Result.map_error Kernel_ir.error_to_string
+
 let lower analysis =
   let graph = Analysis.graph analysis in
   let target = Analysis.target analysis in
@@ -1201,7 +1373,135 @@ let lower analysis =
       (claimed, [], []) linear_matches
   in
   let linear_events = List.rev linear_events in
-  let events = gated_events @ linear_events in
+  let tactic_boundary_values = function
+    | Kernel_ir.Fused_tactic.Rms_normalize { input; weight; output; _ } ->
+        [ input; weight ], output
+    | Kernel_ir.Fused_tactic.Rms_rope
+        { input; weight; cosine; sine; output; _ } ->
+        [ input; weight; cosine; sine ], output
+    | Kernel_ir.Fused_tactic.Linear_additive _
+    | Kernel_ir.Fused_tactic.Gated_product _ -> assert false
+  in
+  let assignment_slice assignments tactic =
+    let boundaries, output = tactic_boundary_values tactic in
+    let boundary value =
+      List.exists (fun candidate -> Ir.Value.equal candidate value) boundaries
+    in
+    let producer_map =
+      assignments
+      |> List.fold_left
+           (fun map assignment ->
+             Assignment.outputs assignment
+             |> List.fold_left
+                  (fun map value ->
+                    Value_id_map.add (value_id value) assignment map)
+                  map)
+           Value_id_map.empty
+    in
+    let rec visit seen value =
+      if boundary value then seen
+      else
+        match Value_id_map.find_opt (value_id value) producer_map with
+        | None -> seen
+        | Some assignment ->
+            let id = assignment_id assignment in
+            if Node_set.mem id seen then seen
+            else
+              Assignment.inputs assignment
+              |> List.fold_left visit (Node_set.add id seen)
+    in
+    let selected = visit Node_set.empty output in
+    assignments
+    |> List.filter (fun assignment ->
+           Node_set.mem (assignment_id assignment) selected)
+  in
+  let rms_candidates =
+    regions
+    |> List.concat_map (fun region ->
+           let assignments = Region.assignments region in
+           match
+             kernel_region_of_assignments ~name:"constructive-tactics"
+               ~inputs:(Region.inputs region) ~outputs:(Region.outputs region)
+               assignments
+           with
+           | Error _ -> []
+           | Ok kernel_region ->
+               Kernel_ir.Fused_tactic.select_all kernel_region
+               |> List.filter_map (fun tactic ->
+                      match tactic with
+                      | (Kernel_ir.Fused_tactic.Rms_normalize _
+                        | Kernel_ir.Fused_tactic.Rms_rope _) as tactic ->
+                          let selected = assignment_slice assignments tactic in
+                          if selected = [] then None else Some (tactic, selected)
+                      | _ -> None))
+  in
+  let all_assignment_producers =
+    Analysis.assignments analysis
+    |> List.fold_left
+         (fun map assignment ->
+           Assignment.outputs assignment
+           |> List.fold_left
+                (fun map value ->
+                  Value_id_map.add (value_id value) (assignment_id assignment) map)
+                map)
+         Value_id_map.empty
+  in
+  let selected_inputs assignments member_set =
+    assignments
+    |> List.concat_map Assignment.inputs
+    |> List.filter (fun value ->
+           match Value_id_map.find_opt (value_id value) all_assignment_producers with
+           | Some producer -> not (Node_set.mem producer member_set)
+           | None -> true)
+    |> unique_values
+  in
+  let claimed, rms_events =
+    rms_candidates
+    |> List.fold_left
+         (fun (claimed, events) (tactic, assignments) ->
+           match overlap claimed assignments, List.rev assignments with
+           | None, final_assignment :: _ ->
+               let kind =
+                 match tactic with
+                 | Kernel_ir.Fused_tactic.Rms_normalize _ ->
+                     Lowering.Kind.Rms_norm
+                 | Kernel_ir.Fused_tactic.Rms_rope _ ->
+                     Lowering.Kind.Rms_rope
+                 | _ -> assert false
+               in
+               let _, output = tactic_boundary_values tactic in
+               let member_set =
+                 assignments |> List.map assignment_id |> Node_set.of_list
+               in
+               let inputs = selected_inputs assignments member_set in
+               let replacement_node =
+                 assignments
+                 |> List.find_opt (fun assignment ->
+                        Assignment.outputs assignment
+                        |> List.exists (Ir.Value.equal output))
+                 |> Option.value ~default:final_assignment
+                 |> Assignment.source_node
+               in
+               let event =
+                 { Lowering.Event.kind = kind;
+                   source_assignments = assignments;
+                   inputs;
+                   outputs = [ output ];
+                   replacement_node }
+               in
+               let claimed =
+                 List.fold_left
+                   (fun claimed assignment ->
+                     Node_set.add (assignment_id assignment) claimed)
+                   claimed assignments
+               in
+               claimed, event :: events
+           | _ -> claimed, events)
+         (claimed, [])
+  in
+  let _ = claimed in
+  let rms_events = List.rev rms_events in
+  let events = gated_events @ linear_events @ rms_events in
   let cut_uncovered =
     decisions
     |> List.filter_map (function
@@ -1262,7 +1562,9 @@ let lower analysis =
               match Lowering.Uncovered.kind candidate with
               | Lowering.Kind.Linear_add -> 0
               | Lowering.Kind.W4a16_linear_add -> 1
-              | Lowering.Kind.Gated_linear -> 2 )
+              | Lowering.Kind.Gated_linear -> 2
+              | Lowering.Kind.Rms_norm -> 3
+              | Lowering.Kind.Rms_rope -> 4 )
           in
           if Hashtbl.mem seen key then false
           else (Hashtbl.add seen key (); true))
@@ -1325,7 +1627,8 @@ let executable_region event =
                  ( slots,
                    ({ Kernel_ir.slot;
                       shape = Ir.Value.logical_shape value;
-                      dtype = Ir.Value.dtype value } : Kernel_ir.output_spec)
+                      dtype = Ir.Value.dtype value;
+                      value = Some value } : Kernel_ir.output_spec)
                    :: outputs ))
                (slots, [])
         in
@@ -1381,6 +1684,8 @@ let executable_region event =
     | Lowering.Kind.Linear_add -> "linear-add"
     | Lowering.Kind.W4a16_linear_add -> "w4a16-linear-add"
     | Lowering.Kind.Gated_linear -> "gated-linear"
+    | Lowering.Kind.Rms_norm -> "rms-normalize"
+    | Lowering.Kind.Rms_rope -> "rms-rope"
   in
   Kernel_ir.create ~name
     ~member_node_ids:

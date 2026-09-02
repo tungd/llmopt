@@ -55,6 +55,7 @@ module Boundary : sig
         operation : Ir.Op.t;
       }
     | Unsupported_index_map of Compute_plan.Node_id.t
+    | Layout_boundary of Compute_plan.Node_id.t
     | Missing_normalization of {
         source : Compute_plan.Node_id.t;
         destination : Compute_plan.Node_id.t;
@@ -104,7 +105,7 @@ val analyze : target:Target_hardware.t -> Compute_plan.t -> Analysis.t
     accepted dependency decisions retained by the analysis. *)
 module Lowering : sig
   module Kind : sig
-    type t = Linear_add | W4a16_linear_add | Gated_linear
+    type t = Linear_add | W4a16_linear_add | Gated_linear | Rms_norm | Rms_rope
   end
 
   module Event : sig

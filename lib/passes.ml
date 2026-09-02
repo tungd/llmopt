@@ -274,6 +274,10 @@ module Receipt = struct
         `Assoc
           [ ("kind", `String "unsupported-index-map");
             ("node", node_id_to_json node) ]
+    | Constructive_lowering.Boundary.Layout_boundary node ->
+        `Assoc
+          [ ("kind", `String "layout-boundary");
+            ("node", node_id_to_json node) ]
     | Constructive_lowering.Boundary.Missing_normalization
         { source; destination } ->
         `Assoc
@@ -313,6 +317,8 @@ module Receipt = struct
     | Constructive_lowering.Lowering.Kind.Linear_add -> "linear-add"
     | Constructive_lowering.Lowering.Kind.W4a16_linear_add -> "w4a16-linear-add"
     | Constructive_lowering.Lowering.Kind.Gated_linear -> "gated-linear"
+    | Constructive_lowering.Lowering.Kind.Rms_norm -> "rms-normalize"
+    | Constructive_lowering.Lowering.Kind.Rms_rope -> "rms-rope"
 
   let event_to_json event =
     `Assoc
@@ -803,8 +809,6 @@ end
 let optimize_pre_analysis_pipeline =
   Pass.Pipeline.of_list
     [ Pass_fuse_linear_bias.pass;
-      Pass_fuse_rms_norm.pass;
-      Pass_fuse_rms_rope.pass;
       Pass_fuse_short_conv.pass ]
 
 let execution_passes =
@@ -882,11 +886,13 @@ module Optimization_node_id_map = Map.Make (Int)
 
 let fallback_matcher = function
   | Constructive_lowering.Lowering.Kind.Linear_add ->
-      Optimization.Legacy_fallback.Quant_linear_add
+      Some Optimization.Legacy_fallback.Quant_linear_add
   | Constructive_lowering.Lowering.Kind.W4a16_linear_add ->
-      Optimization.Legacy_fallback.W4a16_linear_add
+      Some Optimization.Legacy_fallback.W4a16_linear_add
   | Constructive_lowering.Lowering.Kind.Gated_linear ->
-      Optimization.Legacy_fallback.Quant_gated_linear
+      Some Optimization.Legacy_fallback.Quant_gated_linear
+  | Constructive_lowering.Lowering.Kind.Rms_norm
+  | Constructive_lowering.Lowering.Kind.Rms_rope -> None
 
 let fallback_matcher_equal left right =
   match left, right with
@@ -906,8 +912,11 @@ let legacy_fallback_kinds lowering =
            fallback_matcher
              (Constructive_lowering.Lowering.Uncovered.kind uncovered)
          in
-         if List.exists (fallback_matcher_equal matcher) matchers then matchers
-         else matchers @ [ matcher ])
+         match matcher with
+         | None -> matchers
+         | Some matcher ->
+             if List.exists (fallback_matcher_equal matcher) matchers then matchers
+             else matchers @ [ matcher ])
        []
 
 let invoke_legacy_fallback matcher graph =

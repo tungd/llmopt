@@ -13,8 +13,35 @@ module Slot = struct
 end
 
 module Primitive = struct
-  type unary = Silu | Gelu | Sigmoid
-  type binary = Mul | Add
+  type unary =
+    | Neg
+    | Rsqrt
+    | Silu
+    | Gelu
+    | Cos
+    | Sin
+    | Tanh
+    | Exp
+    | Sigmoid
+    | Softplus
+    | Pow of Ir.Scalar.t
+
+  type binary =
+    | Mul
+    | Add
+    | Sub
+    | Div
+    | Logical_and
+    | Equal
+    | Not_equal
+    | Less_equal
+    | Greater
+
+  type scalar_binary = {
+    operator : binary;
+    scalar : Ir.Scalar.t;
+    scalar_on_left : bool;
+  }
   type linear = {
     m : int;
     n : int;
@@ -28,11 +55,46 @@ module Primitive = struct
     | Linear of linear
     | Unary of unary
     | Binary of binary
+    | Scalar_binary of scalar_binary
+    | Reduce of Ir.Reduction.t
+    | Cast of Ir.Dtype.t
+    | Movement of Ir.Movement.t
+    | Short_conv of Ir.Short_conv.t
 
   let rms_norm ~epsilon = Rms_norm { epsilon }
   let linear ~m ~n ~k ~bias ~storage = Linear { m; n; k; bias; storage }
   let unary operation = Unary operation
   let binary operation = Binary operation
+  let scalar_binary ~operator ~scalar ~scalar_on_left =
+    Scalar_binary { operator; scalar; scalar_on_left }
+  let reduce reduction = Reduce reduction
+  let cast dtype = Cast dtype
+  let movement movement = Movement movement
+  let short_conv convolution = Short_conv convolution
+
+  let unary_name = function
+    | Neg -> "neg"
+    | Rsqrt -> "rsqrt"
+    | Silu -> "silu"
+    | Gelu -> "gelu"
+    | Cos -> "cos"
+    | Sin -> "sin"
+    | Tanh -> "tanh"
+    | Exp -> "exp"
+    | Sigmoid -> "sigmoid"
+    | Softplus -> "softplus"
+    | Pow scalar -> Printf.sprintf "pow(%s)" (Ir.Scalar.to_string scalar)
+
+  let binary_name = function
+    | Mul -> "mul"
+    | Add -> "add"
+    | Sub -> "sub"
+    | Div -> "div"
+    | Logical_and -> "logical-and"
+    | Equal -> "equal"
+    | Not_equal -> "not-equal"
+    | Less_equal -> "less-equal"
+    | Greater -> "greater"
 
   let to_string = function
     | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
@@ -40,11 +102,16 @@ module Primitive = struct
         Printf.sprintf "linear[%dx%dx%d]" m n k
     | Linear { m; n; k; bias = true; _ } ->
         Printf.sprintf "linear+bias[%dx%dx%d]" m n k
-    | Unary Silu -> "silu"
-    | Unary Gelu -> "gelu"
-    | Unary Sigmoid -> "sigmoid"
-    | Binary Mul -> "mul"
-    | Binary Add -> "add"
+    | Unary unary -> unary_name unary
+    | Binary binary -> binary_name binary
+    | Scalar_binary { operator; scalar; scalar_on_left } ->
+        Printf.sprintf "%s(%s,%s)" (binary_name operator)
+          (if scalar_on_left then Ir.Scalar.to_string scalar else "tensor")
+          (if scalar_on_left then "tensor" else Ir.Scalar.to_string scalar)
+    | Reduce reduction -> Ir.Reduction.to_string reduction
+    | Cast dtype -> Printf.sprintf "cast(%s)" (Ir.Dtype.to_string dtype)
+    | Movement movement -> Ir.Movement.to_string movement
+    | Short_conv convolution -> Ir.Short_conv.to_string convolution
 end
 
 module Effect = struct
@@ -707,6 +774,7 @@ type output_spec = {
   slot : Slot.t;
   shape : Tensor_shape.t;
   dtype : Ir.Dtype.t;
+  value : Ir.Value.t option;
 }
 
 type binding = {
@@ -747,6 +815,7 @@ let binding_primitive binding = binding.primitive
 let output_slot output = output.slot
 let output_shape output = output.shape
 let output_dtype output = output.dtype
+let output_value output = output.value
 
 type storage = Fresh | Alias_input of Slot.t | In_place_input of Slot.t
 type result = { slot : Slot.t; value : Ir.Value.t; storage : storage }
@@ -915,8 +984,8 @@ let validate_primitive map binding =
           match input_metadata map input with
           | Error error -> Error error
           | Ok (shape, dtype)
-            when dtype = Ir.Dtype.Float16 && is_float dtype
-                 && same_shape shape output.shape && dtype = output.dtype ->
+            when is_float dtype && same_shape shape output.shape
+                 && dtype = output.dtype ->
               Ok ()
           | Ok _ -> invalid "unary metadata is inconsistent"))
   | Primitive.Binary _ -> (
@@ -925,15 +994,126 @@ let validate_primitive map binding =
       | Ok output, Ok (left, right) -> (
           match input_metadata map left, input_metadata map right with
           | Error error, _ | _, Error error -> Error error
-          | Ok (left_shape, left_dtype), Ok (right_shape, right_dtype) ->
-              if
-                left_dtype = Ir.Dtype.Float16
-                && right_dtype = left_dtype
-                && same_shape left_shape right_shape
-                && same_shape left_shape output.shape
-                && output.dtype = left_dtype
-              then Ok ()
-              else invalid "binary metadata is inconsistent"))
+          | Ok (left_shape, left_dtype), Ok (right_shape, right_dtype) -> (
+              match Tensor_shape.broadcast left_shape right_shape with
+              | Ok shape
+                when left_dtype = right_dtype && is_float left_dtype
+                     && same_shape shape output.shape
+                     && output.dtype = left_dtype ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "binary metadata is inconsistent")))
+  | Primitive.Scalar_binary _ -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Ok (shape, dtype)
+            when is_float dtype && same_shape shape output.shape
+                 && output.dtype = dtype ->
+              Ok ()
+          | Ok _ -> invalid "scalar-binary metadata is inconsistent"
+          | Error error -> Error error))
+  | Primitive.Reduce reduction -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Error error -> Error error
+          | Ok (shape, dtype) -> (
+              match
+                Tensor_shape.reduce shape ~axes:reduction.Ir.Reduction.axes
+                  ~keepdim:reduction.keepdim
+              with
+              | Ok expected
+                when same_shape expected output.shape
+                     && (match reduction.operator with
+                        | Ir.Reduction.Argmax -> output.dtype = Ir.Dtype.Int32
+                        | Ir.Reduction.Mean | Ir.Reduction.Sum ->
+                            is_float dtype && output.dtype = dtype) ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "reduction metadata is inconsistent")))
+  | Primitive.Cast dtype -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Ok (shape, _) when same_shape shape output.shape && output.dtype = dtype ->
+              Ok ()
+          | Ok _ -> invalid "cast metadata is inconsistent"
+          | Error error -> Error error))
+  | Primitive.Movement movement -> (
+      match one_output binding with
+      | Error error -> Error error
+      | Ok output ->
+          let input_shapes =
+            binding.inputs
+            |> List.fold_left
+                 (fun result slot ->
+                   match result, input_metadata map slot with
+                   | Error _ as error, _ -> error
+                   | Ok _, Error error -> Error error
+                   | Ok shapes, Ok (shape, dtype) -> Ok ((shape, dtype) :: shapes))
+                 (Ok [])
+            |> Result.map List.rev
+          in
+          (match input_shapes with
+          | Error error -> Error error
+          | Ok shapes ->
+              let shape_result =
+                Result.map_error (fun error -> Tensor_shape.error_to_string error)
+              in
+              let inferred =
+                match movement, shapes with
+                | (Ir.Movement.View | Ir.Movement.Reshape | Ir.Movement.Expand),
+                  [ (_, dtype) ] ->
+                    if dtype = output.dtype then Ok output.shape
+                    else Error "movement dtype changed"
+                | Ir.Movement.Transpose { axis0; axis1 }, [ (shape, dtype) ] ->
+                    if dtype <> output.dtype then Error "movement dtype changed"
+                    else
+                      Tensor_shape.transpose shape ~axis0 ~axis1 |> shape_result
+                | Ir.Movement.Unsqueeze axis, [ (shape, dtype) ] ->
+                    if dtype <> output.dtype then Error "movement dtype changed"
+                    else Tensor_shape.unsqueeze shape ~axis |> shape_result
+                | (Ir.Movement.Contiguous | Ir.Movement.Roll _),
+                  [ (shape, dtype) ] ->
+                    if dtype = output.dtype then Ok shape
+                    else Error "movement dtype changed"
+                | Ir.Movement.Index index, [ (shape, dtype) ] ->
+                    if dtype <> output.dtype then Error "movement dtype changed"
+                    else Tensor_shape.apply_index shape index |> shape_result
+                | Ir.Movement.Concat { axis }, shapes ->
+                    if
+                      shapes = []
+                      || List.exists (fun (_, dtype) -> dtype <> output.dtype) shapes
+                    then Error "movement inputs are inconsistent"
+                    else
+                      Tensor_shape.concat (List.map fst shapes) ~axis
+                      |> shape_result
+                | _ -> Error "movement arity is inconsistent"
+              in
+              (match inferred with
+              | Ok shape when same_shape shape output.shape -> Ok ()
+              | Ok _ | Error _ -> invalid "movement metadata is inconsistent")))
+  | Primitive.Short_conv convolution -> (
+      match one_output binding, two binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok (input, weight) -> (
+          match input_metadata map input, input_metadata map weight with
+          | Error error, _ | _, Error error -> Error error
+          | Ok (input_shape, input_dtype), Ok (weight_shape, weight_dtype) -> (
+              match
+                Tensor_shape.depthwise_conv1d input_shape weight_shape
+                  ~stride:(Ir.Short_conv.stride convolution)
+                  ~padding:(Ir.Short_conv.padding convolution)
+                  ~dilation:(Ir.Short_conv.dilation convolution)
+                  ~groups:(Ir.Short_conv.groups convolution)
+              with
+              | Ok shape
+                when same_shape shape output.shape && is_float input_dtype
+                     && is_float weight_dtype && output.dtype = input_dtype ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "short-conv metadata is inconsistent")))
 
 let check_unique slots =
   let rec loop seen = function
@@ -1142,6 +1322,19 @@ let specialize ~dimension ~value region =
             m = dimension linear.m;
             n = dimension linear.n;
             k = dimension linear.k }
+    | Primitive.Movement (Ir.Movement.Index index) ->
+        let selectors =
+          Tensor_shape.Index.selectors index
+          |> List.map (function
+               | Tensor_shape.Index.Slice { start; step; length } ->
+                   Tensor_shape.Index.Slice
+                     { start; step; length = dimension length }
+               | (Tensor_shape.Index.At _ | Tensor_shape.Index.New_axis) as selector ->
+                   selector)
+        in
+        (match Tensor_shape.Index.of_selectors selectors with
+        | Ok index -> Primitive.Movement (Ir.Movement.Index index)
+        | Error _ -> Primitive.Movement (Ir.Movement.Index index))
     | primitive -> primitive
   in
   let* inputs =
@@ -1162,10 +1355,15 @@ let specialize ~dimension ~value region =
            let* outputs =
              binding.outputs
              |> List.fold_left
-                  (fun result ({ slot; shape; dtype } : output_spec) ->
+                  (fun result ({ slot; shape; dtype; value = original } : output_spec) ->
                     let* outputs = result in
                     let* shape = map_shape shape in
-                    Ok ({ slot; shape; dtype } :: outputs))
+                    let* value =
+                      match original with
+                      | None -> Ok None
+                      | Some original -> Result.map Option.some (value original)
+                    in
+                    Ok ({ slot; shape; dtype; value } :: outputs))
                   (Ok [])
              |> Result.map List.rev
            in
@@ -1214,11 +1412,36 @@ module Fused_tactic = struct
         activation : Primitive.unary;
         output : Ir.Value.t;
       }
+    | Rms_normalize of {
+        input : Ir.Value.t;
+        weight : Ir.Value.t;
+        output : Ir.Value.t;
+        epsilon : float;
+      }
+    | Rms_rope of {
+        config : Ir.Rms_rope.t;
+        input : Ir.Value.t;
+        weight : Ir.Value.t;
+        cosine : Ir.Value.t;
+        sine : Ir.Value.t;
+        output : Ir.Value.t;
+      }
 
   let input_map region =
     List.fold_left
       (fun values ({ slot; value } : input) -> Slot_map.add slot value values)
       Slot_map.empty region.inputs
+
+  let value_map region =
+    List.fold_left
+      (fun values binding ->
+        List.fold_left
+          (fun values ({ slot; value; _ } : output_spec) ->
+            match value with
+            | Some value -> Slot_map.add slot value values
+            | None -> values)
+          values binding.outputs)
+      (input_map region) region.bindings
 
   let input_value values slot = Slot_map.find_opt slot values
 
@@ -1246,6 +1469,335 @@ module Fused_tactic = struct
     region.results
     |> List.find_opt (fun result -> Slot.equal result.slot slot)
     |> Option.map (fun result -> result.value)
+
+  let binding_output binding =
+    match binding.outputs with [ output ] -> Some output.slot | _ -> None
+
+  let producer region slot =
+    List.find_opt
+      (fun binding ->
+        Option.exists (fun output -> Slot.equal output slot)
+          (binding_output binding))
+      region.bindings
+
+  let value_origin region values slot =
+    match producer region slot with
+    | Some { primitive = Primitive.Cast _; inputs = [ source ]; _ } ->
+        Slot_map.find_opt source values
+    | _ -> Slot_map.find_opt slot values
+
+  let scalar_float = function
+    | Ir.Scalar.Bool _ -> None
+    | Ir.Scalar.Int value -> Some (Float.of_int value)
+    | Ir.Scalar.Float value -> Some value
+
+  let square = function
+    | Primitive.Pow (Ir.Scalar.Int 2)
+    | Primitive.Pow (Ir.Scalar.Float 2.0) -> true
+    | _ -> false
+
+  let inverse_square_root = function
+    | Primitive.Rsqrt
+    | Primitive.Pow (Ir.Scalar.Float (-0.5)) -> true
+    | _ -> false
+
+  let normalized_origin region slot =
+    match producer region slot with
+    | Some { primitive = Primitive.Cast _; inputs = [ source ]; _ } -> source
+    | _ -> slot
+
+  let rms_core region values normalized_slot =
+    match producer region normalized_slot with
+    | Some
+        { primitive = Primitive.Binary Primitive.Mul;
+          inputs = [ left; right ]; _ } ->
+        let try_orientation input_slot inverse_slot =
+          match producer region inverse_slot with
+          | Some
+              { primitive = Primitive.Unary inverse;
+                inputs = [ stabilized ]; _ }
+            when inverse_square_root inverse -> (
+              match producer region stabilized with
+              | Some
+                  { primitive =
+                      Primitive.Scalar_binary
+                        { operator = Primitive.Add; scalar; _ };
+                    inputs = [ mean ]; _ } -> (
+                  match scalar_float scalar, producer region mean with
+                  | Some epsilon,
+                    Some
+                      { primitive =
+                          Primitive.Reduce
+                            { Ir.Reduction.operator = Ir.Reduction.Mean;
+                              keepdim = true; _ };
+                        inputs = [ squared ]; _ }
+                    when Float.is_finite epsilon && epsilon > 0.0 -> (
+                      match producer region squared with
+                      | Some
+                          { primitive = Primitive.Unary power;
+                            inputs = [ source ]; _ }
+                        when square power && Slot.equal source input_slot ->
+                          Option.map
+                            (fun input -> input, epsilon)
+                            (value_origin region values input_slot)
+                      | _ -> None)
+                  | _ -> None)
+              | _ -> None)
+          | _ -> None
+        in
+        (match try_orientation left right with
+        | Some matched -> Some matched
+        | None -> try_orientation right left)
+    | _ -> None
+
+  let rms_scale region values (scale : binding) =
+    match scale.inputs, binding_output scale with
+    | [ left; right ], Some scaled ->
+        let try_orientation normalized weight_slot =
+          match
+            rms_core region values (normalized_origin region normalized),
+            value_origin region values weight_slot
+          with
+          | Some (input, epsilon), Some weight ->
+              Some (input, weight, epsilon, scaled)
+          | _ -> None
+        in
+        (match try_orientation left right with
+        | Some matched -> Some matched
+        | None -> try_orientation right left)
+    | _ -> None
+
+  let scale_binding region slot =
+    match producer region slot with
+    | Some ({ primitive = Primitive.Binary Primitive.Mul; _ } as scale) ->
+        Some scale
+    | Some { primitive = Primitive.Cast _; inputs = [ scaled ]; _ } -> (
+        match producer region scaled with
+        | Some ({ primitive = Primitive.Binary Primitive.Mul; _ } as scale) ->
+            Some scale
+        | _ -> None)
+    | _ -> None
+
+  let rms_parameters region values slot =
+    match producer region slot with
+    | Some
+        { primitive = Primitive.Rms_norm { epsilon };
+          inputs = [ input; weight ]; _ } -> (
+        match value_origin region values input,
+              value_origin region values weight
+        with
+        | Some input, Some weight -> Some (input, weight, epsilon)
+        | _ -> None)
+    | _ -> (
+        match scale_binding region slot with
+        | Some scale ->
+            rms_scale region values scale
+            |> Option.map (fun (input, weight, epsilon, _) ->
+                   input, weight, epsilon)
+        | None -> None)
+
+  let rms_normalize region values =
+    let result =
+      match region.results with [ result ] -> Some result | _ -> None
+    in
+    let final_scale result_slot =
+      let direct =
+        region.bindings
+        |> List.find_opt (fun binding ->
+               Option.exists (Slot.equal result_slot) (binding_output binding))
+      in
+      match direct with
+      | Some ({ primitive = Primitive.Binary Primitive.Mul; _ } as scale) ->
+          Some scale
+      | Some { primitive = Primitive.Cast _; inputs = [ scale_slot ]; _ } -> (
+          match producer region scale_slot with
+          | Some ({ primitive = Primitive.Binary Primitive.Mul; _ } as scale) ->
+              Some scale
+          | _ -> None)
+      | _ -> None
+    in
+    let try_normalized normalized_slot =
+      match producer region normalized_slot with
+      | Some
+          { primitive = Primitive.Binary Primitive.Mul;
+            inputs = [ left; right ]; _ } ->
+          let try_orientation input_slot inverse_slot =
+            match producer region inverse_slot with
+            | Some
+                { primitive = Primitive.Unary inverse;
+                  inputs = [ stabilized ]; _ }
+              when inverse_square_root inverse -> (
+                match producer region stabilized with
+                | Some
+                    { primitive =
+                        Primitive.Scalar_binary
+                          { operator = Primitive.Add; scalar; _ };
+                      inputs = [ mean ]; _ } -> (
+                    match scalar_float scalar, producer region mean with
+                    | Some epsilon,
+                      Some
+                        { primitive =
+                            Primitive.Reduce
+                              { Ir.Reduction.operator = Ir.Reduction.Mean;
+                                keepdim = true; _ };
+                          inputs = [ squared ]; _ }
+                      when Float.is_finite epsilon && epsilon > 0.0 -> (
+                        match producer region squared with
+                        | Some
+                            { primitive = Primitive.Unary power;
+                              inputs = [ source ]; _ }
+                          when square power && Slot.equal source input_slot ->
+                            Option.map
+                              (fun input -> input, epsilon)
+                              (value_origin region values input_slot)
+                        | _ -> None)
+                    | _ -> None)
+                | _ -> None)
+            | _ -> None
+          in
+          (match try_orientation left right with
+          | Some matched -> Some matched
+          | None -> try_orientation right left)
+      | _ -> None
+    in
+    match result with
+    | None -> None
+    | Some result -> (
+        match final_scale result.slot with
+        | Some { inputs = [ left; right ]; _ } ->
+            let try_orientation normalized weight_slot =
+              let normalized = normalized_origin region normalized in
+              match try_normalized normalized,
+                    value_origin region values weight_slot
+              with
+              | Some (input, epsilon), Some weight ->
+                  Some
+                    (Rms_normalize
+                       { input; weight; output = result.value; epsilon })
+              | _ -> None
+            in
+            (match try_orientation left right with
+            | Some tactic -> Some tactic
+            | None -> try_orientation right left)
+        | _ -> None)
+
+  let rms_rope region values =
+    let external_inputs = input_map region in
+    let tensor_input slot = input_value external_inputs slot in
+    let multiply slot =
+      match producer region slot with
+      | Some
+          { primitive = Primitive.Binary Primitive.Mul;
+            inputs = [ left; right ]; _ } -> Some (left, right)
+      | _ -> None
+    in
+    let orient_external left right =
+      match tensor_input left, tensor_input right with
+      | None, Some external_value -> Some (left, external_value)
+      | Some external_value, None -> Some (right, external_value)
+      | _ -> None
+    in
+    match region.results with
+    | [ result ] -> (
+        let sum_slot, token_major_layout =
+          match producer region result.slot with
+          | Some
+              { primitive =
+                  Primitive.Movement
+                    (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 });
+                inputs = [ summed ]; _ } -> summed, true
+          | _ -> result.slot, false
+        in
+        match producer region sum_slot with
+        | Some
+            { primitive = Primitive.Binary Primitive.Add;
+              inputs = [ direct_term; rotated_term ]; _ } ->
+            let try_terms direct_term rotated_term =
+              match multiply direct_term, multiply rotated_term with
+              | Some direct_inputs, Some rotated_inputs -> (
+                  match
+                    orient_external (fst direct_inputs) (snd direct_inputs),
+                    orient_external (fst rotated_inputs) (snd rotated_inputs)
+                  with
+                  | Some (transposed, cosine), Some (rotated, sine) -> (
+                      match producer region rotated with
+                      | Some
+                          { primitive =
+                              Primitive.Movement
+                                (Ir.Movement.Concat { axis = 3 });
+                            inputs = [ negated; low ]; _ } -> (
+                          match producer region negated, producer region low with
+                          | ( Some
+                                { primitive = Primitive.Unary Primitive.Neg;
+                                  inputs = [ high ]; _ },
+                              Some
+                                { primitive =
+                                    Primitive.Movement (Ir.Movement.Index low_index);
+                                  inputs = [ low_source ]; _ } ) -> (
+                              match producer region high with
+                              | Some
+                                  { primitive =
+                                      Primitive.Movement
+                                        (Ir.Movement.Index high_index);
+                                    inputs = [ high_source ]; _ }
+                                when Slot.equal low_source transposed
+                                     && Slot.equal high_source transposed ->
+                                  let half_dimension =
+                                    match
+                                      Tensor_shape.Index.selectors low_index,
+                                      Tensor_shape.Index.selectors high_index
+                                    with
+                                    | ( [ _; _; _;
+                                          Tensor_shape.Index.Slice
+                                            { start = 0; step = 1; length } ],
+                                        [ _; _; _;
+                                          Tensor_shape.Index.Slice
+                                            { start; step = 1;
+                                              length = high_length } ] )
+                                      when start = length
+                                           && high_length = length -> Some length
+                                    | _ -> None
+                                  in
+                                  let scaled =
+                                    if token_major_layout then Some transposed
+                                    else
+                                      match producer region transposed with
+                                      | Some
+                                          { primitive =
+                                              Primitive.Movement
+                                                (Ir.Movement.Transpose
+                                                  { axis0 = 1; axis1 = 2 });
+                                            inputs = [ scaled ]; _ } -> Some scaled
+                                      | _ -> None
+                                  in
+                                  (match half_dimension, scaled with
+                                  | Some half_dimension, Some scaled -> (
+                                      match rms_parameters region values scaled with
+                                      | Some (input, weight, epsilon) -> (
+                                              match
+                                                Ir.Rms_rope.create ~epsilon
+                                                  ~half_dimension
+                                              with
+                                              | Ok config ->
+                                                  Some
+                                                    (Rms_rope
+                                                       { config; input; weight;
+                                                         cosine; sine;
+                                                         output = result.value })
+                                              | Error _ -> None)
+                                      | None -> None)
+                                  | _ -> None)
+                              | _ -> None)
+                          | _ -> None)
+                      | _ -> None)
+                  | _ -> None)
+              | _ -> None
+            in
+            (match try_terms direct_term rotated_term with
+            | Some tactic -> Some tactic
+            | None -> try_terms rotated_term direct_term)
+        | _ -> None)
+    | _ -> None
 
   let linear_additive region values =
     let linear_bindings =
@@ -1315,7 +1867,12 @@ module Fused_tactic = struct
         (match oriented, result_value region product_output with
         | Some (gate, up, up_output), Some output
           when
-            ((Slot.equal left activated_output && Slot.equal right up_output)
+            (match activation with
+            | Primitive.Silu | Primitive.Gelu | Primitive.Sigmoid -> true
+            | Primitive.Neg | Primitive.Rsqrt | Primitive.Cos | Primitive.Sin
+            | Primitive.Tanh | Primitive.Exp | Primitive.Softplus
+            | Primitive.Pow _ -> false)
+            && ((Slot.equal left activated_output && Slot.equal right up_output)
             || (Slot.equal right activated_output && Slot.equal left up_output))
             && gate.m = up.m && gate.n = up.n && gate.k = up.k
             && gate.storage = up.storage
@@ -1326,10 +1883,44 @@ module Fused_tactic = struct
     | _ -> None
 
   let select region =
-    let values = input_map region in
+    let values = value_map region in
     match linear_additive region values with
     | Some tactic -> Some tactic
-    | None -> gated_product region values
+    | None -> (
+        match gated_product region values with
+        | Some tactic -> Some tactic
+        | None -> (
+            match rms_rope region values with
+            | Some tactic -> Some tactic
+            | None -> rms_normalize region values))
+
+  let select_all region =
+    let original_results = region.results in
+    let candidate_results =
+      region.bindings
+      |> List.rev
+      |> List.concat_map (fun binding ->
+             List.filter_map
+               (fun ({ slot; value; _ } : output_spec) ->
+                 Option.map
+                   (fun value -> { slot; value; storage = Fresh })
+                   value)
+               binding.outputs)
+    in
+    let candidates = original_results @ candidate_results in
+    let rec collect seen reversed = function
+      | [] -> List.rev reversed
+      | result :: rest ->
+          let id = Ir.Value.id result.value in
+          if List.mem id seen then collect seen reversed rest
+          else
+            let seen = id :: seen in
+            let candidate = { region with results = [ result ] } in
+            (match select candidate with
+            | Some tactic -> collect seen (tactic :: reversed) rest
+            | None -> collect seen reversed rest)
+    in
+    collect [] [] candidates
 end
 let result_slot result = result.slot
 let result_value result = result.value

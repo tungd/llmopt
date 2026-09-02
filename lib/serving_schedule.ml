@@ -2892,6 +2892,178 @@ let read_linear_storage reader =
       Ok (Ir.Linear_storage.Groupwise_packed { bits; group_elements })
   | _ -> Error (Printf.sprintf "unknown kernel assignment storage tag: %d" tag)
 
+let write_kernel_scalar writer = function
+  | Ir.Scalar.Bool value ->
+      Binary.Writer.u8 writer 0;
+      Binary.Writer.bool writer value
+  | Ir.Scalar.Int value ->
+      Binary.Writer.u8 writer 1;
+      Binary.Writer.i64 writer value
+  | Ir.Scalar.Float value ->
+      Binary.Writer.u8 writer 2;
+      Binary.Writer.float64 writer value
+
+let read_kernel_scalar reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> Binary.Reader.bool reader |> Result.map (fun value -> Ir.Scalar.Bool value)
+  | 1 -> Binary.Reader.i64 reader |> Result.map (fun value -> Ir.Scalar.Int value)
+  | 2 -> Binary.Reader.float64 reader |> Result.map (fun value -> Ir.Scalar.Float value)
+  | _ -> Error (Printf.sprintf "unknown kernel scalar tag: %d" tag)
+
+let write_kernel_unary writer unary =
+  let tag =
+    match unary with
+    | Kernel_ir.Primitive.Silu -> 0
+    | Kernel_ir.Primitive.Gelu -> 1
+    | Kernel_ir.Primitive.Sigmoid -> 2
+    | Kernel_ir.Primitive.Neg -> 3
+    | Kernel_ir.Primitive.Rsqrt -> 4
+    | Kernel_ir.Primitive.Cos -> 5
+    | Kernel_ir.Primitive.Sin -> 6
+    | Kernel_ir.Primitive.Tanh -> 7
+    | Kernel_ir.Primitive.Exp -> 8
+    | Kernel_ir.Primitive.Softplus -> 9
+    | Kernel_ir.Primitive.Pow _ -> 10
+  in
+  Binary.Writer.u8 writer tag;
+  match unary with
+  | Kernel_ir.Primitive.Pow scalar -> write_kernel_scalar writer scalar
+  | _ -> ()
+
+let read_kernel_unary reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> Ok Kernel_ir.Primitive.Silu
+  | 1 -> Ok Kernel_ir.Primitive.Gelu
+  | 2 -> Ok Kernel_ir.Primitive.Sigmoid
+  | 3 -> Ok Kernel_ir.Primitive.Neg
+  | 4 -> Ok Kernel_ir.Primitive.Rsqrt
+  | 5 -> Ok Kernel_ir.Primitive.Cos
+  | 6 -> Ok Kernel_ir.Primitive.Sin
+  | 7 -> Ok Kernel_ir.Primitive.Tanh
+  | 8 -> Ok Kernel_ir.Primitive.Exp
+  | 9 -> Ok Kernel_ir.Primitive.Softplus
+  | 10 ->
+      read_kernel_scalar reader
+      |> Result.map (fun scalar -> Kernel_ir.Primitive.Pow scalar)
+  | _ -> Error (Printf.sprintf "unknown kernel unary tag: %d" tag)
+
+let write_kernel_binary writer binary =
+  Binary.Writer.u8 writer
+    (match binary with
+    | Kernel_ir.Primitive.Mul -> 0
+    | Kernel_ir.Primitive.Add -> 1
+    | Kernel_ir.Primitive.Sub -> 2
+    | Kernel_ir.Primitive.Div -> 3
+    | Kernel_ir.Primitive.Logical_and -> 4
+    | Kernel_ir.Primitive.Equal -> 5
+    | Kernel_ir.Primitive.Not_equal -> 6
+    | Kernel_ir.Primitive.Less_equal -> 7
+    | Kernel_ir.Primitive.Greater -> 8)
+
+let read_kernel_binary reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> Ok Kernel_ir.Primitive.Mul
+  | 1 -> Ok Kernel_ir.Primitive.Add
+  | 2 -> Ok Kernel_ir.Primitive.Sub
+  | 3 -> Ok Kernel_ir.Primitive.Div
+  | 4 -> Ok Kernel_ir.Primitive.Logical_and
+  | 5 -> Ok Kernel_ir.Primitive.Equal
+  | 6 -> Ok Kernel_ir.Primitive.Not_equal
+  | 7 -> Ok Kernel_ir.Primitive.Less_equal
+  | 8 -> Ok Kernel_ir.Primitive.Greater
+  | _ -> Error (Printf.sprintf "unknown kernel binary tag: %d" tag)
+
+let write_kernel_index writer index =
+  let selectors = Tensor_shape.Index.selectors index in
+  Binary.Writer.u16 writer (List.length selectors);
+  List.iter
+    (function
+      | Tensor_shape.Index.At index ->
+          Binary.Writer.u8 writer 0;
+          Binary.Writer.u64 writer index
+      | Tensor_shape.Index.Slice { start; step; length } ->
+          Binary.Writer.u8 writer 1;
+          Binary.Writer.i64 writer start;
+          Binary.Writer.i64 writer step;
+          Binary.Writer.u64 writer length
+      | Tensor_shape.Index.New_axis -> Binary.Writer.u8 writer 2)
+    selectors
+
+let read_kernel_index reader =
+  let* count = Binary.Reader.u16 reader in
+  let rec loop reversed remaining =
+    if remaining = 0 then Tensor_shape.Index.of_selectors (List.rev reversed)
+    else
+      let* tag = Binary.Reader.u8 reader in
+      let* selector =
+        match tag with
+        | 0 ->
+            Binary.Reader.u64 reader
+            |> Result.map (fun index -> Tensor_shape.Index.At index)
+        | 1 ->
+            let* start = Binary.Reader.i64 reader in
+            let* step = Binary.Reader.i64 reader in
+            let* length = Binary.Reader.u64 reader in
+            Ok (Tensor_shape.Index.Slice { start; step; length })
+        | 2 -> Ok Tensor_shape.Index.New_axis
+        | _ -> Error (Printf.sprintf "unknown kernel index tag: %d" tag)
+      in
+      loop (selector :: reversed) (remaining - 1)
+  in
+  loop [] count
+
+let write_kernel_movement writer = function
+  | Ir.Movement.View -> Binary.Writer.u8 writer 0
+  | Ir.Movement.Reshape -> Binary.Writer.u8 writer 1
+  | Ir.Movement.Transpose { axis0; axis1 } ->
+      Binary.Writer.u8 writer 2;
+      Binary.Writer.i64 writer axis0;
+      Binary.Writer.i64 writer axis1
+  | Ir.Movement.Unsqueeze axis ->
+      Binary.Writer.u8 writer 3;
+      Binary.Writer.i64 writer axis
+  | Ir.Movement.Expand -> Binary.Writer.u8 writer 4
+  | Ir.Movement.Contiguous -> Binary.Writer.u8 writer 5
+  | Ir.Movement.Index index ->
+      Binary.Writer.u8 writer 6;
+      write_kernel_index writer index
+  | Ir.Movement.Concat { axis } ->
+      Binary.Writer.u8 writer 7;
+      Binary.Writer.i64 writer axis
+  | Ir.Movement.Roll { axis; shift } ->
+      Binary.Writer.u8 writer 8;
+      Binary.Writer.i64 writer axis;
+      Binary.Writer.i64 writer shift
+
+let read_kernel_movement reader =
+  let* tag = Binary.Reader.u8 reader in
+  match tag with
+  | 0 -> Ok Ir.Movement.View
+  | 1 -> Ok Ir.Movement.Reshape
+  | 2 ->
+      let* axis0 = Binary.Reader.i64 reader in
+      let* axis1 = Binary.Reader.i64 reader in
+      Ok (Ir.Movement.Transpose { axis0; axis1 })
+  | 3 ->
+      Binary.Reader.i64 reader
+      |> Result.map (fun axis -> Ir.Movement.Unsqueeze axis)
+  | 4 -> Ok Ir.Movement.Expand
+  | 5 -> Ok Ir.Movement.Contiguous
+  | 6 ->
+      read_kernel_index reader
+      |> Result.map (fun index -> Ir.Movement.Index index)
+  | 7 ->
+      Binary.Reader.i64 reader
+      |> Result.map (fun axis -> Ir.Movement.Concat { axis })
+  | 8 ->
+      let* axis = Binary.Reader.i64 reader in
+      let* shift = Binary.Reader.i64 reader in
+      Ok (Ir.Movement.Roll { axis; shift })
+  | _ -> Error (Printf.sprintf "unknown kernel movement tag: %d" tag)
+
 let write_kernel_primitive writer = function
   | Kernel_ir.Primitive.Rms_norm { epsilon } ->
       Binary.Writer.u8 writer 0;
@@ -2905,17 +3077,37 @@ let write_kernel_primitive writer = function
       write_linear_storage writer storage
   | Kernel_ir.Primitive.Unary unary ->
       Binary.Writer.u8 writer 2;
-      Binary.Writer.u8 writer
-        (match unary with
-        | Kernel_ir.Primitive.Silu -> 0
-        | Kernel_ir.Primitive.Gelu -> 1
-        | Kernel_ir.Primitive.Sigmoid -> 2)
+      write_kernel_unary writer unary
   | Kernel_ir.Primitive.Binary binary ->
       Binary.Writer.u8 writer 3;
+      write_kernel_binary writer binary
+  | Kernel_ir.Primitive.Scalar_binary { operator; scalar; scalar_on_left } ->
+      Binary.Writer.u8 writer 4;
+      write_kernel_binary writer operator;
+      write_kernel_scalar writer scalar;
+      Binary.Writer.bool writer scalar_on_left
+  | Kernel_ir.Primitive.Reduce reduction ->
+      Binary.Writer.u8 writer 5;
       Binary.Writer.u8 writer
-        (match binary with
-        | Kernel_ir.Primitive.Mul -> 0
-        | Kernel_ir.Primitive.Add -> 1)
+        (match reduction.Ir.Reduction.operator with
+        | Ir.Reduction.Mean -> 0
+        | Ir.Reduction.Sum -> 1
+        | Ir.Reduction.Argmax -> 2);
+      Binary.Writer.u16 writer (List.length reduction.axes);
+      List.iter (Binary.Writer.i64 writer) reduction.axes;
+      Binary.Writer.bool writer reduction.keepdim
+  | Kernel_ir.Primitive.Cast dtype ->
+      Binary.Writer.u8 writer 6;
+      Binary.Writer.u8 writer (dtype_tag dtype)
+  | Kernel_ir.Primitive.Movement movement ->
+      Binary.Writer.u8 writer 7;
+      write_kernel_movement writer movement
+  | Kernel_ir.Primitive.Short_conv convolution ->
+      Binary.Writer.u8 writer 8;
+      Binary.Writer.u32 writer (Ir.Short_conv.stride convolution);
+      Binary.Writer.u32 writer (Ir.Short_conv.padding convolution);
+      Binary.Writer.u32 writer (Ir.Short_conv.dilation convolution);
+      Binary.Writer.u32 writer (Ir.Short_conv.groups convolution)
 
 let read_kernel_primitive reader =
   let* tag = Binary.Reader.u8 reader in
@@ -2931,19 +3123,52 @@ let read_kernel_primitive reader =
       let* bias = Binary.Reader.bool reader in
       let* storage = read_linear_storage reader in
       Ok (Kernel_ir.Primitive.linear ~m ~n ~k ~bias ~storage)
-  | 2 ->
-      let* unary = Binary.Reader.u8 reader in
-      (match unary with
-      | 0 -> Ok (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu)
-      | 1 -> Ok (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Gelu)
-      | 2 -> Ok (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Sigmoid)
-      | _ -> Error (Printf.sprintf "unknown kernel assignment unary tag: %d" unary))
-  | 3 ->
-      let* binary = Binary.Reader.u8 reader in
-      (match binary with
-      | 0 -> Ok (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul)
-      | 1 -> Ok (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add)
-      | _ -> Error (Printf.sprintf "unknown kernel assignment binary tag: %d" binary))
+  | 2 -> read_kernel_unary reader |> Result.map Kernel_ir.Primitive.unary
+  | 3 -> read_kernel_binary reader |> Result.map Kernel_ir.Primitive.binary
+  | 4 ->
+      let* operator = read_kernel_binary reader in
+      let* scalar = read_kernel_scalar reader in
+      let* scalar_on_left = Binary.Reader.bool reader in
+      Ok
+        (Kernel_ir.Primitive.scalar_binary ~operator ~scalar ~scalar_on_left)
+  | 5 ->
+      let* operator_tag = Binary.Reader.u8 reader in
+      let* operator =
+        match operator_tag with
+        | 0 -> Ok Ir.Reduction.Mean
+        | 1 -> Ok Ir.Reduction.Sum
+        | 2 -> Ok Ir.Reduction.Argmax
+        | _ ->
+            Error
+              (Printf.sprintf "unknown kernel reduction tag: %d" operator_tag)
+      in
+      let* count = Binary.Reader.u16 reader in
+      let rec axes reversed remaining =
+        if remaining = 0 then Ok (List.rev reversed)
+        else
+          let* axis = Binary.Reader.i64 reader in
+          axes (axis :: reversed) (remaining - 1)
+      in
+      let* axes = axes [] count in
+      let* keepdim = Binary.Reader.bool reader in
+      Ok
+        (Kernel_ir.Primitive.reduce
+           { Ir.Reduction.operator; axes; keepdim })
+  | 6 ->
+      let* dtype_tag = Binary.Reader.u8 reader in
+      let* dtype = dtype_of_tag dtype_tag in
+      Ok (Kernel_ir.Primitive.cast dtype)
+  | 7 ->
+      read_kernel_movement reader |> Result.map Kernel_ir.Primitive.movement
+  | 8 ->
+      let* stride = Binary.Reader.u32 reader in
+      let* padding = Binary.Reader.u32 reader in
+      let* dilation = Binary.Reader.u32 reader in
+      let* groups = Binary.Reader.u32 reader in
+      let* convolution =
+        Ir.Short_conv.create ~stride ~padding ~dilation ~groups
+      in
+      Ok (Kernel_ir.Primitive.short_conv convolution)
   | _ -> Error (Printf.sprintf "unknown kernel assignment primitive tag: %d" tag)
 
 let write_slots writer slots =
@@ -3059,7 +3284,7 @@ let read_fusion_region values reader =
           let* dtype = dtype_of_tag dtype_tag in
           let* shape = read_shape reader in
           outputs
-            (({ Kernel_ir.slot; shape; dtype } : Kernel_ir.output_spec)
+            (({ Kernel_ir.slot; shape; dtype; value = None } : Kernel_ir.output_spec)
             :: reversed)
             (remaining - 1)
       in
