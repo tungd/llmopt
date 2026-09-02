@@ -460,6 +460,15 @@ let normalize node =
           assignment node (Kernel_ir.Primitive.movement movement) output
       | Ir.Op.Primitive (Ir.Primitive.Short_conv convolution), [ _; _ ] ->
           assignment node (Kernel_ir.Primitive.short_conv convolution) output
+      | Ir.Op.Primitive Ir.Primitive.Batched_matmul, [ _; _ ] ->
+          assignment node Kernel_ir.Primitive.batched_matmul output
+      | Ir.Op.Primitive (Ir.Primitive.Pad_right_zero { axis }), [ _ ] ->
+          assignment node (Kernel_ir.Primitive.pad_right_zero ~axis) output
+      | Ir.Op.Primitive (Ir.Primitive.Update_slice index), [ _; _ ] ->
+          assignment node (Kernel_ir.Primitive.update_slice index) output
+      | Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence config), [ _ ] ->
+          assignment node (Kernel_ir.Primitive.triangular_recurrence config)
+            output
       | _ -> Ineligible (unsupported_boundary node))
 
 let normalize_requests requests =
@@ -567,29 +576,37 @@ let candidate_boundaries plan normalized candidate =
   let external_boundaries =
     match source_assignment with
     | Some assignment ->
-        external_use_boundaries plan normalized destination assignment
+        (match Assignment.primitive assignment with
+        | Kernel_ir.Primitive.Batched_matmul
+        | Kernel_ir.Primitive.Pad_right_zero _
+        | Kernel_ir.Primitive.Update_slice _
+        | Kernel_ir.Primitive.Triangular_recurrence _ -> []
+        | _ -> external_use_boundaries plan normalized destination assignment)
     | None -> []
   in
   let effect_boundaries = effect_boundary plan candidate |> Option.to_list in
   let inlining_boundaries =
     match source_assignment, destination_assignment with
-    | Some source_assignment, Some _ ->
-        (match Assignment.primitive source_assignment with
-        | Kernel_ir.Primitive.Movement (Ir.Movement.Unsqueeze _) ->
+    | Some source_assignment, Some destination_assignment ->
+        (match Assignment.primitive source_assignment,
+              Assignment.primitive destination_assignment with
+        | Kernel_ir.Primitive.Movement (Ir.Movement.Unsqueeze _),
+          Kernel_ir.Primitive.Batched_matmul -> []
+        | Kernel_ir.Primitive.Movement (Ir.Movement.Unsqueeze _), _ ->
             [ Boundary.Layout_boundary source ]
-        | _ ->
-            (match destination_assignment with
-            | Some destination_assignment ->
-                (match Assignment.primitive destination_assignment with
-                | Kernel_ir.Primitive.Unary _ | Kernel_ir.Primitive.Binary _
-                | Kernel_ir.Primitive.Scalar_binary _
-                | Kernel_ir.Primitive.Reduce _ | Kernel_ir.Primitive.Cast _
-                | Kernel_ir.Primitive.Movement _
-                | Kernel_ir.Primitive.Short_conv _ -> []
-                | Kernel_ir.Primitive.Rms_norm _
-                | Kernel_ir.Primitive.Linear _ ->
-                    [ Boundary.Unsupported_index_map destination ])
-            | None -> []))
+        | _, destination_primitive ->
+        (match destination_primitive with
+        | Kernel_ir.Primitive.Unary _ | Kernel_ir.Primitive.Binary _
+        | Kernel_ir.Primitive.Scalar_binary _
+        | Kernel_ir.Primitive.Reduce _ | Kernel_ir.Primitive.Cast _
+        | Kernel_ir.Primitive.Movement _
+        | Kernel_ir.Primitive.Short_conv _
+        | Kernel_ir.Primitive.Batched_matmul
+        | Kernel_ir.Primitive.Pad_right_zero _
+        | Kernel_ir.Primitive.Update_slice _
+        | Kernel_ir.Primitive.Triangular_recurrence _ -> []
+        | Kernel_ir.Primitive.Rms_norm _ | Kernel_ir.Primitive.Linear _ ->
+            [ Boundary.Unsupported_index_map destination ]))
     | _ -> []
   in
   source_boundaries @ destination_boundaries @ graph_boundaries
@@ -752,6 +769,7 @@ module Lowering = struct
       | Rms_norm
       | Rms_rope
       | Short_conv_silu
+      | Gated_delta
   end
 
   module Event = struct
@@ -1092,7 +1110,8 @@ let linear_add_match ~decisions assignments =
                                 Ir.Op.Linear_add
                                   { m = linear.m; n = linear.n; k = linear.k }
                             | Lowering.Kind.Rms_norm | Lowering.Kind.Rms_rope
-                            | Lowering.Kind.Short_conv_silu ->
+                            | Lowering.Kind.Short_conv_silu
+                            | Lowering.Kind.Gated_delta ->
                                 assert false)
                           ~inputs
                       in
@@ -1388,6 +1407,9 @@ let lower analysis =
         [ input; weight; cosine; sine ], output
     | Kernel_ir.Fused_tactic.Short_conv_silu { input; weight; output; _ } ->
         [ input; weight ], output
+    | Kernel_ir.Fused_tactic.Gated_delta
+        { query; key; value; gate; beta; output } ->
+        [ query; key; value; gate; beta ], output
     | Kernel_ir.Fused_tactic.Linear_additive _
     | Kernel_ir.Fused_tactic.Gated_product _ -> assert false
   in
@@ -1440,7 +1462,8 @@ let lower analysis =
                       match tactic with
                       | (Kernel_ir.Fused_tactic.Rms_normalize _
                         | Kernel_ir.Fused_tactic.Rms_rope _
-                        | Kernel_ir.Fused_tactic.Short_conv_silu _) as tactic ->
+                        | Kernel_ir.Fused_tactic.Short_conv_silu _
+                        | Kernel_ir.Fused_tactic.Gated_delta _) as tactic ->
                           let selected = assignment_slice assignments tactic in
                           if selected = [] then None else Some (tactic, selected)
                       | _ -> None))
@@ -1479,6 +1502,8 @@ let lower analysis =
                      Lowering.Kind.Rms_rope
                  | Kernel_ir.Fused_tactic.Short_conv_silu _ ->
                      Lowering.Kind.Short_conv_silu
+                 | Kernel_ir.Fused_tactic.Gated_delta _ ->
+                     Lowering.Kind.Gated_delta
                  | _ -> assert false
                in
                let _, output = tactic_boundary_values tactic in
@@ -1577,7 +1602,8 @@ let lower analysis =
               | Lowering.Kind.Gated_linear -> 2
               | Lowering.Kind.Rms_norm -> 3
               | Lowering.Kind.Rms_rope -> 4
-              | Lowering.Kind.Short_conv_silu -> 5 )
+              | Lowering.Kind.Short_conv_silu -> 5
+              | Lowering.Kind.Gated_delta -> 6 )
           in
           if Hashtbl.mem seen key then false
           else (Hashtbl.add seen key (); true))
@@ -1700,6 +1726,7 @@ let executable_region event =
     | Lowering.Kind.Rms_norm -> "rms-normalize"
     | Lowering.Kind.Rms_rope -> "rms-rope"
     | Lowering.Kind.Short_conv_silu -> "short-conv-silu"
+    | Lowering.Kind.Gated_delta -> "gated-delta"
   in
   Kernel_ir.create ~name
     ~member_node_ids:

@@ -9705,7 +9705,8 @@ let region_tactics ~target regions =
   in
   regions
   |> List.fold_left
-       (fun (quant, quant_add, has_w4, has_rms, has_rms_rope, has_short_conv_silu) region ->
+       (fun (quant, quant_add, has_w4, has_rms, has_rms_rope,
+              has_short_conv_silu, gated_delta) region ->
          match Kernel_ir.Fused_tactic.select region with
          | Some
              (Kernel_ir.Fused_tactic.Linear_additive
@@ -9714,10 +9715,13 @@ let region_tactics ~target regions =
              | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                  (storage, tactic) :: quant,
                  (storage, tactic) :: quant_add,
-                 has_w4, has_rms, has_rms_rope, has_short_conv_silu
+                 has_w4, has_rms, has_rms_rope, has_short_conv_silu,
+                 gated_delta
              | Ir.Linear_storage.Groupwise_packed _, _ ->
-                 quant, quant_add, true, has_rms, has_rms_rope, has_short_conv_silu
-             | _ -> quant, quant_add, has_w4, has_rms, has_rms_rope, has_short_conv_silu)
+                 quant, quant_add, true, has_rms, has_rms_rope,
+                 has_short_conv_silu, gated_delta
+             | _ -> quant, quant_add, has_w4, has_rms, has_rms_rope,
+                 has_short_conv_silu, gated_delta)
          | Some
              (Kernel_ir.Fused_tactic.Gated_product
                { gate; up; output; _ }) ->
@@ -9737,24 +9741,45 @@ let region_tactics ~target regions =
                       Ir.Linear_storage.Groupwise_packed _ ) -> true
                   | _ -> false)
              in
-             quant, quant_add, has_w4, has_rms, has_rms_rope, has_short_conv_silu
+             quant, quant_add, has_w4, has_rms, has_rms_rope,
+             has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Rms_normalize _) ->
-             quant, quant_add, has_w4, true, has_rms_rope, has_short_conv_silu
+             quant, quant_add, has_w4, true, has_rms_rope,
+             has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Rms_rope _) ->
-             quant, quant_add, has_w4, has_rms, true, has_short_conv_silu
+             quant, quant_add, has_w4, has_rms, true,
+             has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Short_conv_silu _) ->
-             quant, quant_add, has_w4, has_rms, has_rms_rope, true
-         | None -> quant, quant_add, has_w4, has_rms, has_rms_rope, has_short_conv_silu)
-       ([], [], false, false, false, false)
-  |> fun (quant, quant_add, has_w4, has_rms, has_rms_rope, has_short_conv_silu) ->
+             quant, quant_add, has_w4, has_rms, has_rms_rope, true,
+             gated_delta
+         | Some (Kernel_ir.Fused_tactic.Gated_delta { query; _ }) ->
+             let gated_delta =
+               match
+                 Ir.Value.dtype query,
+                 Tensor_shape.dimensions (Ir.Value.logical_shape query)
+               with
+               | Ir.Dtype.Float32, [ _; _; _; width ] ->
+                   Gated_delta_head_major_f32 width :: gated_delta
+               | _ -> gated_delta
+             in
+             quant, quant_add, has_w4, has_rms, has_rms_rope,
+             has_short_conv_silu, gated_delta
+         | None ->
+             quant, quant_add, has_w4, has_rms, has_rms_rope,
+             has_short_conv_silu, gated_delta)
+       ([], [], false, false, false, false, [])
+  |> fun (quant, quant_add, has_w4, has_rms, has_rms_rope,
+           has_short_conv_silu, gated_delta) ->
   ( List.sort_uniq Stdlib.compare quant,
     List.sort_uniq Stdlib.compare quant_add,
-    has_w4, has_rms, has_rms_rope, has_short_conv_silu )
+    has_w4, has_rms, has_rms_rope, has_short_conv_silu,
+    List.sort_uniq Stdlib.compare gated_delta )
 
 let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
   let graph = without_region_nodes graph fusion_regions in
   let ( region_quant_tactics, region_quant_add_tactics, regions_have_w4,
-        regions_have_rms, regions_have_rms_rope, regions_have_short_conv_silu ) =
+        regions_have_rms, regions_have_rms_rope, regions_have_short_conv_silu,
+        region_gated_delta_tactics ) =
     region_tactics ~target fusion_regions
   in
   let materialized_movement = has_materialized_movement graph in
@@ -9792,7 +9817,10 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     |> String.concat "\n"
   in
   let quant_add_entries = List.map quant_linear_add_entry quant_add_tactics in
-  let gated_delta_tactics = gated_delta_tactics graph in
+  let gated_delta_tactics =
+    gated_delta_tactics graph @ region_gated_delta_tactics
+    |> List.sort_uniq Stdlib.compare
+  in
   let gated_delta_source =
     gated_delta_tactics |> List.map gated_delta_source |> String.concat "\n"
   in

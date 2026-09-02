@@ -15,3 +15,7 @@ val eliminate_kv_transpose : Ir.Graph.t -> Ir.Graph.t
 val eliminate_value_transpose : Ir.Graph.t -> Ir.Graph.t
 
 val eliminate_gqa_expansion : Ir.Graph.t -> Ir.Graph.t
+
+(** Canonicalize attention operands and results by composing typed logical-axis
+    provenance across movement primitives. *)
+val canonicalize_layouts : Ir.Graph.t -> Ir.Graph.t

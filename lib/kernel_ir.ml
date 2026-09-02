@@ -60,6 +60,10 @@ module Primitive = struct
     | Cast of Ir.Dtype.t
     | Movement of Ir.Movement.t
     | Short_conv of Ir.Short_conv.t
+    | Batched_matmul
+    | Pad_right_zero of { axis : int }
+    | Update_slice of Tensor_shape.Index.t
+    | Triangular_recurrence of Ir.Triangular_recurrence.t
 
   let rms_norm ~epsilon = Rms_norm { epsilon }
   let linear ~m ~n ~k ~bias ~storage = Linear { m; n; k; bias; storage }
@@ -71,6 +75,10 @@ module Primitive = struct
   let cast dtype = Cast dtype
   let movement movement = Movement movement
   let short_conv convolution = Short_conv convolution
+  let batched_matmul = Batched_matmul
+  let pad_right_zero ~axis = Pad_right_zero { axis }
+  let update_slice index = Update_slice index
+  let triangular_recurrence config = Triangular_recurrence config
 
   let unary_name = function
     | Neg -> "neg"
@@ -112,6 +120,12 @@ module Primitive = struct
     | Cast dtype -> Printf.sprintf "cast(%s)" (Ir.Dtype.to_string dtype)
     | Movement movement -> Ir.Movement.to_string movement
     | Short_conv convolution -> Ir.Short_conv.to_string convolution
+    | Batched_matmul -> "batched-matmul"
+    | Pad_right_zero { axis } -> Printf.sprintf "pad-right-zero(axis=%d)" axis
+    | Update_slice index ->
+        Printf.sprintf "update-slice%s" (Tensor_shape.Index.to_string index)
+    | Triangular_recurrence config ->
+        Ir.Triangular_recurrence.to_string config
 end
 
 module Effect = struct
@@ -1114,6 +1128,72 @@ let validate_primitive map binding =
                      && is_float weight_dtype && output.dtype = input_dtype ->
                   Ok ()
               | Ok _ | Error _ -> invalid "short-conv metadata is inconsistent")))
+  | Primitive.Batched_matmul -> (
+      match one_output binding, two binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok (left, right) -> (
+          match input_metadata map left, input_metadata map right with
+          | Error error, _ | _, Error error -> Error error
+          | Ok (_, left_dtype), Ok (_, right_dtype)
+            when left_dtype = right_dtype && is_float left_dtype
+                 && output.dtype = left_dtype ->
+              Ok ()
+          | Ok _, Ok _ -> invalid "batched-matmul metadata is inconsistent"))
+  | Primitive.Pad_right_zero { axis } -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Error error -> Error error
+          | Ok (input_shape, dtype) ->
+              let input_dimensions = dims input_shape in
+              let output_dimensions = dims output.shape in
+              let dimensions_match =
+                List.length input_dimensions = List.length output_dimensions
+                && axis >= 0 && axis < List.length input_dimensions
+              in
+              let dimensions_match =
+                dimensions_match
+                && List.mapi
+                     (fun current input_dimension ->
+                       let output_dimension = List.nth output_dimensions current in
+                       if current = axis then output_dimension >= input_dimension
+                       else output_dimension = input_dimension)
+                     input_dimensions
+                   |> List.for_all Fun.id
+              in
+              if dimensions_match && dtype = output.dtype then Ok ()
+              else invalid "pad-right-zero metadata is inconsistent"))
+  | Primitive.Update_slice index -> (
+      match one_output binding, two binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok (destination, source) -> (
+          match input_metadata map destination, input_metadata map source with
+          | Error error, _ | _, Error error -> Error error
+          | Ok (destination_shape, destination_dtype),
+            Ok (source_shape, source_dtype) -> (
+              match Tensor_shape.apply_index destination_shape index with
+              | Ok selected
+                when same_shape selected source_shape
+                     && same_shape destination_shape output.shape
+                     && destination_dtype = source_dtype
+                     && output.dtype = destination_dtype ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "update-slice metadata is inconsistent")))
+  | Primitive.Triangular_recurrence config -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Error error -> Error error
+          | Ok (shape, dtype) ->
+              let dimensions = dims shape in
+              let rank = List.length dimensions in
+              let axis = Ir.Triangular_recurrence.axis config in
+              if axis >= 0 && axis < rank && dtype = Ir.Dtype.Float32
+                 && output.dtype = dtype && same_shape shape output.shape
+              then Ok ()
+              else invalid "triangular-recurrence metadata is inconsistent"))
 
 let check_unique slots =
   let rec loop seen = function
@@ -1335,6 +1415,19 @@ let specialize ~dimension ~value region =
         (match Tensor_shape.Index.of_selectors selectors with
         | Ok index -> Primitive.Movement (Ir.Movement.Index index)
         | Error _ -> Primitive.Movement (Ir.Movement.Index index))
+    | Primitive.Update_slice index ->
+        let selectors =
+          Tensor_shape.Index.selectors index
+          |> List.map (function
+               | Tensor_shape.Index.Slice { start; step; length } ->
+                   Tensor_shape.Index.Slice
+                     { start; step; length = dimension length }
+               | (Tensor_shape.Index.At _ | Tensor_shape.Index.New_axis) as selector ->
+                   selector)
+        in
+        (match Tensor_shape.Index.of_selectors selectors with
+        | Ok index -> Primitive.Update_slice index
+        | Error _ -> Primitive.Update_slice index)
     | primitive -> primitive
   in
   let* inputs =
@@ -1430,6 +1523,14 @@ module Fused_tactic = struct
         config : Ir.Short_conv_silu.t;
         input : Ir.Value.t;
         weight : Ir.Value.t;
+        output : Ir.Value.t;
+      }
+    | Gated_delta of {
+        query : Ir.Value.t;
+        key : Ir.Value.t;
+        value : Ir.Value.t;
+        gate : Ir.Value.t;
+        beta : Ir.Value.t;
         output : Ir.Value.t;
       }
 
@@ -1895,6 +1996,211 @@ module Fused_tactic = struct
         | _ -> None)
     | _ -> None
 
+  type padded_input = {
+    source_slot : Slot.t;
+    padded_slot : Slot.t;
+    source_value : Ir.Value.t;
+  }
+
+  let gated_delta region values =
+    let ( let* ) = Option.bind in
+    let shapes =
+      let inputs =
+        List.fold_left
+          (fun shapes ({ slot; value } : input) ->
+            Slot_map.add slot (Ir.Value.logical_shape value) shapes)
+          Slot_map.empty region.inputs
+      in
+      List.fold_left
+        (fun shapes binding ->
+          List.fold_left
+            (fun shapes ({ slot; shape; _ } : output_spec) ->
+              Slot_map.add slot shape shapes)
+            shapes binding.outputs)
+        inputs region.bindings
+    in
+    let dimensions slot =
+      Slot_map.find_opt slot shapes |> Option.map Tensor_shape.dimensions
+    in
+    let consumers =
+      List.fold_left
+        (fun consumers (binding : binding) ->
+          List.fold_left
+            (fun consumers slot ->
+              let current =
+                Slot_map.find_opt slot consumers |> Option.value ~default:[]
+              in
+              Slot_map.add slot (binding :: current) consumers)
+            consumers binding.inputs)
+        Slot_map.empty region.bindings
+    in
+    let consumers_of slot =
+      Slot_map.find_opt slot consumers |> Option.value ~default:[]
+    in
+    let rec collect slot visited bindings pads =
+      if List.exists (Slot.equal slot) visited then bindings, pads
+      else
+        let visited = slot :: visited in
+        match producer region slot with
+        | None -> bindings, pads
+        | Some binding -> (
+            match binding.primitive, binding.inputs, binding_output binding with
+            | Primitive.Pad_right_zero { axis = 2 }, [ source ], Some padded ->
+                (match input_value values source with
+                | Some source_value ->
+                    binding :: bindings,
+                    { source_slot = source; padded_slot = padded; source_value }
+                    :: pads
+                | None -> binding :: bindings, pads)
+            | _ ->
+                List.fold_left
+                  (fun (bindings, pads) input ->
+                    collect input visited bindings pads)
+                  (binding :: bindings, pads) binding.inputs)
+    in
+    let exactly_one predicate candidates =
+      match List.filter predicate candidates with [ candidate ] -> Some candidate | _ -> None
+    in
+    let result = match region.results with [ result ] -> Some result | _ -> None in
+    let* result = result in
+    let* final_input =
+      match producer region result.slot with
+      | Some
+          { primitive = Primitive.Cast Ir.Dtype.Float16;
+            inputs = [ input ]; _ }
+        when Ir.Value.dtype result.value = Ir.Dtype.Float16 ->
+          Some input
+      | _ -> None
+    in
+    let bindings, pads = collect final_input [] [] [] in
+    let bindings =
+      bindings
+      |> List.fold_left
+           (fun unique binding ->
+             match binding_output binding with
+             | None -> unique
+             | Some slot -> Slot_map.add slot binding unique)
+           Slot_map.empty
+      |> Slot_map.bindings |> List.map snd
+    in
+    let pads =
+      pads
+      |> List.fold_left
+           (fun unique pad -> Slot_map.add pad.source_slot pad unique)
+           Slot_map.empty
+      |> Slot_map.bindings |> List.map snd
+    in
+    let* batch, tokens, heads, width =
+      match Tensor_shape.dimensions (Ir.Value.logical_shape result.value) with
+      | [ batch; tokens; heads; width ]
+        when batch > 0 && tokens > 0 && heads > 0 && width > 0
+             && width mod 32 = 0 ->
+          Some (batch, tokens, heads, width)
+      | _ -> None
+    in
+    let vector_pads, scalar_pads =
+      List.partition
+        (fun pad ->
+          Ir.Value.dtype pad.source_value = Ir.Dtype.Float32
+          && dimensions pad.source_slot = Some [ batch; heads; tokens; width ])
+        pads
+    in
+    let scalar_pads =
+      List.filter
+        (fun pad ->
+          Ir.Value.dtype pad.source_value = Ir.Dtype.Float32
+          && dimensions pad.source_slot = Some [ batch; heads; tokens ])
+        scalar_pads
+    in
+    if List.length vector_pads <> 3 || List.length scalar_pads <> 2 then None
+    else
+      let q_pad =
+        exactly_one
+          (fun pad ->
+            consumers_of pad.padded_slot
+            |> List.exists (fun binding ->
+                   match binding.primitive, binding.inputs with
+                   | Primitive.Scalar_binary { operator = Primitive.Mul; _ },
+                     [ input ] ->
+                       Slot.equal input pad.padded_slot
+                   | _ -> false))
+          vector_pads
+      in
+      let k_pad =
+        exactly_one
+          (fun pad ->
+            consumers_of pad.padded_slot
+            |> List.exists (fun reshape ->
+                   match reshape.primitive, reshape.inputs,
+                         binding_output reshape with
+                   | Primitive.Movement Ir.Movement.Reshape, [ input ],
+                     Some reshaped
+                     when Slot.equal input pad.padded_slot ->
+                       consumers_of reshaped
+                       |> List.exists (fun transpose ->
+                              match transpose.primitive, transpose.inputs with
+                              | ( Primitive.Movement
+                                    (Ir.Movement.Transpose { axis0; axis1 }),
+                                  [ actual ] ) ->
+                                  Slot.equal actual reshaped
+                                  && ((axis0 = 4 && axis1 = 3)
+                                     || (axis0 = 3 && axis1 = 4))
+                              | _ -> false)
+                   | _ -> false))
+          vector_pads
+      in
+      let beta_pad =
+        exactly_one
+          (fun pad ->
+            consumers_of pad.padded_slot
+            |> List.exists (fun binding ->
+                   match binding.primitive, binding.inputs with
+                   | Primitive.Movement (Ir.Movement.Unsqueeze 3), [ input ] ->
+                       Slot.equal input pad.padded_slot
+                   | _ -> false))
+          scalar_pads
+      in
+      let* q_pad = q_pad in
+      let* k_pad = k_pad in
+      let* beta_pad = beta_pad in
+      if Slot.equal q_pad.source_slot k_pad.source_slot then None
+      else
+        let* value_pad =
+          exactly_one
+            (fun pad ->
+              not (Slot.equal pad.source_slot q_pad.source_slot)
+              && not (Slot.equal pad.source_slot k_pad.source_slot))
+            vector_pads
+        in
+        let* gate_pad =
+          exactly_one
+            (fun pad -> not (Slot.equal pad.source_slot beta_pad.source_slot))
+            scalar_pads
+        in
+        let triangular, batched_matmul, update_slice =
+          List.fold_left
+            (fun (triangular, batched_matmul, update_slice) binding ->
+              match binding.primitive with
+              | Primitive.Triangular_recurrence _ ->
+                  triangular + 1, batched_matmul, update_slice
+              | Primitive.Batched_matmul ->
+                  triangular, batched_matmul + 1, update_slice
+              | Primitive.Update_slice _ ->
+                  triangular, batched_matmul, update_slice + 1
+              | _ -> triangular, batched_matmul, update_slice)
+            (0, 0, 0) bindings
+        in
+        if triangular <> 1 || batched_matmul < 4 || update_slice < 1 then None
+        else
+          Some
+            (Gated_delta
+               { query = q_pad.source_value;
+                 key = k_pad.source_value;
+                 value = value_pad.source_value;
+                 gate = gate_pad.source_value;
+                 beta = beta_pad.source_value;
+                 output = result.value })
+
   let linear_additive region values =
     let linear_bindings =
       region.bindings
@@ -1980,6 +2286,9 @@ module Fused_tactic = struct
 
   let select region =
     let values = value_map region in
+    match gated_delta region values with
+    | Some tactic -> Some tactic
+    | None -> (
     match short_conv_silu region values with
     | Some tactic -> Some tactic
     | None -> (
@@ -1991,7 +2300,7 @@ module Fused_tactic = struct
         | None -> (
             match rms_rope region values with
             | Some tactic -> Some tactic
-            | None -> rms_normalize region values)))
+            | None -> rms_normalize region values))))
 
   let select_all region =
     let original_results = region.results in

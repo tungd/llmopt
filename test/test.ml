@@ -890,9 +890,7 @@ let () =
   Ir.Graph.add_output generalized_attention_graph ~name:"token_first"
     token_first_contiguous;
   let generalized_attention_graph =
-    generalized_attention_graph
-    |> Pass_fuse_linear_bias.eliminate_gqa_expansion
-    |> Pass_fuse_linear_bias.eliminate_attention_transpose
+    Pass_fuse_linear_bias.canonicalize_layouts generalized_attention_graph
   in
   expect
     (Ir.Graph.nodes generalized_attention_graph
@@ -988,7 +986,7 @@ let () =
   Ir.Graph.add_output token_value_graph ~name:"token_value_output"
     token_value_output;
   let token_value_graph =
-    Pass_fuse_linear_bias.eliminate_value_transpose token_value_graph
+    Pass_fuse_linear_bias.canonicalize_layouts token_value_graph
   in
   expect
     (Ir.Graph.nodes token_value_graph
@@ -2392,34 +2390,54 @@ let () =
       [ expanded_output ] [ 1; 2; 2; 32 ]
   in
   Ir.Graph.add_output gated_graph ~name:"gated" gated_output;
-  let gated_fused = Passes.fuse_gated_delta gated_graph in
+  let gated_optimization = Passes.optimize gated_graph |> expect_ok in
+  let gated_fused =
+    Passes.Optimization.semantic_graph gated_optimization
+  in
+  let gated_regions =
+    Passes.Optimization.fusion_regions gated_optimization
+  in
   expect
-    (Ir.Graph.nodes gated_fused
-    |> List.exists (fun node ->
-           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
-           | Ir.Op.Primitive Ir.Primitive.Gated_delta,
-             [ actual_query; actual_key; actual_value; actual_gate; actual_beta ],
-             Some output ->
+    (gated_regions
+    |> List.exists (fun region ->
+           match Kernel_ir.Fused_tactic.select region with
+           | Some
+               (Kernel_ir.Fused_tactic.Gated_delta
+                 { query = actual_query; key = actual_key;
+                   value = actual_value; gate = actual_gate;
+                   beta = actual_beta; output }) ->
                List.for_all2 Ir.Value.equal
                  [ actual_query; actual_key; actual_value; actual_gate; actual_beta ]
                  [ query; key; value; gate; beta ]
                && Ir.Value.equal output gated_output
            | _ -> false))
-    "captured padded topology recovers semantic gated-delta inputs";
+    "constructive gated-delta recovers inputs from primitive dependencies";
   expect
-    (Ir.Graph.nodes gated_fused |> List.length = 7)
-    "gated-delta fusion prunes the expanded topology and dead branches";
+    (Ir.Graph.nodes gated_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node with
+           | Ir.Op.Primitive Ir.Primitive.Batched_matmul -> true
+           | _ -> false))
+    "constructive gated-delta preserves the primitive source graph";
   let gated_schedule =
-    gated_fused |> Serving_schedule.of_graph |> expect_ok
+    Serving_schedule.of_graph ~fusion_regions:gated_regions
+      (Passes.Optimization.execution_graph gated_optimization)
+    |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
   in
   expect
     (Serving_schedule.commands gated_schedule
     |> List.exists (fun command ->
-           Serving_schedule.Command.op command
-           = Ir.Op.Primitive Ir.Primitive.Gated_delta))
-    "gated-delta survives schedule serialization";
-  let gated_program = Metal.lower gated_fused |> expect_ok in
+           match
+             Option.bind (Serving_schedule.Command.fusion_region command)
+               Kernel_ir.Fused_tactic.select
+           with
+           | Some (Kernel_ir.Fused_tactic.Gated_delta _) -> true
+           | _ -> false))
+    "constructive gated-delta survives schedule serialization";
+  let gated_program =
+    Metal.lower ~fusion_regions:gated_regions gated_fused |> expect_ok
+  in
   expect
     (contains_substring (Metal.Program.source gated_program)
        "kernel void llmopt_gated_delta_f32_d32")
@@ -2481,7 +2499,9 @@ let () =
   in
   Ir.Graph.add_output token_major_graph ~name:"token_major"
     token_major_output;
-  let token_major_fused = Passes.fuse_gated_delta token_major_graph in
+  let token_major_fused =
+    Pass_fuse_linear_bias.canonicalize_layouts token_major_graph
+  in
   expect
     (Ir.Graph.nodes token_major_fused
     |> List.exists (fun node ->

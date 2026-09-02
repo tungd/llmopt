@@ -2648,6 +2648,14 @@ type assignment_execution =
       weight : Ir.Value.t;
       output : Ir.Value.t;
     }
+  | Assignment_gated_delta of {
+      query : Ir.Value.t;
+      key : Ir.Value.t;
+      value : Ir.Value.t;
+      gate : Ir.Value.t;
+      beta : Ir.Value.t;
+      output : Ir.Value.t;
+    }
 
 let assignment_execution command =
   match
@@ -2676,6 +2684,10 @@ let assignment_execution command =
       (Kernel_ir.Fused_tactic.Short_conv_silu
         { config; input; weight; output }) ->
       Some (Assignment_short_conv_silu { config; input; weight; output })
+  | Some
+      (Kernel_ir.Fused_tactic.Gated_delta
+        { query; key; value; gate; beta; output }) ->
+      Some (Assignment_gated_delta { query; key; value; gate; beta; output })
   | None -> None
 
 let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
@@ -2913,11 +2925,49 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                        ~operation:Kernel_abi.Operation.W4a16_linear
                        ~input_dtype:Ir.Dtype.Float16
                        ~buffers:[ input; weight; scale_buffer; additive_buffer ]
-                       ~parameters ~grid:(grid_x, 1, 1))
+                   ~parameters ~grid:(grid_x, 1, 1))
               | Ir.Linear_storage.Groupwise_packed _ ->
                   Error "assignment Linear-add has unsupported packed storage"
               | Ir.Linear_storage.Dense _ ->
                   Error "assignment Linear-add requires quantized storage")
+          | Assignment_gated_delta
+              { query; key; value; gate; beta; output } ->
+              let shape value =
+                Tensor_shape.dimensions (Ir.Value.logical_shape value)
+              in
+              let* batch_size, heads, tokens, width =
+                match shape query, shape output with
+                | [ batch_size; heads; tokens; width ],
+                  [ output_batch; output_tokens; output_heads; output_width ]
+                  when width > 0 && width mod 32 = 0
+                       && output_batch = batch_size && output_tokens = tokens
+                       && output_heads = heads && output_width = width
+                       && List.for_all
+                            (fun candidate ->
+                              Ir.Value.dtype candidate = Ir.Dtype.Float32)
+                            [ query; key; value; gate; beta ]
+                       && shape key = shape query && shape value = shape query
+                       && shape gate = [ batch_size; heads; tokens ]
+                       && shape beta = [ batch_size; heads; tokens ] ->
+                    Ok (batch_size, heads, tokens, width)
+                | _ ->
+                    Error
+                      "unsupported assignment gated-delta layout or dtype contract"
+              in
+              let* buffers =
+                find_values state [ query; key; value; gate; beta ]
+              in
+              let* parameters =
+                Parameters.u32s [ batch_size; heads; tokens; width ]
+              in
+              let* grid_x = gated_delta_grid (batch_size * heads * width) in
+              dispatched
+                (dispatch_output
+                   ~name:(Printf.sprintf "llmopt_gated_delta_f32_d%d" width)
+                   runtime state output
+                   ~operation:Kernel_abi.Operation.Gated_delta
+                   ~input_dtype:Ir.Dtype.Float32 ~buffers ~parameters
+                   ~grid:(grid_x, 1, 1))
           | Assignment_gated_product { gate; up; activation; output } ->
               let* () =
                 validate_linear_shapes ~m:gate.m ~n:gate.n ~k:gate.k

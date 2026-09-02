@@ -64,6 +64,10 @@ module Primitive : sig
     | Cast of Ir.Dtype.t
     | Movement of Ir.Movement.t
     | Short_conv of Ir.Short_conv.t
+    | Batched_matmul
+    | Pad_right_zero of { axis : int }
+    | Update_slice of Tensor_shape.Index.t
+    | Triangular_recurrence of Ir.Triangular_recurrence.t
 
   val rms_norm : epsilon:float -> t
   val linear :
@@ -80,6 +84,10 @@ module Primitive : sig
   val cast : Ir.Dtype.t -> t
   val movement : Ir.Movement.t -> t
   val short_conv : Ir.Short_conv.t -> t
+  val batched_matmul : t
+  val pad_right_zero : axis:int -> t
+  val update_slice : Tensor_shape.Index.t -> t
+  val triangular_recurrence : Ir.Triangular_recurrence.t -> t
   val to_string : t -> string
 end
 
@@ -286,6 +294,14 @@ module Fused_tactic : sig
         config : Ir.Short_conv_silu.t;
         input : Ir.Value.t;
         weight : Ir.Value.t;
+        output : Ir.Value.t;
+      }
+    | Gated_delta of {
+        query : Ir.Value.t;
+        key : Ir.Value.t;
+        value : Ir.Value.t;
+        gate : Ir.Value.t;
+        beta : Ir.Value.t;
         output : Ir.Value.t;
       }
 

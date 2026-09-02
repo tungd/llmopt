@@ -3064,6 +3064,45 @@ let read_kernel_movement reader =
       Ok (Ir.Movement.Roll { axis; shift })
   | _ -> Error (Printf.sprintf "unknown kernel movement tag: %d" tag)
 
+let write_kernel_index writer index =
+  let selectors = Tensor_shape.Index.selectors index in
+  Binary.Writer.u16 writer (List.length selectors);
+  List.iter
+    (function
+      | Tensor_shape.Index.At index ->
+          Binary.Writer.u8 writer 0;
+          Binary.Writer.u64 writer index
+      | Tensor_shape.Index.Slice { start; step; length } ->
+          Binary.Writer.u8 writer 1;
+          Binary.Writer.i64 writer start;
+          Binary.Writer.i64 writer step;
+          Binary.Writer.u64 writer length
+      | Tensor_shape.Index.New_axis -> Binary.Writer.u8 writer 2)
+    selectors
+
+let read_kernel_index reader =
+  let* count = Binary.Reader.u16 reader in
+  let rec selectors reversed remaining =
+    if remaining = 0 then Tensor_shape.Index.of_selectors (List.rev reversed)
+    else
+      let* tag = Binary.Reader.u8 reader in
+      let* selector =
+        match tag with
+        | 0 ->
+            Binary.Reader.u64 reader
+            |> Result.map (fun index -> Tensor_shape.Index.At index)
+        | 1 ->
+            let* start = Binary.Reader.i64 reader in
+            let* step = Binary.Reader.i64 reader in
+            let* length = Binary.Reader.u64 reader in
+            Ok (Tensor_shape.Index.Slice { start; step; length })
+        | 2 -> Ok Tensor_shape.Index.New_axis
+        | _ -> Error (Printf.sprintf "unknown kernel tensor-index tag: %d" tag)
+      in
+      selectors (selector :: reversed) (remaining - 1)
+  in
+  selectors [] count
+
 let write_kernel_primitive writer = function
   | Kernel_ir.Primitive.Rms_norm { epsilon } ->
       Binary.Writer.u8 writer 0;
@@ -3108,6 +3147,18 @@ let write_kernel_primitive writer = function
       Binary.Writer.u32 writer (Ir.Short_conv.padding convolution);
       Binary.Writer.u32 writer (Ir.Short_conv.dilation convolution);
       Binary.Writer.u32 writer (Ir.Short_conv.groups convolution)
+  | Kernel_ir.Primitive.Batched_matmul -> Binary.Writer.u8 writer 9
+  | Kernel_ir.Primitive.Pad_right_zero { axis } ->
+      Binary.Writer.u8 writer 10;
+      Binary.Writer.u16 writer axis
+  | Kernel_ir.Primitive.Update_slice index ->
+      Binary.Writer.u8 writer 11;
+      write_kernel_index writer index
+  | Kernel_ir.Primitive.Triangular_recurrence config ->
+      Binary.Writer.u8 writer 12;
+      Binary.Writer.u16 writer (Ir.Triangular_recurrence.axis config);
+      Binary.Writer.u16 writer (Ir.Triangular_recurrence.start config);
+      Binary.Writer.u16 writer (Ir.Triangular_recurrence.stop config)
 
 let read_kernel_primitive reader =
   let* tag = Binary.Reader.u8 reader in
@@ -3169,6 +3220,18 @@ let read_kernel_primitive reader =
         Ir.Short_conv.create ~stride ~padding ~dilation ~groups
       in
       Ok (Kernel_ir.Primitive.short_conv convolution)
+  | 9 -> Ok Kernel_ir.Primitive.batched_matmul
+  | 10 ->
+      Binary.Reader.u16 reader
+      |> Result.map (fun axis -> Kernel_ir.Primitive.pad_right_zero ~axis)
+  | 11 ->
+      read_kernel_index reader |> Result.map Kernel_ir.Primitive.update_slice
+  | 12 ->
+      let* axis = Binary.Reader.u16 reader in
+      let* start = Binary.Reader.u16 reader in
+      let* stop = Binary.Reader.u16 reader in
+      Ir.Triangular_recurrence.create ~axis ~start ~stop
+      |> Result.map Kernel_ir.Primitive.triangular_recurrence
   | _ -> Error (Printf.sprintf "unknown kernel assignment primitive tag: %d" tag)
 
 let write_slots writer slots =

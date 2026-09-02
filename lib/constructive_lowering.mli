@@ -112,6 +112,7 @@ module Lowering : sig
       | Rms_norm
       | Rms_rope
       | Short_conv_silu
+      | Gated_delta
   end
 
   module Event : sig

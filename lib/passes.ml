@@ -320,6 +320,7 @@ module Receipt = struct
     | Constructive_lowering.Lowering.Kind.Rms_norm -> "rms-normalize"
     | Constructive_lowering.Lowering.Kind.Rms_rope -> "rms-rope"
     | Constructive_lowering.Lowering.Kind.Short_conv_silu -> "short-conv-silu"
+    | Constructive_lowering.Lowering.Kind.Gated_delta -> "gated-delta"
 
   let event_to_json event =
     `Assoc
@@ -892,7 +893,8 @@ let fallback_matcher = function
       Some Optimization.Legacy_fallback.Quant_gated_linear
   | Constructive_lowering.Lowering.Kind.Rms_norm
   | Constructive_lowering.Lowering.Kind.Rms_rope
-  | Constructive_lowering.Lowering.Kind.Short_conv_silu -> None
+  | Constructive_lowering.Lowering.Kind.Short_conv_silu
+  | Constructive_lowering.Lowering.Kind.Gated_delta -> None
 
 let fallback_matcher_equal left right =
   match left, right with
@@ -1033,19 +1035,10 @@ let optimize ?(target = Target_hardware.default) graph =
     Kernel_ir.Scan.fuse_triangular_recurrences ~max_width:max_scan_width
       lowered_graph
   in
-  let gated_delta_graph = Pass_fuse_gated_delta.run scan_lowered_graph in
-  let fused_graph = run_uncovered_epilogues gated_delta_graph lowering in
-  let gqa_elim_graph =
-    Pass_fuse_linear_bias.eliminate_gqa_expansion fused_graph
+  let fused_graph = run_uncovered_epilogues scan_lowered_graph lowering in
+  let final_semantic_graph =
+    Pass_fuse_linear_bias.canonicalize_layouts fused_graph
   in
-  let value_layout_graph =
-    Pass_fuse_linear_bias.eliminate_value_transpose gqa_elim_graph
-  in
-  let no_trans_graph =
-    Pass_fuse_linear_bias.eliminate_attention_transpose value_layout_graph
-    |> Pass_fuse_linear_bias.eliminate_kv_transpose
-  in
-  let final_semantic_graph = no_trans_graph in
   let* semantic_plan = Compute_plan.of_graph final_semantic_graph in
   let execution_input = Pass.Pipeline.run execution_pipeline final_semantic_graph in
   let* execution_plan = Compute_plan.of_graph execution_input in
