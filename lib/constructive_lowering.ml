@@ -745,7 +745,13 @@ let analyze ~target plan =
 
 module Lowering = struct
   module Kind = struct
-    type t = Linear_add | W4a16_linear_add | Gated_linear | Rms_norm | Rms_rope
+    type t =
+      | Linear_add
+      | W4a16_linear_add
+      | Gated_linear
+      | Rms_norm
+      | Rms_rope
+      | Short_conv_silu
   end
 
   module Event = struct
@@ -1085,7 +1091,8 @@ let linear_add_match ~decisions assignments =
                             | Lowering.Kind.Gated_linear ->
                                 Ir.Op.Linear_add
                                   { m = linear.m; n = linear.n; k = linear.k }
-                            | Lowering.Kind.Rms_norm | Lowering.Kind.Rms_rope ->
+                            | Lowering.Kind.Rms_norm | Lowering.Kind.Rms_rope
+                            | Lowering.Kind.Short_conv_silu ->
                                 assert false)
                           ~inputs
                       in
@@ -1379,6 +1386,8 @@ let lower analysis =
     | Kernel_ir.Fused_tactic.Rms_rope
         { input; weight; cosine; sine; output; _ } ->
         [ input; weight; cosine; sine ], output
+    | Kernel_ir.Fused_tactic.Short_conv_silu { input; weight; output; _ } ->
+        [ input; weight ], output
     | Kernel_ir.Fused_tactic.Linear_additive _
     | Kernel_ir.Fused_tactic.Gated_product _ -> assert false
   in
@@ -1430,7 +1439,8 @@ let lower analysis =
                |> List.filter_map (fun tactic ->
                       match tactic with
                       | (Kernel_ir.Fused_tactic.Rms_normalize _
-                        | Kernel_ir.Fused_tactic.Rms_rope _) as tactic ->
+                        | Kernel_ir.Fused_tactic.Rms_rope _
+                        | Kernel_ir.Fused_tactic.Short_conv_silu _) as tactic ->
                           let selected = assignment_slice assignments tactic in
                           if selected = [] then None else Some (tactic, selected)
                       | _ -> None))
@@ -1467,6 +1477,8 @@ let lower analysis =
                      Lowering.Kind.Rms_norm
                  | Kernel_ir.Fused_tactic.Rms_rope _ ->
                      Lowering.Kind.Rms_rope
+                 | Kernel_ir.Fused_tactic.Short_conv_silu _ ->
+                     Lowering.Kind.Short_conv_silu
                  | _ -> assert false
                in
                let _, output = tactic_boundary_values tactic in
@@ -1564,7 +1576,8 @@ let lower analysis =
               | Lowering.Kind.W4a16_linear_add -> 1
               | Lowering.Kind.Gated_linear -> 2
               | Lowering.Kind.Rms_norm -> 3
-              | Lowering.Kind.Rms_rope -> 4 )
+              | Lowering.Kind.Rms_rope -> 4
+              | Lowering.Kind.Short_conv_silu -> 5 )
           in
           if Hashtbl.mem seen key then false
           else (Hashtbl.add seen key (); true))
@@ -1686,6 +1699,7 @@ let executable_region event =
     | Lowering.Kind.Gated_linear -> "gated-linear"
     | Lowering.Kind.Rms_norm -> "rms-normalize"
     | Lowering.Kind.Rms_rope -> "rms-rope"
+    | Lowering.Kind.Short_conv_silu -> "short-conv-silu"
   in
   Kernel_ir.create ~name
     ~member_node_ids:

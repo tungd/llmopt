@@ -1426,6 +1426,12 @@ module Fused_tactic = struct
         sine : Ir.Value.t;
         output : Ir.Value.t;
       }
+    | Short_conv_silu of {
+        config : Ir.Short_conv_silu.t;
+        input : Ir.Value.t;
+        weight : Ir.Value.t;
+        output : Ir.Value.t;
+      }
 
   let input_map region =
     List.fold_left
@@ -1799,6 +1805,96 @@ module Fused_tactic = struct
         | _ -> None)
     | _ -> None
 
+  let short_conv_silu region values =
+    let shapes =
+      let inputs =
+        List.fold_left
+          (fun shapes ({ slot; value } : input) ->
+            Slot_map.add slot (Ir.Value.logical_shape value) shapes)
+          Slot_map.empty region.inputs
+      in
+      List.fold_left
+        (fun shapes binding ->
+          List.fold_left
+            (fun shapes ({ slot; shape; _ } : output_spec) ->
+              Slot_map.add slot shape shapes)
+            shapes binding.outputs)
+        inputs region.bindings
+    in
+    let dimensions slot =
+      Slot_map.find_opt slot shapes |> Option.map Tensor_shape.dimensions
+    in
+    let transpose slot =
+      match producer region slot with
+      | Some
+          { primitive =
+              Primitive.Movement
+                (Ir.Movement.Transpose { axis0 = 1; axis1 = 2 });
+            inputs = [ input ]; _ } -> Some input
+      | _ -> None
+    in
+    match region.results with
+    | [ result ] -> (
+        let ( let* ) = Option.bind in
+        let* silu = transpose result.slot in
+        let* trimmed =
+          match producer region silu with
+          | Some { primitive = Primitive.Unary Primitive.Silu; inputs = [ input ]; _ } ->
+              Some input
+          | _ -> None
+        in
+        let* convolution_output, output_start, length =
+          match producer region trimmed with
+          | Some
+              { primitive = Primitive.Movement (Ir.Movement.Index index);
+                inputs = [ input ]; _ } -> (
+              match Tensor_shape.Index.selectors index with
+              | [ _; _;
+                  Tensor_shape.Index.Slice { start; step = 1; length } ] ->
+                  Some (input, start, length)
+              | _ -> None)
+          | _ -> None
+        in
+        let* convolution, channel_major_input, weight_slot =
+          match producer region convolution_output with
+          | Some
+              { primitive = Primitive.Short_conv convolution;
+                inputs = [ input; weight ]; _ } ->
+              Some (convolution, input, weight)
+          | _ -> None
+        in
+        let* input_slot = transpose channel_major_input in
+        let* input = Slot_map.find_opt input_slot values in
+        let* weight = Slot_map.find_opt weight_slot values in
+        let* input_dimensions = dimensions input_slot in
+        let* channel_dimensions = dimensions channel_major_input in
+        let* weight_dimensions = dimensions weight_slot in
+        let* convolution_dimensions = dimensions convolution_output in
+        let* output_dimensions = dimensions result.slot in
+        match
+          input_dimensions, channel_dimensions, weight_dimensions,
+          convolution_dimensions, output_dimensions
+        with
+        | ( [ batches; tokens; channels ],
+            [ input_batches; input_channels; input_tokens ],
+            [ weight_channels; 1; _ ],
+            [ conv_batches; conv_channels; conv_width ],
+            [ output_batches; output_tokens; output_channels ] )
+          when batches > 0 && tokens > 0 && channels > 0
+               && input_batches = batches && input_tokens = tokens
+               && input_channels = channels && weight_channels = channels
+               && conv_batches = batches && conv_channels = channels
+               && output_batches = batches && output_tokens = tokens
+               && output_channels = channels && length = tokens
+               && Ir.Short_conv.groups convolution = channels
+               && output_start >= 0 && output_start + tokens <= conv_width ->
+            Ir.Short_conv_silu.create ~convolution ~output_start
+            |> Result.to_option
+            |> Option.map (fun config ->
+                   Short_conv_silu { config; input; weight; output = result.value })
+        | _ -> None)
+    | _ -> None
+
   let linear_additive region values =
     let linear_bindings =
       region.bindings
@@ -1884,6 +1980,9 @@ module Fused_tactic = struct
 
   let select region =
     let values = value_map region in
+    match short_conv_silu region values with
+    | Some tactic -> Some tactic
+    | None -> (
     match linear_additive region values with
     | Some tactic -> Some tactic
     | None -> (
@@ -1892,7 +1991,7 @@ module Fused_tactic = struct
         | None -> (
             match rms_rope region values with
             | Some tactic -> Some tactic
-            | None -> rms_normalize region values))
+            | None -> rms_normalize region values)))
 
   let select_all region =
     let original_results = region.results in

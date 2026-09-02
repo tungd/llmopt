@@ -105,7 +105,13 @@ val analyze : target:Target_hardware.t -> Compute_plan.t -> Analysis.t
     accepted dependency decisions retained by the analysis. *)
 module Lowering : sig
   module Kind : sig
-    type t = Linear_add | W4a16_linear_add | Gated_linear | Rms_norm | Rms_rope
+    type t =
+      | Linear_add
+      | W4a16_linear_add
+      | Gated_linear
+      | Rms_norm
+      | Rms_rope
+      | Short_conv_silu
   end
 
   module Event : sig

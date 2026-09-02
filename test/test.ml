@@ -1079,46 +1079,52 @@ let () =
       [ activated ] [ 2; 3; 6 ]
   in
   Ir.Graph.add_output short_conv_layout_graph ~name:"token_major" token_major;
-  let short_conv_layout_fused =
-    Passes.fuse_short_conv short_conv_layout_graph
+  let short_conv_layout_optimization =
+    Passes.optimize short_conv_layout_graph |> expect_ok
+  in
+  let short_conv_layout_regions =
+    Passes.Optimization.fusion_regions short_conv_layout_optimization
   in
   expect
-    (Ir.Graph.nodes short_conv_layout_fused
-    |> List.exists (fun node ->
-           match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
-           | ( Ir.Op.Primitive (Ir.Primitive.Short_conv_silu config),
-               [ input; weight ], Some output ) ->
+    (short_conv_layout_regions
+    |> List.exists (fun region ->
+           match Kernel_ir.Fused_tactic.select region with
+           | Some (Kernel_ir.Fused_tactic.Short_conv_silu
+               { config; input; weight; output }) ->
                Ir.Value.equal input short_conv_input
                && Ir.Value.equal weight short_conv_weight
                && Ir.Value.equal output token_major
                && Ir.Short_conv_silu.output_start config = 1
            | _ -> false))
-    "short-conv layout fusion follows captured token/channel relations";
+    "constructive ShortConv-SiLU follows primitive dependency relations";
   expect
-    (Ir.Graph.nodes short_conv_layout_fused
-    |> List.for_all (fun node ->
+    (Ir.Graph.nodes (Passes.Optimization.semantic_graph short_conv_layout_optimization)
+    |> List.exists (fun node ->
            match Ir.node_op node with
-           | Ir.Op.Primitive (Ir.Primitive.Short_conv _) -> false
-           | Ir.Op.Primitive
-               (Ir.Primitive.Pointwise
-                 (Ir.Pointwise.Unary (Ir.Pointwise.Silu, _))) -> false
-           | Ir.Op.Primitive (Ir.Primitive.Movement _) -> false
-           | _ -> true))
-    "short-conv layout fusion removes trim, activation, and transposes";
+           | Ir.Op.Primitive (Ir.Primitive.Short_conv _) -> true
+           | _ -> false))
+    "constructive ShortConv-SiLU preserves primitive source graph";
   let short_conv_layout_schedule =
-    short_conv_layout_fused |> Serving_schedule.of_graph |> expect_ok
+    Serving_schedule.of_graph ~fusion_regions:short_conv_layout_regions
+      (Passes.Optimization.execution_graph short_conv_layout_optimization)
+    |> expect_ok
     |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
   in
   expect
     (Serving_schedule.commands short_conv_layout_schedule
     |> List.exists (fun command ->
-           match Serving_schedule.Command.op command with
-           | Ir.Op.Primitive (Ir.Primitive.Short_conv_silu config) ->
+           match
+             Option.bind (Serving_schedule.Command.fusion_region command)
+               Kernel_ir.Fused_tactic.select
+           with
+           | Some (Kernel_ir.Fused_tactic.Short_conv_silu { config; _ }) ->
                Ir.Short_conv_silu.output_start config = 1
            | _ -> false))
     "token-major short-conv-SiLU survives schedule serialization";
   expect
-    (short_conv_layout_fused |> Metal.lower |> expect_ok
+    (Metal.lower ~fusion_regions:short_conv_layout_regions
+       (Passes.Optimization.semantic_graph short_conv_layout_optimization)
+    |> expect_ok
     |> Metal.Program.source
     |> fun source ->
     contains_substring source "kernel void llmopt_short_conv_silu_tm_f32")

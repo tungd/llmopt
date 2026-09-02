@@ -2642,6 +2642,12 @@ type assignment_execution =
       sine : Ir.Value.t;
       output : Ir.Value.t;
     }
+  | Assignment_short_conv_silu of {
+      config : Ir.Short_conv_silu.t;
+      input : Ir.Value.t;
+      weight : Ir.Value.t;
+      output : Ir.Value.t;
+    }
 
 let assignment_execution command =
   match
@@ -2666,6 +2672,10 @@ let assignment_execution command =
       Some
         (Assignment_rms_rope
            { config; input; weight; cosine; sine; output })
+  | Some
+      (Kernel_ir.Fused_tactic.Short_conv_silu
+        { config; input; weight; output }) ->
+      Some (Assignment_short_conv_silu { config; input; weight; output })
   | None -> None
 
 let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
@@ -2724,6 +2734,45 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
               kernels_rev = List.rev_append kernels state.kernels_rev }
         in
         let dispatch_assignment = function
+          | Assignment_short_conv_silu { config; input; weight; output } ->
+              let* batches, tokens, channels =
+                match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
+                | [ batches; tokens; channels ] ->
+                    Ok (batches, tokens, channels)
+                | _ ->
+                    Error
+                      "assignment token-major ShortConv-SiLU input must have rank three"
+              in
+              let* kernel_width =
+                match Tensor_shape.dimensions (Ir.Value.logical_shape weight) with
+                | [ weight_channels; 1; kernel_width ]
+                  when weight_channels = channels -> Ok kernel_width
+                | _ ->
+                    Error
+                      "assignment token-major ShortConv-SiLU weight must have shape [channels,1,width]"
+              in
+              let convolution = Ir.Short_conv_silu.convolution config in
+              let* buffers = find_values state [ input; weight ] in
+              let* parameters =
+                Parameters.u32s
+                  [ batches; tokens; channels; kernel_width;
+                    Ir.Short_conv.stride convolution;
+                    Ir.Short_conv.padding convolution;
+                    Ir.Short_conv.dilation convolution;
+                    Ir.Short_conv_silu.output_start config ]
+              in
+              let name =
+                match Ir.Value.dtype weight with
+                | Ir.Dtype.Float16 -> "llmopt_short_conv_silu_tm_f16"
+                | Ir.Dtype.Float32 -> "llmopt_short_conv_silu_tm_f32"
+                | _ -> ""
+              in
+              dispatched
+                (dispatch_output ~name runtime state output
+                   ~operation:Kernel_abi.Operation.Short_conv
+                   ~input_dtype:(Ir.Value.dtype weight) ~buffers ~parameters
+                   ~grid:
+                     (Tensor_shape.numel (Ir.Value.logical_shape output), 1, 1))
           | Assignment_rms_rope
               { config; input; weight; cosine; sine; output } ->
               let* batches, tokens, heads, width =

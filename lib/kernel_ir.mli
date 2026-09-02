@@ -282,6 +282,12 @@ module Fused_tactic : sig
         sine : Ir.Value.t;
         output : Ir.Value.t;
       }
+    | Short_conv_silu of {
+        config : Ir.Short_conv_silu.t;
+        input : Ir.Value.t;
+        weight : Ir.Value.t;
+        output : Ir.Value.t;
+      }
 
   val select : region -> t option
   (** Select tactics rooted at the region results and at internal assignment

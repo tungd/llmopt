@@ -319,6 +319,7 @@ module Receipt = struct
     | Constructive_lowering.Lowering.Kind.Gated_linear -> "gated-linear"
     | Constructive_lowering.Lowering.Kind.Rms_norm -> "rms-normalize"
     | Constructive_lowering.Lowering.Kind.Rms_rope -> "rms-rope"
+    | Constructive_lowering.Lowering.Kind.Short_conv_silu -> "short-conv-silu"
 
   let event_to_json event =
     `Assoc
@@ -807,9 +808,7 @@ end
    it uses this private semantic prefix and lowers those families from the
    resulting immutable plan. *)
 let optimize_pre_analysis_pipeline =
-  Pass.Pipeline.of_list
-    [ Pass_fuse_linear_bias.pass;
-      Pass_fuse_short_conv.pass ]
+  Pass.Pipeline.of_list [ Pass_fuse_linear_bias.pass ]
 
 let execution_passes =
   [
@@ -892,7 +891,8 @@ let fallback_matcher = function
   | Constructive_lowering.Lowering.Kind.Gated_linear ->
       Some Optimization.Legacy_fallback.Quant_gated_linear
   | Constructive_lowering.Lowering.Kind.Rms_norm
-  | Constructive_lowering.Lowering.Kind.Rms_rope -> None
+  | Constructive_lowering.Lowering.Kind.Rms_rope
+  | Constructive_lowering.Lowering.Kind.Short_conv_silu -> None
 
 let fallback_matcher_equal left right =
   match left, right with
