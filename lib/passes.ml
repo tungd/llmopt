@@ -1,9 +1,5 @@
 module Linear_bias = Pass_fuse_linear_bias
-module Rms_norm = Pass_fuse_rms_norm
-module Rms_rope = Pass_fuse_rms_rope
-module Short_conv = Pass_fuse_short_conv
 module Short_conv_step_fused = Pass_fuse_short_conv_step
-module Gated_delta = Pass_fuse_gated_delta
 module Lm_head_argmax = Pass_fuse_lm_head_argmax
 module Co_schedule = Pass_co_schedule
 module Epilogues = Pass_fuse_epilogues
@@ -11,14 +7,10 @@ module Epilogues = Pass_fuse_epilogues
 let ( let* ) = Result.bind
 
 let fuse_linear_bias = Pass_fuse_linear_bias.run
-let fuse_rms_norm = Pass_fuse_rms_norm.run
-let fuse_rms_rope = Pass_fuse_rms_rope.run
-let fuse_short_conv = Pass_fuse_short_conv.run
 let discover_swiglu_ffn _ = Ok []
 let recover_scans = Kernel_ir.Scan.recover
 let fuse_swiglu_ffn graph = Ok (Pass_fuse_epilogues.run graph)
 let fuse_short_conv_step = Pass_fuse_short_conv_step.run
-let fuse_gated_delta = Pass_fuse_gated_delta.run
 let fuse_lm_head_argmax = Pass_fuse_lm_head_argmax.run
 
 let parameterize_token_id_output graph =
@@ -93,9 +85,6 @@ let semantic_passes =
   [
     Pass_fuse_epilogues.pass;
     Pass_fuse_linear_bias.pass;
-    Pass_fuse_rms_norm.pass;
-    Pass_fuse_rms_rope.pass;
-    Pass_fuse_short_conv.pass;
   ]
 
 let default_pipeline = Pass.Pipeline.of_list semantic_passes

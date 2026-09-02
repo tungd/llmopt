@@ -315,10 +315,12 @@ llama.cpp policy token. Ranked IDs agree through rank eight; bit-exact logit
 parity is not claimed. The immutable receipt is
 `bench/results/uoc-constructive-rms-rope-gemma4-2026-09-03.txt`.
 
-RMSNorm, RMSNorm-RoPE, and ShortConv-SiLU now select and execute dependency
-slices from primitive assignments without macro graph replacement. GQA layout
-and gated delta remain the active operation-specific migrations; this follow-up
-does not mark those two items complete.
+RMSNorm, RMSNorm-RoPE, ShortConv-SiLU, and padded gated-delta now select and
+execute dependency slices from primitive assignments without macro graph
+replacement. GQA replication, token-major attention values and outputs, and
+token-major gated-delta inputs are canonicalized by a shared typed
+axis-provenance model. The four obsolete pass modules and their compatibility
+aliases are removed from source and Ninja linkage.
 
 ### 2026-09-02 repair follow-up
 

@@ -3,7 +3,7 @@ type: Decision
 title: 'Adopt Parametric Epilogue Inlining and Hardware-Aware Prefill Tiling'
 description: 'Incorporate ArrayJit architectural lessons directly into llmopt without vendor runtime dependencies: replace 2,500 lines of fragile AST pattern matchers with algebraic epilogue inlining, and introduce bank-swizzled simdgroup_matrix staging for prefill GEMM.'
 tags: [decision, compiler, epilogue-inlining, tiling, simdgroup-matrix, prefill, zero-jit, msl, rocm]
-status: approved
+status: stable
 generated: { by: human:tung, at: '2026-08-31T22:42:00+07:00' }
 sources:
   - id: ocannl-prior-art

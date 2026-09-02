@@ -213,19 +213,20 @@ root `Ir` module-name collision.[^arrayjit-experiment] The implementation should
 port its proven assignment and quant-layout ideas into the current compiler
 seams.
 
-Legacy `pass_fuse_*.ml` rewrites and `metal.ml` kernels remain executable during
-the transition. Each is removed only after the unified model owns the same
-semantic coverage and the generated plan records the new path. The target
-architecture supersedes them; the decision does not claim they are already
-absent.
+The RMSNorm, RMSNorm-RoPE, ShortConv-SiLU, and gated-delta `pass_fuse_*.ml`
+modules are retired. Their covered kernels remain executable, but selection is
+derived from `Kernel_ir` assignment dependencies and serialized region
+bindings. Attention layout canonicalization composes logical-axis provenance
+through movement primitives instead of matching fixed node chains.
 
 # Current transition boundary
 
 The constructive implementation covers Linear-add, gated-Linear, raw RMSNorm,
-RMSNorm-RoPE, and ShortConv-SiLU regions. It selects these from primitive slot
-dependencies inside legal maximal components and extracts exact inner slices,
-including internal fan-out. GQA layout and gated-delta transformations remain
-the two operation-specific compiler paths.
+RMSNorm-RoPE, ShortConv-SiLU, and padded gated-delta regions. It selects these
+from primitive slot dependencies inside legal maximal components and extracts
+exact inner slices, including internal fan-out. GQA replication, token-major
+attention values, flattened attention outputs, and token-major gated-delta
+inputs use one typed axis-provenance model.
 
 The attempted `assignment_*_tactics` migration did exactly that and has been
 removed. Although `Kernel_ir` regions were formed and printed, backend code
@@ -241,8 +242,8 @@ Serving Schedule ABI 28 serialization and specialization, drive Metal tactic
 selection, and supply runtime buffers, dimensions, storage, activation, and
 result metadata. The latest Gemma bundle contains 337 regions per entrypoint:
 48 gated-Linear, 96 RMSNorm-RoPE, and 193 standalone RMSNorm regions. GQA
-layout and gated delta remain active legacy transformations.
-[^assignment-backed-execution][^constructive-rms-rope]
+layout canonicalization and gated delta no longer use active legacy semantic
+rewrites.[^assignment-backed-execution][^constructive-rms-rope]
 
 Gemma 4 12B next-token parity is established for the exact 37 prompt IDs and
 GGUF suppression set: both llama.cpp and the assignment-backed LLMOpt engine

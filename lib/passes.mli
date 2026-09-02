@@ -1,22 +1,14 @@
 module Linear_bias = Pass_fuse_linear_bias
-module Rms_norm = Pass_fuse_rms_norm
-module Rms_rope = Pass_fuse_rms_rope
-module Short_conv = Pass_fuse_short_conv
 module Short_conv_step_fused = Pass_fuse_short_conv_step
-module Gated_delta = Pass_fuse_gated_delta
 module Lm_head_argmax = Pass_fuse_lm_head_argmax
 module Co_schedule = Pass_co_schedule
 module Epilogues = Pass_fuse_epilogues
 
 val fuse_linear_bias : Ir.Graph.t -> Ir.Graph.t
-val fuse_rms_norm : Ir.Graph.t -> Ir.Graph.t
-val fuse_rms_rope : Ir.Graph.t -> Ir.Graph.t
-val fuse_short_conv : Ir.Graph.t -> Ir.Graph.t
 val discover_swiglu_ffn : Ir.Graph.t -> (Kernel_ir.t list, string) result
 val recover_scans : Ir.Graph.t -> Kernel_ir.Scan.t list
 val fuse_swiglu_ffn : Ir.Graph.t -> (Ir.Graph.t, string) result
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
-val fuse_gated_delta : Ir.Graph.t -> Ir.Graph.t
 val fuse_lm_head_argmax : Ir.Graph.t -> Ir.Graph.t
 val parameterize_token_id_output : Ir.Graph.t -> (Ir.Graph.t, string) result
 val fuse_epilogues : Ir.Graph.t -> Ir.Graph.t

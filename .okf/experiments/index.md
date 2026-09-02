@@ -140,3 +140,4 @@
 * [Gemma 4 MTP meta-graph lowering probe](exp-0136-gemma4-mtp-lowering-probe-2026-08-31.md) - native FX/Metal lowering inventory that records opaque target and assistant operations.
 * [MoltenVK and Metal streaming-copy comparison](exp-0137-vulkan-moltenvk-metal-2026-09-01.md) - portable Vulkan compute bootstrap and one paired M4 Pro run over identical 16/64/256 MiB working sets.
 * [Unified compiler Gemma 4 12B transition run](exp-0138-unified-compiler-gemma4-transition-2026-09-02.md) - one measured-profile AOT build and raw-token run recording zero unified lowerings, retained legacy fallback, command-queue structure, degenerate output, and exact llama.cpp deltas.
+* [Modeled layout and gated-delta pass retirement](exp-0143-modeled-layout-and-gated-delta-retirement-2026-09-03.md) - typed axis provenance, assignment-backed gated-delta execution, and removal of four ad hoc pass modules.

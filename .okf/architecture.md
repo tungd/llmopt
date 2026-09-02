@@ -166,24 +166,19 @@ The entry point is a PyTorch `torch.compile` custom backend.[^pytorch-backend-co
 
 The compiler pipeline ([`bin/fx_compile.ml`](file:///Users/tung/Projects/std23/llmopt/bin/fx_compile.ml)) reads `graph.llmopt` into high-level IR ([`lib/ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/ir.ml)) and executes an ordered pipeline of pure passes ([`lib/passes.ml`](file:///Users/tung/Projects/std23/llmopt/lib/passes.ml)):
 
-1. **Topology-Selected Gated Linear & SwiGLU Fusions ([`Pass_fuse_swiglu_ffn`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_swiglu_ffn.ml))**:
-   - Detects parallel gate and up projections sharing common inputs and feeding pointwise activation products (`silu(gate) * up`).
-   - Fuses them into unified semantic `Gated_linear` operations across `Q4_K`, `Q5_K`, `Q5_0`, `IQ4_XS`, and `W4A16` layouts without materializing intermediate gate/up activation buffers in DRAM.
-2. **Attention-Linked Rotary QK & RMSNorm-RoPE ([`Pass_fuse_rms_rope`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_rms_rope.ml))**:
-   - Matches paired query/key normalization, rotary trigonometric embeddings, and transposition branches linked to a common Multi-Head/Grouped-Query Attention node.
-   - Lowers them to unified layout-aware SIMD kernels (`llmopt_rms_rope_*`).
-3. **RMSNorm & Residual Epilogue Fusions ([`Pass_fuse_rms_norm`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_rms_norm.ml))**:
-   - Detects RMSNorm operations followed immediately by residual additions, folding them into `Rms_norm_add`.
-   - Selects whole-threadgroup wide-row execution tactics for low-row, high-dimension tensors.
-4. **Quantized Linear Residual Fusions ([`Pass_fuse_linear_bias`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_linear_bias.ml))**:
-   - Replaces biasless block-quantized `Linear` operations and their sole-consumer same-shape Float16 `Add` with `Linear_add`.
-   - Absorbs token-major value `transpose(1,2)` operations directly into the attention operand contract.
-5. **Relational Short-Convolution Fusions ([`Pass_fuse_short_conv`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_short_conv.ml))**:
-   - Fuses token-major transpose, depthwise 1D convolution, token state trim, SiLU activation, and output transposition into single `Short_conv_prefill` and `Short_conv_step` operations.
-6. **Stateful Scan & Recurrence Recovery ([`Pass_fuse_gated_delta`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_gated_delta.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml))**:
-   - Identifies unrolled recurrence loops and carried-state chains (e.g. Qwen's 63-step triangular recurrences and zero-state gated-delta expansions).
-   - Reconstructs semantic `Kernel_ir.Scan` regions with explicit induction variables and carried tensors, lowering them directly to SIMD Metal kernels.
-7. **DAG Concurrency & Antichain Co-Scheduling ([`Pass_co_schedule`](file:///Users/tung/Projects/std23/llmopt/lib/pass_co_schedule.ml))**:
+1. **Constructive assignment regions ([`lib/constructive_lowering.ml`](file:///Users/tung/Projects/std23/llmopt/lib/constructive_lowering.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml))**:
+   - Normalizes Linear, pointwise, reduction, movement, ShortConv, padding, batched-matmul, slice-update, and recurrence requests into one primitive assignment vocabulary.
+   - Uses dependency, fan-out, effect, and resource facts to form legal components, then extracts exact executable slices for gated Linear, Linear-add, RMSNorm, RMSNorm-RoPE, ShortConv-SiLU, and gated-delta tactics.
+2. **Typed layout provenance ([`lib/pass_fuse_linear_bias.ml`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_linear_bias.ml))**:
+   - Composes logical source axes, broadcast axes, and flattened axis products across movement primitives.
+   - Canonicalizes grouped-query head replication, token-major attention values and outputs, and token-major gated-delta inputs without fixed AST node sequences.
+3. **Stateful scan recovery ([`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml))**:
+   - Recovers explicit induction order and carried tensors from update dependencies, then represents triangular recurrence as a primitive operation.
+   - Padded zero-state gated-delta regions execute directly from their serialized assignment bindings.
+4. **Target-costed kernel selection ([`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml))**:
+   - Chooses shape, dtype, storage-layout, and target-specific tactics from the hardware-probe profile.
+   - Covered fused regions retain primitive source graphs and provide executable boundary values directly to Metal lowering and runtime dispatch.
+5. **DAG Concurrency & Antichain Co-Scheduling ([`Pass_co_schedule`](file:///Users/tung/Projects/std23/llmopt/lib/pass_co_schedule.ml))**:
    - Analyzes SSA dependency DAGs and computes ready antichains of independent operations (e.g., parallel Q/K/V projections or parallel layer components).
    - Groups independent kernels into concurrent execution stages bounded by `Ir.Op.Barrier_wait` and dispatched via `MTLDispatchTypeConcurrent`.
 
