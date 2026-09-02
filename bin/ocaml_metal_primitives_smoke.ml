@@ -36,6 +36,33 @@ let bytes_of_i32 values =
     values;
   bytes
 
+let q4_0_block ~scale nibbles =
+  if List.length nibbles <> 32 then fail "Q4_0 fixture block needs 32 nibbles";
+  let values = Array.of_list nibbles in
+  let bytes = Bytes.create 18 in
+  Bytes.set_uint16_le bytes 0 scale;
+  for lane = 0 to 15 do
+    let low = values.(lane) in
+    let high = values.(lane + 16) in
+    if low < 0 || low > 15 || high < 0 || high > 15 then
+      fail "Q4_0 fixture nibble is outside [0, 15]";
+    Bytes.set_uint8 bytes (lane + 2) (low lor (high lsl 4))
+  done;
+  bytes
+
+let concat_bytes chunks =
+  let total =
+    List.fold_left (fun length chunk -> length + Bytes.length chunk) 0 chunks
+  in
+  let result = Bytes.create total in
+  ignore
+    (List.fold_left
+       (fun offset chunk ->
+         Bytes.blit chunk 0 result offset (Bytes.length chunk);
+         offset + Bytes.length chunk)
+       0 chunks);
+  result
+
 let paged_pool () =
   let bytes = Bytes.make 132 '\000' in
   for index = 64 to 127 do
@@ -111,6 +138,25 @@ let () =
     Serving_package.of_file (Filename.concat root "package.llmopt") |> expect_ok
   in
   let runtime = Metal_runtime.load_package ~root package |> expect_ok in
+  let q4_gate_fixture =
+    List.init 240 (fun block ->
+        let scale = if block mod 3 = 0 then 0x3000 else 0x3400 in
+        let nibble index =
+          if block < 120 then (index + block) mod 16
+          else 15 - ((index + block) mod 16)
+        in
+        q4_0_block ~scale (List.init 32 nibble))
+    |> concat_bytes
+  in
+  let q4_up_fixture =
+    List.init 240 (fun block ->
+        let scale = if block mod 5 = 0 then 0x3800 else 0x3000 in
+        let nibble index =
+          if (index + block) mod 3 = 0 then 10 else 6
+        in
+        q4_0_block ~scale (List.init 32 nibble))
+    |> concat_bytes
+  in
   let inputs =
     [ input runtime "embedding_indices" (bytes_of_i64 [ 2; 0 ]);
           input runtime "embedding_weight"
@@ -133,6 +179,26 @@ let () =
             (bytes_of_u16 (List.init 128 (Fun.const 0)));
           input runtime "rms_rope_sine"
             (bytes_of_u16 (List.init 128 (Fun.const 0x3c00)));
+          input runtime "wide_rms_q_input"
+            (bytes_of_u16
+               (List.init 1024 (fun index ->
+                    match index mod 8 with
+                    | 0 -> 0x3c00
+                    | 1 -> 0xb800
+                    | 2 -> 0x3400
+                    | _ -> 0)));
+          input runtime "wide_rms_k_input"
+            (bytes_of_u16
+               (List.init 512 (fun index ->
+                    if index mod 4 = 0 then 0x4000 else 0x3800)));
+          input runtime "wide_rms_q_weight"
+            (bytes_of_f32 (List.init 256 (Fun.const 1.0)));
+          input runtime "wide_rms_k_weight"
+            (bytes_of_f32 (List.init 256 (Fun.const 1.0)));
+          input runtime "wide_rms_cosine"
+            (bytes_of_u16 (List.init 512 (Fun.const 0)));
+          input runtime "wide_rms_sine"
+            (bytes_of_u16 (List.init 512 (Fun.const 0x3c00)));
           input runtime "short_input"
             (bytes_of_u16
                [ 0x3c00; 0x4000; 0x4200; 0x4400; 0x4500; 0x4600; 0x4700;
@@ -161,13 +227,14 @@ let () =
           input runtime "attention_mask"
             (bytes_of_bool [ true; false; false; true ]);
           input runtime "wide_attention_query"
-            (bytes_of_u16 (List.init 512 (Fun.const 0)));
+            (bytes_of_u16 (List.init 1024 (Fun.const 0)));
           input runtime "wide_attention_key"
             (bytes_of_u16 (List.init 512 (Fun.const 0)));
           input runtime "wide_attention_value"
-            (bytes_of_u16 (List.init 512 (Fun.const 0x4200)));
+            (bytes_of_u16
+               (List.init 512 (fun index -> if index < 256 then 0x3c00 else 0x4200)));
           input runtime "wide_attention_mask"
-            (bytes_of_u16 [ 0; 0; 0; 0 ]);
+            (bytes_of_u16 [ 0; 0xfc00; 0; 0 ]);
           input runtime "paged_query" (bytes_of_u16 (List.init 64 (Fun.const 0)));
           input runtime "paged_current_key"
             (bytes_of_u16 (List.init 64 (Fun.const 0)));
@@ -252,6 +319,16 @@ let () =
             (bytes_of_u16
                [ 0x3c00; 0x0000; 0x4000; 0xbc00; 0x0000; 0x3c00; 0xbc00;
                  0x4000; 0x4000; 0xc000; 0x0000; 0x3c00 ]);
+          input runtime "q4_gated_input"
+            (bytes_of_u16
+               (List.init (37 * 3840) (fun index ->
+                    match index mod 4 with
+                    | 0 -> 0x3c00
+                    | 1 -> 0xb800
+                    | 2 -> 0x3400
+                    | _ -> 0xbc00)));
+          input runtime "q4_gate_weight" q4_gate_fixture;
+          input runtime "q4_up_weight" q4_up_fixture;
           input runtime "matmul_lhs" (bytes_of_f32 [ 1.; 2.; 3.; 4.; 5.; 6. ]);
           input runtime "matmul_rhs"
             (bytes_of_f32 [ 1.; 2.; 0.; 1.; -1.; 0. ]) ]
@@ -281,6 +358,16 @@ let () =
     fail "fused RMSNorm-RoPE differs byte-for-byte from its materialized GPU chain"
   );
   expect_rms_rope_values rms_rope_reference;
+  let expect_fused_pair reference_name fused_name =
+    let reference = output execution reference_name in
+    let fused = output execution fused_name in
+    if not (Bytes.equal reference fused) then
+      fail
+        (Printf.sprintf "%s differs byte-for-byte from %s" fused_name
+           reference_name)
+  in
+  expect_fused_pair "wide_rms_q_reference" "wide_rms_q_fused";
+  expect_fused_pair "wide_rms_k_reference" "wide_rms_k_fused";
   expect_bytes execution "short_conv"
     (bytes_of_u16
        [ 0xbc00; 0xc000; 0xc000; 0xc000; 0x4200; 0x4400; 0x4100; 0x4800;
@@ -295,7 +382,8 @@ let () =
   expect_bytes execution "attention"
     (bytes_of_u16 [ 0x4900; 0; 0; 0x4d00 ]);
   expect_bytes execution "wide_attention"
-    (bytes_of_u16 (List.init 512 (Fun.const 0x4200)));
+    (bytes_of_u16
+       (List.init 1024 (fun index -> if index < 512 then 0x3c00 else 0x4000)));
   expect_bytes execution "paged_attention"
     (bytes_of_u16 (List.init 64 (Fun.const 0x4200)));
   expect_bytes execution "paged_gqa3_attention"
@@ -368,6 +456,13 @@ let () =
     (bytes_of_f32 [ 8.; 10.; 12.; 15. ]);
   expect_bytes execution "linear_f16"
     (bytes_of_u16 [ 0x4200; 0x4700; 0x4000; 0x3c00; 0x4200; 0x4200 ]);
+  let q4_gated_reference = output execution "q4_gated_reference" in
+  let q4_gated_fused = output execution "q4_gated_fused" in
+  if not (Bytes.equal q4_gated_fused q4_gated_reference) then
+    fail
+      (Printf.sprintf
+         "Q4_0 GELU gated Linear differs byte-for-byte: reference=%s fused=%s"
+         (hex q4_gated_reference) (hex q4_gated_fused));
   expect_bytes execution "matmul" (bytes_of_f32 [ -2.; 4.; -2.; 13. ]);
   let kernels = Metal_runtime.Execution.kernels execution in
   if not (List.mem "llmopt_batched_matmul_f32_simd8" kernels) then

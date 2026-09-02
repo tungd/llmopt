@@ -171,6 +171,55 @@ let graph () =
     [ 1; 2; 2; 64 ] Ir.Dtype.Float16
   |> output graph "rms_rope";
 
+  let wide_rms_q_input =
+    input graph "wide_rms_q_input" [ 1; 2; 2; 256 ] Ir.Dtype.Float16
+  in
+  let wide_rms_k_input =
+    input graph "wide_rms_k_input" [ 1; 2; 1; 256 ] Ir.Dtype.Float16
+  in
+  let wide_rms_q_weight =
+    input graph "wide_rms_q_weight" [ 256 ] Ir.Dtype.Float32
+  in
+  let wide_rms_k_weight =
+    input graph "wide_rms_k_weight" [ 256 ] Ir.Dtype.Float32
+  in
+  let wide_rms_cosine =
+    input graph "wide_rms_cosine" [ 1; 1; 2; 256 ] Ir.Dtype.Float16
+  in
+  let wide_rms_sine =
+    input graph "wide_rms_sine" [ 1; 1; 2; 256 ] Ir.Dtype.Float16
+  in
+  let wide_rms_rope =
+    expect_ok (Ir.Rms_rope.create ~epsilon:1e-6 ~half_dimension:128)
+  in
+  command graph (Ir.Op.Rms_rope wide_rms_rope)
+    [ wide_rms_q_input; wide_rms_q_weight; wide_rms_cosine; wide_rms_sine ]
+    [ 1; 2; 2; 256 ] Ir.Dtype.Float16
+  |> output graph "wide_rms_q_reference";
+  command graph (Ir.Op.Rms_rope wide_rms_rope)
+    [ wide_rms_k_input; wide_rms_k_weight; wide_rms_cosine; wide_rms_sine ]
+    [ 1; 1; 2; 256 ] Ir.Dtype.Float16
+  |> output graph "wide_rms_k_reference";
+  let wide_rms_q_fused =
+    Ir.Graph.fresh_tensor_value graph ~shape:(tensor [ 1; 2; 2; 256 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let wide_rms_k_fused =
+    Ir.Graph.fresh_tensor_value graph ~shape:(tensor [ 1; 1; 2; 256 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append graph
+    ~op:
+      (Ir.Op.Rms_rope_qk
+         { q_heads = 2; k_heads = 1; width = 256; half_dimension = 128;
+           epsilon = 1e-6; extra_outputs = [ wide_rms_k_fused ] })
+    ~inputs:
+      [ wide_rms_q_input; wide_rms_q_weight; wide_rms_k_input;
+        wide_rms_k_weight; wide_rms_cosine; wide_rms_sine ]
+    ~output:(Some wide_rms_q_fused);
+  output graph "wide_rms_q_fused" wide_rms_q_fused;
+  output graph "wide_rms_k_fused" wide_rms_k_fused;
+
   let short_input = input graph "short_input" [ 1; 2; 4 ] Ir.Dtype.Float16 in
   let short_weight = input graph "short_weight" [ 2; 1; 3 ] Ir.Dtype.Float16 in
   let short_conv =
@@ -227,17 +276,21 @@ let graph () =
   |> output graph "attention";
 
   let wide_attention_input name dtype =
-    input graph name [ 1; 1; 2; 256 ] dtype
+    input graph name [ 1; 2; 2; 256 ] dtype
   in
   let wide_query = wide_attention_input "wide_attention_query" Ir.Dtype.Float16 in
-  let wide_key = wide_attention_input "wide_attention_key" Ir.Dtype.Float16 in
-  let wide_value = wide_attention_input "wide_attention_value" Ir.Dtype.Float16 in
+  let wide_key =
+    input graph "wide_attention_key" [ 1; 1; 2; 256 ] Ir.Dtype.Float16
+  in
+  let wide_value =
+    input graph "wide_attention_value" [ 1; 1; 2; 256 ] Ir.Dtype.Float16
+  in
   let wide_mask =
     input graph "wide_attention_mask" [ 1; 1; 2; 2 ] Ir.Dtype.Float16
   in
   primitive graph (Ir.Primitive.Attention attention)
     [ wide_query; wide_key; wide_value; wide_mask ]
-    [ 1; 1; 2; 256 ] Ir.Dtype.Float16
+    [ 1; 2; 512 ] Ir.Dtype.Float16
   |> output graph "wide_attention";
 
   let paged_query =
@@ -585,6 +638,43 @@ let graph () =
   command graph (Ir.Op.Linear { m = 2; n = 3; k = 4; bias = false })
     [ linear_f16_input; linear_f16_weight ] [ 2; 3 ] Ir.Dtype.Float16
   |> output graph "linear_f16";
+
+  let q4_gated_input =
+    input graph "q4_gated_input" [ 37; 3840 ] Ir.Dtype.Float16
+  in
+  let q4_gate_weight =
+    input graph "q4_gate_weight" [ 2; 3840 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_up_weight =
+    input graph "q4_up_weight" [ 2; 3840 ]
+      (Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_gate =
+    command graph (Ir.Op.Linear { m = 37; n = 2; k = 3840; bias = false })
+      [ q4_gated_input; q4_gate_weight ] [ 37; 2 ] Ir.Dtype.Float16
+  in
+  let q4_up =
+    command graph (Ir.Op.Linear { m = 37; n = 2; k = 3840; bias = false })
+      [ q4_gated_input; q4_up_weight ] [ 37; 2 ] Ir.Dtype.Float16
+  in
+  let q4_gelu =
+    command graph Ir.Op.Gelu [ q4_gate ] [ 37; 2 ] Ir.Dtype.Float16
+  in
+  primitive graph
+    (Ir.Primitive.Pointwise
+       (Ir.Pointwise.Binary
+          ( Ir.Pointwise.Mul,
+            Ir.Pointwise.Tensor q4_gelu,
+            Ir.Pointwise.Tensor q4_up )))
+    [ q4_gelu; q4_up ] [ 37; 2 ] Ir.Dtype.Float16
+  |> output graph "q4_gated_reference";
+  command graph
+    (Ir.Op.Gated_linear
+       { m = 37; n = 2; k = 3840; activation = Ir.Gated_activation.Gelu })
+    [ q4_gated_input; q4_gate_weight; q4_up_weight ] [ 37; 2 ]
+    Ir.Dtype.Float16
+  |> output graph "q4_gated_fused";
 
   let lhs = input graph "matmul_lhs" [ 2; 3 ] Ir.Dtype.Float32 in
   let rhs = input graph "matmul_rhs" [ 3; 2 ] Ir.Dtype.Float32 in
