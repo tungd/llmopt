@@ -1,0 +1,56 @@
+{
+  "kind": "gemma4-f32-reference-constant-probe",
+  "date": "2026-09-02",
+  "working_tree_base": "1fc0633f23fd130d78db31350f5837e2f7a8c620",
+  "device": "Apple M4 Pro",
+  "model": {
+    "gguf": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+    "sha256": "90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370",
+    "prompt_token_count": 37
+  },
+  "constant_precision": {
+    "previous_archive_dtype": "F16",
+    "corrected_archive_dtype": "F32",
+    "embed_scale": "sqrt(hidden_size)",
+    "full_attention_inv_freq": {
+      "elements": 256,
+      "changed_by_f16_roundtrip": 63,
+      "max_abs_roundtrip_delta": 0.00023865699768066406
+    },
+    "sliding_attention_inv_freq": {
+      "elements": 128,
+      "changed_by_f16_roundtrip": 127,
+      "max_abs_roundtrip_delta": 0.00024169683456420898
+    }
+  },
+  "fresh_artifact": {
+    "path": "_artifacts/gemma4-12b-qat-f32-constants-2026-09-02",
+    "prefill": {
+      "fx_nodes": 5895,
+      "ir_commands": 3252,
+      "kernels": 110,
+      "opaque_commands": 0
+    },
+    "decode": {
+      "fx_nodes": 6087,
+      "ir_commands": 3492,
+      "kernels": 109,
+      "opaque_commands": 0
+    },
+    "model_program_abi": 6,
+    "package_checks": "passed"
+  },
+  "single_generation_probe": {
+    "max_new_tokens": 1,
+    "llmopt_raw_token_id": 258882,
+    "llmopt_ttft_seconds": 8.429582,
+    "llama_cpp_generated_token_id": 100,
+    "raw_token_id_equal": false
+  },
+  "generation_policy": {
+    "gguf_suppress_token_ids": [258883, 258882],
+    "llmopt_applied_suppression": false,
+    "interpretation": "the observed first generated-token mismatch does not isolate a full-forward logit mismatch because llama.cpp suppresses the LLMOpt raw argmax token"
+  },
+  "result_boundary": "F32 constant preservation is implemented and the fresh packages validate; the one raw-token retry remains unequal, while matched post-suppression argmax and raw-logit parity were not measured"
+}

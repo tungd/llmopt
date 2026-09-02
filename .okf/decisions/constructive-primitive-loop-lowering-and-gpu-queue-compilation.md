@@ -5,7 +5,7 @@ description: 'Replace ad hoc compiler pass matching with one modeled assignment,
 tags: [decision, compiler, assignment-ir, fusion, antichain, dependency-analysis, cost-model, block-quantization, gpu-command-queue, metal, cuda, rocm]
 status: stable
 decision_status: approved
-generated: { by: codex/gpt-5.6, at: '2026-09-01T23:22:30+07:00' }
+generated: { by: codex/gpt-5.6, at: '2026-09-02T12:53:59+07:00' }
 verified: { by: human:tung, at: '2026-09-01T23:22:30+07:00' }
 sources:
   - id: ocannl-prior-art
@@ -29,6 +29,9 @@ sources:
   - id: gemma-transition
     resource: /decisions/gemma-12b-qat-mtp-speculative-benchmark.md
     title: Gemma 4 12B QAT and MTP comparison protocol
+  - id: gemma-repair
+    resource: /experiments/exp-0139-unified-compiler-gemma4-repair-2026-09-02.md
+    title: Gemma compiler repair and corrected reference boundary
 ---
 
 # Decision
@@ -207,6 +210,30 @@ semantic coverage and the generated plan records the new path. The target
 architecture supersedes them; the decision does not claim they are already
 absent.
 
+# Outstanding transition gaps
+
+The current constructive implementation is narrower than this decision. Its
+replacement kinds cover Linear-add and gated-Linear regions, while named
+RMSNorm/RoPE, ShortConv/SiLU, GQA layout, and gated-delta transformations still
+run through operation-specific passes. Extending the implementation means
+emitting those graphs from pointwise, reduction, index, movement, state, and
+effect assignments selected by the shared dependency and cost model. Adding a
+new named constructive matcher for each family would preserve the ad hoc
+architecture under a different module.
+
+Gemma 4 12B generated-token parity is not established. The builder's FP16
+rounding of embedding and rotary constants has been corrected, but the only
+post-correction raw argmax is token `258882`, which the GGUF instructs
+llama.cpp to suppress. A matched-policy argmax or raw-logit comparison is the
+diagnostic seam that can distinguish generation policy from arithmetic drift;
+the prior first-token observation cannot do so by itself.[^gemma-repair]
+
+Full-model code generation currently targets Metal. The repository's Vulkan
+work is experimental primitive-backend evidence, not a second full-model
+serving path, and CUDA/HIP full-model backends are not implemented. Multi-backend
+support therefore remains a backend-lowering and runtime-portability gap after
+the assignment model becomes backend-neutral.
+
 # Implementation sequence
 
 1. Define the constructive assignment-region and block-schema interfaces in the
@@ -261,3 +288,4 @@ Their experiments and rationale remain historical evidence.[^constructive-loweri
 [^dag-co-scheduling]: DAG concurrency analysis and co-scheduling decision.
 [^gguf-quant]: GGUF and Unsloth Dynamic quantization contract.
 [^gemma-transition]: Gemma 4 12B QAT and MTP comparison protocol.
+[^gemma-repair]: Gemma compiler repair and corrected reference boundary.

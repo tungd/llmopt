@@ -1,10 +1,10 @@
 ---
 type: Experiment
 title: 'Unified compiler Gemma 4 repair and queue-collapse diagnosis'
-description: 'Records constructive Q4_0 GELU lowering, unambiguous legacy accounting, AOT queue deltas, the Metal ICB collapse isolation and direct-command repair, widened native fixtures, and the remaining full-model reference boundary.'
+description: 'Records constructive Q4_0 GELU lowering, unambiguous legacy accounting, AOT queue deltas, the Metal ICB collapse isolation and direct-command repair, widened native fixtures, and the corrected Gemma generation-policy boundary.'
 tags: [experiment, gemma-4, unified-compiler, constructive-lowering, q4-0, gelu, aot-command-queue, metal, icb, diagnosis]
 status: stable
-generated: { by: codex/gpt-5.6, at: '2026-09-02T10:45:41+07:00' }
+generated: { by: codex/gpt-5.6, at: '2026-09-02T12:53:59+07:00' }
 sources:
   - id: repair-receipt
     resource: /bench/results/uoc-gemma4-repair-2026-09-02.json
@@ -15,6 +15,9 @@ sources:
   - id: decision
     resource: /decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md
     title: Constructive assignment lowering and AOT GPU command-queue decision
+  - id: f32-constant-probe
+    resource: /bench/results/gemma4-f32-reference-constant-probe-2026-09-02.json
+    title: F32 embedding and rotary constant repair plus one-token diagnostic
 ---
 
 # Scope
@@ -95,18 +98,37 @@ dequantization.
 
 # Reference boundary
 
-For the exact 37 prompt IDs, the same-GGUF llama.cpp greedy reference begins
-`100,45518,107,14947,135383`. The transition LLMOpt stream begins
+For the exact 37 prompt IDs, the same-GGUF llama.cpp generated stream begins
+`100,45518,107,14947,135383`. The transition LLMOpt raw stream begins
 `258882,86559,43208,146894,141156`, and the repaired fused artifact begins
-`505,98677,236888,207451,236779`; neither matches at token 1. For the single
-BOS token, both runtimes select `236749`, which localizes the observed
-divergence to the multi-token path rather than the archive, embedding, or
-single-row feed-forward path.
+`505,98677,236888,207451,236779`. This comparison originally treated token 1
+as a full-forward mismatch, but the GGUF declares
+`tokenizer.ggml.suppress_tokens = [258883, 258882]` and llama.cpp applies that
+model policy while LLMOpt's compiled greedy path does not. The first transition
+token is therefore not a matched-policy comparison.
 
-Evidence: the ICB-specific zero-token collapse is fixed and the widened fused
-primitives match their materialized chains; assumption: the remaining
-multi-token full-model divergence is independent of the queue repair, because
-it is already present before the repaired fusion artifact and has not been
-localized to one primitive.
+The Gemma builder also rounded `sqrt(hidden_size)`, full-attention inverse
+frequencies, and sliding-attention inverse frequencies to FP16. Their archive
+bindings now preserve the source constants as FP32, and the captured rotary
+paths consume the inverse frequencies as FP32. The embedding graph still casts
+its scalar to FP16 before multiplying the FP16 lookup result, so this change
+does not establish llama.cpp embedding-arithmetic parity. A fresh build produced
+valid zero-opaque prefill/decode packages and one controlled 37-token probe
+returned raw LLMOpt token `258882` in `8.429582 s`, versus generated llama.cpp
+token `100`; `258882` is one of the two suppressed GGUF tokens. The F32
+correction therefore did not establish generated-token parity, and the next
+unsuppressed argmax was not captured.
+
+For a single BOS token, both prior runs selected `236749`. That observation
+does not exclude embedding, normalization, RoPE, attention, or feed-forward
+differences on the 37-token path; single-token attention has no competing
+historical keys. The configured attention scale is already `1.0`, and the GGUF
+full/sliding RoPE bases are `1,000,000` and `10,000`, matching the captured
+Gemma configuration.
+
+Evidence: the builder had an FP16 source-constant mismatch and the observed raw
+token `258882` is suppressed by llama.cpp; assumption: attributing the remaining
+generated-token difference to arithmetic drift is unproven until a
+matched-policy top-k or logit comparison isolates it.
 
 This experiment makes no full-model token-parity or matched-throughput claim.

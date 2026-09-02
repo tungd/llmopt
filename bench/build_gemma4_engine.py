@@ -72,8 +72,54 @@ def align(value: int) -> int:
     return (value + ALIGNMENT - 1) // ALIGNMENT * ALIGNMENT
 
 
-def f16_bytes(tensor: torch.Tensor) -> bytes:
-    return tensor.detach().to(dtype=torch.float16, device="cpu").contiguous().numpy().tobytes()
+def f32_bytes(tensor: torch.Tensor) -> bytes:
+    return tensor.detach().to(dtype=torch.float32, device="cpu").contiguous().numpy().tobytes()
+
+
+def gemma_reference_constants(config: Any) -> tuple[TensorSpec, ...]:
+    """Create the scalar/rotary constants with llama.cpp's source precision."""
+
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextRotaryEmbedding
+
+    rotary = Gemma4TextRotaryEmbedding(config, device="cpu")
+    return (
+        TensorSpec(
+            name=SPECIAL_EMBED_SCALE,
+            dtype_tag=0,
+            dtype_name="F32",
+            shape=(),
+            byte_length=4,
+            contents=struct.pack("<f", math.sqrt(config.hidden_size)),
+        ),
+        TensorSpec(
+            name=SPECIAL_FULL_INV_FREQ,
+            dtype_tag=0,
+            dtype_name="F32",
+            shape=tuple(rotary.full_attention_inv_freq.shape),
+            byte_length=4 * rotary.full_attention_inv_freq.numel(),
+            contents=f32_bytes(rotary.full_attention_inv_freq),
+        ),
+        TensorSpec(
+            name=SPECIAL_SLIDING_INV_FREQ,
+            dtype_tag=0,
+            dtype_name="F32",
+            shape=tuple(rotary.sliding_attention_inv_freq.shape),
+            byte_length=4 * rotary.sliding_attention_inv_freq.numel(),
+            contents=f32_bytes(rotary.sliding_attention_inv_freq),
+        ),
+    )
+
+
+def preserve_reference_constant_precision(model: Any) -> None:
+    """Undo the model-wide FP16 cast for constants evaluated in FP32."""
+
+    embedding = model.model.embed_tokens
+    embedding.embed_scale = embedding.embed_scale.float()
+    rotary = model.model.rotary_emb
+    for layer_type in rotary.layer_types:
+        for suffix in ("inv_freq", "original_inv_freq"):
+            name = f"{layer_type}_{suffix}"
+            setattr(rotary, name, getattr(rotary, name).float())
 
 
 def write_augmented_archive(source: Path, destination: Path, config: Any) -> None:
@@ -94,33 +140,7 @@ def write_augmented_archive(source: Path, destination: Path, config: Any) -> Non
             )
         )
 
-    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextRotaryEmbedding
-
-    rotary = Gemma4TextRotaryEmbedding(config, device="cpu").to(dtype=torch.float16)
-    constants = (
-        (SPECIAL_EMBED_SCALE, (), struct.pack("<e", math.sqrt(config.hidden_size))),
-        (
-            SPECIAL_FULL_INV_FREQ,
-            tuple(rotary.full_attention_inv_freq.shape),
-            f16_bytes(rotary.full_attention_inv_freq),
-        ),
-        (
-            SPECIAL_SLIDING_INV_FREQ,
-            tuple(rotary.sliding_attention_inv_freq.shape),
-            f16_bytes(rotary.sliding_attention_inv_freq),
-        ),
-    )
-    for name, shape, contents in constants:
-        specs.append(
-            TensorSpec(
-                name=name,
-                dtype_tag=1,
-                dtype_name="F16",
-                shape=shape,
-                byte_length=len(contents),
-                contents=contents,
-            )
-        )
+    specs.extend(gemma_reference_constants(config))
 
     specs.sort(key=lambda spec: spec.name)
     index_bytes = PREFIX.size + sum(
@@ -185,11 +205,11 @@ def semantic_runtime_name(name: str) -> str:
 def external_binding(key: str, inventory: dict[str, Any]) -> ExternalTensor:
     normalized = key.removeprefix("model.") if key.startswith("model.model.") else key
     if normalized == "model.embed_tokens.embed_scale":
-        return ExternalTensor(SPECIAL_EMBED_SCALE, "float16", ())
+        return ExternalTensor(SPECIAL_EMBED_SCALE, "float32", ())
     if normalized == "model.rotary_emb.full_attention_inv_freq":
-        return ExternalTensor(SPECIAL_FULL_INV_FREQ, "float16", (256,))
+        return ExternalTensor(SPECIAL_FULL_INV_FREQ, "float32", (256,))
     if normalized == "model.rotary_emb.sliding_attention_inv_freq":
-        return ExternalTensor(SPECIAL_SLIDING_INV_FREQ, "float16", (128,))
+        return ExternalTensor(SPECIAL_SLIDING_INV_FREQ, "float32", (128,))
     gguf_name = captured_to_gguf(normalized, assistant=False)
     tensor = inventory[gguf_name]
     dtype_name = {
@@ -282,6 +302,7 @@ def main() -> None:
 
     with torch.device("meta"):
         target = Gemma4ForCausalLM(config).to(dtype=torch.float16)
+    preserve_reference_constant_precision(target)
     target.eval()
     prefill = capture(
         _target_prefill_wrapper_type()(target),

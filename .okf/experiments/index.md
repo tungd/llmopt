@@ -1,6 +1,6 @@
 # Experiments
 
-* [Unified compiler Gemma 4 repair and queue-collapse diagnosis](exp-0139-unified-compiler-gemma4-repair-2026-09-02.md) - constructive Q4_0/GELU coverage, receipt schema 2, AOT queue deltas, direct-command repair, widened native fixtures, and the remaining exact-reference boundary.
+* [Unified compiler Gemma 4 repair and queue-collapse diagnosis](exp-0139-unified-compiler-gemma4-repair-2026-09-02.md) - constructive Q4_0/GELU coverage, AOT queue deltas, direct-command repair, widened native fixtures, F32 Gemma constants, and the unmatched generation-policy boundary.
 
 * [FX linear smoke](exp-0001-fx-linear.md) - first Python-to-OCaml code-generation probe.
 * [LFM2.5 naive MPS execution](exp-0002-lfm25-mps.md) - complete model forward against eager MPS.

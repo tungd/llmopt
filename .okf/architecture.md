@@ -285,7 +285,9 @@ The compiler is validated against a multi-architecture probe matrix without embe
 | **Gemma-4-E2B-it** | Deep Transformer (Wide RMSNorm, Gated MLP, h256 Attention) | `UD-Q4_K_XL` | **19.4005 ms** | 18.8907 ms | **1.0270x** | Parity achieved; wide-row RMSNorm, rotary QK, Split-K parallel reductions. |
 | **LFM2.5-350M** | Hybrid Conv / Attention | `W4A16 / KVQ8` | **18.2 ms** (TTFT Turn 1) | 19.1 ms | **0.9529x** | Full serving probe with true suffix prefill and prefix retention. |
 
-All benchmark runs adhere strictly to the target performance envelope ($0.90\text{x} \le \frac{\text{LLMOpt}}{\text{llama.cpp}} \le 1.10\text{x}$) while guaranteeing bit-exact deterministic execution and preserving reference argmax token predictions.[^slice-31-receipt]
+These rows are scoped observations from their cited probe artifacts. Performance
+ratios, deterministic replay, byte equality, and reference argmax parity remain
+separate claims; no row generalizes those properties to every benchmark run.[^slice-31-receipt]
 
 ---
 
