@@ -5,6 +5,8 @@ type options = {
   prompt_tokens : int array;
   max_new_tokens : int;
   top_k_logits : int option;
+  dump_diagnostic_output : (string * string) option;
+  dump_diagnostic_directory : string option;
   token_capacity : int;
   checkpoint_capacity : int;
 }
@@ -13,7 +15,9 @@ let usage () =
   prerr_endline
     "usage: llmopt-bench-tokens --model-dir <dir> --prompt-token-ids <csv> \
      (--max-new-tokens <count> | --top-k-logits <count>) [--token-capacity <count>] \
-     [--checkpoint-capacity <count>]";
+     [--checkpoint-capacity <count>] \
+     [--dump-diagnostic-output <name> <path>] \
+     [--dump-diagnostic-directory <path>]";
   exit 64
 
 let positive value =
@@ -43,6 +47,11 @@ let arguments () =
         loop { options with max_new_tokens = positive value } rest
     | "--top-k-logits" :: value :: rest ->
         loop { options with top_k_logits = Some (positive value) } rest
+    | "--dump-diagnostic-output" :: name :: path :: rest
+      when String.starts_with ~prefix:"diagnostic." name ->
+        loop { options with dump_diagnostic_output = Some (name, path) } rest
+    | "--dump-diagnostic-directory" :: path :: rest ->
+        loop { options with dump_diagnostic_directory = Some path } rest
     | "--token-capacity" :: value :: rest ->
         loop { options with token_capacity = positive value } rest
     | "--checkpoint-capacity" :: value :: rest ->
@@ -57,6 +66,8 @@ let arguments () =
             prompt_tokens = [||];
             max_new_tokens = 0;
             top_k_logits = None;
+            dump_diagnostic_output = None;
+            dump_diagnostic_directory = None;
             token_capacity = 4_096;
             checkpoint_capacity = 512 }
           rest
@@ -65,6 +76,10 @@ let arguments () =
         options.model_dir = "" || Array.length options.prompt_tokens = 0
         || (options.max_new_tokens = 0 && Option.is_none options.top_k_logits)
         || (options.max_new_tokens > 0 && Option.is_some options.top_k_logits)
+        || (Option.is_some options.dump_diagnostic_output
+           && Option.is_none options.top_k_logits)
+        || (Option.is_some options.dump_diagnostic_directory
+           && Option.is_none options.top_k_logits)
       then usage ()
       else options
   | [] -> usage ()
@@ -77,6 +92,15 @@ let ranked values =
   |> List.map (fun (token_id, logit) ->
          Printf.sprintf "%d:%.9g" token_id logit)
   |> String.concat ","
+
+let write_file path contents =
+  try
+    let channel = open_out_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr channel)
+      (fun () -> output_bytes channel contents);
+    Ok ()
+  with Sys_error message -> Error message
 
 let run () =
   let options = arguments () in
@@ -109,6 +133,34 @@ let run () =
       in
       let* policy =
         Sampling.Float16_logits.top ~count ~vocabulary ~suppress_token_ids bytes
+      in
+      let* () =
+        match options.dump_diagnostic_output with
+        | None -> Ok ()
+        | Some (name, path) ->
+            (match Serving_engine.Step.diagnostic step ~name with
+            | None -> Error ("model did not expose diagnostic output " ^ name)
+            | Some output ->
+                let* contents = Metal_runtime.Buffer.contents output in
+                write_file path contents)
+      in
+      let* () =
+        match options.dump_diagnostic_directory with
+        | None -> Ok ()
+        | Some directory when Sys.file_exists directory && Sys.is_directory directory ->
+            Serving_engine.Step.diagnostic_names step
+            |> List.fold_left
+                 (fun result name ->
+                   let* () = result in
+                   match Serving_engine.Step.diagnostic step ~name with
+                   | None -> Error ("model lost diagnostic output " ^ name)
+                   | Some output ->
+                       let* contents = Metal_runtime.Buffer.contents output in
+                       write_file (Filename.concat directory (name ^ ".bin"))
+                         contents)
+                 (Ok ())
+        | Some directory ->
+            Error ("diagnostic output directory does not exist: " ^ directory)
       in
       Printf.printf "load-seconds: %.6f\n" load_seconds;
       Printf.printf "probe-seconds: %.6f\n"

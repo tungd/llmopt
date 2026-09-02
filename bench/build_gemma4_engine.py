@@ -241,7 +241,86 @@ def replace_names(value: Any, names: dict[str, str]) -> Any:
     return value
 
 
-def target_graph(captured: CapturedFx, inventory: dict[str, Any]) -> dict[str, Any]:
+def retain_diagnostic_outputs(
+    manifest: dict[str, Any], outputs: dict[str, str]
+) -> dict[str, Any]:
+    """Retain existing FX values under reserved diagnostic output names."""
+
+    if not outputs:
+        return manifest
+    diagnostic_names = list(outputs.values())
+    if len(set(diagnostic_names)) != len(diagnostic_names):
+        raise ValueError("diagnostic output names must be unique")
+    if any(not name.startswith("diagnostic.") for name in diagnostic_names):
+        raise ValueError("diagnostic output names must use the diagnostic. namespace")
+    existing_names = {node["name"] for node in manifest["nodes"]}
+    missing = sorted(set(outputs) - existing_names)
+    if missing:
+        raise ValueError(f"diagnostic source values are missing: {missing}")
+    if set(diagnostic_names) & set(manifest["outputs"]):
+        raise ValueError("diagnostic output is already present")
+    manifest = replace_names(manifest, outputs)
+    manifest["outputs"] = [*manifest["outputs"], *diagnostic_names]
+    output_node = next(node for node in manifest["nodes"] if node["op"] == "output")
+    output_node["inputs"] = [*output_node["inputs"], *diagnostic_names]
+    output_node["arguments"] = {
+        "args": [
+            {
+                "kind": "tuple",
+                "items": [
+                    {"kind": "node", "name": name}
+                    for name in output_node["inputs"]
+                ],
+            }
+        ],
+        "kwargs": [],
+    }
+    return manifest
+
+
+def retain_diagnostic_hidden_output(
+    manifest: dict[str, Any], hidden_name: str
+) -> dict[str, Any]:
+    """Retain the model's final normalized hidden state as a named probe output."""
+
+    return retain_diagnostic_outputs(
+        manifest, {hidden_name: "diagnostic.hidden"}
+    )
+
+
+def retain_layer_zero_diagnostic_outputs(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Retain arithmetic boundaries from the first Gemma transformer block."""
+
+    return retain_diagnostic_outputs(
+        manifest,
+        {
+            "hidden_states": "diagnostic.layer0.attn_norm",
+            "linear": "diagnostic.layer0.q",
+            "query_states_1": "diagnostic.layer0.q_norm",
+            "query_states_2": "diagnostic.layer0.q_pos",
+            "linear_1": "diagnostic.layer0.k",
+            "linear_2": "diagnostic.layer0.v",
+            "key_states_1": "diagnostic.layer0.k_norm",
+            "value_states_1": "diagnostic.layer0.v_norm",
+            "key_states_2": "diagnostic.layer0.k_pos",
+            "attn_output_2": "diagnostic.layer0.attn_pre_o",
+            "hidden_states_3": "diagnostic.layer0.attn_post_norm",
+            "hidden_states_4": "diagnostic.layer0.attn_out",
+            "hidden_states_5": "diagnostic.layer0.ffn_norm",
+            "down_proj": "diagnostic.layer0.ffn_out",
+            "hidden_states_6": "diagnostic.layer0.ffn_post_norm",
+            "hidden_states_7": "diagnostic.layer0.pre_scale",
+        },
+    )
+
+
+def target_graph(
+    captured: CapturedFx,
+    inventory: dict[str, Any],
+    *,
+    retain_hidden_output: bool = False,
+    retain_layer_zero_outputs: bool = False,
+) -> dict[str, Any]:
     rebound = bind_external_tensors(
         captured,
         {key: external_binding(key, inventory) for key in captured.tensors},
@@ -273,9 +352,8 @@ def target_graph(captured: CapturedFx, inventory: dict[str, Any]) -> dict[str, A
     )
     if set(output_names.values()) != {"logits", *cache_outputs}:
         raise ValueError("target cache output names do not cover all 48 layers")
-    manifest = replace_names(
-        manifest, {**runtime_names, **output_names}
-    )
+    hidden_name = raw_outputs[1]
+    manifest = replace_names(manifest, {**runtime_names, **output_names})
     retained = ["logits", *cache_outputs]
     manifest["outputs"] = retained
     output_node = next(node for node in manifest["nodes"] if node["op"] == "output")
@@ -284,6 +362,10 @@ def target_graph(captured: CapturedFx, inventory: dict[str, Any]) -> dict[str, A
         "args": [{"kind": "tuple", "items": [{"kind": "node", "name": name} for name in retained]}],
         "kwargs": [],
     }
+    if retain_hidden_output:
+        manifest = retain_diagnostic_hidden_output(manifest, hidden_name)
+    if retain_layer_zero_outputs:
+        manifest = retain_layer_zero_diagnostic_outputs(manifest)
     return manifest
 
 
@@ -292,6 +374,16 @@ def main() -> None:
     parser.add_argument("--target-gguf", required=True, type=Path)
     parser.add_argument("--target-profile", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--retain-hidden-output",
+        action="store_true",
+        help="retain diagnostic.hidden in both entrypoints for arithmetic localization",
+    )
+    parser.add_argument(
+        "--retain-layer-zero-outputs",
+        action="store_true",
+        help="retain diagnostic.layer0.* arithmetic boundaries in both entrypoints",
+    )
     args = parser.parse_args()
     output = args.output.resolve()
     if output.exists() and any(output.iterdir()):
@@ -324,8 +416,24 @@ def main() -> None:
     inventory = {tensor.name: tensor for tensor in reader.tensors}
     prefill_path = source_dir / "prefill.graph.llmopt"
     decode_path = source_dir / "decode.graph.llmopt"
-    write_graph(target_graph(prefill, inventory), prefill_path)
-    write_graph(target_graph(decode, inventory), decode_path)
+    write_graph(
+        target_graph(
+            prefill,
+            inventory,
+            retain_hidden_output=args.retain_hidden_output,
+            retain_layer_zero_outputs=args.retain_layer_zero_outputs,
+        ),
+        prefill_path,
+    )
+    write_graph(
+        target_graph(
+            decode,
+            inventory,
+            retain_hidden_output=args.retain_hidden_output,
+            retain_layer_zero_outputs=args.retain_layer_zero_outputs,
+        ),
+        decode_path,
+    )
 
     weights = source_dir / "target.weights.llmopt"
     write_augmented_archive(args.target_gguf, weights, config)

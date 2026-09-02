@@ -37,6 +37,7 @@ module Step = struct
   type t = {
     logits : Metal_runtime.Buffer.t option;
     token_id : Metal_runtime.Buffer.t option;
+    diagnostics : Metal_runtime.Buffer.t String_map.t;
     tokens : int array;
     vocabulary : int;
     suppress_token_ids : int list;
@@ -46,6 +47,9 @@ module Step = struct
 
   let logits step = step.logits
   let token_id step = step.token_id
+  let diagnostic step ~name = String_map.find_opt name step.diagnostics
+  let diagnostic_names step =
+    step.diagnostics |> String_map.bindings |> List.map fst
   let tokens step = Array.copy step.tokens
   let vocabulary step = step.vocabulary
   let suppress_token_ids step = step.suppress_token_ids
@@ -148,6 +152,27 @@ let expect_names values expected label =
       Error
         (Printf.sprintf "%s names differ: expected=[%s] actual=[%s]" label
          (String.concat "," expected) (String.concat "," actual))
+
+let expect_output_names values expected label =
+  let is_diagnostic name = String.starts_with ~prefix:"diagnostic." name in
+  let actual =
+    String_map.bindings values
+    |> List.map fst
+    |> List.filter (fun name -> not (is_diagnostic name))
+    |> List.sort String.compare
+  in
+  let expected = List.sort String.compare expected in
+  if actual = expected then Ok ()
+  else
+    Error
+      (Printf.sprintf "%s names differ: expected=[%s] actual=[%s]" label
+         (String.concat "," expected) (String.concat "," actual))
+
+let diagnostic_outputs execution =
+  Metal_runtime.Execution.outputs execution
+  |> List.filter (fun (name, _) ->
+         String.starts_with ~prefix:"diagnostic." name)
+  |> List.to_seq |> String_map.of_seq
 
 let optional_value values ~name ~dtype ~shape label =
   match String_map.find_opt name values with
@@ -378,9 +403,11 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
       expect_names decode_inputs expected_decode_inputs "decode runtime input"
     in
     let* () =
-      expect_names prefill_outputs expected_prefill_outputs "prefill output"
+      expect_output_names prefill_outputs expected_prefill_outputs "prefill output"
     in
-    let* () = expect_names decode_outputs expected_decode_outputs "decode output" in
+    let* () =
+      expect_output_names decode_outputs expected_decode_outputs "decode output"
+    in
     Ok
       {
         input_ids;
@@ -1099,6 +1126,7 @@ let prefill engine ~tokens =
       {
         Step.logits;
         token_id;
+        diagnostics = diagnostic_outputs execution;
         tokens = Array.copy tokens;
         vocabulary = engine.contract.vocab_size;
         suppress_token_ids = engine.contract.suppress_token_ids;
@@ -1408,6 +1436,7 @@ let decode_matched engine match_ ~schedule ~prefix ~token ~retain_inserted_match
             ( {
                 Step.logits;
                 token_id = token_id_buffer;
+                diagnostics = diagnostic_outputs execution;
                 tokens;
                 vocabulary = engine.contract.vocab_size;
                 suppress_token_ids = engine.contract.suppress_token_ids;
@@ -1621,6 +1650,7 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
             {
               Step.logits;
               token_id;
+              diagnostics = diagnostic_outputs execution;
               tokens = Array.copy tokens;
               vocabulary = engine.contract.vocab_size;
               suppress_token_ids = engine.contract.suppress_token_ids;
@@ -1769,6 +1799,7 @@ let suffix_prefill ?(cache_result = true) engine match_ ~tokens ~cached_tokens =
             {
               Step.logits;
               token_id;
+              diagnostics = diagnostic_outputs execution;
               tokens = Array.copy tokens;
               vocabulary = engine.contract.vocab_size;
               suppress_token_ids = engine.contract.suppress_token_ids;

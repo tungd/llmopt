@@ -3,6 +3,8 @@ module Step : sig
 
   val logits : t -> Metal_runtime.Buffer.t option
   val token_id : t -> Metal_runtime.Buffer.t option
+  val diagnostic : t -> name:string -> Metal_runtime.Buffer.t option
+  val diagnostic_names : t -> string list
   val tokens : t -> int array
   val vocabulary : t -> int
   val suppress_token_ids : t -> int list

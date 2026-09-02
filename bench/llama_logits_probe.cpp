@@ -1,4 +1,6 @@
 #include <llama.h>
+#include <ggml-backend.h>
+#include <ggml.h>
 
 #include <algorithm>
 #include <charconv>
@@ -13,6 +15,54 @@
 #include <vector>
 
 namespace {
+
+struct tensor_probe {
+    std::string directory;
+};
+
+bool selected_tensor(std::string_view name) {
+    static constexpr std::string_view layer_zero[] = {
+        "attn_norm-0", "Qcur-0", "Qcur_normed-0", "Qcur_pos-0",
+        "Kcur-0", "Vcur-0", "Kcur_normed-0", "Vcur_normed-0",
+        "Kcur_pos-0", "kqv_out-0", "attn_pre_o-0", "attn_post_norm-0",
+        "attn_out-0", "ffn_norm-0",
+        "ffn_out-0", "ffn_post_norm-0", "out_scaled-0",
+    };
+    return name == "inp_scaled" || name == "result_norm" ||
+           name.substr(0, 6) == "l_out-" ||
+           std::find(std::begin(layer_zero), std::end(layer_zero), name) !=
+               std::end(layer_zero);
+}
+
+bool capture_tensor(ggml_tensor * tensor, bool ask, void * user_data) {
+    const std::string_view name = ggml_get_name(tensor);
+    const bool selected = selected_tensor(name);
+    if (ask) return selected;
+    if (!selected) return true;
+
+    const auto * probe = static_cast<const tensor_probe *>(user_data);
+    const std::string path = probe->directory + "/" + std::string(name) + ".bin";
+    const size_t bytes = ggml_nbytes(tensor);
+    std::vector<uint8_t> contents(bytes);
+    ggml_backend_tensor_get(tensor, contents.data(), 0, bytes);
+    FILE * file = std::fopen(path.c_str(), "wb");
+    const bool wrote =
+        file != nullptr && std::fwrite(contents.data(), 1, bytes, file) == bytes;
+    const bool closed = file == nullptr ? false : std::fclose(file) == 0;
+    if (!wrote || !closed) {
+        std::fprintf(stderr, "failed to write callback tensor: %s\n", path.c_str());
+        return false;
+    }
+    std::printf("callback-tensor: %s type=%s elements=%lld bytes=%zu shape=",
+        name.data(), ggml_type_name(tensor->type),
+        static_cast<long long>(ggml_nelements(tensor)), bytes);
+    for (int dimension = 0; dimension < GGML_MAX_DIMS; ++dimension) {
+        if (dimension != 0) std::putchar('x');
+        std::printf("%lld", static_cast<long long>(tensor->ne[dimension]));
+    }
+    std::printf(" output=%s\n", path.c_str());
+    return true;
+}
 
 std::vector<int32_t> parse_ids(const char * text) {
     std::vector<int32_t> result;
@@ -55,9 +105,9 @@ void print_top(const char * label, const std::vector<float> & logits, int count)
 } // namespace
 
 int main(int argc, char ** argv) {
-    if (argc != 5) {
+    if (argc != 5 && argc != 6 && argc != 7) {
         std::fprintf(stderr,
-            "usage: llama-logits-probe <model.gguf> <prompt-token-ids> <suppress-token-ids> <top-k>\n");
+            "usage: llama-logits-probe <model.gguf> <prompt-token-ids> <suppress-token-ids> <top-k> [embedding-output.f32 [tensor-output-directory]]\n");
         return 64;
     }
     const auto tokens = parse_ids(argv[2]);
@@ -78,6 +128,10 @@ int main(int argc, char ** argv) {
     context_params.n_ctx = std::max<uint32_t>(512, tokens.size() + 1);
     context_params.n_batch = tokens.size();
     context_params.n_ubatch = tokens.size();
+    tensor_probe probe{argc == 7 ? argv[6] : ""};
+    context_params.embeddings = argc >= 6;
+    context_params.cb_eval = argc == 7 ? capture_tensor : nullptr;
+    context_params.cb_eval_user_data = argc == 7 ? &probe : nullptr;
     context_params.no_perf = false;
     llama_context * context = llama_init_from_model(model, context_params);
     if (context == nullptr) {
@@ -120,6 +174,40 @@ int main(int argc, char ** argv) {
     std::printf("suppressed-token-ids: %s\n", argv[3]);
     print_top("raw-top-k", raw, top_k);
     print_top("policy-top-k", policy, top_k);
+    if (argc >= 6) {
+        const int32_t dimensions = llama_model_n_embd(model);
+        const float * embedding = llama_get_embeddings_ith(context, -1);
+        if (embedding == nullptr || dimensions <= 0) {
+            std::fprintf(stderr, "last-token embedding is unavailable\n");
+            llama_free(context);
+            llama_model_free(model);
+            llama_backend_free();
+            return 2;
+        }
+        FILE * file = std::fopen(argv[5], "wb");
+        const bool wrote =
+            file != nullptr &&
+            std::fwrite(embedding, sizeof(float), dimensions, file) ==
+                static_cast<size_t>(dimensions);
+        const bool closed = file == nullptr ? false : std::fclose(file) == 0;
+        if (!wrote || !closed) {
+            std::fprintf(stderr, "failed to write embedding output: %s\n", argv[5]);
+            llama_free(context);
+            llama_model_free(model);
+            llama_backend_free();
+            return 2;
+        }
+        double sum = 0.0;
+        double squared = 0.0;
+        for (int32_t index = 0; index < dimensions; ++index) {
+            sum += embedding[index];
+            squared += static_cast<double>(embedding[index]) * embedding[index];
+        }
+        std::printf("embedding-elements: %d\n", dimensions);
+        std::printf("embedding-mean: %.9g\n", sum / dimensions);
+        std::printf("embedding-rms: %.9g\n", std::sqrt(squared / dimensions));
+        std::printf("embedding-output: %s\n", argv[5]);
+    }
 
     llama_free(context);
     llama_model_free(model);

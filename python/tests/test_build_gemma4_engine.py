@@ -15,6 +15,8 @@ from build_gemma4_engine import (
     gemma_reference_constants,
     gguf_suppress_token_ids,
     preserve_reference_constant_precision,
+    retain_diagnostic_hidden_output,
+    retain_layer_zero_diagnostic_outputs,
 )
 
 
@@ -42,6 +44,94 @@ def gemma_config() -> Gemma4TextConfig:
 
 
 class BuildGemma4EngineTests(unittest.TestCase):
+    def test_hidden_output_is_retained_under_diagnostic_namespace(self) -> None:
+        manifest = {
+            "outputs": ["softcapped_logits", "cache"],
+            "nodes": [
+                {
+                    "name": "final_hidden",
+                    "op": "call_method",
+                    "inputs": ["normed"],
+                    "arguments": {
+                        "args": [{"kind": "node", "name": "normed"}],
+                        "kwargs": [],
+                    },
+                },
+                {
+                    "name": "lm_head",
+                    "op": "call_function",
+                    "inputs": ["final_hidden", "weight"],
+                    "arguments": {
+                        "args": [
+                            {"kind": "node", "name": "final_hidden"},
+                            {"kind": "node", "name": "weight"},
+                        ],
+                        "kwargs": [],
+                    },
+                },
+                {
+                    "name": "output",
+                    "op": "output",
+                    "inputs": ["softcapped_logits", "cache"],
+                    "arguments": {
+                        "args": [
+                            {
+                                "kind": "tuple",
+                                "items": [
+                                    {"kind": "node", "name": "softcapped_logits"},
+                                    {"kind": "node", "name": "cache"},
+                                ],
+                            }
+                        ],
+                        "kwargs": [],
+                    },
+                },
+            ],
+        }
+
+        retained = retain_diagnostic_hidden_output(manifest, "final_hidden")
+
+        self.assertEqual(
+            retained["outputs"],
+            ["softcapped_logits", "cache", "diagnostic.hidden"],
+        )
+        hidden = retained["nodes"][0]
+        linear = retained["nodes"][1]
+        output = retained["nodes"][2]
+        self.assertEqual(hidden["name"], "diagnostic.hidden")
+        self.assertEqual(linear["inputs"][0], "diagnostic.hidden")
+        self.assertEqual(
+            linear["arguments"]["args"][0],
+            {"kind": "node", "name": "diagnostic.hidden"},
+        )
+        self.assertEqual(output["inputs"][-1], "diagnostic.hidden")
+
+    def test_layer_zero_boundaries_are_retained_under_diagnostic_namespace(self) -> None:
+        source_names = [
+            "hidden_states", "linear", "query_states_1", "query_states_2",
+            "linear_1", "linear_2", "key_states_1", "value_states_1",
+            "key_states_2", "attn_output_2", "hidden_states_3", "hidden_states_4",
+            "hidden_states_5", "down_proj", "hidden_states_6", "hidden_states_7",
+        ]
+        manifest = {
+            "outputs": ["original"],
+            "nodes": [
+                {"name": name, "op": "call_function", "inputs": []}
+                for name in source_names
+            ] + [{
+                "name": "output",
+                "op": "output",
+                "inputs": ["original"],
+                "arguments": {"args": [], "kwargs": []},
+            }],
+        }
+
+        retained = retain_layer_zero_diagnostic_outputs(manifest)
+
+        self.assertEqual(len(retained["outputs"]), 17)
+        self.assertIn("diagnostic.layer0.attn_norm", retained["outputs"])
+        self.assertIn("diagnostic.layer0.pre_scale", retained["outputs"])
+
     def test_gguf_suppression_policy_is_forwarded_in_declared_order(self) -> None:
         reader = types.SimpleNamespace(
             fields={

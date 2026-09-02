@@ -915,9 +915,30 @@ let () =
            | Ir.Op.Primitive (Ir.Primitive.Movement _) -> false
            | _ -> true))
     "attention layout fusion removes the materialized GQA and token-first chains";
-  generalized_attention_graph |> Serving_schedule.of_graph |> expect_ok
-  |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
-  |> ignore;
+  let generalized_attention_schedule =
+    generalized_attention_graph |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  let specialized_attention_schedule =
+    generalized_attention_schedule
+    |> Serving_schedule.Sequence.specialize_prefill ~all_token_outputs:true
+         ~minimum_tokens:1 ~captured_tokens:tokens ~tokens:5
+    |> expect_ok
+  in
+  expect
+    (specialized_attention_schedule |> Serving_schedule.commands
+    |> List.find_map (fun command ->
+           match
+             Serving_schedule.Command.op command,
+             Serving_schedule.Command.output command
+           with
+           | Ir.Op.Primitive (Ir.Primitive.Attention _), Some output ->
+               Some
+                 (Tensor_shape.dimensions (Ir.Value.logical_shape output)
+                 = [ batches; 5; heads * head_dimension ])
+           | _ -> None)
+    = Some true)
+    "prefill specialization preserves fused token-first attention layout";
 
   let token_value_graph = Ir.Graph.create () in
   let token_value_input name shape dtype =

@@ -1742,19 +1742,13 @@ module Sequence = struct
         |> shape_error
     | Ir.Primitive.Short_conv_silu _, [ input; _weight ] ->
         Ok (Ir.Value.logical_shape input)
-    | Ir.Primitive.Attention _, [ query; key; value; mask ] ->
-        let* value_shape =
-          attention_value_shape ~key:(Ir.Value.logical_shape key)
-            (Ir.Value.logical_shape value)
-        in
-        Tensor_shape.scaled_dot_product_attention
-          (Ir.Value.logical_shape query) (Ir.Value.logical_shape key)
-          value_shape (Ir.Value.logical_shape mask)
-        |> shape_error
-    | Ir.Primitive.Attention _, [ query; _; _ ] ->
-        Ok (Ir.Value.logical_shape query)
-    | Ir.Primitive.Paged_attention_q8 _, query :: _ ->
-        Ok (Ir.Value.logical_shape query)
+    | Ir.Primitive.Attention _, [ _; _; _; _ ]
+    | Ir.Primitive.Attention _, [ _; _; _ ]
+    | Ir.Primitive.Paged_attention_q8 _, _ :: _ ->
+        (* Attention layout fusion may replace the native head-major result
+           with a token-major or flattened result. Preserve that modeled
+           output layout while substituting the dynamic sequence dimensions. *)
+        map_shape substitutions original
     | Ir.Primitive.Embedding, [ indices; weight ] ->
         Tensor_shape.embedding (Ir.Value.logical_shape indices)
           (Ir.Value.logical_shape weight)

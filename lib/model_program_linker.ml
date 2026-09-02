@@ -49,6 +49,21 @@ let expect_names values expected label =
       (Printf.sprintf "%s names differ: expected=[%s] actual=[%s]" label
          (String.concat "," expected) (String.concat "," actual))
 
+let expect_output_names values expected label =
+  let actual =
+    String_map.bindings values
+    |> List.map fst
+    |> List.filter (fun name ->
+           not (String.starts_with ~prefix:"diagnostic." name))
+    |> List.sort String.compare
+  in
+  let expected = List.sort String.compare expected in
+  if actual = expected then Ok ()
+  else
+    Error
+      (Printf.sprintf "%s names differ: expected=[%s] actual=[%s]" label
+         (String.concat "," expected) (String.concat "," actual))
+
 let optional_value values ~name ~dtype ~shape label =
   match String_map.find_opt name values with
   | None -> Ok None
@@ -384,10 +399,10 @@ let validate_entrypoints_full ?input_ids_name ?position_ids_input
       expect_names decode_inputs expected_decode_inputs "decode runtime input"
     in
     let* () =
-      expect_names prefill_outputs expected_prefill_outputs "prefill output"
+      expect_output_names prefill_outputs expected_prefill_outputs "prefill output"
     in
     let* () =
-      expect_names decode_outputs expected_decode_outputs "decode output"
+      expect_output_names decode_outputs expected_decode_outputs "decode output"
     in
     let attention_layouts =
       discovered_attentions
