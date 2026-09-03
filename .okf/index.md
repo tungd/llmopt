@@ -59,6 +59,7 @@ configuration.
 * [Primitive-assignment-backed Gemma execution](experiments/exp-0141-assignment-backed-gemma4-execution-2026-09-03.md) - 48 prefill and 48 decode regions survive schedule serialization and drive Metal runtime execution with exact legacy-backed LLMOpt logits.
 * [Constructive RMSNorm and RoPE Gemma execution](experiments/exp-0142-constructive-rms-rope-gemma4-2026-09-03.md) - 96 RMSNorm-RoPE and 193 RMSNorm regions per entrypoint execute from primitive bindings and select the same next token as llama.cpp.
 * [Gemma 4 postprocessed last-token projection execution](experiments/exp-0144-gemma4-last-token-projection-attempt-2026-09-03.md) - one-row prefill specialization and Layout_model extraction pass; the corrected artifact completes 128 Metal-backed tokens and matches the five retained llama.cpp prefix IDs.
+* [Length-invariant decode execution and schema-generated block-quant Metal](experiments/exp-0145-static-decode-and-schema-metal-2026-09-03.md) - fixture-proven serialized direct-paged decode with dynamic uniforms, constructive ordinary/paired Linear emission, and complete 128-token Gemma 4 execution at 5.22 tok/s.
 
 * [FX linear smoke](experiments/exp-0001-fx-linear.md) - first cross-language probe.
 * [Cross-runtime benchmark protocol](benchmarks/benchmark-protocol.md) - llama.cpp target, native llmopt side comparison, and MPS reference record format.

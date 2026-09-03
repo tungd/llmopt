@@ -44,6 +44,9 @@ sources:
   - id: modeled-layout-retirement
     resource: /experiments/exp-0143-modeled-layout-and-gated-delta-retirement-2026-09-03.md
     title: Modeled layout and gated-delta pass retirement
+  - id: static-decode-schema-metal
+    resource: /experiments/exp-0145-static-decode-and-schema-metal-2026-09-03.md
+    title: Length-invariant decode and schema-generated block-quant Metal
 ---
 
 # Decision
@@ -241,7 +244,7 @@ command that replace it.[^matched-policy-diagnostic]
 That executable seam now exists for accepted Linear/add,
 dual-Linear/activation/multiply, RMSNorm, RMSNorm-RoPE, and ShortConv-SiLU
 regions. Their primitive programs survive
-Serving Schedule ABI 28 serialization and specialization, drive Metal tactic
+Serving Schedule ABI 29 serialization and specialization, drive Metal tactic
 selection, and supply runtime buffers, dimensions, storage, activation, and
 result metadata. The latest Gemma bundle contains 337 regions per entrypoint:
 48 gated-Linear, 96 RMSNorm-RoPE, and 193 standalone RMSNorm regions. GQA
@@ -252,6 +255,21 @@ Gemma 4 12B next-token parity is established for the exact 37 prompt IDs and
 GGUF suppression set: both llama.cpp and the assignment-backed LLMOpt engine
 select token `100`. Ranked top-logit IDs agree through rank eight and then
 differ, so bit-exact full-logit parity is not claimed.[^constructive-rms-rope]
+
+The final decode package now contains one direct paged-Q8 schedule and its
+compiler-created memory plan. The runtime no longer keeps a per-length decode
+schedule table or reinterprets the command list per token: it binds one native
+dispatch plan, preloads every declared Metal pipeline at package load, and
+patches the token, past length, cache slot, checkpoint, and RoPE row for each
+execution. Metal command buffers themselves remain one-shot as required by the
+API.[^static-decode-schema-metal]
+
+Ordinary and paired-row Linear MSL for every supported block format—Q8_0,
+Q5_0, Q4_0, Q4_K, Q5_K, Q6_K, and IQ4_XS—is now generated in a dedicated
+backend unit from `Block_schema` physical offsets, logical decode equations,
+block geometry, and target SIMD width. Specialized quant tactics and fused
+quant epilogues remain legacy source bodies; their presence is an explicit
+transition boundary, not constructive coverage.[^static-decode-schema-metal]
 
 That first token-100 result predates final GQA provenance and pass retirement.
 The initial post-retirement execution stopped before Metal dispatch on an
@@ -324,3 +342,4 @@ Their experiments and rationale remain historical evidence.[^constructive-loweri
 [^matched-policy-diagnostic]: Matched-policy result and constructive-transition correction.
 [^assignment-backed-execution]: Primitive-assignment-backed Gemma package and model run.
 [^modeled-layout-retirement]: Modeled layout retirement, failed final execution, and corrected specialization evidence.
+[^static-decode-schema-metal]: Length-invariant decode and schema-generated block-quant Metal.
