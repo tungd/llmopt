@@ -1,0 +1,59 @@
+Gemma 4 postprocessed last-token projection completion
+=====================================================
+
+Source and artifact
+-------------------
+
+Source commit: f5b7c9ceae9e1d2a1f3e34c511392760dc8f7410
+Artifact: _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03
+Model Program sha256: 9856d3a011c1c348c6be4391e08ada362efbdf292e98d9ad4c4d91e6b408965a
+Prefill package sha256: 261593cc771e4cb551189878cffb998512faa329d8a36c83d74d7a09577c0702
+Decode package sha256: 0be6418871fc154893f137a85ae1f950bc89be7f3fd992c90556e181fc072150
+Prompt token count: 37
+Pinned llama.cpp receipt: bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json
+Prior first-token receipt: bench/results/uoc-final-constructive-gemma4-parity-2026-09-03.txt
+
+Repository verification
+-----------------------
+
+Command: ninja -f ninja.build all test native-schedule-smoke
+Exit status: 0
+Result: OCaml suite passed; 79 Python tests passed; the native schedule fixture
+compiled and validated.
+
+Corrected device execution
+--------------------------
+
+Command: _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --max-new-tokens 128
+Exit status: 0
+Load seconds: 0.104276
+TTFT seconds: 8.761896
+Elapsed seconds: 36.867588
+Tokens per second: 3.471884
+Inter-token count: 127
+Inter-token mean ms: 221.304664
+Inter-token median ms: 180.555105
+Completion token count: 128
+Completion tokens: 100,45518,107,14947,135383,568,11124,769,107,4225,552,6795,32404,236764,68028,134930,990,58692,236764,8084,105888,11441,236761,107,174791,12323,236761,108,140,236829,139,236829,22660,149681,2900,563,5884,135383,236881,568,147505,236764,236743,236770,236819,236770,236810,236764,18899,618,18271,769,107,140,236829,139,236829,818,11032,236787,669,8084,105888,83928,149681,669,623,72699,15163,3305,2098,114194,7728,236761,39524,3413,236764,506,41898,46836,236761,107,140,236829,139,236829,818,94028,236787,2177,552,6795,11094,137455,149681,669,9130,529,506,17748,236764,3413,236786,23325,14315,2557,1217,531,9023,236764,2557,14315,3413,1217,531,2827,568,20379,5248,236789,236751,14993,769,107,140,236829,139,236829
+
+Comparison boundary
+-------------------
+
+The corrected final artifact dispatched on Metal and completed all 128 requested
+autoregressive tokens. Its first five token IDs are exactly
+`100,45518,107,14947,135383`, equal to the five IDs retained for the pinned
+same-GGUF llama.cpp sequential stream.
+
+The pinned llama.cpp receipt retains a generated-text SHA-256 but not its 128
+token IDs or generated text. Therefore this receipt establishes five-step token
+parity and successful 128-step LLMOpt decode, but does not claim exact parity for
+completion positions 6 through 128.
+
+The prior `10.581340 s` result was a top-k logits probe that included logits
+readback and ranking, whereas `8.761896 s` here is generation TTFT. Their
+`-1.819444 s` difference is recorded as a mode-mismatched observation, not an
+isolated last-token-projection latency delta.
+
+Evidence: the corrected command exited zero with 128 tokens and the first five
+IDs match the retained llama.cpp prefix; assumption: none for those facts, and
+no all-128 parity assumption is made.
