@@ -231,6 +231,7 @@ module Paged_attention_q8 : sig
   type t
 
   val create :
+    window:int option ->
     scale:float ->
     cache_layer:int ->
     kv_heads:int ->
@@ -251,6 +252,7 @@ module Paged_attention_q8 : sig
   val value_offset : t -> int
   val group_size : t -> int
   val token_stride : t -> int
+  val window : t -> int option
   val to_string : t -> string
 end
 

@@ -27,6 +27,13 @@ let decode_paged_q8 ~specialization:_ ~captured_past ~past_tokens ~cache schedul
   Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past ~past_tokens
     ~cache schedule
 
+let solidify_decode_paged_q8 ~specialization ~captured_past ~cache schedule =
+  Serving_schedule.Sequence.solidify_decode_paged_q8
+    ?sliding_mask_input:
+      (Model_program.Specialization.sliding_attention_mask_input specialization)
+    ?sliding_window:(Model_program.Specialization.sliding_window specialization)
+    ~captured_past ~cache schedule
+
 let decode ~specialization:_ ~captured_past ~past_tokens schedule =
   Serving_schedule.Sequence.specialize_decode ~captured_past ~past_tokens schedule
 

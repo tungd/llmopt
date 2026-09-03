@@ -2471,6 +2471,14 @@ module Sequence = struct
         true
     | _ -> false
 
+  let runtime_input_name producers value =
+    match Value_map.find_opt (Ir.Value.id value) producers with
+    | Some
+        { Command.op =
+            Ir.Op.Input { source = Ir.Input_source.Runtime; name };
+          inputs = []; output = Some _; _ } -> Some name
+    | _ -> None
+
   let cache_chain producers value =
     let rec find value =
       match Value_map.find_opt (Ir.Value.id value) producers with
@@ -2505,7 +2513,8 @@ module Sequence = struct
     in
     find value
 
-  let direct_q8_attention ~maskless ~past_tokens ~cache schedule =
+  let direct_q8_attention ?sliding_mask_input ?sliding_window ~maskless
+      ~past_tokens ~cache schedule =
     let layout = Kv_cache.Config.layout cache in
     let group_size = Kv_cache.Format.q8_group_size in
     let commands = schedule.commands in
@@ -2564,7 +2573,18 @@ module Sequence = struct
                   | None -> Error "paged Q8 attention value region is missing"
                 in
                 let* config =
+                  let window =
+                    match
+                      ( runtime_input_name producers mask,
+                        sliding_mask_input,
+                        sliding_window )
+                    with
+                    | Some actual, Some expected, Some window
+                      when String.equal actual expected -> Some window
+                    | _ -> None
+                  in
                   Ir.Paged_attention_q8.create
+                    ~window
                     ~scale:(Ir.Attention.scale attention) ~cache_layer:layer
                     ~kv_heads:
                       (Kv_cache.Layout.Attention_layer.kv_heads geometry)
@@ -2633,6 +2653,14 @@ module Sequence = struct
       Sys.getenv_opt "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE" = Some "1"
     in
     direct_q8_attention ~maskless ~past_tokens ~cache schedule
+
+  let solidify_decode_paged_q8 ?sliding_mask_input ?sliding_window
+      ~captured_past ~cache schedule =
+    let* schedule =
+      specialize_decode ~captured_past ~past_tokens:captured_past schedule
+    in
+    direct_q8_attention ?sliding_mask_input ?sliding_window ~maskless:true
+      ~past_tokens:captured_past ~cache schedule
 
   let recurrent_in_input layer =
     Printf.sprintf "__llmopt_recurrent_in_%d" layer
@@ -3830,6 +3858,9 @@ let write_primitive writer = function
           Ir.Paged_attention_q8.value_offset config;
           Ir.Paged_attention_q8.group_size config;
           Ir.Paged_attention_q8.token_stride config ]
+      ; Binary.Writer.u32 writer
+          (Option.fold ~none:0 ~some:Fun.id
+             (Ir.Paged_attention_q8.window config))
   | Ir.Primitive.Embedding -> Binary.Writer.u8 writer 6
   | Ir.Primitive.Arange config ->
       Binary.Writer.u8 writer 7;
@@ -3976,7 +4007,9 @@ let read_primitive values reader =
       let* value_offset = Binary.Reader.u32 reader in
       let* group_size = Binary.Reader.u32 reader in
       let* token_stride = Binary.Reader.u32 reader in
-      Ir.Paged_attention_q8.create ~scale ~cache_layer ~kv_heads ~head_dim
+      let* encoded_window = Binary.Reader.u32 reader in
+      let window = if encoded_window = 0 then None else Some encoded_window in
+      Ir.Paged_attention_q8.create ~window ~scale ~cache_layer ~kv_heads ~head_dim
         ~token_elements ~key_offset ~value_offset ~group_size ~token_stride
       |> Result.map (fun config -> Ir.Primitive.Paged_attention_q8 config)
   | 15 ->
@@ -4377,7 +4410,7 @@ let magic = "LLMOSCH\000"
 let to_bytes schedule =
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer magic;
-  Binary.Writer.u16 writer 28;
+  Binary.Writer.u16 writer 29;
   Binary.Writer.u32 writer (List.length schedule.commands);
   List.iter
     (fun command ->
@@ -4398,7 +4431,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving schedule magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version <> 28 then
+    if version <> 29 then
       Error (Printf.sprintf "unsupported serving schedule version: %d" version)
 
 

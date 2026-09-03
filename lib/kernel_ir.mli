@@ -244,6 +244,9 @@ val results : t -> result list
 val effects : t -> Effect.t
 val resource : t -> Resource.t
 
+(** Specialize region dimensions. [value] maps schedule-visible region inputs
+    and results; assignment-local output provenance is rebuilt from its
+    specialized binding metadata. *)
 val specialize :
   dimension:(int -> int) ->
   value:(Ir.Value.t -> (Ir.Value.t, string) Stdlib.result) ->

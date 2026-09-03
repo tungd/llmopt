@@ -25,6 +25,13 @@ val decode_paged_q8 :
   Serving_schedule.t ->
   (Serving_schedule.t, string) result
 
+val solidify_decode_paged_q8 :
+  specialization:Model_program.Specialization.t ->
+  captured_past:int ->
+  cache:Kv_cache.Config.t ->
+  Serving_schedule.t ->
+  (Serving_schedule.t, string) result
+
 val decode :
   specialization:Model_program.Specialization.t ->
   captured_past:int ->

@@ -1395,6 +1395,14 @@ let specialize ~dimension ~value region =
     shape |> Tensor_shape.dimensions |> List.map dimension
     |> Tensor_shape.create |> Result.map_error Tensor_shape.error_to_string
   in
+  let specialize_local_value ~shape ~dtype original =
+    try
+      Ok
+        (Ir.Value.make_tensor
+           ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
+           ~shape ~dtype)
+    with Invalid_argument message -> Error message
+  in
   let map_primitive = function
     | Primitive.Linear linear ->
         Primitive.Linear
@@ -1454,7 +1462,9 @@ let specialize ~dimension ~value region =
                     let* value =
                       match original with
                       | None -> Ok None
-                      | Some original -> Result.map Option.some (value original)
+                      | Some original ->
+                          specialize_local_value ~shape ~dtype original
+                          |> Result.map Option.some
                     in
                     Ok ({ slot; shape; dtype; value } :: outputs))
                   (Ok [])

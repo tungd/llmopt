@@ -455,11 +455,14 @@ module Paged_attention_q8 = struct
     value_offset : int;
     group_size : int;
     token_stride : int;
+    window : int option;
   }
 
-  let create ~scale ~cache_layer ~kv_heads ~head_dim ~token_elements
+  let create ~window ~scale ~cache_layer ~kv_heads ~head_dim ~token_elements
       ~key_offset ~value_offset ~group_size ~token_stride =
     if not (Float.is_finite scale) then Error "paged Q8 attention scale must be finite"
+    else if Option.exists (fun value -> value <= 0) window then
+      Error "paged Q8 attention window must be positive"
     else if cache_layer < 0 then
       Error "paged Q8 attention cache layer cannot be negative"
     else if kv_heads <= 0 then Error "paged Q8 attention requires positive KV heads"
@@ -505,6 +508,7 @@ module Paged_attention_q8 = struct
             value_offset;
             group_size;
             token_stride;
+            window;
           }
 
   let scale config = config.scale
@@ -516,12 +520,14 @@ module Paged_attention_q8 = struct
   let value_offset config = config.value_offset
   let group_size config = config.group_size
   let token_stride config = config.token_stride
+  let window config = config.window
 
   let to_string config =
     Printf.sprintf
-      "paged-attention-q8(scale=%.9g,layer=%d,kv-heads=%d,head-dim=%d,key=%d,value=%d,group=%d,stride=%d)"
+      "paged-attention-q8(scale=%.9g,layer=%d,kv-heads=%d,head-dim=%d,key=%d,value=%d,group=%d,stride=%d,window=%s)"
       config.scale config.cache_layer config.kv_heads config.head_dim
       config.key_offset config.value_offset config.group_size config.token_stride
+      (Option.fold ~none:"full" ~some:string_of_int config.window)
 end
 
 module Arange = struct

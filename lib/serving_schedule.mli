@@ -71,6 +71,17 @@ module Sequence : sig
     t ->
     (t, string) result
 
+  (** Compile the captured one-token decode graph into its length-invariant
+      direct-paged form. The retained slot tensor describes buffer capacity;
+      the active prefix length is supplied separately as a dispatch uniform. *)
+  val solidify_decode_paged_q8 :
+    ?sliding_mask_input:string ->
+    ?sliding_window:int ->
+    captured_past:int ->
+    cache:Kv_cache.Config.t ->
+    t ->
+    (t, string) result
+
   (** Specialize a captured cached multi-token target graph for one speculative
       verification window and direct grouped-Q8 cache reads. *)
   val specialize_prompt_lookup_paged_q8 :
