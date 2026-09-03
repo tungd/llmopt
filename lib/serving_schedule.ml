@@ -1922,7 +1922,9 @@ module Sequence = struct
     | _ -> operation
 
   type last_token_projection = {
-    index_node : int;
+    index_node : int option;
+    inserted_index_node : int;
+    inserted_index_value : int;
     linear_node : int;
   }
 
@@ -1945,10 +1947,43 @@ module Sequence = struct
                0 command.Command.inputs)
          0
 
+  let fresh_projection_ids commands =
+    let values command =
+      command.Command.inputs
+      @ Ir.Op.additional_outputs command.Command.op
+      @ Option.to_list command.Command.output
+    in
+    let maximum_value =
+      commands
+      |> List.fold_left
+           (fun maximum command ->
+             values command
+             |> List.fold_left
+                  (fun maximum value ->
+                    max maximum (Ir.Value.id value |> Ir.Value_id.to_int))
+                  maximum)
+           (-1)
+    in
+    let maximum_node =
+      commands
+      |> List.fold_left
+           (fun maximum command -> max maximum command.Command.node_id)
+           (-1)
+    in
+    maximum_node + 1, maximum_value + 1
+
   let projection_dimensions = function
     | Ir.Op.Linear { m; n; k; _ }
-    | Ir.Op.Linear_add { m; n; k }
     | Ir.Op.W4a16_linear { m; n; k; _ } -> Some (m, n, k)
+    | _ -> None
+
+  let postprocessed_input command value =
+    match command.Command.op, command.Command.inputs, command.Command.output with
+    | Ir.Op.Primitive (Ir.Primitive.Pointwise _), [ input ], Some output
+      when same_value output value
+           && Tensor_shape.dimensions (Ir.Value.logical_shape input)
+              = Tensor_shape.dimensions (Ir.Value.logical_shape output) ->
+        Some input
     | _ -> None
 
   let is_identity_index source index =
@@ -1969,6 +2004,60 @@ module Sequence = struct
 
   let last_token_projection schedule =
     let commands = schedule.commands in
+    let rec find_projection logits =
+      match producer commands logits with
+      | Some
+          ({
+            Command.node_id = linear_node;
+            op;
+            inputs = indexed :: _;
+            output = Some _;
+          } as command) -> (
+          match projection_dimensions op with
+          | None ->
+              if use_count commands logits = 1 then
+                match postprocessed_input command logits with
+                | Some input -> find_projection input
+                | None -> Ok None
+              else Ok None
+          | Some (m, n, k) ->
+              (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
+              | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
+              | [ 1; tokens; output_width ]
+                when tokens = m && output_width = n
+                     && use_count commands logits = 1 ->
+                  let index_node, source =
+                    match producer commands indexed with
+                    | Some
+                        {
+                          Command.node_id = index_node;
+                          op =
+                            Ir.Op.Primitive
+                              (Ir.Primitive.Movement (Ir.Movement.Index index));
+                          inputs = [ source ];
+                          output = Some _;
+                        }
+                      when use_count commands indexed = 1
+                           && is_identity_index source index ->
+                        Some index_node, source
+                    | _ -> None, indexed
+                  in
+                  (match Tensor_shape.dimensions (Ir.Value.logical_shape source) with
+                  | [ 1; source_tokens; width ]
+                    when source_tokens = tokens && width = k ->
+                      let inserted_index_node, inserted_index_value =
+                        fresh_projection_ids commands
+                      in
+                      Ok
+                        (Some
+                           { index_node;
+                             inserted_index_node;
+                             inserted_index_value;
+                             linear_node })
+                  | _ -> Error "prefill logits index has an unexpected source shape")
+              | _ -> Error "prefill logits has an unexpected projection shape"))
+      | Some _ | None -> Ok None
+    in
     match
       List.find_map
         (fun command ->
@@ -1978,49 +2067,7 @@ module Sequence = struct
         commands
     with
     | None -> Ok None
-    | Some logits -> (
-        match producer commands logits with
-        | Some
-            {
-              Command.node_id = linear_node;
-              op;
-              inputs = indexed :: _;
-              output = Some _;
-            } -> (
-            match projection_dimensions op with
-            | None -> Ok None
-            | Some (m, n, k) ->
-                (match Tensor_shape.dimensions (Ir.Value.logical_shape logits) with
-                | [ 1; 1; output_width ] when m = 1 && output_width = n -> Ok None
-                | [ 1; tokens; output_width ]
-                  when tokens = m && output_width = n
-                       && use_count commands logits = 1 ->
-                    let* index_node, source =
-                      match producer commands indexed with
-                      | Some
-                          {
-                            Command.node_id = index_node;
-                            op =
-                              Ir.Op.Primitive
-                                (Ir.Primitive.Movement (Ir.Movement.Index index));
-                            inputs = [ source ];
-                            output = Some _;
-                          }
-                        when use_count commands indexed = 1
-                             && is_identity_index source index ->
-                          Ok (index_node, source)
-                      | _ ->
-                          Error
-                            "prefill logits projection is not fed by a sole-consumer identity index"
-                    in
-                    (match Tensor_shape.dimensions (Ir.Value.logical_shape source) with
-                    | [ 1; source_tokens; width ]
-                      when source_tokens = tokens && width = k ->
-                        Ok (Some { index_node; linear_node })
-                    | _ ->
-                        Error "prefill logits index has an unexpected source shape")
-                | _ -> Error "prefill logits has an unexpected projection shape"))
-        | _ -> Ok None)
+    | Some logits -> find_projection logits
 
   let last_token_index = function
     | [ input ] ->
@@ -2046,6 +2093,21 @@ module Sequence = struct
             Ok
               (Ir.Op.Primitive
                  (Ir.Primitive.Movement (Ir.Movement.Index index)))
+        | _ -> Error "final-token index expects a rank-three tensor")
+    | _ -> Error "final-token index expects one input"
+
+  let last_token_index_output ~id = function
+    | [ input ] ->
+        (match Tensor_shape.dimensions (Ir.Value.logical_shape input) with
+        | [ batch; tokens; width ] when batch > 0 && tokens > 0 && width > 0 ->
+            let* shape =
+              Tensor_shape.create [ batch; 1; width ]
+              |> Result.map_error Tensor_shape.error_to_string
+            in
+            (try
+               Ok
+                 (Ir.Value.make_tensor ~id ~shape ~dtype:(Ir.Value.dtype input))
+             with Invalid_argument message -> Error message)
         | _ -> Error "final-token index expects a rank-three tensor")
     | _ -> Error "final-token index expects one input"
 
@@ -2113,10 +2175,33 @@ module Sequence = struct
                 :: output)
                 rest
           | None ->
+          let* inputs, inserted_index =
+            match projection with
+            | Some projection
+              when command.Command.node_id = projection.linear_node
+                   && Option.is_none projection.index_node ->
+                (match inputs with
+                | source :: rest ->
+                    let* op = last_token_index [ source ] in
+                    let* indexed =
+                      last_token_index_output ~id:projection.inserted_index_value
+                        [ source ]
+                    in
+                    let inserted =
+                      { Command.node_id = projection.inserted_index_node;
+                        op;
+                        inputs = [ source ];
+                        output = Some indexed;
+                        fusion_region = None }
+                    in
+                    Ok (indexed :: rest, Some inserted)
+                | [] -> Error "final-token projection has no activation input")
+            | Some _ | None -> Ok (inputs, None)
+          in
           let* op =
             match projection with
             | Some projection
-              when command.Command.node_id = projection.index_node ->
+              when Some command.Command.node_id = projection.index_node ->
                 last_token_index inputs
             | Some projection
               when command.Command.node_id = projection.linear_node ->
@@ -2163,15 +2248,19 @@ module Sequence = struct
                   in
                   Ok (Some value, values)
           in
-          map_commands
-            values
-            ({ command with
-               Command.op = op;
-               inputs;
-               output = result;
-               fusion_region = None }
-            :: output)
-            rest)
+          let command =
+            { command with
+              Command.op = op;
+              inputs;
+              output = result;
+              fusion_region = None }
+          in
+          let output =
+            match inserted_index with
+            | None -> command :: output
+            | Some inserted -> command :: inserted :: output
+          in
+          map_commands values output rest)
     in
     map_commands Value_map.empty [] commands
 

@@ -35,6 +35,24 @@ let fusion_region_count schedule =
          else count)
        0
 
+let head_rows schedule =
+  schedule |> Serving_schedule.commands
+  |> List.find_map (fun command ->
+         match
+           Serving_schedule.Command.op command,
+           Serving_schedule.Command.inputs command
+         with
+         | Ir.Op.Output { name = "logits" }, [ logits ] ->
+             (match dimensions logits with
+             | [ 1; rows; _ ] when rows > 0 -> Some (Ok rows)
+             | _ -> Some (Error "specialized logits output has an invalid shape"))
+         | Ir.Op.Output { name = "token_id" }, [ token_id ] ->
+             (match dimensions token_id with
+             | [ rows ] when rows > 0 -> Some (Ok rows)
+             | _ -> Some (Error "specialized token output has an invalid shape"))
+         | _ -> None)
+  |> Option.value ~default:(Error "specialized prefill has no head output")
+
 let validate_runtime_specializations program prefill_pkg decode_pkg =
   let prefill_schedule = Serving_package.schedule prefill_pkg in
   let decode_schedule = Serving_package.schedule decode_pkg in
@@ -69,11 +87,12 @@ let validate_runtime_specializations program prefill_pkg decode_pkg =
       (Model_program.specialization program)
   in
   let probe_tokens = max minimum 22 in
-  let* _prefill =
+  let* prefill =
     Serving_schedule.Sequence.specialize_prefill ~minimum_tokens:minimum
       ~captured_tokens:captured_prefill ~tokens:probe_tokens prefill_schedule
   in
-  if captured_past = 0 then Ok (probe_tokens, 0, 0)
+  let* prefill_head_rows = head_rows prefill in
+  if captured_past = 0 then Ok (probe_tokens, prefill_head_rows, 0, 0)
   else
     let* decode =
       Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past
@@ -89,7 +108,7 @@ let validate_runtime_specializations program prefill_pkg decode_pkg =
              | _ -> count)
            0
     in
-    Ok (probe_tokens, captured_past, paged_attention)
+    Ok (probe_tokens, prefill_head_rows, captured_past, paged_attention)
 
 let validate_declared_roles program prefill_pkg decode_pkg =
   let prefill_sched = Serving_package.schedule prefill_pkg in
@@ -202,7 +221,7 @@ let run root =
   in
 
   let* () = validate_declared_roles program prefill_pkg decode_pkg in
-  let* probe_tokens, captured_past, paged_attention =
+  let* probe_tokens, prefill_head_rows, captured_past, paged_attention =
     validate_runtime_specializations program prefill_pkg decode_pkg
   in
 
@@ -259,8 +278,8 @@ let run root =
   Printf.printf "  Specialization: min_prefill_tokens=%d\n"
     (Model_program.Specialization.min_prefill_tokens (Model_program.specialization program));
   Printf.printf
-    "  Runtime specialization: tokens=%d, captured_decode_past=%d, paged_q8_attention=%d\n"
-    probe_tokens captured_past paged_attention;
+    "  Runtime specialization: tokens=%d, prefill_head_rows=%d, captured_decode_past=%d, paged_q8_attention=%d\n"
+    probe_tokens prefill_head_rows captured_past paged_attention;
   Printf.printf "  Primitive assignment regions: prefill=%d, decode=%d\n"
     (fusion_region_count (Serving_package.schedule prefill_pkg))
     (fusion_region_count (Serving_package.schedule decode_pkg));

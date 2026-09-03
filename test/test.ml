@@ -722,6 +722,98 @@ let () =
     = Some true)
     "prefill specialization preserves fused token-first attention layout";
 
+  let postprocessed_head_graph = Ir.Graph.create () in
+  let hidden =
+    tensor_input postprocessed_head_graph ~name:"hidden"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 2; 4 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let head_weight =
+    tensor_input postprocessed_head_graph ~name:"head.weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "head.weight" })
+      ~shape:[ 8; 4 ] ~dtype:Ir.Dtype.Float16
+  in
+  let head_logits =
+    Ir.Graph.fresh_tensor_value postprocessed_head_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 2; 8 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append postprocessed_head_graph
+    ~op:(Ir.Op.Linear { m = 2; n = 8; k = 4; bias = false })
+    ~inputs:[ hidden; head_weight ] ~output:(Some head_logits);
+  let append_pointwise operation input =
+    let output =
+      Ir.Graph.fresh_tensor_value postprocessed_head_graph
+        ~shape:(Ir.Value.logical_shape input) ~dtype:(Ir.Value.dtype input)
+    in
+    Ir.Graph.append postprocessed_head_graph
+      ~op:(Ir.Op.Primitive (Ir.Primitive.Pointwise operation)) ~inputs:[ input ]
+      ~output:(Some output);
+    output
+  in
+  let divided =
+    append_pointwise
+      (Ir.Pointwise.Binary
+         ( Ir.Pointwise.Div,
+           Ir.Pointwise.Tensor head_logits,
+           Ir.Pointwise.Scalar (Ir.Scalar.Float 2.0) ))
+      head_logits
+  in
+  let activated =
+    append_pointwise (Ir.Pointwise.Unary (Ir.Pointwise.Tanh, divided)) divided
+  in
+  let postprocessed =
+    append_pointwise
+      (Ir.Pointwise.Binary
+         ( Ir.Pointwise.Mul,
+           Ir.Pointwise.Tensor activated,
+           Ir.Pointwise.Scalar (Ir.Scalar.Float 30.0) ))
+      activated
+  in
+  Ir.Graph.add_output postprocessed_head_graph ~name:"logits" postprocessed;
+  let postprocessed_head_schedule =
+    postprocessed_head_graph |> Serving_schedule.of_graph |> expect_ok
+  in
+  let specialized_postprocessed_head =
+    postprocessed_head_schedule
+    |> Serving_schedule.Sequence.specialize_prefill ~minimum_tokens:1
+         ~captured_tokens:2 ~tokens:37
+    |> expect_ok
+  in
+  let all_token_postprocessed_head =
+    postprocessed_head_schedule
+    |> Serving_schedule.Sequence.specialize_prefill ~all_token_outputs:true
+         ~minimum_tokens:1 ~captured_tokens:2 ~tokens:37
+    |> expect_ok
+  in
+  let logits_shape schedule =
+    schedule |> Serving_schedule.commands
+    |> List.find_map (fun command ->
+           match
+             Serving_schedule.Command.op command,
+             Serving_schedule.Command.inputs command
+           with
+           | Ir.Op.Output { name = "logits" }, [ logits ] ->
+               Some
+                 (Tensor_shape.dimensions (Ir.Value.logical_shape logits))
+           | _ -> None)
+  in
+  let specialized_postprocessed_shape =
+    logits_shape specialized_postprocessed_head
+  in
+  expect
+    (specialized_postprocessed_shape = Some [ 1; 1; 8 ])
+    (Printf.sprintf
+       "prefill specialization projects before a sole-consumer logits postprocess chain (shape=%s)"
+       (match specialized_postprocessed_shape with
+       | None -> "missing"
+       | Some dimensions ->
+           dimensions |> List.map string_of_int |> String.concat "x"));
+  expect
+    (logits_shape all_token_postprocessed_head = Some [ 1; 37; 8 ])
+    "all-token prefill specialization preserves the complete postprocessed logits";
+  specialized_postprocessed_head |> Serving_memory_plan.create |> expect_ok
+  |> ignore;
+
   let token_value_graph = Ir.Graph.create () in
   let token_value_input name shape dtype =
     tensor_input token_value_graph ~name ~source:Ir.Input_source.Runtime ~shape

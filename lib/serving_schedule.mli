@@ -37,8 +37,9 @@ val opaque_count : t -> int
 module Sequence : sig
   (** Rebuild a captured prefill template for [tokens]. The request must
       cover [minimum_tokens]. When the [logits] output
-      is the full-sequence vocabulary projection, specialize its existing
-      identity index and W4A16 linear command to the final token row. *)
+      is a full-sequence vocabulary projection, optionally followed by a
+      sole-consumer elementwise postprocessing chain, specialize its existing
+      identity index and linear command to the final token row. *)
   val specialize_prefill :
     ?all_token_outputs:bool ->
     minimum_tokens:int ->
