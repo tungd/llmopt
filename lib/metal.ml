@@ -3,6 +3,8 @@ type kernel =
   | Fused of int * int * int * Ir.Value.t * Ir.Value.t * Ir.Value.t * Ir.Value.t
   | Linear of int * int * int * bool * Ir.Value.t * Ir.Value.t * Ir.Value.t option * Ir.Value.t
 
+let ( let* ) = Result.bind
+
 module Program = struct
   type t = { source : string; kernels : Kernel_abi.Entry.t list }
 
@@ -1854,6 +1856,7 @@ struct Q8PagedAttentionParams {
   float scale;
   uint query_length;
   uint mask_dtype;
+  uint window;
 };
 
 inline bool llmopt_q8_paged_mask_active(
@@ -1915,13 +1918,15 @@ kernel void llmopt_attention_q8_paged_simd_h64(
   const uint current_base =
       (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
   const uint key_length = params.past_length + q_pos + 1;
+  const uint first_key = params.window == 0 || key_length <= params.window
+      ? 0 : key_length - params.window;
   const uint key_segment = params.key_offset;
   const uint value_segment = params.value_offset;
   float maximum = -INFINITY;
   float denominator = 0.0f;
   float result_low = 0.0f;
   float result_high = 0.0f;
-  for (uint key_position = 0; key_position < key_length; ++key_position) {
+  for (uint key_position = first_key; key_position < key_length; ++key_position) {
     if (mask != nullptr && params.mask_batches > 0) {
       const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
       const uint mask_head = params.mask_heads == 1 ? 0 : head;
@@ -2003,6 +2008,8 @@ kernel void llmopt_attention_q8_paged_simd_generic(
   const uint current_base =
       (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
   const uint key_length = params.past_length + q_pos + 1;
+  const uint first_key = params.window == 0 || key_length <= params.window
+      ? 0 : key_length - params.window;
   const uint fragments =
       (params.head_dim + Q8_PAGED_ATTENTION_SIMD_WIDTH - 1u)
       / Q8_PAGED_ATTENTION_SIMD_WIDTH;
@@ -2012,7 +2019,7 @@ kernel void llmopt_attention_q8_paged_simd_generic(
   for (uint component = 0; component < Q8_PAGED_ATTENTION_MAX_FRAGMENTS;
        ++component)
     results[component] = 0.0f;
-  for (uint key_position = 0; key_position < key_length; ++key_position) {
+  for (uint key_position = first_key; key_position < key_length; ++key_position) {
     if (mask != nullptr && params.mask_batches > 0) {
       const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
       const uint mask_head = params.mask_heads == 1 ? 0 : head;
@@ -2098,6 +2105,8 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3(
   const uint current_base =
       (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
   const uint key_length = params.past_length + q_pos + 1;
+  const uint first_key = params.window == 0 || key_length <= params.window
+      ? 0 : key_length - params.window;
   float maximum0 = -INFINITY;
   float maximum1 = -INFINITY;
   float maximum2 = -INFINITY;
@@ -2110,7 +2119,7 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3(
   float result_high0 = 0.0f;
   float result_high1 = 0.0f;
   float result_high2 = 0.0f;
-  for (uint key_position = 0; key_position < key_length; ++key_position) {
+  for (uint key_position = first_key; key_position < key_length; ++key_position) {
     bool active0 = true;
     bool active1 = true;
     bool active2 = true;
@@ -2216,6 +2225,8 @@ kernel void llmopt_attention_q8_paged_simd_h64_split8(
   const uint current_base =
       (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
   const uint key_length = params.past_length + q_pos + 1;
+  const uint first_key = params.window == 0 || key_length <= params.window
+      ? 0 : key_length - params.window;
   float maximum = -INFINITY;
   float denominator = 0.0f;
   float result_low = 0.0f;
@@ -2223,7 +2234,7 @@ kernel void llmopt_attention_q8_paged_simd_h64_split8(
   const uint chunk_length =
       (key_length + Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP - 1u)
       / Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP;
-  const uint chunk_start = simdgroup * chunk_length;
+  const uint chunk_start = max(simdgroup * chunk_length, first_key);
   const uint chunk_stop = min(chunk_start + chunk_length, key_length);
   for (uint key_position = chunk_start; key_position < chunk_stop;
        ++key_position) {
@@ -2338,6 +2349,8 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3_split8(
   const uint current_base =
       (batch * params.kv_heads + kv_head) * q_len * params.head_dim;
   const uint key_length = params.past_length + q_pos + 1;
+  const uint first_key = params.window == 0 || key_length <= params.window
+      ? 0 : key_length - params.window;
   float maximum0 = -INFINITY;
   float maximum1 = -INFINITY;
   float maximum2 = -INFINITY;
@@ -2353,7 +2366,7 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3_split8(
   const uint chunk_length =
       (key_length + Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP - 1u)
       / Q8_PAGED_ATTENTION_ROWS_PER_THREADGROUP;
-  const uint chunk_start = simdgroup * chunk_length;
+  const uint chunk_start = max(simdgroup * chunk_length, first_key);
   const uint chunk_stop = min(chunk_start + chunk_length, key_length);
   for (uint key_position = chunk_start; key_position < chunk_stop;
        ++key_position) {
@@ -6173,7 +6186,20 @@ let extract_kernel source name =
       in
       String.sub source start (stop - start)
 
-let quant_source = function
+let remove_kernel name source =
+  let signature = "kernel void " ^ name ^ "(" in
+  match find_substring_from source signature 0 with
+  | None -> source
+  | Some start ->
+      let stop =
+        match find_substring_from source "\nkernel void " (start + 1) with
+        | Some stop -> stop
+        | None -> String.length source
+      in
+      String.sub source 0 start
+      ^ String.sub source stop (String.length source - stop)
+
+let legacy_quant_source = function
   | Ir.Dtype.Q8_0 -> q8_0_source
   | Ir.Dtype.Q4_K -> q4_k_source
   | Ir.Dtype.Q5_K -> q5_k_source
@@ -6182,9 +6208,29 @@ let quant_source = function
   | Ir.Dtype.Q4_0 -> q4_0_source
   | Ir.Dtype.IQ4_XS -> iq4_xs_source
 
-let quant_linear_add_source (quant, tactic) =
+let quant_source ~target = function
+  | (Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
+    | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS) as quant ->
+      let* schema =
+        Block_schema.of_storage
+          (Ir.Linear_storage.Block_quantized quant)
+        |> Result.map_error Block_schema.Error.to_string
+      in
+      let* generated = Metal_block_codegen.linear_kernels ~target schema in
+      Ok
+        (generated
+        ^ (legacy_quant_source quant
+          |> remove_kernel
+               (Printf.sprintf "llmopt_%s_linear_f16"
+                  (Ir.Dtype.quant_to_string quant |> String.lowercase_ascii))
+          |> remove_kernel
+               (Printf.sprintf "llmopt_%s_linear_f16_m2"
+                  (Ir.Dtype.quant_to_string quant |> String.lowercase_ascii))))
+
+let quant_linear_add_source ~target (quant, tactic) =
+  ignore target;
   let name = Tactic.name tactic in
-  let source = extract_kernel (quant_source quant) name in
+  let source = extract_kernel (legacy_quant_source quant) name in
   let replacements =
     [ ( "kernel void " ^ name ^ "(",
         "kernel void " ^ name ^ "_add(" );
@@ -9463,7 +9509,7 @@ let quant_linear_tactics ~target graph =
          | 0 -> String.compare (Tactic.name left) (Tactic.name right)
          | order -> order)
 
-let quant_tactic_entries tactics =
+let quant_tactic_entries ~quant_types tactics =
   let selected_names = List.map (fun (_, tactic) -> Tactic.name tactic) tactics in
   let generic_name = function
     | Ir.Dtype.Q8_0 -> "llmopt_q8_0_linear_f16"
@@ -9480,14 +9526,26 @@ let quant_tactic_entries tactics =
   in
   block32_entries @ kquant_entries
   |> List.filter (fun entry ->
-         Kernel_abi.Entry.operation entry <> Kernel_abi.Operation.Linear
-         || List.mem (Kernel_abi.Entry.name entry) selected_names
-         || List.mem (Kernel_abi.Entry.name entry) generic_names
-         || List.mem (Kernel_abi.Entry.name entry)
-              [ "llmopt_q5_0_linear_f16_llama_mv_add";
-                "llmopt_q8_0_linear_f16_llama_mv";
-                "llmopt_q4_k_linear_f16_llama_mv_add";
-                "llmopt_q6_k_linear_f16_llama_mv_add" ])
+         match Kernel_abi.Entry.input_dtype entry with
+         | Ir.Dtype.Quant quant when List.mem quant quant_types ->
+             Kernel_abi.Entry.operation entry <> Kernel_abi.Operation.Linear
+             || List.mem (Kernel_abi.Entry.name entry) selected_names
+             || List.mem (Kernel_abi.Entry.name entry) generic_names
+             || List.mem (Kernel_abi.Entry.name entry)
+                  [ "llmopt_q5_0_linear_f16_llama_mv_add";
+                    "llmopt_q8_0_linear_f16_llama_mv";
+                    "llmopt_q4_k_linear_f16_llama_mv_add";
+                    "llmopt_q6_k_linear_f16_llama_mv_add" ]
+         | _ -> false)
+
+let graph_quant_types graph =
+  Ir.Graph.nodes graph
+  |> List.concat_map Ir.node_inputs
+  |> List.filter_map (fun value ->
+         match Ir.Value.dtype value with
+         | Ir.Dtype.Quant quant -> Some quant
+         | _ -> None)
+  |> List.sort_uniq Stdlib.compare
 
 let quant_linear_add_tactics ~target graph =
   Ir.Graph.nodes graph
@@ -9804,7 +9862,15 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     quant_linear_tactics ~target graph @ region_quant_tactics
     |> List.sort_uniq Stdlib.compare
   in
-  let selected_quant_entries = quant_tactic_entries quant_tactics in
+  let quant_types =
+    graph_quant_types graph
+    @ List.map fst region_quant_tactics
+    @ List.map fst region_quant_add_tactics
+    |> List.sort_uniq Stdlib.compare
+  in
+  let selected_quant_entries =
+    quant_tactic_entries ~quant_types quant_tactics
+  in
   let quant_qkv = has_quant_qkv_linear graph in
   let quant_qkv_source = if quant_qkv then quant_qkv_source else "" in
   let quant_qkv_entries = if quant_qkv then quant_qkv_entries else [] in
@@ -9813,7 +9879,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     |> List.sort_uniq Stdlib.compare
   in
   let quant_add_source =
-    quant_add_tactics |> List.map quant_linear_add_source
+    quant_add_tactics |> List.map (quant_linear_add_source ~target)
     |> String.concat "\n"
   in
   let quant_add_entries = List.map quant_linear_add_entry quant_add_tactics in
@@ -9825,6 +9891,15 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     gated_delta_tactics |> List.map gated_delta_source |> String.concat "\n"
   in
   let gated_delta_entries = List.map gated_delta_entry gated_delta_tactics in
+  let* quant_format_source =
+    quant_types
+    |> List.fold_left
+         (fun result quant ->
+           let* source = result in
+           let* component = quant_source ~target quant in
+           Ok (source ^ component))
+         (Ok "")
+  in
   let components =
     [ ( has_w4a16_linear graph || regions_have_w4,
         w4a16_source,
@@ -9839,8 +9914,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
       ( has_quant_linear graph || region_quant_tactics <> [] || quant_qkv,
-        quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source
-        ^ q4_k_source ^ q5_k_source ^ q6_k_source ^ iq4_xs_source
+        quant_common_source ^ quant_format_source
         ^ quant_qkv_source ^ quant_add_source,
         selected_quant_entries @ quant_qkv_entries @ quant_add_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;

@@ -1,0 +1,6 @@
+(** Constructive Metal emission for ordinary and paired-row block-quantized
+    Linear assignments. Physical decode details come from [Block_schema] and
+    lane geometry comes from the target profile. *)
+
+val linear_kernels :
+  target:Target_hardware.t -> Block_schema.t -> (string, string) result
