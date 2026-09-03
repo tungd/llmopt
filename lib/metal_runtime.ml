@@ -17,6 +17,9 @@ external load_library_stub : context_handle -> string -> library_handle
 external has_function_stub : library_handle -> string -> bool
   = "caml_llmopt_metal_has_function"
 
+external preload_pipeline_stub : library_handle -> string -> unit
+  = "caml_llmopt_metal_preload_pipeline"
+
 external buffer_of_bytes_stub : context_handle -> bytes -> buffer_handle
   = "caml_llmopt_metal_buffer_of_bytes"
 
@@ -133,6 +136,16 @@ type t = {
 }
 
 type runtime = t
+
+module Decode_uniforms = struct
+  type t = { past_tokens : int }
+
+  let create ~past_tokens =
+    if past_tokens <= 0 then Error "decode past_tokens must be positive"
+    else Ok { past_tokens }
+
+  let past_tokens uniforms = uniforms.past_tokens
+end
 
 module Batch = struct
   type dispatch_item = {
@@ -263,6 +276,13 @@ let rec validate_declared_functions library = function
         validate_declared_functions library rest
       else Error ("Metal library does not define declared kernel: " ^ name)
 
+let rec preload_declared_pipelines library = function
+  | [] -> Ok ()
+  | entry :: rest ->
+      let name = Kernel_abi.Entry.name entry in
+      let* () = protect (fun () -> preload_pipeline_stub library name) in
+      preload_declared_pipelines library rest
+
 let prepare_package (root, package) =
   match Serving_package.validate_files ~root package with
   | Error _ as error -> error
@@ -331,6 +351,10 @@ let load_packages sources =
           in
           let* () =
             validate_declared_functions library
+              (Serving_package.kernels prepared.manifest)
+          in
+          let* () =
+            preload_declared_pipelines library
               (Serving_package.kernels prepared.manifest)
           in
           let runtime =
@@ -630,8 +654,8 @@ module Parameters = struct
   let paged_attention_q8 ~batches ~query_heads ~kv_heads ~past_length
       ~head_dimension ~mask_batches ~mask_heads ~token_elements ~key_offset
       ~value_offset ~group_size ~token_stride ~scale ~mask_dtype
-      ?(query_length = 1) () =
-    let bytes = Bytes.make 60 '\000' in
+      ?(query_length = 1) ?(window = 0) () =
+    let bytes = Bytes.make 64 '\000' in
     let values =
       [ batches; query_heads; kv_heads; past_length; head_dimension; mask_batches;
         mask_heads; token_elements; key_offset; value_offset; group_size;
@@ -647,6 +671,7 @@ module Parameters = struct
     Bytes.set_int32_le bytes 48 (Int32.bits_of_float scale);
     let* () = set_u32 bytes 52 query_length in
     let* () = set_u32 bytes 56 mask_dtype in
+    let* () = set_u32 bytes 60 window in
     Ok bytes
 
   let speculative_attention ~batches ~heads ~query_length ~key_length
@@ -2690,7 +2715,8 @@ let assignment_execution command =
       Some (Assignment_gated_delta { query; key; value; gate; beta; output })
   | None -> None
 
-let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
+let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
+    ~schedule ~inputs =
   let runtime = execution_batch.Execution_batch.runtime in
   let batch = execution_batch.commands in
   let* runtime_inputs = runtime_input_map inputs in
@@ -3044,7 +3070,15 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
             (match String_map.find_opt name runtime_inputs with
             | None -> Error ("runtime input is not bound: " ^ name)
             | Some buffer ->
-                let* () = validate_buffer output buffer in
+                let* () =
+                  if
+                    String.equal name
+                      Serving_schedule.Sequence.q8_attention_pool_input
+                    || String.equal name
+                         Serving_schedule.Sequence.q8_attention_slots_input
+                  then Ok ()
+                  else validate_buffer output buffer
+                in
                 continue (bind_value state output buffer))
         | ( Ir.Op.Input
               { source = Ir.Input_source.Tensor_store { key }; name = _ },
@@ -4355,9 +4389,12 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                   Error "paged Q8 attention current key must match query tokens"
             in
             let* past_length =
-              match Tensor_shape.dimensions (Ir.Value.logical_shape slots) with
-              | [ past_length ] -> Ok past_length
-              | _ -> Error "paged Q8 attention slots must have rank one"
+              match decode_uniforms with
+              | Some uniforms -> Ok (Decode_uniforms.past_tokens uniforms)
+              | None ->
+                  (match Tensor_shape.dimensions (Ir.Value.logical_shape slots) with
+                  | [ past_length ] -> Ok past_length
+                  | _ -> Error "paged Q8 attention slots must have rank one")
             in
             let* mask_batches, mask_heads, mask_dtype, mask_buffer =
               match mask_values with
@@ -4395,10 +4432,15 @@ let encode_schedule ?workspace ?memory_plan execution_batch ~schedule ~inputs =
                 ~group_size:(Ir.Paged_attention_q8.group_size config)
                 ~token_stride:(Ir.Paged_attention_q8.token_stride config)
                 ~scale:(Ir.Paged_attention_q8.scale config)
-                ~mask_dtype ~query_length ()
+                ~mask_dtype ~query_length
+                ~window:
+                  (Option.fold ~none:0 ~some:Fun.id
+                     (Ir.Paged_attention_q8.window config))
+                ()
             in
             let split8 =
-              Sys.getenv_opt "LLMOPT_EXPERIMENTAL_SPLIT8" = Some "1"
+              Option.is_none decode_uniforms
+              && Sys.getenv_opt "LLMOPT_EXPERIMENTAL_SPLIT8" = Some "1"
               && head_dimension = 64 && query_length = 1 && past_length >= 64
             in
             let kernel_name =
@@ -4601,21 +4643,8 @@ let execute_schedule ?workspace ?memory_plan runtime ~schedule ~inputs =
   with_execution_batch runtime (fun batch ->
       encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs)
 
-let execute_decode_step ?workspace ?memory_plan runtime ~cache ~schedule ~inputs
-    ~cache_pack =
-  with_execution_batch runtime (fun batch ->
-      let* execution =
-        encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs
-      in
-      let cache_batch =
-        { Cache.cache; commands = batch.commands; resources = []; dispatches = 0 }
-      in
-      let* () = cache_pack execution cache_batch in
-      batch.resources <- cache_batch.resources @ batch.resources;
-      Ok execution)
-
-let precompile_decode_batch ?workspace ?memory_plan ?cache ?cache_pack runtime
-    ~schedule ~inputs =
+let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
+    ?cache_pack runtime ~schedule ~inputs =
   let* commands = Batch.create runtime in
   let batch =
     {
@@ -4629,7 +4658,8 @@ let precompile_decode_batch ?workspace ?memory_plan ?cache ?cache_pack runtime
     }
   in
   let* execution =
-    encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs
+    encode_schedule ?workspace ?memory_plan ~decode_uniforms batch ~schedule
+      ~inputs
   in
   let* () =
     match cache, cache_pack with

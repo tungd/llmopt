@@ -76,6 +76,11 @@ type rope_table = {
   row_bytes : int;
 }
 
+type decode_executable = {
+  plan : Metal_runtime.Prebaked.t;
+  execution : Metal_runtime.Execution.t;
+}
+
 type t = {
   program : Model_program.t option;
   config : Serving_cache.Config.t;
@@ -88,7 +93,9 @@ type t = {
   decode_workspace : Metal_runtime.Buffer.t option;
   decode_token_buffer : Metal_runtime.Buffer.t option;
   rope_table : rope_table option;
-  decode_schedules : (int, Serving_schedule.t) Hashtbl.t;
+  decode_schedule : Serving_schedule.t;
+  decode_memory_plan : Serving_memory_plan.t;
+  mutable decode_executable : decode_executable option;
   prefill_schedules : (int, Serving_schedule.t * Serving_memory_plan.t) Hashtbl.t;
   suffix_prefill_schedules :
     (int * int * bool, Serving_schedule.t * Serving_memory_plan.t) Hashtbl.t;
@@ -252,6 +259,16 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
     ~decode =
   let prefill_inputs = runtime_inputs prefill in
   let decode_inputs = runtime_inputs decode in
+  let direct_paged_decode =
+    String_map.mem Serving_schedule.Sequence.q8_attention_pool_input decode_inputs
+    && String_map.mem Serving_schedule.Sequence.q8_attention_slots_input decode_inputs
+  in
+  let* () =
+    if attentions <> [] && not direct_paged_decode then
+      Error
+        "decode package is not AOT-solidified for direct paged cache execution"
+    else Ok ()
+  in
   let prefill_outputs = named_outputs prefill in
   let decode_outputs = named_outputs decode in
   let* prefill_ids =
@@ -287,7 +304,8 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
             Model_program.State.Cache_layout.Attention_layer.head_dim layer )
   in
   let* past_tokens =
-    match attentions with
+    if direct_paged_decode then Ok prefill_tokens
+    else match attentions with
     | [] ->
         (match recurrents with
         | [] -> Ok prefill_tokens
@@ -322,7 +340,10 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
           let* kv_heads, head_dim = attention_geometry binding in
           let prefill_shape = [ 1; kv_heads; prefill_tokens; head_dim ] in
           let decode_input_shape = [ 1; kv_heads; past_tokens; head_dim ] in
-          let decode_output_shape = [ 1; kv_heads; past_tokens + 1; head_dim ] in
+          let decode_output_shape =
+            if direct_paged_decode then [ 1; kv_heads; 1; head_dim ]
+            else [ 1; kv_heads; past_tokens + 1; head_dim ]
+          in
           let* _ =
             expect_value prefill_outputs ~name:binding.key_output
               ~dtype:Ir.Dtype.Float16 ~shape:prefill_shape "prefill output"
@@ -331,15 +352,20 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
             expect_value prefill_outputs ~name:binding.value_output
               ~dtype:Ir.Dtype.Float16 ~shape:prefill_shape "prefill output"
           in
-          let* _ =
-            expect_value decode_inputs ~name:binding.key_input
-              ~dtype:Ir.Dtype.Float16 ~shape:decode_input_shape
-              "decode runtime input"
-          in
-          let* _ =
-            expect_value decode_inputs ~name:binding.value_input
-              ~dtype:Ir.Dtype.Float16 ~shape:decode_input_shape
-              "decode runtime input"
+          let* () =
+            if direct_paged_decode then Ok ()
+            else
+              let* _ =
+                expect_value decode_inputs ~name:binding.key_input
+                  ~dtype:Ir.Dtype.Float16 ~shape:decode_input_shape
+                  "decode runtime input"
+              in
+              let* _ =
+                expect_value decode_inputs ~name:binding.value_input
+                  ~dtype:Ir.Dtype.Float16 ~shape:decode_input_shape
+                  "decode runtime input"
+              in
+              Ok ()
           in
           let* _ =
             expect_value decode_outputs ~name:binding.key_output
@@ -376,12 +402,22 @@ let contract_of_parts ~input_ids ~attentions ~recurrents ~attention_layout
         "decode output"
     in
     let expected_prefill_inputs = input_ids :: auxiliary_inputs in
+    let decode_auxiliary_inputs =
+      if direct_paged_decode then
+        List.filter
+          (fun name -> String_map.mem name decode_inputs)
+          auxiliary_inputs
+      else auxiliary_inputs
+    in
     let expected_decode_inputs =
-      (input_ids :: auxiliary_inputs)
-      @ (List.concat_map
-            (fun binding -> [ binding.key_input; binding.value_input ])
-            attentions
-         @ List.map (fun binding -> binding.state_input) recurrents)
+      (input_ids :: decode_auxiliary_inputs)
+      @ ((if direct_paged_decode then
+            [ Serving_schedule.Sequence.q8_attention_pool_input;
+              Serving_schedule.Sequence.q8_attention_slots_input ]
+          else
+            List.concat_map
+              (fun binding -> [ binding.key_input; binding.value_input ]) attentions)
+           @ List.map (fun binding -> binding.state_input) recurrents)
     in
     let expected_prefill_outputs =
       head_names prefill_head
@@ -746,8 +782,8 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
       Metal_runtime.Cache.create ~runtime:decode
         ~config:(Serving_cache.Config.kv config)
     in
+    let decode_memory_plan = Serving_package.memory_plan decode_package in
     let* decode_workspace =
-      let* decode_memory_plan = Serving_memory_plan.create decode_schedule in
       let workspace_bytes =
         max 262144 (Serving_memory_plan.workspace_bytes decode_memory_plan)
       in
@@ -771,7 +807,9 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         decode_workspace;
         decode_token_buffer;
         rope_table;
-        decode_schedules = Hashtbl.create 64;
+        decode_schedule;
+        decode_memory_plan;
+        decode_executable = None;
         prefill_schedules = Hashtbl.create 64;
         suffix_prefill_schedules = Hashtbl.create 64;
         verification_schedules = Hashtbl.create 64;
@@ -878,20 +916,8 @@ let suffix_prefill_schedule engine ~all_token_outputs ~tokens ~past_tokens =
       Ok (schedule, memory_plan)
 
 let decode_schedule engine past_tokens =
-  match Hashtbl.find_opt engine.decode_schedules past_tokens with
-  | Some schedule -> Ok schedule
-  | None ->
-      let base_schedule =
-        engine.decode |> Metal_runtime.package |> Serving_package.schedule
-      in
-      let specialization = specialization_of engine in
-      let* schedule =
-        Serving_specialization.decode_paged_q8 ~specialization
-          ~captured_past:engine.contract.past_tokens ~past_tokens
-          ~cache:(Serving_cache.Config.kv engine.config) base_schedule
-      in
-      Hashtbl.add engine.decode_schedules past_tokens schedule;
-      Ok schedule
+  if past_tokens <= 0 then Error "decode past length must be positive"
+  else Ok engine.decode_schedule
 
 let verification_schedule engine prompt_lookup ~query_tokens ~past_tokens =
   let key = query_tokens, past_tokens in
@@ -962,33 +988,35 @@ let attention_mask_buffer runtime ~query_start ~query_tokens ~total_tokens
   done;
   Metal_runtime.Buffer.of_bytes ~runtime bytes
 
-let transformer_auxiliary_inputs engine ~runtime ~query_start ~query_tokens
-    ~total_tokens =
+let transformer_auxiliary_inputs ?(required = fun _ -> true) engine ~runtime
+    ~query_start ~query_tokens ~total_tokens =
   let specialization = specialization_of engine in
   let* position =
     match Model_program.Specialization.position_ids_input specialization with
     | None -> Ok []
-    | Some name ->
+    | Some name when required name ->
         let* buffer = position_ids_buffer runtime ~start:query_start ~length:query_tokens in
         Ok [ name, buffer ]
+    | Some _ -> Ok []
   in
   let* full =
     match
       Model_program.Specialization.full_attention_mask_input specialization
     with
     | None -> Ok []
-    | Some name ->
+    | Some name when required name ->
         let* buffer =
           attention_mask_buffer runtime ~query_start ~query_tokens ~total_tokens ()
         in
         Ok [ name, buffer ]
+    | Some _ -> Ok []
   in
   let* sliding =
     match
       Model_program.Specialization.sliding_attention_mask_input specialization
     with
     | None -> Ok []
-    | Some name ->
+    | Some name when required name ->
         let sliding_window =
           Model_program.Specialization.sliding_window specialization
         in
@@ -997,6 +1025,7 @@ let transformer_auxiliary_inputs engine ~runtime ~query_start ~query_tokens
             ?sliding_window ()
         in
         Ok [ name, buffer ]
+    | Some _ -> Ok []
   in
   Ok (position @ full @ sliding)
 
@@ -1203,12 +1232,6 @@ let unpack_recurrent_states engine checkpoint =
   Metal_runtime.Cache.with_batch engine.physical_cache (fun batch ->
       recurrent batch [] engine.contract.recurrents)
 
-let decode_buffers_from_execution execution buffers =
-  Serving_replay.Decode_buffers.update_attention buffers ~f:(fun binding ->
-      let* key = output execution binding.key_output in
-      let* value = output execution binding.value_output in
-      Ok (key, value))
-
 let decode_inputs engine ~slots ~token_input ~rope_buffers buffers =
   let* attention_inputs =
     Metal_runtime.Cache.q8_attention_inputs engine.physical_cache ~slots
@@ -1229,8 +1252,12 @@ let decode_inputs engine ~slots ~token_input ~rope_buffers buffers =
     | None, Some _ -> Error "decode RoPE binding has no serving table"
   in
   let past_tokens = Array.length slots in
+  let required name =
+    Serving_schedule.runtime_inputs engine.decode_schedule
+    |> List.exists (fun (input_name, _) -> String.equal input_name name)
+  in
   let* auxiliary_inputs =
-    transformer_auxiliary_inputs engine ~runtime:engine.decode
+    transformer_auxiliary_inputs ~required engine ~runtime:engine.decode
       ~query_start:past_tokens ~query_tokens:1 ~total_tokens:(past_tokens + 1)
   in
   Ok
@@ -1267,32 +1294,53 @@ let rec pack_decode_recurrent batch checkpoint
       in
       pack_decode_recurrent batch (Some checkpoint) rest
 
-let rec encode_decode_attention batch cache execution slot ~source_items
-    ~source_offset (bindings : attention_binding list) =
-  match bindings with
-  | [] -> Ok ()
-  | binding :: rest ->
-      let* key = output execution binding.key_output in
-      let* value = output execution binding.value_output in
+let execute_static_decode engine ~schedule ~inputs ~token ~past_tokens
+    ~checkpoint ~cache_pack =
+  let checkpoint_index =
+    Option.fold ~none:0 ~some:Kv_cache.Checkpoint.to_int checkpoint
+  in
+  match engine.decode_executable with
+  | Some executable ->
       let* _ =
-        Metal_runtime.encode_cache_pack_attention_pair_slice batch ~cache
-          ~layer:binding.cache_layer ~slots:[| slot |] ~source_items
-          ~source_offset ~key_source:key ~value_source:value
+        Metal_runtime.Prebaked.execute executable.plan ~token ~past_tokens
+          ~checkpoint:checkpoint_index
       in
-      encode_decode_attention batch cache execution slot ~source_items
-        ~source_offset rest
-
-let rec encode_decode_recurrent batch cache checkpoint
-    (buffers : (recurrent_binding * Metal_runtime.Buffer.t) list) =
-  match buffers, checkpoint with
-  | [], _ -> Ok ()
-  | _ :: _, None -> Error "recurrent replay has no checkpoint reservation"
-  | (binding, state) :: rest, Some checkpoint ->
+      Ok executable.execution
+  | None ->
+      let* decode_uniforms =
+        Metal_runtime.Decode_uniforms.create ~past_tokens
+      in
+      let* dispatches, execution =
+        Metal_runtime.bind_decode_plan
+          ?workspace:engine.decode_workspace
+          ~memory_plan:engine.decode_memory_plan ~decode_uniforms
+          ~cache:engine.physical_cache ~cache_pack engine.decode ~schedule ~inputs
+      in
+      let token_id = engine.contract.decode_head.token_id in
+      let* output_buffer =
+        match
+          Option.bind token_id (fun name ->
+              Metal_runtime.Execution.output execution ~name)
+        with
+        | Some buffer -> Ok buffer
+        | None -> Metal_runtime.Buffer.create ~runtime:engine.decode ~bytes:4
+      in
+      let* token_buffer =
+        match engine.decode_token_buffer with
+        | Some buffer -> Ok buffer
+        | None -> Error "static decode has no retained token buffer"
+      in
+      let* plan =
+        Metal_runtime.Prebaked.create ~runtime:engine.decode ~dispatches
+          ~token_buffer ~output_buffer
+      in
+      let executable = { plan; execution } in
+      engine.decode_executable <- Some executable;
       let* _ =
-        Metal_runtime.encode_cache_pack_checkpoint batch ~cache
-          ~layer:binding.cache_layer ~checkpoint ~source:state
+        Metal_runtime.Prebaked.execute plan ~token ~past_tokens
+          ~checkpoint:checkpoint_index
       in
-      encode_decode_recurrent batch cache (Some checkpoint) rest
+      Ok execution
 
 let with_match engine match_ operation =
   let result = operation () in
@@ -1404,9 +1452,8 @@ let decode_matched engine match_ ~schedule ~prefix ~token ~retain_inserted_match
                     (Serving_replay.Decode_buffers.recurrent buffers)
             in
             let* execution =
-              Metal_runtime.execute_decode_step
-                ?workspace:engine.decode_workspace engine.decode
-                ~cache:engine.physical_cache ~schedule ~inputs ~cache_pack
+              execute_static_decode engine ~schedule ~inputs ~token ~past_tokens
+                ~checkpoint:reservation.checkpoint ~cache_pack
             in
             let* token_id =
               optional_output execution engine.contract.decode_head.token_id
@@ -1587,54 +1634,62 @@ let replay_matched engine match_ ~tokens ~cached_tokens =
             prepare_decode_buffers engine matched_slots source_checkpoint
             |> before_insert
           in
-          let* execution =
-            Metal_runtime.with_execution_batch engine.decode (fun batch ->
-                let rec replay buffers offset =
-                  let* schedule = decode_schedule engine offset in
-                  let* token_input = token_buffer engine.decode [| tokens.(offset) |] in
-                  let suffix_index = offset - cached_tokens in
-                  let prior_slots =
-                    if suffix_index = 0 then matched_slots
-                    else
-                      Array.append matched_slots
-                        (Array.sub reservation.slots 0 suffix_index)
-                  in
-                  let* inputs =
-                    let* rope_buffers =
-                      match engine.rope_table with
-                      | None -> Ok None
-                      | Some table ->
-                          Rope_table.row table ~position:offset
-                          |> Result.map Option.some
-                    in
-                    decode_inputs engine ~slots:prior_slots ~token_input
-                      ~rope_buffers buffers
-                  in
-                  let* execution =
-                    Metal_runtime.encode_schedule batch ~schedule ~inputs
-                  in
-                  let* buffers = decode_buffers_from_execution execution buffers in
-                  let source_items, source_offset =
-                    attention_pack_slice engine ~past_tokens:offset
-                  in
+          let* schedule = decode_schedule engine cached_tokens |> before_insert in
+          let rec replay offset =
+            let suffix_index = offset - cached_tokens in
+            let prior_slots =
+              if suffix_index = 0 then matched_slots
+              else
+                Array.append matched_slots
+                  (Array.sub reservation.slots 0 suffix_index)
+            in
+            let* token_input =
+              match engine.decode_token_buffer with
+              | Some buffer ->
                   let* () =
-                    encode_decode_attention batch engine.physical_cache execution
-                      reservation.slots.(suffix_index)
-                      ~source_items ~source_offset
-                      engine.contract.attentions
+                    Metal_runtime.Buffer.set_int64 buffer ~offset:0
+                      (Int64.of_int tokens.(offset))
                   in
-                  let* () =
-                    encode_decode_recurrent batch engine.physical_cache
-                      reservation.checkpoints.(suffix_index)
-                      (Serving_replay.Decode_buffers.recurrent buffers)
-                  in
-                  let next = offset + 1 in
-                  if next = token_count then Ok execution
-                  else replay buffers next
-                in
-                replay initial_buffers cached_tokens)
-            |> before_insert
+                  Ok buffer
+              | None -> Error "static replay has no retained token buffer"
+            in
+            let* rope_buffers =
+              match engine.rope_table with
+              | None -> Ok None
+              | Some table ->
+                  Rope_table.slot_for_position table ~position:offset
+                  |> Result.map Option.some
+            in
+            let* inputs =
+              decode_inputs engine ~slots:prior_slots ~token_input ~rope_buffers
+                initial_buffers
+            in
+            let source_items, source_offset =
+              attention_pack_slice engine ~past_tokens:offset
+            in
+            let* () =
+              Metal_runtime.Cache.update_pack_slot engine.physical_cache
+                reservation.slots.(suffix_index)
+            in
+            let cache_pack execution batch =
+              let* () =
+                pack_decode_attention batch execution
+                  [| reservation.slots.(suffix_index) |]
+                  ~source_items ~source_offset engine.contract.attentions
+              in
+              pack_decode_recurrent batch
+                reservation.checkpoints.(suffix_index)
+                (Serving_replay.Decode_buffers.recurrent initial_buffers)
+            in
+            let* execution =
+              execute_static_decode engine ~schedule ~inputs
+                ~token:tokens.(offset) ~past_tokens:offset
+                ~checkpoint:reservation.checkpoints.(suffix_index) ~cache_pack
+            in
+            let next = offset + 1 in
+            if next = token_count then Ok execution else replay next
           in
+          let* execution = replay cached_tokens |> before_insert in
           let* logits =
             optional_output execution engine.contract.decode_head.logits
             |> before_insert

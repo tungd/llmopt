@@ -966,6 +966,19 @@ pipeline_for_name(llmopt_metal_library *library, const char *kernel_name) {
   return pipeline;
 }
 
+CAMLprim value caml_llmopt_metal_preload_pipeline(value library_value,
+                                                   value name_value) {
+  CAMLparam2(library_value, name_value);
+  llmopt_metal_library *library = Library_val(library_value);
+  if (library == NULL) {
+    caml_failwith("Metal library has been finalized");
+  }
+  @autoreleasepool {
+    (void)pipeline_for_name(library, String_val(name_value));
+  }
+  CAMLreturn(Val_unit);
+}
+
 static NSUInteger positive_size(value encoded, const char *name) {
   intnat decoded = Long_val(encoded);
   if (decoded <= 0) {
@@ -1579,12 +1592,31 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     caml_failwith("Metal library has been finalized");
   }
 
+  mlsize_t total = Wosize_val(v_dispatches);
+  if (total == 0) {
+    caml_invalid_argument("prebaked Metal plan requires at least one dispatch");
+  }
+  for (mlsize_t i = 0; i < total; i++) {
+    value item = Field(v_dispatches, i);
+    value rem = Field(item, 1);
+    NSUInteger buffer_count = 0;
+    while (rem != Val_emptylist) {
+      buffer_count++;
+      rem = Field(rem, 1);
+    }
+    if (buffer_count > 16) {
+      caml_invalid_argument("prebaked Metal dispatch exceeds 16 buffers");
+    }
+    if (caml_string_length(Field(item, 2)) > 256) {
+      caml_invalid_argument("prebaked Metal dispatch parameters exceed 256 bytes");
+    }
+  }
+
   llmopt_prebaked_plan *plan = calloc(1, sizeof(*plan));
   if (plan == NULL) {
     caml_raise_out_of_memory();
   }
 
-  mlsize_t total = Wosize_val(v_dispatches);
   plan->records = calloc(total, sizeof(llmopt_dispatch_record));
   plan->record_count = total;
   plan->library = lib;

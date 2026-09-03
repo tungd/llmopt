@@ -10,6 +10,13 @@ val load_packages :
 val device_name : t -> string
 val package : t -> Serving_package.t
 
+module Decode_uniforms : sig
+  type t
+
+  val create : past_tokens:int -> (t, string) result
+  val past_tokens : t -> int
+end
+
 module Quant_qkv_tactic : sig
   val kernel_name :
     experimental_llama_mv:bool ->
@@ -191,6 +198,7 @@ val with_execution_batch :
 val encode_schedule :
   ?workspace:Buffer.t ->
   ?memory_plan:Serving_memory_plan.t ->
+  ?decode_uniforms:Decode_uniforms.t ->
   Execution_batch.t ->
   schedule:Serving_schedule.t ->
   inputs:(string * Buffer.t) list ->
@@ -237,19 +245,10 @@ val execute_schedule :
   inputs:(string * Buffer.t) list ->
   (Execution.t, string) result
 
-val execute_decode_step :
+val bind_decode_plan :
   ?workspace:Buffer.t ->
   ?memory_plan:Serving_memory_plan.t ->
-  t ->
-  cache:Cache.t ->
-  schedule:Serving_schedule.t ->
-  inputs:(string * Buffer.t) list ->
-  cache_pack:(Execution.t -> Cache.batch -> (unit, string) result) ->
-  (Execution.t, string) result
-
-val precompile_decode_batch :
-  ?workspace:Buffer.t ->
-  ?memory_plan:Serving_memory_plan.t ->
+  decode_uniforms:Decode_uniforms.t ->
   ?cache:Cache.t ->
   ?cache_pack:(Execution.t -> Cache.batch -> (unit, string) result) ->
   t ->
