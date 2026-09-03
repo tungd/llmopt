@@ -2578,6 +2578,224 @@ let () =
     |> Result.is_ok)
     "sequence specialization rebuilds fusion-local assignment provenance";
 
+  let unweighted_rms_graph, unweighted_rms_regions =
+    let graph = Ir.Graph.create () in
+    let input =
+      tensor_input graph ~name:"unweighted-rms-input"
+        ~source:Ir.Input_source.Runtime ~shape:[ 1; 8; 64 ]
+        ~dtype:Ir.Dtype.Float16
+    in
+    let append dtype op inputs shape =
+      let output =
+        Ir.Graph.fresh_tensor_value graph ~shape:(Tensor_shape.of_ints_exn shape)
+          ~dtype
+      in
+      Ir.Graph.append graph ~op ~inputs ~output:(Some output);
+      output
+    in
+    let input_f32 =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+        [ input ] [ 1; 8; 64 ]
+    in
+    let squared =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary
+                 (Ir.Pointwise.Pow (Ir.Scalar.Int 2), input_f32))))
+        [ input_f32 ] [ 1; 8; 64 ]
+    in
+    let mean =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Reduce
+              { Ir.Reduction.operator = Ir.Reduction.Mean;
+                axes = [ 2 ]; keepdim = true }))
+        [ squared ] [ 1; 8; 1 ]
+    in
+    let stabilized =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Add, Ir.Pointwise.Tensor mean,
+                   Ir.Pointwise.Scalar (Ir.Scalar.Float 1e-5) ))))
+        [ mean ] [ 1; 8; 1 ]
+    in
+    let inverse =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, stabilized))))
+        [ stabilized ] [ 1; 8; 1 ]
+    in
+    let normalized =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor input_f32,
+                   Ir.Pointwise.Tensor inverse ))))
+        [ input_f32; inverse ] [ 1; 8; 64 ]
+    in
+    let output =
+      append Ir.Dtype.Float16
+        (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float16))
+        [ normalized ] [ 1; 8; 64 ]
+    in
+    Ir.Graph.add_output graph ~name:"unweighted-rms" output;
+    let analysis =
+      graph |> Compute_plan.of_graph |> expect_ok
+      |> Constructive_lowering.analyze ~target:Target_hardware.default
+    in
+    let regions =
+      analysis |> Constructive_lowering.lower
+      |> Constructive_lowering.executable_regions |> expect_ok
+    in
+    graph, regions
+  in
+  expect
+    (List.exists
+       (fun region ->
+         match Kernel_ir.Fused_tactic.select region with
+         | Some (Kernel_ir.Fused_tactic.Rms_normalize { weight = None; _ }) -> true
+         | _ -> false)
+       unweighted_rms_regions)
+    "constructive assignments recover unweighted RMSNorm (e.g. V-norm) without weight";
+  let unweighted_rms_schedule =
+    Serving_schedule.of_graph ~fusion_regions:unweighted_rms_regions
+      unweighted_rms_graph
+    |> expect_ok
+  in
+  expect
+    (List.length (Serving_schedule.commands unweighted_rms_schedule) < 8)
+    "unweighted RMSNorm collapses scalar dataflow into one carrier command";
+
+  let rms_add_graph, rms_add_regions =
+    let graph = Ir.Graph.create () in
+    let input =
+      tensor_input graph ~name:"rms-add-input"
+        ~source:Ir.Input_source.Runtime ~shape:[ 1; 64 ]
+        ~dtype:Ir.Dtype.Float16
+    in
+    let weight =
+      tensor_input graph ~name:"rms-add-weight"
+        ~source:(Ir.Input_source.Tensor_store { key = "rms-add-weight" })
+        ~shape:[ 64 ] ~dtype:Ir.Dtype.Float32
+    in
+    let residual =
+      tensor_input graph ~name:"rms-add-residual"
+        ~source:Ir.Input_source.Runtime ~shape:[ 1; 64 ]
+        ~dtype:Ir.Dtype.Float16
+    in
+    let append dtype op inputs shape =
+      let output =
+        Ir.Graph.fresh_tensor_value graph ~shape:(Tensor_shape.of_ints_exn shape)
+          ~dtype
+      in
+      Ir.Graph.append graph ~op ~inputs ~output:(Some output);
+      output
+    in
+    let input_f32 =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float32))
+        [ input ] [ 1; 64 ]
+    in
+    let squared =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary
+                 (Ir.Pointwise.Pow (Ir.Scalar.Int 2), input_f32))))
+        [ input_f32 ] [ 1; 64 ]
+    in
+    let mean =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Reduce
+              { Ir.Reduction.operator = Ir.Reduction.Mean;
+                axes = [ 1 ]; keepdim = true }))
+        [ squared ] [ 1; 1 ]
+    in
+    let stabilized =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Add, Ir.Pointwise.Tensor mean,
+                   Ir.Pointwise.Scalar (Ir.Scalar.Float 1e-5) ))))
+        [ mean ] [ 1; 1 ]
+    in
+    let inverse =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Unary (Ir.Pointwise.Rsqrt, stabilized))))
+        [ stabilized ] [ 1; 1 ]
+    in
+    let normalized =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor input_f32,
+                   Ir.Pointwise.Tensor inverse ))))
+        [ input_f32; inverse ] [ 1; 64 ]
+    in
+    let scaled =
+      append Ir.Dtype.Float32
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor normalized,
+                   Ir.Pointwise.Tensor weight ))))
+        [ normalized; weight ] [ 1; 64 ]
+    in
+    let norm_out =
+      append Ir.Dtype.Float16
+        (Ir.Op.Primitive (Ir.Primitive.Cast Ir.Dtype.Float16))
+        [ scaled ] [ 1; 64 ]
+    in
+    let output =
+      append Ir.Dtype.Float16
+        (Ir.Op.Primitive
+           (Ir.Primitive.Pointwise
+              (Ir.Pointwise.Binary
+                 ( Ir.Pointwise.Add, Ir.Pointwise.Tensor norm_out,
+                   Ir.Pointwise.Tensor residual ))))
+        [ norm_out; residual ] [ 1; 64 ]
+    in
+    Ir.Graph.add_output graph ~name:"rms-add-output" output;
+    let analysis =
+      graph |> Compute_plan.of_graph |> expect_ok
+      |> Constructive_lowering.analyze ~target:Target_hardware.default
+    in
+    let regions =
+      analysis |> Constructive_lowering.lower
+      |> Constructive_lowering.executable_regions |> expect_ok
+    in
+    graph, regions
+  in
+  expect
+    (List.exists
+       (fun region ->
+         match Kernel_ir.Fused_tactic.select region with
+         | Some (Kernel_ir.Fused_tactic.Rms_normalize { residual = Some _; _ }) -> true
+         | _ -> false)
+       rms_add_regions)
+    "constructive assignments recover RMSNorm with fused residual add";
+  let rms_add_schedule =
+    Serving_schedule.of_graph ~fusion_regions:rms_add_regions
+      rms_add_graph
+    |> expect_ok
+  in
+  expect
+    (List.length (Serving_schedule.commands rms_add_schedule) < 9)
+    "fused RMSNorm-add collapses normalization and residual addition into one command";
+
+
+
   let rope_graph = Ir.Graph.create () in
   let rope_input =
     tensor_input rope_graph ~name:"rope_input" ~source:Ir.Input_source.Runtime

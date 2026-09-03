@@ -2655,7 +2655,8 @@ type assignment_execution =
     }
   | Assignment_rms_normalize of {
       input : Ir.Value.t;
-      weight : Ir.Value.t;
+      weight : Ir.Value.t option;
+      residual : Ir.Value.t option;
       output : Ir.Value.t;
       epsilon : float;
     }
@@ -2697,8 +2698,8 @@ let assignment_execution command =
       Some (Assignment_gated_product { gate; up; activation; output })
   | Some
       (Kernel_ir.Fused_tactic.Rms_normalize
-        { input; weight; output; epsilon }) ->
-      Some (Assignment_rms_normalize { input; weight; output; epsilon })
+        { input; weight; residual; output; epsilon }) ->
+      Some (Assignment_rms_normalize { input; weight; residual; output; epsilon })
   | Some
       (Kernel_ir.Fused_tactic.Rms_rope
         { config; input; weight; cosine; sine; output }) ->
@@ -2855,7 +2856,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                      ~operation:Kernel_abi.Operation.Rms_rope
                      ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
                      ~grid:(grid_x, 1, 1))
-          | Assignment_rms_normalize { input; weight; output; epsilon } ->
+          | Assignment_rms_normalize { input; weight; residual; output; epsilon } ->
               let input_shape = Ir.Value.logical_shape input in
               let* width =
                 match List.rev (Tensor_shape.dimensions input_shape) with
@@ -2863,18 +2864,72 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                 | _ -> Error "assignment RMSNorm has no final dimension"
               in
               let rows = Tensor_shape.numel input_shape / width in
-              let* buffers = find_values state [ input; weight ] in
+              let* buffers =
+                match weight, residual with
+                | Some weight, Some residual ->
+                    find_values state [ input; weight; residual ]
+                | Some weight, None -> find_values state [ input; weight ]
+                | None, Some residual ->
+                    find_values state [ input; residual ]
+                | None, None -> find_values state [ input ]
+              in
               let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
               let input_dtype = Ir.Value.dtype input in
-              let weight_dtype = Ir.Value.dtype weight in
-              let wide =
-                use_wide_rows ~rows ~width
-                && input_dtype = Ir.Dtype.Float16
-                && weight_dtype = Ir.Dtype.Float32
-              in
-              let* entry, simd =
-                select_rms_norm_kernel runtime ~wide input_dtype weight_dtype
-                  (Ir.Value.dtype output)
+              let* entry, simd, wide =
+                match weight, residual with
+                | Some weight, Some _residual ->
+                    let weight_dtype = Ir.Value.dtype weight in
+                    let wide =
+                      use_wide_rows ~rows ~width
+                      && input_dtype = Ir.Dtype.Float16
+                      && weight_dtype = Ir.Dtype.Float32
+                    in
+                    let name =
+                      if wide then "llmopt_rms_norm_add_f16_wf32_wide"
+                      else "llmopt_rms_norm_add_f16_wf32_simd"
+                    in
+                    let* entry =
+                      kernel_entry ~name runtime
+                        ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype
+                        ~output_dtype:(Ir.Value.dtype output)
+                    in
+                    Ok (entry, not wide, wide)
+                | Some weight, None ->
+                    let weight_dtype = Ir.Value.dtype weight in
+                    let wide =
+                      use_wide_rows ~rows ~width
+                      && input_dtype = Ir.Dtype.Float16
+                      && weight_dtype = Ir.Dtype.Float32
+                    in
+                    let* entry, simd =
+                      select_rms_norm_kernel runtime ~wide input_dtype weight_dtype
+                        (Ir.Value.dtype output)
+                    in
+                    Ok (entry, simd, wide)
+                | None, Some _residual ->
+                    let wide = use_wide_rows ~rows ~width in
+                    let name =
+                      if wide then "llmopt_rms_norm_unweighted_add_f16_wide"
+                      else "llmopt_rms_norm_unweighted_add_f16_simd"
+                    in
+                    let* entry =
+                      kernel_entry ~name runtime
+                        ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype
+                        ~output_dtype:(Ir.Value.dtype output)
+                    in
+                    Ok (entry, not wide, wide)
+                | None, None ->
+                    let wide = use_wide_rows ~rows ~width in
+                    let name =
+                      if wide then "llmopt_rms_norm_unweighted_f16_wide"
+                      else "llmopt_rms_norm_unweighted_f16_simd"
+                    in
+                    let* entry =
+                      kernel_entry ~name runtime
+                        ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype
+                        ~output_dtype:(Ir.Value.dtype output)
+                    in
+                    Ok (entry, not wide, wide)
               in
               let* grid_x =
                 if wide then wide_rows_grid rows
@@ -3617,6 +3672,37 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
               kernel_entry ~name runtime
                 ~operation:Kernel_abi.Operation.Rms_norm
                 ~input_dtype:(Ir.Value.dtype input)
+                ~output_dtype:(Ir.Value.dtype output)
+            in
+            let* grid_x =
+              if wide then wide_rows_grid rows else simd_rows_grid rows
+            in
+            let* output_buffer = workspace_buffer state output in
+            let* kernel =
+              dispatch ~batch runtime entry ~buffers:(buffers @ [ output_buffer ])
+                ~parameters ~grid:(grid_x, 1, 1)
+            in
+            dispatched (Ok (bind_value state output output_buffer, kernel))
+        | Ir.Op.Rms_norm { epsilon }, [ input ], Some output ->
+            let input_shape = Ir.Value.logical_shape input in
+            let dimensions = Tensor_shape.dimensions input_shape in
+            let* width =
+              match List.rev dimensions with
+              | width :: _ when width > 0 -> Ok width
+              | _ -> Error "RMSNorm requires a non-empty final dimension"
+            in
+            let rows = Tensor_shape.numel input_shape / width in
+            let* buffers = find_values state [ input ] in
+            let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
+            let input_dtype = Ir.Value.dtype input in
+            let wide = use_wide_rows ~rows ~width in
+            let name =
+              if wide then "llmopt_rms_norm_unweighted_f16_wide"
+              else "llmopt_rms_norm_unweighted_f16_simd"
+            in
+            let* entry =
+              kernel_entry ~name runtime
+                ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype
                 ~output_dtype:(Ir.Value.dtype output)
             in
             let* grid_x =

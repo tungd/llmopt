@@ -1517,7 +1517,8 @@ module Fused_tactic = struct
       }
     | Rms_normalize of {
         input : Ir.Value.t;
-        weight : Ir.Value.t;
+        weight : Ir.Value.t option;
+        residual : Ir.Value.t option;
         output : Ir.Value.t;
         epsilon : float;
       }
@@ -1780,23 +1781,61 @@ module Fused_tactic = struct
     match result with
     | None -> None
     | Some result -> (
-        match final_scale result.slot with
-        | Some { inputs = [ left; right ]; _ } ->
-            let try_orientation normalized weight_slot =
-              let normalized = normalized_origin region normalized in
-              match try_normalized normalized,
-                    value_origin region values weight_slot
-              with
-              | Some (input, epsilon), Some weight ->
-                  Some
-                    (Rms_normalize
-                       { input; weight; output = result.value; epsilon })
-              | _ -> None
-            in
-            (match try_orientation left right with
-            | Some tactic -> Some tactic
-            | None -> try_orientation right left)
-        | _ -> None)
+        let match_rms slot =
+          let try_unweighted () =
+            let normalized = normalized_origin region slot in
+            match try_normalized normalized with
+            | Some (input, epsilon) -> Some (input, None, epsilon)
+            | None -> None
+          in
+          match final_scale slot with
+          | Some { inputs = [ left; right ]; _ } ->
+              let try_orientation normalized weight_slot =
+                let normalized = normalized_origin region normalized in
+                match try_normalized normalized,
+                      value_origin region values weight_slot
+                with
+                | Some (input, epsilon), Some weight ->
+                    Some (input, Some weight, epsilon)
+                | _ -> None
+              in
+              (match try_orientation left right with
+              | Some tactic -> Some tactic
+              | None -> (
+                  match try_orientation right left with
+                  | Some tactic -> Some tactic
+                  | None -> try_unweighted ()))
+          | _ -> try_unweighted ()
+        in
+        let match_residual () =
+          match producer region result.slot with
+          | Some
+              { primitive = Primitive.Binary Primitive.Add;
+                inputs = [ left; right ]; _ } ->
+              let try_residual norm_slot residual_slot =
+                match match_rms norm_slot, value_origin region values residual_slot with
+                | Some (input, weight, epsilon), Some residual ->
+                    Some
+                      (Rms_normalize
+                         { input; weight; residual = Some residual;
+                           output = result.value; epsilon })
+                | _ -> None
+              in
+              (match try_residual left right with
+              | Some tactic -> Some tactic
+              | None -> try_residual right left)
+          | _ -> None
+        in
+        match match_residual () with
+        | Some tactic -> Some tactic
+        | None -> (
+            match match_rms result.slot with
+            | Some (input, weight, epsilon) ->
+                Some
+                  (Rms_normalize
+                     { input; weight; residual = None;
+                       output = result.value; epsilon })
+            | None -> None))
 
   let rms_rope region values =
     let external_inputs = input_map region in

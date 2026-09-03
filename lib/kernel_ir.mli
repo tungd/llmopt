@@ -281,7 +281,8 @@ module Fused_tactic : sig
       }
     | Rms_normalize of {
         input : Ir.Value.t;
-        weight : Ir.Value.t;
+        weight : Ir.Value.t option;
+        residual : Ir.Value.t option;
         output : Ir.Value.t;
         epsilon : float;
       }

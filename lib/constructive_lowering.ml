@@ -1400,8 +1400,15 @@ let lower analysis =
   in
   let linear_events = List.rev linear_events in
   let tactic_boundary_values = function
-    | Kernel_ir.Fused_tactic.Rms_normalize { input; weight; output; _ } ->
-        [ input; weight ], output
+    | Kernel_ir.Fused_tactic.Rms_normalize { input; weight; residual; output; _ } ->
+        let inputs =
+          match weight, residual with
+          | Some weight, Some residual -> [ input; weight; residual ]
+          | Some weight, None -> [ input; weight ]
+          | None, Some residual -> [ input; residual ]
+          | None, None -> [ input ]
+        in
+        inputs, output
     | Kernel_ir.Fused_tactic.Rms_rope
         { input; weight; cosine; sine; output; _ } ->
         [ input; weight; cosine; sine ], output
