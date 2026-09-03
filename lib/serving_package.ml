@@ -67,13 +67,14 @@ type t = {
   files : Files.t;
   kernels : Kernel_abi.Entry.t list;
   schedule : Serving_schedule.t;
+  memory_plan : Serving_memory_plan.t;
   tensor_store : Tensor_store.t option;
   cache : Cache.t;
 }
 
-let current_abi_version = 26
+let current_abi_version = 27
 
-let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
+let validate ~stage ~model ~kernels ~schedule ~tensor_store =
   let kernel_names = List.map Kernel_abi.Entry.name kernels in
   let tensor_inputs = Serving_schedule.tensor_inputs schedule in
   if Option.exists (fun value -> String.trim value = "") model then
@@ -89,18 +90,25 @@ let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
     Error "serving-stage package must declare a tensor store"
   else if stage = Stage.Serving && tensor_inputs = [] then
     Error "serving-stage package schedule has no tensor-store inputs"
-  else
-    Ok
-      {
-        abi_version = current_abi_version;
-        stage;
-        model;
-        files;
-        kernels;
-        schedule;
-        tensor_store;
-        cache;
-      }
+  else Ok ()
+
+let make ~stage ~model ~files ~kernels ~schedule ~memory_plan ~tensor_store
+    ~cache =
+  { abi_version = current_abi_version;
+    stage;
+    model;
+    files;
+    kernels;
+    schedule;
+    memory_plan;
+    tensor_store;
+    cache }
+
+let create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache () =
+  let* () = validate ~stage ~model ~kernels ~schedule ~tensor_store in
+  let* memory_plan = Serving_memory_plan.create schedule in
+  Ok (make ~stage ~model ~files ~kernels ~schedule ~memory_plan ~tensor_store
+        ~cache)
 
 let compiled_graph ?model ~files ~kernels ~schedule ~cache () =
   create ~stage:Stage.Compiled_graph ?model ~files ~kernels ~schedule
@@ -116,6 +124,7 @@ let model package = package.model
 let files package = package.files
 let kernels package = package.kernels
 let schedule package = package.schedule
+let memory_plan package = package.memory_plan
 let tensor_store package = package.tensor_store
 let cache package = package.cache
 
@@ -299,6 +308,7 @@ let to_bytes package =
   write_option writer write_tensor_store package.tensor_store;
   write_cache writer package.cache;
   package.schedule |> Serving_schedule.to_bytes |> Binary.Writer.bytes writer;
+  package.memory_plan |> Serving_memory_plan.to_bytes |> Binary.Writer.bytes writer;
   Binary.Writer.contents writer
 
 let of_bytes bytes =
@@ -309,7 +319,7 @@ let of_bytes bytes =
   if actual_magic <> magic then Error "invalid serving-package magic"
   else
     let* version = Binary.Reader.u16 reader in
-    if version < 25 || version > current_abi_version then
+    if version <> current_abi_version then
       Error (Printf.sprintf "unsupported serving-package version: %d" version)
 
 
@@ -343,9 +353,15 @@ let of_bytes bytes =
         let* cache = read_cache reader in
         let* schedule_bytes = Binary.Reader.bytes reader in
         let* schedule = Serving_schedule.of_bytes schedule_bytes in
+        let* memory_plan_bytes = Binary.Reader.bytes reader in
+        let* memory_plan =
+          Serving_memory_plan.of_bytes ~schedule memory_plan_bytes
+        in
         let* () = Binary.Reader.finish reader in
-        create ~stage ?model ~files ~kernels ~schedule ~tensor_store ~cache ()
-        |> Result.map (fun package -> { package with abi_version = version })
+        let* () = validate ~stage ~model ~kernels ~schedule ~tensor_store in
+        Ok
+          (make ~stage ~model ~files ~kernels ~schedule ~memory_plan
+             ~tensor_store ~cache)
 
 let write_file path package =
   try

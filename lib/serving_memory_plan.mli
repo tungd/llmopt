@@ -15,3 +15,6 @@ val workspace_bytes : t -> int
 val bytes_without_reuse : t -> int
 val allocation_count : t -> int
 val value_bytes : Ir.Value.t -> (int, string) result
+
+val to_bytes : t -> bytes
+val of_bytes : schedule:Serving_schedule.t -> bytes -> (t, string) result

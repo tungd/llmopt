@@ -349,3 +349,134 @@ let check_disjoint plan values =
       else check i (j + 1)
   in
   check 0 1
+
+let to_bytes plan =
+  let writer = Binary.Writer.create () in
+  Binary.Writer.raw_string writer "LLMOPTMP";
+  Binary.Writer.u16 writer 1;
+  Binary.Writer.u64 writer plan.workspace_bytes;
+  Binary.Writer.u64 writer plan.bytes_without_reuse;
+  Binary.Writer.u64 writer (Value_map.cardinal plan.storage_by_value);
+  Value_map.iter
+    (fun value storage ->
+      Binary.Writer.u64 writer (Ir.Value_id.to_int value);
+      match storage with
+      | Storage.External -> Binary.Writer.u8 writer 0
+      | Storage.Workspace owner ->
+          Binary.Writer.u8 writer 1;
+          Binary.Writer.u64 writer (Ir.Value_id.to_int owner))
+    plan.storage_by_value;
+  Binary.Writer.u64 writer (Value_map.cardinal plan.allocation_by_owner);
+  Value_map.iter
+    (fun owner allocation ->
+      Binary.Writer.u64 writer (Ir.Value_id.to_int owner);
+      Binary.Writer.u64 writer allocation.Allocation.offset;
+      Binary.Writer.u64 writer allocation.Allocation.bytes)
+    plan.allocation_by_owner;
+  Binary.Writer.contents writer
+
+let schedule_values schedule =
+  let values = Hashtbl.create 128 in
+  let add value =
+    Hashtbl.replace values (Ir.Value.id value |> Ir.Value_id.to_int) value
+  in
+  List.iter
+    (fun command ->
+      List.iter add (Serving_schedule.Command.inputs command);
+      Option.iter add (Serving_schedule.Command.output command);
+      List.iter add
+        (Ir.Op.additional_outputs (Serving_schedule.Command.op command)))
+    (Serving_schedule.commands schedule);
+  values
+
+let of_bytes ~schedule bytes =
+  let reader = Binary.Reader.create bytes in
+  let* magic = Binary.Reader.raw_string reader ~length:8 in
+  if magic <> "LLMOPTMP" then Error "invalid serving memory-plan magic"
+  else
+    let* version = Binary.Reader.u16 reader in
+    if version <> 1 then
+      Error (Printf.sprintf "unsupported serving memory-plan version: %d" version)
+    else
+      let* workspace_bytes = Binary.Reader.u64 reader in
+      let* bytes_without_reuse = Binary.Reader.u64 reader in
+      let values = schedule_values schedule in
+      let resolve encoded =
+        match Hashtbl.find_opt values encoded with
+        | Some value -> Ok (Ir.Value.id value)
+        | None ->
+            Error
+              (Printf.sprintf
+                 "serving memory plan references unknown schedule value %d"
+                 encoded)
+      in
+      let* storage_count = Binary.Reader.u64 reader in
+      let rec read_storage remaining storage_by_value =
+        if remaining = 0 then Ok storage_by_value
+        else
+          let* encoded_value = Binary.Reader.u64 reader in
+          let* value = resolve encoded_value in
+          let* tag = Binary.Reader.u8 reader in
+          let* storage =
+            match tag with
+            | 0 -> Ok Storage.External
+            | 1 ->
+                let* encoded_owner = Binary.Reader.u64 reader in
+                let* owner = resolve encoded_owner in
+                Ok (Storage.Workspace owner)
+            | tag ->
+                Error
+                  (Printf.sprintf
+                     "unknown serving memory-plan storage tag: %d" tag)
+          in
+          if Value_map.mem value storage_by_value then
+            Error
+              (Printf.sprintf
+                 "duplicate serving memory-plan value %d" encoded_value)
+          else
+            read_storage (remaining - 1)
+              (Value_map.add value storage storage_by_value)
+      in
+      let* storage_by_value = read_storage storage_count Value_map.empty in
+      let* allocation_count = Binary.Reader.u64 reader in
+      let rec read_allocations remaining allocation_by_owner =
+        if remaining = 0 then Ok allocation_by_owner
+        else
+          let* encoded_owner = Binary.Reader.u64 reader in
+          let* owner = resolve encoded_owner in
+          let* offset = Binary.Reader.u64 reader in
+          let* bytes = Binary.Reader.u64 reader in
+          if bytes <= 0 then Error "serving memory-plan allocation is empty"
+          else if offset > workspace_bytes || bytes > workspace_bytes - offset then
+            Error "serving memory-plan allocation exceeds its workspace"
+          else if Value_map.mem owner allocation_by_owner then
+            Error
+              (Printf.sprintf
+                 "duplicate serving memory-plan owner %d" encoded_owner)
+          else
+            read_allocations (remaining - 1)
+              (Value_map.add owner { Allocation.offset; bytes }
+                 allocation_by_owner)
+      in
+      let* allocation_by_owner =
+        read_allocations allocation_count Value_map.empty
+      in
+      let* () = Binary.Reader.finish reader in
+      let* () =
+        Value_map.fold
+          (fun value storage result ->
+            let* () = result in
+            match storage with
+            | Storage.External -> Ok ()
+            | Storage.Workspace owner ->
+                if Value_map.mem owner allocation_by_owner then Ok ()
+                else
+                  Error
+                    (Printf.sprintf
+                       "serving memory-plan value %d has no owner allocation"
+                       (Ir.Value_id.to_int value)))
+          storage_by_value (Ok ())
+      in
+      Ok
+        { storage_by_value; allocation_by_owner; workspace_bytes;
+          bytes_without_reuse }

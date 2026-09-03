@@ -63,6 +63,7 @@ val model : t -> string option
 val files : t -> Files.t
 val kernels : t -> Kernel_abi.Entry.t list
 val schedule : t -> Serving_schedule.t
+val memory_plan : t -> Serving_memory_plan.t
 val tensor_store : t -> Tensor_store.t option
 val cache : t -> Cache.t
 
