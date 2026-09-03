@@ -58,6 +58,7 @@ configuration.
 * [Gemma 4 matched-policy diagnostic and constructive-transition correction](experiments/exp-0140-gemma4-matched-policy-diagnostic-2026-09-03.md) - same-prompt top-10 logits prove suppression is applied but arithmetic still diverges, and restore legacy passes after rejecting receipt-only Kernel_ir regions as backend lowering.
 * [Primitive-assignment-backed Gemma execution](experiments/exp-0141-assignment-backed-gemma4-execution-2026-09-03.md) - 48 prefill and 48 decode regions survive schedule serialization and drive Metal runtime execution with exact legacy-backed LLMOpt logits.
 * [Constructive RMSNorm and RoPE Gemma execution](experiments/exp-0142-constructive-rms-rope-gemma4-2026-09-03.md) - 96 RMSNorm-RoPE and 193 RMSNorm regions per entrypoint execute from primitive bindings and select the same next token as llama.cpp.
+* [Gemma 4 postprocessed last-token projection attempt](experiments/exp-0144-gemma4-last-token-projection-attempt-2026-09-03.md) - one-row prefill head specialization and Layout_model extraction are verified statically; the sole device attempt stopped before dispatch, leaving corrected latency and 128-token parity unmeasured.
 
 * [FX linear smoke](experiments/exp-0001-fx-linear.md) - first cross-language probe.
 * [Cross-runtime benchmark protocol](benchmarks/benchmark-protocol.md) - llama.cpp target, native llmopt side comparison, and MPS reference record format.

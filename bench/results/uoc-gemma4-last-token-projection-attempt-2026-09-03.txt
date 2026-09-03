@@ -1,0 +1,54 @@
+Gemma 4 postprocessed last-token projection attempt
+===================================================
+
+Source and artifact
+-------------------
+
+Source worktree base: b0c3290
+Artifact: _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03
+Prompt token count: 37
+Prior artifact receipt: bench/results/uoc-final-constructive-gemma4-parity-2026-09-03.txt
+Prior probe seconds: 10.581340
+
+Single model-execution attempt
+------------------------------
+
+Command: _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --top-k-logits 10
+Exit status: 2
+Error: prefill logits projection is not fed by a sole-consumer identity index
+
+The attempt stopped during schedule specialization before prompt Metal dispatch.
+It therefore produced no logits, latency, or completion-token result.
+
+Correction and static artifact result
+-------------------------------------
+
+The final-token specialization now traces a sole-consumer elementwise chain
+backward from the declared logits output to its Linear projection. It rewrites
+an existing sole-consumer identity index when present and otherwise inserts a
+typed final-row Index command immediately before the Linear. The downstream
+Div, Tanh, and Mul commands infer their one-row result shapes from that input.
+
+Command: _build/bin/llmopt-model-check _artifacts/gemma4-12b-qat-final-constructive-fixed-2026-09-03
+Exit status: 0
+Static result: tokens=22, prefill_head_rows=1, captured_decode_past=2, paged_q8_attention=48
+
+Repository verification
+-----------------------
+
+Command: ninja -f ninja.build all test native-schedule-smoke
+Exit status: 0
+Result: OCaml suite passed; 79 Python tests passed; the 1,125-command,
+135-kernel native schedule fixture compiled and validated with zero opaque
+commands.
+
+Validation boundary
+-------------------
+
+No second model-execution attempt was made. The corrected path is proven by the
+focused shape regression and exact-artifact static specialization, but its
+device latency and 128-token autoregressive parity remain unmeasured.
+
+Evidence: the one execution attempt returned the exact specialization error,
+and the corrected exact artifact specializes to one prefill head row; assumption:
+the unexecuted corrected path will preserve the prior first-token result.

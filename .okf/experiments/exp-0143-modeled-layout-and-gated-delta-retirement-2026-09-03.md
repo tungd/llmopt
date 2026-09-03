@@ -4,7 +4,7 @@ title: 'Modeled layout and gated-delta pass retirement'
 description: 'GQA and token-major layouts use typed axis provenance; padded gated-delta executes from primitive assignment regions; four ad hoc pass modules are removed.'
 tags: [experiment, compiler, constructive-lowering, gqa, gated-delta, pass-retirement]
 status: stable
-generated: { by: codex/gpt-5.6, at: '2026-09-03T12:00:00+07:00' }
+generated: { by: codex/gpt-5.6, at: '2026-09-03T09:47:12+07:00' }
 sources:
   - id: compiler-decision
     resource: /decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md
@@ -13,7 +13,7 @@ sources:
     resource: /lib/kernel_ir.ml
     title: Primitive assignment and fused tactic model
   - id: layout-model
-    resource: /lib/pass_fuse_linear_bias.ml
+    resource: /lib/layout_model.ml
     title: Typed logical-axis provenance model
   - id: final-attempt
     resource: /bench/results/uoc-final-constructive-gemma4-attempt-2026-09-03.txt
@@ -37,7 +37,8 @@ expansion, reshape/view, contiguous movement, and dtype casts. Attention and
 gated-delta consumers query that provenance for grouped-head replication,
 token-to-head movement, and flattened token-major output. The compiler no
 longer runs fixed GQA, attention-output, value-transpose, or gated-delta graph
-sequence matchers.
+sequence matchers. The model now lives in the independent `Layout_model`
+compilation unit rather than beside the residual Linear/QKV matchers.
 
 The first post-retirement 37-token execution stopped before Metal dispatch:
 prefill specialization changed GQA reshape value `776` from `5,607,424` input
