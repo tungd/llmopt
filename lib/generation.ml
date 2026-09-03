@@ -121,7 +121,7 @@ let create ~tokenizer ~chat:chat_contract ~engine =
   Ok { tokenizer; chat; engine }
 
 let create_from_program ~program ~model_dir ?token_capacity ?checkpoint_capacity
-    ?page_size () =
+    ?page_size ?warmup () =
   let tokenizer_name =
     Model_program.Artifact.path
       (Model_program.Processor.tokenizer (Model_program.processor program))
@@ -135,15 +135,16 @@ let create_from_program ~program ~model_dir ?token_capacity ?checkpoint_capacity
   in
   let* engine =
     Serving_engine.create_from_program ~program ~model_dir ?token_capacity
-      ?checkpoint_capacity ?page_size ()
+      ?checkpoint_capacity ?page_size ?warmup ()
   in
   create ~tokenizer ~chat ~engine
 
-let create_from_dir ~model_dir ?token_capacity ?checkpoint_capacity ?page_size () =
+let create_from_dir ~model_dir ?token_capacity ?checkpoint_capacity ?page_size
+    ?warmup () =
   let program_path = Filename.concat model_dir "model.llmopt" in
   let* program = Model_program.of_file program_path in
   create_from_program ~program ~model_dir ?token_capacity ?checkpoint_capacity
-    ?page_size ()
+    ?page_size ?warmup ()
 
 let program gen = Serving_engine.program gen.engine
 let tokenizer gen = gen.tokenizer

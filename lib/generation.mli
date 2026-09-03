@@ -26,6 +26,7 @@ val create_from_program :
   ?token_capacity:int ->
   ?checkpoint_capacity:int ->
   ?page_size:int ->
+  ?warmup:bool ->
   unit ->
   (t, string) result
 
@@ -34,6 +35,7 @@ val create_from_dir :
   ?token_capacity:int ->
   ?checkpoint_capacity:int ->
   ?page_size:int ->
+  ?warmup:bool ->
   unit ->
   (t, string) result
 

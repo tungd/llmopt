@@ -87,7 +87,7 @@ type t = {
   prefill : Metal_runtime.t;
   decode : Metal_runtime.t;
   verification : Metal_runtime.t option;
-  logical_cache : Serving_cache.t;
+  mutable logical_cache : Serving_cache.t;
   physical_cache : Metal_runtime.Cache.t;
   contract : contract;
   decode_workspace : Metal_runtime.Buffer.t option;
@@ -816,64 +816,6 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         decode_recurrent_buffers = None;
         decode_checkpoint = None;
       }
-
-let create ~config ~prefill ~decode =
-  create_internal ~config ~prefill ~decode ()
-
-let create_from_program ~program ~model_dir ?(token_capacity = 1024)
-    ?(checkpoint_capacity = 16) ?page_size () =
-  let state = Model_program.state program in
-  let prefill_pkg_name =
-    Model_program.Artifact.path
-      (Model_program.Entrypoint.package (Model_program.prefill program))
-  in
-  let decode_pkg_name =
-    Model_program.Artifact.path
-      (Model_program.Entrypoint.package (Model_program.decode program))
-  in
-  let prefill_dir =
-    let dir = Filename.dirname prefill_pkg_name in
-    if dir = "." then model_dir else Filename.concat model_dir dir
-  in
-  let decode_dir =
-    let dir = Filename.dirname decode_pkg_name in
-    if dir = "." then model_dir else Filename.concat model_dir dir
-  in
-  let* prefill_pkg =
-    Serving_package.of_file (Filename.concat model_dir prefill_pkg_name)
-  in
-  let* decode_pkg =
-    Serving_package.of_file (Filename.concat model_dir decode_pkg_name)
-  in
-  let page_size =
-    match page_size with
-    | Some s -> s
-    | None ->
-        prefill_pkg |> Serving_package.cache |> Serving_package.Cache.page_size
-  in
-  let* config =
-    Serving_cache.Config.of_state_plan ~state ~token_capacity
-      ~checkpoint_capacity ~page_size ()
-  in
-  let* prefill = Metal_runtime.load_package ~root:prefill_dir prefill_pkg in
-  let* decode = Metal_runtime.load_package ~root:decode_dir decode_pkg in
-  let* verification =
-    match Model_program.prompt_lookup program with
-    | None -> Ok None
-    | Some prompt_lookup ->
-        let entrypoint = Model_program.Prompt_lookup.entrypoint prompt_lookup in
-        let relative =
-          Model_program.Artifact.path
-            (Model_program.Entrypoint.package entrypoint)
-        in
-        let path = Filename.concat model_dir relative in
-        let* package = Serving_package.of_file path in
-        let* runtime =
-          Metal_runtime.load_package ~root:(Filename.dirname path) package
-        in
-        Ok (Some runtime)
-  in
-  create_internal ~program ~config ~prefill ~decode ?verification ()
 
 let prefill_tokens engine = engine.contract.prefill_tokens
 let past_tokens engine = engine.contract.past_tokens
@@ -1979,6 +1921,81 @@ let verify_prompt engine ~tokens =
 
 let stats engine = Serving_cache.stats engine.logical_cache
 let validate engine = Serving_cache.validate engine.logical_cache
+
+let reset engine =
+  engine.logical_cache <- Serving_cache.create engine.config;
+  engine.decode_checkpoint <- None;
+  engine.decode_recurrent_buffers <- None;
+  Ok ()
+
+let warmup_engine engine =
+  let* _step = prefill engine ~tokens:[| 2; 105; 9731; 107 |] in
+  let* _decode_step = decode engine ~prefix:[| 2; 105; 9731; 107 |] ~token:100 in
+  reset engine
+
+let warmup = warmup_engine
+
+let create ~config ~prefill ~decode =
+  create_internal ~config ~prefill ~decode ()
+
+let create_from_program ~program ~model_dir ?(token_capacity = 1024)
+    ?(checkpoint_capacity = 16) ?page_size ?(warmup = false) () =
+  let state = Model_program.state program in
+  let prefill_pkg_name =
+    Model_program.Artifact.path
+      (Model_program.Entrypoint.package (Model_program.prefill program))
+  in
+  let decode_pkg_name =
+    Model_program.Artifact.path
+      (Model_program.Entrypoint.package (Model_program.decode program))
+  in
+  let prefill_dir =
+    let dir = Filename.dirname prefill_pkg_name in
+    if dir = "." then model_dir else Filename.concat model_dir dir
+  in
+  let decode_dir =
+    let dir = Filename.dirname decode_pkg_name in
+    if dir = "." then model_dir else Filename.concat model_dir dir
+  in
+  let* prefill_pkg =
+    Serving_package.of_file (Filename.concat model_dir prefill_pkg_name)
+  in
+  let* decode_pkg =
+    Serving_package.of_file (Filename.concat model_dir decode_pkg_name)
+  in
+  let page_size =
+    match page_size with
+    | Some s -> s
+    | None ->
+        prefill_pkg |> Serving_package.cache |> Serving_package.Cache.page_size
+  in
+  let* config =
+    Serving_cache.Config.of_state_plan ~state ~token_capacity
+      ~checkpoint_capacity ~page_size ()
+  in
+  let* prefill = Metal_runtime.load_package ~root:prefill_dir prefill_pkg in
+  let* decode = Metal_runtime.load_package ~root:decode_dir decode_pkg in
+  let* verification =
+    match Model_program.prompt_lookup program with
+    | None -> Ok None
+    | Some prompt_lookup ->
+        let entrypoint = Model_program.Prompt_lookup.entrypoint prompt_lookup in
+        let relative =
+          Model_program.Artifact.path
+            (Model_program.Entrypoint.package entrypoint)
+        in
+        let path = Filename.concat model_dir relative in
+        let* package = Serving_package.of_file path in
+        let* runtime =
+          Metal_runtime.load_package ~root:(Filename.dirname path) package
+        in
+        Ok (Some runtime)
+  in
+  let* engine =
+    create_internal ~program ~config ~prefill ~decode ?verification ()
+  in
+  let* () = if warmup then warmup_engine engine else Ok () in
+  Ok engine
 
 module Batch_item = struct
   type decode_request = {

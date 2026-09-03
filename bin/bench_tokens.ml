@@ -9,13 +9,14 @@ type options = {
   dump_diagnostic_directory : string option;
   token_capacity : int;
   checkpoint_capacity : int;
+  warmup : bool;
 }
 
 let usage () =
   prerr_endline
     "usage: llmopt-bench-tokens --model-dir <dir> --prompt-token-ids <csv> \
      (--max-new-tokens <count> | --top-k-logits <count>) [--token-capacity <count>] \
-     [--checkpoint-capacity <count>] \
+     [--checkpoint-capacity <count>] [--warmup] \
      [--dump-diagnostic-output <name> <path>] \
      [--dump-diagnostic-directory <path>]";
   exit 64
@@ -56,6 +57,8 @@ let arguments () =
         loop { options with token_capacity = positive value } rest
     | "--checkpoint-capacity" :: value :: rest ->
         loop { options with checkpoint_capacity = positive value } rest
+    | "--warmup" :: rest ->
+        loop { options with warmup = true } rest
     | _ -> usage ()
   in
   match Array.to_list Sys.argv with
@@ -69,7 +72,8 @@ let arguments () =
             dump_diagnostic_output = None;
             dump_diagnostic_directory = None;
             token_capacity = 4_096;
-            checkpoint_capacity = 512 }
+            checkpoint_capacity = 512;
+            warmup = Sys.getenv_opt "LLMOPT_WARMUP" = Some "1" }
           rest
       in
       if
@@ -112,7 +116,8 @@ let run () =
   let* engine =
     Serving_engine.create_from_program ~program ~model_dir:options.model_dir
       ~token_capacity:options.token_capacity
-      ~checkpoint_capacity:options.checkpoint_capacity ()
+      ~checkpoint_capacity:options.checkpoint_capacity
+      ~warmup:options.warmup ()
   in
   let load_seconds = Unix.gettimeofday () -. load_started in
   match options.top_k_logits with
