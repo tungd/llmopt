@@ -56,6 +56,11 @@ let head_rows schedule =
 let validate_runtime_specializations program prefill_pkg decode_pkg =
   let prefill_schedule = Serving_package.schedule prefill_pkg in
   let decode_schedule = Serving_package.schedule decode_pkg in
+  let decode_in = runtime_input_names decode_schedule in
+  let direct_paged_decode =
+    String_set.mem Serving_schedule.Sequence.q8_attention_pool_input decode_in
+    && String_set.mem Serving_schedule.Sequence.q8_attention_slots_input decode_in
+  in
   let prefill_entry = Model_program.prefill program in
   let state = Model_program.state program in
   let* captured_prefill =
@@ -67,15 +72,17 @@ let validate_runtime_specializations program prefill_pkg decode_pkg =
     | _ -> Error "prefill input_ids has an invalid captured shape"
   in
   let* captured_past =
-    match Model_program.State.attentions state with
-    | [] -> Ok 0
-    | binding :: _ ->
-        (match
-           runtime_input_shape decode_schedule
-             (Model_program.State.Attention_binding.key_input binding)
-         with
-        | Some [ 1; _heads; tokens; _width ] when tokens > 0 -> Ok tokens
-        | _ -> Error "decode attention key has an invalid captured shape")
+    if direct_paged_decode then Ok captured_prefill
+    else
+      match Model_program.State.attentions state with
+      | [] -> Ok 0
+      | binding :: _ ->
+          (match
+             runtime_input_shape decode_schedule
+               (Model_program.State.Attention_binding.key_input binding)
+           with
+          | Some [ 1; _heads; tokens; _width ] when tokens > 0 -> Ok tokens
+          | _ -> Error "decode attention key has an invalid captured shape")
   in
   let page_size = Serving_package.Cache.page_size (Serving_package.cache prefill_pkg) in
   let* config =
@@ -95,9 +102,11 @@ let validate_runtime_specializations program prefill_pkg decode_pkg =
   if captured_past = 0 then Ok (probe_tokens, prefill_head_rows, 0, 0)
   else
     let* decode =
-      Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past
-        ~past_tokens:probe_tokens ~cache:(Serving_cache.Config.kv config)
-        decode_schedule
+      if direct_paged_decode then Ok decode_schedule
+      else
+        Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past
+          ~past_tokens:probe_tokens ~cache:(Serving_cache.Config.kv config)
+          decode_schedule
     in
     let paged_attention =
       Serving_schedule.commands decode
@@ -115,6 +124,10 @@ let validate_declared_roles program prefill_pkg decode_pkg =
   let decode_sched = Serving_package.schedule decode_pkg in
   let prefill_in = runtime_input_names prefill_sched in
   let decode_in = runtime_input_names decode_sched in
+  let direct_paged_decode =
+    String_set.mem Serving_schedule.Sequence.q8_attention_pool_input decode_in
+    && String_set.mem Serving_schedule.Sequence.q8_attention_slots_input decode_in
+  in
   let prefill_out = output_names prefill_sched in
   let decode_out = output_names decode_sched in
 
@@ -158,9 +171,9 @@ let validate_declared_roles program prefill_pkg decode_pkg =
           let vin = Model_program.State.Attention_binding.value_input b in
           let kout = Model_program.State.Attention_binding.key_output b in
           let vout = Model_program.State.Attention_binding.value_output b in
-          if not (String_set.mem kin decode_in) then
+          if (not direct_paged_decode) && not (String_set.mem kin decode_in) then
             Error (Printf.sprintf "decode schedule is missing attention key_input: %s" kin)
-          else if not (String_set.mem vin decode_in) then
+          else if (not direct_paged_decode) && not (String_set.mem vin decode_in) then
             Error (Printf.sprintf "decode schedule is missing attention value_input: %s" vin)
           else if not (String_set.mem kout prefill_out) then
             Error (Printf.sprintf "prefill schedule is missing attention key_output: %s" kout)

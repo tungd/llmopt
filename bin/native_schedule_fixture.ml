@@ -307,7 +307,7 @@ let graph () =
   let paged_mask = input graph "paged_mask" [ 1; 1; 1; 2 ] Ir.Dtype.Bool in
   let paged_attention =
     expect_ok
-      (Ir.Paged_attention_q8.create ~scale:1.0 ~cache_layer:0
+      (Ir.Paged_attention_q8.create ~window:None ~scale:1.0 ~cache_layer:0
          ~kv_heads:1 ~head_dim:64 ~token_elements:128 ~key_offset:0
          ~value_offset:64 ~group_size:64 ~token_stride:132)
   in

@@ -705,8 +705,22 @@ let () =
          ~minimum_tokens:1 ~captured_tokens:tokens ~tokens:5
     |> expect_ok
   in
-  specialized_attention_schedule |> Serving_memory_plan.create |> expect_ok
-  |> ignore;
+  let specialized_attention_plan =
+    specialized_attention_schedule |> Serving_memory_plan.create |> expect_ok
+  in
+  let restored_attention_plan =
+    specialized_attention_plan |> Serving_memory_plan.to_bytes
+    |> Serving_memory_plan.of_bytes ~schedule:specialized_attention_schedule
+    |> expect_ok
+  in
+  expect
+    (Serving_memory_plan.workspace_bytes restored_attention_plan
+       = Serving_memory_plan.workspace_bytes specialized_attention_plan
+    && Serving_memory_plan.bytes_without_reuse restored_attention_plan
+       = Serving_memory_plan.bytes_without_reuse specialized_attention_plan
+    && Serving_memory_plan.allocation_count restored_attention_plan
+       = Serving_memory_plan.allocation_count specialized_attention_plan)
+    "serialized AOT memory plan preserves workspace allocations";
   expect
     (specialized_attention_schedule |> Serving_schedule.commands
     |> List.find_map (fun command ->
@@ -1086,8 +1100,9 @@ let () =
     ~inputs:[ captured_q4_0_input; captured_q4_0_weight ]
     ~output:(Some captured_q4_0_output);
   Ir.Graph.add_output captured_q4_0 ~name:"output" captured_q4_0_output;
+  let captured_q4_0_program = captured_q4_0 |> Metal.lower |> expect_ok in
   let captured_q4_0_kernels =
-    captured_q4_0 |> Metal.lower |> expect_ok |> Metal.Program.kernels
+    captured_q4_0_program |> Metal.Program.kernels
     |> List.map Kernel_abi.Entry.name
   in
   let captured_q4_0_expected =
@@ -1101,6 +1116,45 @@ let () =
   expect
     (List.mem "llmopt_q4_0_linear_f16" captured_q4_0_kernels)
     "captured two-row Q4_0 package also retains the arbitrary-row fallback";
+  expect
+    (contains_substring (Metal.Program.source captured_q4_0_program)
+       "llmopt_schema_q4_0_value")
+    "Q4_0 Linear Metal is emitted constructively from the block schema";
+  expect
+    (not
+       (contains_substring (Metal.Program.source captured_q4_0_program)
+          "struct block_q6_K"))
+    "Q4_0 packages omit unrelated quant-format source";
+  let check_constructive_quant quant elements marker =
+    let graph = Ir.Graph.create () in
+    let input =
+      tensor_input graph ~name:"input" ~source:Ir.Input_source.Runtime
+        ~shape:[ 1; 1; elements ] ~dtype:Ir.Dtype.Float16
+    in
+    let weight =
+      tensor_input graph ~name:"weight"
+        ~source:(Ir.Input_source.Tensor_store { key = "weight" })
+        ~shape:[ 32; elements ] ~dtype:(Ir.Dtype.Quant quant)
+    in
+    let output =
+      Ir.Graph.fresh_tensor_value graph ~shape:(Tensor_shape.of_ints_exn [ 1; 1; 32 ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append graph
+      ~op:(Ir.Op.Linear { m = 1; n = 32; k = elements; bias = false })
+      ~inputs:[ input; weight ] ~output:(Some output);
+    Ir.Graph.add_output graph ~name:"output" output;
+    let program = Metal.lower graph |> expect_ok in
+    expect (contains_substring (Metal.Program.source program) marker)
+      "block-quant Linear Metal is emitted constructively from the block schema"
+  in
+  check_constructive_quant Ir.Dtype.Q8_0 32 "llmopt_schema_q8_0_value";
+  check_constructive_quant Ir.Dtype.Q5_0 32 "llmopt_schema_q5_0_value";
+  check_constructive_quant Ir.Dtype.Q4_0 32 "llmopt_schema_q4_0_value";
+  check_constructive_quant Ir.Dtype.Q4_K 256 "llmopt_schema_q4_k_value";
+  check_constructive_quant Ir.Dtype.Q5_K 256 "llmopt_schema_q5_k_value";
+  check_constructive_quant Ir.Dtype.Q6_K 256 "llmopt_schema_q6_k_value";
+  check_constructive_quant Ir.Dtype.IQ4_XS 256 "llmopt_schema_iq4_xs_value";
   let q8_lm_head_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:49152
       ~k:576 ~input_dtype:Ir.Dtype.Float16
@@ -1235,8 +1289,8 @@ let () =
     "Metal lowering retains the generic Q4_K Linear tactic for dynamic row specialization";
   expect
     (List.mem "llmopt_q4_k_linear_f16_llama_mv_add" q4_m2_kernel_names
-    && List.mem "llmopt_q6_k_linear_f16_llama_mv_add" q4_m2_kernel_names)
-    "Metal lowering declares the experimental llama-style K-quant residual tactics";
+    && not (List.mem "llmopt_q6_k_linear_f16_llama_mv_add" q4_m2_kernel_names))
+    "Metal lowering declares only same-format experimental residual tactics";
 
   [ Ir.Dtype.Q8_0, 32; Ir.Dtype.Q4_K, 256; Ir.Dtype.Q5_K, 1024;
     Ir.Dtype.Q6_K, 256; Ir.Dtype.Q5_0, 32; Ir.Dtype.Q4_0, 32;
@@ -2413,7 +2467,7 @@ let () =
   let fused_ffn = Passes.fuse_epilogues ffn in
   expect (List.length (Ir.Graph.nodes fused_ffn) > 0)
     "epilogue pass rewrites W4A16 SwiGLU into executable operations";
-  let constructive_rms_regions =
+  let constructive_rms_graph, constructive_rms_regions =
     let graph = Ir.Graph.create () in
     let input =
       tensor_input graph ~name:"constructive-rms-input"
@@ -2498,8 +2552,11 @@ let () =
       graph |> Compute_plan.of_graph |> expect_ok
       |> Constructive_lowering.analyze ~target:Target_hardware.default
     in
-    analysis |> Constructive_lowering.lower
-    |> Constructive_lowering.executable_regions |> expect_ok
+    let regions =
+      analysis |> Constructive_lowering.lower
+      |> Constructive_lowering.executable_regions |> expect_ok
+    in
+    graph, regions
   in
   expect
     (List.exists
@@ -2509,6 +2566,17 @@ let () =
          | _ -> false)
        constructive_rms_regions)
     "constructive assignments recover RMSNorm from scalar/reduction dataflow";
+  let constructive_rms_schedule =
+    Serving_schedule.of_graph ~fusion_regions:constructive_rms_regions
+      constructive_rms_graph
+    |> expect_ok
+  in
+  expect
+    (constructive_rms_schedule
+    |> Serving_schedule.Sequence.specialize_decode ~captured_past:17
+         ~past_tokens:19
+    |> Result.is_ok)
+    "sequence specialization rebuilds fusion-local assignment provenance";
 
   let rope_graph = Ir.Graph.create () in
   let rope_input =
@@ -2958,6 +3026,16 @@ let () =
       ~past_tokens:16 ~cache:suffix_cache decode_base
     |> expect_ok
   in
+  let solidified_decode =
+    Serving_schedule.Sequence.solidify_decode_paged_q8 ~captured_past:8
+      ~cache:suffix_cache decode_base
+    |> expect_ok
+  in
+  let solidified_decode_again =
+    Serving_schedule.Sequence.solidify_decode_paged_q8 ~captured_past:8
+      ~cache:suffix_cache decode_base
+    |> expect_ok
+  in
   Unix.putenv "LLMOPT_EXPERIMENTAL_MASKLESS_DECODE" "";
   let additive_mask_decode =
     Serving_schedule.Sequence.specialize_decode_paged_q8 ~captured_past:8
@@ -2990,6 +3068,10 @@ let () =
              [ _; _; _; _; _ ] -> true
            | _ -> false))
     "maskless one-token decode emits a five-input paged-attention command";
+  expect
+    (Serving_schedule.to_bytes solidified_decode
+     = Serving_schedule.to_bytes solidified_decode_again)
+    "AOT decode solidification is deterministic";
   expect
     (Serving_schedule.commands suffix_schedule
     |> List.for_all (fun command ->
@@ -3889,6 +3971,15 @@ let () =
   expect
     (Serving_specialization.recurrent_in_input 5 = "__llmopt_recurrent_in_5")
     "recurrent_in_input 5 produces __llmopt_recurrent_in_5";
+  expect
+    (Result.is_error (Metal_runtime.Decode_uniforms.create ~past_tokens:0))
+    "decode uniforms reject an empty prefix";
+  let decode_uniforms =
+    Metal_runtime.Decode_uniforms.create ~past_tokens:37 |> Result.get_ok
+  in
+  expect
+    (Metal_runtime.Decode_uniforms.past_tokens decode_uniforms = 37)
+    "decode uniforms own the dispatch-time past-token count";
 
   (* Serving engine create_from_program validation tests *)
   let engine_err =

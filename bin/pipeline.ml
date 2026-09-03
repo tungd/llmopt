@@ -147,6 +147,68 @@ let compile_single_graph ~target ~weights_path ~graph_path ~output_dir ~greedy =
   let* () = compile_metal_to_metallib output_dir in
   Ok (package, List.length (Fx.nodes fx_graph), List.length (Ir.Graph.nodes planned))
 
+let runtime_input package name =
+  package |> Serving_package.schedule |> Serving_schedule.runtime_inputs
+  |> List.assoc_opt name
+
+let captured_prefill_tokens program package =
+  let input_ids =
+    Model_program.Entrypoint.input_ids (Model_program.prefill program)
+  in
+  match runtime_input package input_ids with
+  | Some value ->
+      (match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
+      | [ 1; tokens ] when tokens > 0 -> Ok tokens
+      | _ -> Error "prefill input_ids does not have captured shape [1,tokens]")
+  | None -> Error "prefill package is missing its input_ids runtime binding"
+
+let captured_decode_past program prefill_package decode_package =
+  match Model_program.State.attentions (Model_program.state program) with
+  | binding :: _ ->
+      let name = Model_program.State.Attention_binding.key_input binding in
+      (match runtime_input decode_package name with
+      | Some value ->
+          (match Tensor_shape.dimensions (Ir.Value.logical_shape value) with
+          | [ 1; _heads; tokens; _width ] when tokens > 0 -> Ok tokens
+          | _ ->
+              Error
+                "decode attention cache input does not have captured shape [1,heads,tokens,width]")
+      | None -> Error "decode package is missing its captured attention cache input")
+  | [] -> captured_prefill_tokens program prefill_package
+
+let solidify_decode_package ~program ~prefill_package decode_package =
+  let* captured_past =
+    captured_decode_past program prefill_package decode_package
+  in
+  let token_capacity =
+    Model_program.Generation.max_positions (Model_program.generation program)
+  in
+  let checkpoint_capacity =
+    max 1
+      (Model_program.State.Cache_layout.recurrent_layers
+         (Model_program.State.layout (Model_program.state program)))
+  in
+  let* cache_config =
+    Serving_cache.Config.of_state_plan ~state:(Model_program.state program)
+      ~token_capacity ~checkpoint_capacity
+      ~page_size:
+        (Serving_package.Cache.page_size (Serving_package.cache decode_package))
+      ()
+  in
+  let* schedule =
+    Serving_specialization.solidify_decode_paged_q8
+      ~specialization:(Model_program.specialization program) ~captured_past
+      ~cache:(Serving_cache.Config.kv cache_config)
+      (Serving_package.schedule decode_package)
+  in
+  match Serving_package.tensor_store decode_package with
+  | None -> Error "decode serving package has no tensor store"
+  | Some tensor_store ->
+      Serving_package.serving ?model:(Serving_package.model decode_package)
+        ~files:(Serving_package.files decode_package)
+        ~kernels:(Serving_package.kernels decode_package) ~schedule ~tensor_store
+        ~cache:(Serving_package.cache decode_package) ()
+
 type options = {
   weights : string;
   tokenizer : string;
@@ -477,6 +539,14 @@ let run () =
       ~decode_path:decode_art
       ~decode:decode_pkg
       ()
+  in
+  let* decode_pkg =
+    solidify_decode_package ~program ~prefill_package:prefill_pkg decode_pkg
+  in
+  let* () =
+    Serving_package.write_file
+      (Filename.concat decode_dir "package.llmopt")
+      decode_pkg
   in
   let* program =
     match
