@@ -33,7 +33,7 @@ Target performance profile on Apple M4 Pro:
 - `.okf/decisions/gemma4-batched-prefill-and-pipelined-queue.md`: `EXISTING` - Round 1 architectural decision record.
 - `.okf/decisions/llama-cpp-target.md`: `EXISTING` - Target parity definition against `llama.cpp`.
 - `.okf/experiments/exp-0146-gemma4-performance-parity-2026-09-04.md`: `EXISTING` - Round 1 benchmark receipt.
-- `.okf/experiments/exp-0147-gemma4-performance-round2-2026-09-04.md`: `DRAFT` - Benchmark receipt and experiment tracking document to be created upon completing G4P2-05.
+- `.okf/experiments/exp-0147-gemma4-performance-round2-2026-09-04.md`: `CREATED` - Benchmark receipt and experiment tracking document.
 
 ## Complete when
 
@@ -108,7 +108,7 @@ Target performance profile on Apple M4 Pro:
 
 ---
 
-### [ ] G4P2-04: Recompile Gemma 4 engine bundle and verify 128-token bit-exact parity
+### [x] G4P2-04: Recompile Gemma 4 engine bundle and verify 128-token bit-exact parity
 - **REPO**: `llmopt`
 - **WHERE**: `_artifacts/gemma4-12b-qat-round2-2026-09-04`, `bin/pipeline.ml`
 - **IMPORTANT FILES**:
@@ -130,7 +130,7 @@ Target performance profile on Apple M4 Pro:
 
 ---
 
-### [ ] G4P2-05: Record benchmark receipt and document OKF exp-0147
+### [x] G4P2-05: Record benchmark receipt and document OKF exp-0147
 - **REPO**: `llmopt`
 - **WHERE**: `bench/results/`, `.okf/experiments/`, `.okf/tracking.md`
 - **IMPORTANT FILES**:
