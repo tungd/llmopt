@@ -62,7 +62,7 @@ Target performance profile on Apple M4 Pro:
 - **WHY**: For prompt-37, M=16 requires 3 full weight streaming passes (18.24 GB). M=32 reduces weight passes to 2 (12.16 GB), saving 33% of prefill memory bandwidth.
 - **GATE**: `ninja -f ninja.build all test` passes cleanly.
 
-### [ ] G4P4-02: Wide decode QKV & Gated GEMV ($N_{\text{tile}} = 8$)
+### [x] G4P4-02: Wide decode QKV & Gated GEMV ($N_{\text{tile}} = 8$)
 - **REPO**: `llmopt`
 - **WHERE**: `lib/metal.ml`, `lib/metal_runtime.ml`
 - **IMPORTANT FILES**:

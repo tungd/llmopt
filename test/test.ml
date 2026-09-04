@@ -1170,6 +1170,10 @@ let () =
     "Q4_0 Linear Metal emits the gated linear m32 kernel";
   expect
     (contains_substring (Metal.Program.source captured_q4_0_program)
+       "kernel void llmopt_q4_0_gated_linear_f16_x8")
+    "Q4_0 Linear Metal emits the gated linear x8 kernel";
+  expect
+    (contains_substring (Metal.Program.source captured_q4_0_program)
        "llmopt_schema_q4_0_value")
     "Q4_0 Linear Metal is emitted constructively from the block schema";
   expect
@@ -1839,6 +1843,10 @@ let () =
     "Metal lowering emits the all-Q4_0 QKV m16 batched kernel";
   expect
     (contains_substring (Metal.Program.source q4_qkv_program)
+       "kernel void llmopt_q4_0_qkv_linear_f16_x8")
+    "Metal lowering emits the all-Q4_0 QKV x8 wide kernel";
+  expect
+    (contains_substring (Metal.Program.source q4_qkv_program)
        "kernel void llmopt_q4_0_qkv_linear_f16_m32")
     "Metal lowering emits the all-Q4_0 QKV m32 batched kernel";
 
@@ -1848,8 +1856,8 @@ let () =
        ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:1
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
     |> expect_ok
-    = "llmopt_q4_0_qkv_linear_f16")
-    "single-token all-Q4_0 QKV selects the Q4_0 QKV kernel";
+    = "llmopt_q4_0_qkv_linear_f16_x8")
+    "single-token all-Q4_0 QKV selects the wide x8 QKV kernel";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
        ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)

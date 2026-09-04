@@ -469,7 +469,7 @@ module Quant_qkv_tactic = struct
     | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 when m >= 4 ->
         Ok "llmopt_q4_0_qkv_linear_f16_m4"
     | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
-        Ok "llmopt_q4_0_qkv_linear_f16"
+        Ok "llmopt_q4_0_qkv_linear_f16_x8"
     | Ir.Dtype.Quant Ir.Dtype.Q5_0, Ir.Dtype.Quant Ir.Dtype.Q5_0
       when experimental_llama_mv && m = 1 ->
         Ok "llmopt_q5_0_qkv_linear_f16_llama_mv"
@@ -2189,6 +2189,11 @@ let dispatch_quant_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k
     else if String.ends_with ~suffix:"_m32" name then
       let m_tiles = (m + 31) / 32 in
       linear_f16_grid (m_tiles * (n_q + n_k + n_v))
+    else if String.ends_with ~suffix:"_x8" name then
+      let q_groups = (n_q + 7) / 8 in
+      let k_groups = (n_k + 7) / 8 in
+      let v_groups = (n_v + 7) / 8 in
+      linear_f16_grid (m * (q_groups + k_groups + v_groups))
     else if String.ends_with ~suffix:"_m16" name then
       let m_tiles = (m + 15) / 16 in
       linear_f16_grid (m_tiles * (n_q + n_k + n_v))
@@ -3141,10 +3146,9 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                     "llmopt_q5_0_gated_linear_f16_llama_mv"
                 | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
                 | Ir.Dtype.Q4_0, m when m >= 32 -> "llmopt_q4_0_gated_linear_f16_m32"
-                | Ir.Dtype.Q4_0, m when m >= 32 -> "llmopt_q4_0_gated_linear_f16_m32"
-              | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
+                | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
                 | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
-                | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
+                | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16_x8"
                 | Ir.Dtype.IQ4_XS, 2 -> "llmopt_iq4_xs_gated_linear_f16_m2"
                 | _ -> ""
               in
@@ -3173,6 +3177,9 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                   | Ir.Dtype.Q4_0, m when m >= 4 ->
                       let m_tiles = (m + 3) / 4 in
                       linear_f16_grid (m_tiles * gate.n)
+                  | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_x8" name ->
+                      let groups = (gate.n + 7) / 8 in
+                      linear_f16_grid (gate.m * groups)
                   | Ir.Dtype.Q4_0, _ ->
                       let groups = (gate.n + 3) / 4 in
                       linear_f16_grid (gate.m * groups)
@@ -3685,9 +3692,10 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                      = Some "1" ->
                   "llmopt_q5_0_gated_linear_f16_llama_mv"
               | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
+              | Ir.Dtype.Q4_0, m when m >= 32 -> "llmopt_q4_0_gated_linear_f16_m32"
               | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
               | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
-              | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
+              | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16_x8"
               | Ir.Dtype.IQ4_XS, 2 ->
                   "llmopt_iq4_xs_gated_linear_f16_m2"
               | _ -> assert false
@@ -3718,6 +3726,9 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
               | Ir.Dtype.Q4_0, m when m >= 4 ->
                   let m_tiles = (m + 3) / 4 in
                   linear_f16_grid (m_tiles * n)
+              | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_x8" name ->
+                  let groups = (n + 7) / 8 in
+                  linear_f16_grid (m * groups)
               | Ir.Dtype.Q4_0, _ ->
                   let groups = (n + 3) / 4 in
                   linear_f16_grid (m * groups)
