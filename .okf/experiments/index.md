@@ -142,3 +142,6 @@
 * [MoltenVK and Metal streaming-copy comparison](exp-0137-vulkan-moltenvk-metal-2026-09-01.md) - portable Vulkan compute bootstrap and one paired M4 Pro run over identical 16/64/256 MiB working sets.
 * [Unified compiler Gemma 4 12B transition run](exp-0138-unified-compiler-gemma4-transition-2026-09-02.md) - one measured-profile AOT build and raw-token run recording zero unified lowerings, retained legacy fallback, command-queue structure, degenerate output, and exact llama.cpp deltas.
 * [Modeled layout and gated-delta pass retirement](exp-0143-modeled-layout-and-gated-delta-retirement-2026-09-03.md) - typed axis provenance, assignment-backed gated-delta execution, and removal of four ad hoc pass modules.
+* [Gemma 4 last-token projection execution](exp-0144-gemma4-last-token-projection-attempt-2026-09-03.md) - corrected single-row prefill logits projection and 128-token completion.
+* [Length-invariant decode and schema Metal](exp-0145-static-decode-and-schema-metal-2026-09-03.md) - static decode dispatch plan and constructive block-quant emitter with 5.22 tok/s throughput.
+* [Batched prefill GEMM and pipelined queue decode](exp-0146-gemma4-performance-parity-2026-09-04.md) - M-tiled prefill GEMM and depth-2 Ring_queue decode achieving 10.36 tok/s throughput and bit-exact golden parity.

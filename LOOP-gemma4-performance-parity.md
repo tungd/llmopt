@@ -135,7 +135,7 @@ Target performance profile on Apple M4 Pro:
 
 ---
 
-### [ ] G4P-05: Benchmark full Gemma 4 12B sequential generation and record OKF receipt
+### [x] G4P-05: Benchmark full Gemma 4 12B sequential generation and record OKF receipt
 - **REPO**: `llmopt`
 - **WHERE**: `bench/results/`, `.okf/experiments/`, `.okf/tracking.md`
 - **IMPORTANT FILES**:
@@ -155,3 +155,4 @@ Target performance profile on Apple M4 Pro:
 - **VERIFY**: `git diff --check`, `ninja -f ninja.build all test`, and verify that experiment file links resolve.
 - **DONE WHEN**: All 5 checklist items are checked, tests pass, and the immutable experiment receipt is recorded.
 - **ESCALATE IF**: Generated tokens diverge from golden sequence `100, 45518, 107, 14947, 135383`.
+- **DONE**: Rebuilt optimized Gemma 4 bundle (`_artifacts/gemma4-12b-qat-performance-parity-2026-09-04`) with `llmopt-pipeline`. Executed 128-token benchmark on prompt-37 via `llmopt-bench-tokens`. Generated tokens match golden sequence bit-exact (`100, 45518, 107, 14947, 135383,...`). Measured TTFT `1.668 s` (3.9x faster than exp-0145's `6.536 s`), decode mean latency `84.18 ms` (1.7x faster than exp-0145's `141.57 ms`), and overall throughput `10.36 tok/s` (2.0x higher than exp-0145's `5.22 tok/s`). Recorded immutable receipts in `bench/results/uoc-gemma4-performance-parity-2026-09-04.txt`, `.okf/experiments/exp-0146-gemma4-performance-parity-2026-09-04.md`, and `.okf/tracking.md`. All unit and canonical tests pass.
