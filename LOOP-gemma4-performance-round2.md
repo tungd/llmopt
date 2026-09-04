@@ -89,7 +89,7 @@ Target performance profile on Apple M4 Pro:
 
 ---
 
-### [ ] G4P2-03: Wire expanded prefill GEMM tiling into runtime dispatch and grid sizing
+### [x] G4P2-03: Wire expanded prefill GEMM tiling into runtime dispatch and grid sizing
 - **REPO**: `llmopt`
 - **WHERE**: `lib/metal_runtime.ml`
 - **IMPORTANT FILES**:

@@ -1133,13 +1133,27 @@ let () =
     (List.mem "llmopt_q4_0_linear_f16_m4_add" captured_q4_0_kernels)
     "captured Q4_0 package retains the m4_add batched prefill tactic";
   expect
+    (List.mem "llmopt_q4_0_linear_f16_m16" captured_q4_0_kernels)
+    "captured Q4_0 package retains the m16 batched prefill tactic";
+  expect
+    (List.mem "llmopt_q4_0_linear_f16_m16_add" captured_q4_0_kernels)
+    "captured Q4_0 package retains the m16_add batched prefill tactic";
+  expect
     (contains_substring (Metal.Program.source captured_q4_0_program)
        "kernel void llmopt_q4_0_linear_f16_m4_add")
     "Q4_0 Linear Metal emits the m4_add kernel";
   expect
     (contains_substring (Metal.Program.source captured_q4_0_program)
+       "kernel void llmopt_q4_0_linear_f16_m16_add")
+    "Q4_0 Linear Metal emits the m16_add kernel";
+  expect
+    (contains_substring (Metal.Program.source captured_q4_0_program)
        "kernel void llmopt_q4_0_gated_linear_f16_m4")
     "Q4_0 Linear Metal emits the gated linear m4 kernel";
+  expect
+    (contains_substring (Metal.Program.source captured_q4_0_program)
+       "kernel void llmopt_q4_0_gated_linear_f16_m16")
+    "Q4_0 Linear Metal emits the gated linear m16 kernel";
   expect
     (contains_substring (Metal.Program.source captured_q4_0_program)
        "llmopt_schema_q4_0_value")
@@ -1805,6 +1819,10 @@ let () =
     (contains_substring (Metal.Program.source q4_qkv_program)
        "kernel void llmopt_q4_0_qkv_linear_f16_m4")
     "Metal lowering emits the all-Q4_0 QKV m4 batched kernel";
+  expect
+    (contains_substring (Metal.Program.source q4_qkv_program)
+       "kernel void llmopt_q4_0_qkv_linear_f16_m16")
+    "Metal lowering emits the all-Q4_0 QKV m16 batched kernel";
 
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
@@ -1828,8 +1846,8 @@ let () =
        ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:37
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
     |> expect_ok
-    = "llmopt_q4_0_qkv_linear_f16_m4")
-    "prompt prefill (m=37) all-Q4_0 QKV selects the m4 batched kernel";
+    = "llmopt_q4_0_qkv_linear_f16_m16")
+    "prompt prefill (m=37) all-Q4_0 QKV selects the m16 batched kernel";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
        ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)

@@ -462,6 +462,8 @@ module Quant_qkv_tactic = struct
   let kernel_name ~q_dtype ~experimental_llama_mv
       ~experimental_mixed_llama_mv ~m ~v_dtype =
     match q_dtype, v_dtype with
+    | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 when m >= 16 ->
+        Ok "llmopt_q4_0_qkv_linear_f16_m16"
     | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 when m >= 4 ->
         Ok "llmopt_q4_0_qkv_linear_f16_m4"
     | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
@@ -2182,6 +2184,9 @@ let dispatch_quant_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k
       if groups > max_int / 128 then
         Error "llama-style Q5_0 QKV grid overflows"
       else Ok (groups * 128)
+    else if String.ends_with ~suffix:"_m16" name then
+      let m_tiles = (m + 15) / 16 in
+      linear_f16_grid (m_tiles * (n_q + n_k + n_v))
     else if String.ends_with ~suffix:"_m4" name then
       let m_tiles = (m + 3) / 4 in
       linear_f16_grid (m_tiles * (n_q + n_k + n_v))
@@ -2439,7 +2444,13 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     then (n + 3) / 4
     else if String.ends_with ~suffix:"_splitk_m2" tactic_name then (n + 1) / 2
     else if String.ends_with ~suffix:"_splitk" tactic_name then (n + 1) / 2
-    else if String.ends_with ~suffix:"_m4" tactic_name then
+    else if String.ends_with ~suffix:"_m16" tactic_name
+         || String.ends_with ~suffix:"_m16_add" tactic_name
+    then
+      ((m + 15) / 16) * n
+    else if String.ends_with ~suffix:"_m4" tactic_name
+         || String.ends_with ~suffix:"_m4_add" tactic_name
+    then
       ((m + 3) / 4) * n
     else if String.ends_with ~suffix:"_m2" tactic_name then n
     else m * n
@@ -3119,6 +3130,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                   when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
                     "llmopt_q5_0_gated_linear_f16_llama_mv"
                 | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
+                | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
                 | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
                 | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
                 | Ir.Dtype.IQ4_XS, 2 -> "llmopt_iq4_xs_gated_linear_f16_m2"
@@ -3140,6 +3152,9 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                       if groups > max_int / 256 then Error "assignment gated grid overflows"
                       else Ok (groups * 256)
                   | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid gate.n
+                  | Ir.Dtype.Q4_0, m when m >= 16 ->
+                      let m_tiles = (m + 15) / 16 in
+                      linear_f16_grid (m_tiles * gate.n)
                   | Ir.Dtype.Q4_0, m when m >= 4 ->
                       let m_tiles = (m + 3) / 4 in
                       linear_f16_grid (m_tiles * gate.n)
@@ -3655,6 +3670,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                      = Some "1" ->
                   "llmopt_q5_0_gated_linear_f16_llama_mv"
               | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
+              | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
               | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
               | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
               | Ir.Dtype.IQ4_XS, 2 ->
@@ -3678,6 +3694,9 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                     Error "Q5_0 gated Linear grid dimension overflows"
                   else Ok (groups * 256)
               | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
+              | Ir.Dtype.Q4_0, m when m >= 16 ->
+                  let m_tiles = (m + 15) / 16 in
+                  linear_f16_grid (m_tiles * n)
               | Ir.Dtype.Q4_0, m when m >= 4 ->
                   let m_tiles = (m + 3) / 4 in
                   linear_f16_grid (m_tiles * n)
