@@ -404,7 +404,7 @@ end
 module Ring_queue = struct
   type t = ring_handle
 
-  let default_pipeline_depth = 2
+  let default_pipeline_depth = 1
 
   let pipeline_depth () =
     match Sys.getenv_opt "LLMOPT_QUEUE_DEPTH" with

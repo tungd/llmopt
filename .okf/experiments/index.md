@@ -145,3 +145,6 @@
 * [Gemma 4 last-token projection execution](exp-0144-gemma4-last-token-projection-attempt-2026-09-03.md) - corrected single-row prefill logits projection and 128-token completion.
 * [Length-invariant decode and schema Metal](exp-0145-static-decode-and-schema-metal-2026-09-03.md) - static decode dispatch plan and constructive block-quant emitter with 5.22 tok/s throughput.
 * [Batched prefill GEMM and pipelined queue decode](exp-0146-gemma4-performance-parity-2026-09-04.md) - M-tiled prefill GEMM and depth-2 Ring_queue decode achieving 10.36 tok/s throughput and bit-exact golden parity.
+* [M=16 prefill GEMM and SRAM activation staging](exp-0147-gemma4-performance-round2-2026-09-04.md) - M=16 batched prefill GEMM and cooperative threadgroup SRAM staging in decode GEMV reducing TTFT to 1.409 s.
+* [Wide decode GEMV (N_tile=8), vectorized dispatch, and prefill cache](exp-0148-gemma4-performance-round3-2026-09-04.md) - Wide N_tile=8 decode GEMV, vectorized batch buffer binding, compute pipeline caching, and prefill buffer cache achieving record 10.48 tok/s throughput.
+

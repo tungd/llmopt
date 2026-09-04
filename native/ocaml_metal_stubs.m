@@ -1376,7 +1376,7 @@ CAMLprim value caml_llmopt_metal_dispatch(value arguments) {
 static void *llmopt_worker_loop(void *arg) {
   llmopt_ring_queue *q = (llmopt_ring_queue *)arg;
 
-  int pipeline_depth = 2;
+  int pipeline_depth = 1;
   const char *depth_env = getenv("LLMOPT_QUEUE_DEPTH");
   if (depth_env != NULL) {
     int d = atoi(depth_env);

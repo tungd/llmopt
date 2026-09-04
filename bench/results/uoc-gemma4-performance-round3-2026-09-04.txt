@@ -1,0 +1,53 @@
+Gemma 4 Round 3 performance with wide decode GEMV (N_tile=8), vectorized dispatch, and prefill cache
+===================================================================================================
+
+Source and artifact
+-------------------
+
+Artifact: _artifacts/gemma4-12b-qat-round3-2026-09-04
+Model Program sha256: 9856d3a011c1c348c6be4391e08ada362efbdf292e98d9ad4c4d91e6b408965a
+Prefill package sha256: c3c21a90e088b92d038191f1f14bc8cfc0c92dece56d02039ed53961bb2843e0
+Decode package sha256: fe48ff440fce529dd4fe215f1c4b8bb291b899fdf1f47c84a0b26cb4fc215eb0
+Prompt token count: 37
+Pinned llama.cpp receipt: bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json
+Prior execution receipt: bench/results/uoc-gemma4-performance-round2-2026-09-04.txt
+
+Repository verification
+-----------------------
+
+Command: ninja -f ninja.build all test
+Exit status: 0
+Result: OCaml suite passed; 79 Python tests passed.
+
+Device execution
+----------------
+
+Command: _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-round3-2026-09-04 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --max-new-tokens 128 --warmup
+Exit status: 0
+Load seconds: 5.987949
+TTFT seconds: 1.427907
+Elapsed seconds: 12.216533
+Tokens per second: 10.477604
+Inter-token count: 127
+Inter-token mean ms: 84.949813
+Inter-token median ms: 84.168911
+Completion token count: 128
+Completion tokens: 100,45518,107,14947,135383,568,11124,568,147505,236789,236751,236761,107,14947,135383,236761,107,4225,552,236761,107,4225,552,6795,32404,236764,65272,32404,236764,65272,32404,236764,39524,990,58692,236764,990,58692,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,990,58692,236764,32404,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,32404,236764,38789,236764,990,58692,236764,32404,236764,38789,236764,38789,236764,32404,236764,38789,236764,4044,236761,107,140,236829,107,140,236829,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,58991
+
+Comparison against exp-0147
+---------------------------
+
+Prior result (exp-0147):
+- TTFT: 1.409365 s
+- Elapsed: 12.386513 s
+- Throughput: 10.333820 tok/s
+- Inter-token mean: 86.434240 ms
+- Inter-token median: 85.938931 ms
+
+New result (exp-0148):
+- TTFT: 1.427907 s
+- Elapsed: 12.216533 s (-0.170 s, new fastest end-to-end benchmark)
+- Throughput: 10.477604 tok/s (+0.144 tok/s, highest serving throughput achieved)
+- Inter-token mean: 84.949813 ms (-1.48 ms/token faster)
+- Inter-token median: 84.168911 ms (-1.77 ms/token faster; steady-state down to 83.19 ms)
+- Full 128 tokens bit-exact match retained golden reference sequence.

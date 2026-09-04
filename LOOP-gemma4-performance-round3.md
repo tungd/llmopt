@@ -84,14 +84,14 @@ Target performance profile on Apple M4 Pro:
 - **WHY**: Allocating and copying position IDs and attention mask buffers on every prefill step causes driver buffer churn and synchronization latency.
 - **GATE**: `ninja -f ninja.build all test` passes cleanly.
 
-### [ ] G4P3-04: Compile Round 3 bundle and verify 128-token bit-exact parity
+### [x] G4P3-04: Compile Round 3 bundle and verify 128-token bit-exact parity
 - **REPO**: `llmopt`
 - **WHERE**: `bin/pipeline.ml`, `_artifacts/gemma4-12b-qat-round3-2026-09-04`
 - **COMMAND**: Compile bundle `_artifacts/gemma4-12b-qat-round3-2026-09-04` using `llmopt-pipeline` from existing weights, then run 128-token benchmark with `llmopt-bench-tokens`.
 - **GATE**: Verify 128 completion tokens match pinned golden sequence bit-for-bit:
   `100, 45518, 107, 14947, 135383, 568, 11124, 568, 147505, 236789, ...`.
 
-### [ ] G4P3-05: Record benchmark receipt and experiment tracking
+### [x] G4P3-05: Record benchmark receipt and experiment tracking
 - **REPO**: `llmopt`
 - **WHERE**: `bench/results/uoc-gemma4-performance-round3-2026-09-04.txt`, `.okf/experiments/exp-0148-gemma4-performance-round3-2026-09-04.md`, `.okf/tracking.md`
 - **GATE**: Commit all changes with clean git tree and test validation.
