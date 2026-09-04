@@ -1138,6 +1138,7 @@ CAMLprim value caml_llmopt_metal_batch_dispatch_all(value batch_value,
   id<MTLComputeCommandEncoder> encoder = batch_compute_encoder(batch);
   mlsize_t total = Wosize_val(dispatches_value);
 
+  id<MTLComputePipelineState> current_pipeline = nil;
   for (mlsize_t i = 0; i < total; i++) {
     value item = Field(dispatches_value, i);
     const char *kernel_name = String_val(Field(item, 0));
@@ -1154,19 +1155,29 @@ CAMLprim value caml_llmopt_metal_batch_dispatch_all(value batch_value,
 
     id<MTLComputePipelineState> pipeline =
         pipeline_for_name(library, kernel_name);
-    [encoder setComputePipelineState:pipeline];
+    if (pipeline != current_pipeline) {
+      [encoder setComputePipelineState:pipeline];
+      current_pipeline = pipeline;
+    }
 
+    id<MTLBuffer> bufs[16];
+    NSUInteger offs[16];
     NSUInteger buffer_index = 0;
     value remaining = buffers;
-    while (remaining != Val_emptylist) {
+    while (remaining != Val_emptylist && buffer_index < 16) {
       llmopt_metal_buffer *buffer = Buffer_val(Field(remaining, 0));
       if (buffer != NULL) {
-        [encoder setBuffer:buffer->buffer
-                    offset:buffer->offset
-                   atIndex:buffer_index];
+        bufs[buffer_index] = buffer->buffer;
+        offs[buffer_index] = buffer->offset;
+      } else {
+        bufs[buffer_index] = nil;
+        offs[buffer_index] = 0;
       }
       buffer_index += 1;
       remaining = Field(remaining, 1);
+    }
+    if (buffer_index > 0) {
+      [encoder setBuffers:bufs offsets:offs withRange:NSMakeRange(0, buffer_index)];
     }
 
     mlsize_t parameter_length = caml_string_length(parameters);
@@ -1466,14 +1477,18 @@ static void *llmopt_worker_loop(void *arg) {
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
       }
 
+      id<MTLComputePipelineState> current_pipeline = nil;
       for (size_t i = 0; i < q->record_count; i++) {
         llmopt_dispatch_record *r = &q->records[i];
         if (r->barrier_before) {
           [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
         }
-        [enc setComputePipelineState:r->pipeline];
-        for (NSUInteger b = 0; b < r->buffer_count; b++) {
-          [enc setBuffer:r->buffers[b] offset:r->offsets[b] atIndex:b];
+        if (r->pipeline != current_pipeline) {
+          [enc setComputePipelineState:r->pipeline];
+          current_pipeline = r->pipeline;
+        }
+        if (r->buffer_count > 0) {
+          [enc setBuffers:r->buffers offsets:r->offsets withRange:NSMakeRange(0, r->buffer_count)];
         }
         if (r->parameter_length > 0) {
           if (r->is_paged_attention && r->parameter_length >= 16) {
