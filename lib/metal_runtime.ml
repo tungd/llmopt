@@ -2406,7 +2406,9 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     else if String.ends_with ~suffix:"_m2_x2_l32" tactic_name then
       m * ((n + 1) / 2)
     else if String.ends_with ~suffix:"_m2_x1_l32" tactic_name then m * n
-    else if String.ends_with ~suffix:"_m2_x4" tactic_name then (n + 3) / 4
+    else if String.ends_with ~suffix:"_m2_x4" tactic_name
+         || String.ends_with ~suffix:"_x4" tactic_name
+    then (n + 3) / 4
     else if String.ends_with ~suffix:"_splitk_m2" tactic_name then (n + 1) / 2
     else if String.ends_with ~suffix:"_splitk" tactic_name then (n + 1) / 2
     else if String.ends_with ~suffix:"_m4" tactic_name then

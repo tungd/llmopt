@@ -1079,6 +1079,16 @@ let () =
     (Metal.Tactic.name gemma_q4_0_prefill_tactic
     = Kernel_abi.Linear_tactic.name gemma_q4_0_expected)
     "Gemma Q4_0 prefill uses the costed arbitrary-row candidate";
+  let gemma_q4_0_decode_tactic =
+    Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:4096
+      ~k:3840 ~input_dtype:Ir.Dtype.Float16
+      ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0)
+      ~output_dtype:Ir.Dtype.Float16
+    |> Option.get
+  in
+  expect
+    (Metal.Tactic.name gemma_q4_0_decode_tactic = "llmopt_q4_0_linear_f16_x4")
+    "Gemma Q4_0 decode uses the 4-column tiled x4 candidate";
   let captured_q4_0 = Ir.Graph.create () in
   let captured_q4_0_input =
     tensor_input captured_q4_0 ~name:"captured_q4_0_input"

@@ -423,6 +423,24 @@ module Linear_tactic = struct
           ~decoded_weight_reuse:2 ~activation_reuse:4
           ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
+  let four_column_decode_quant_registration quant : registration =
+    { build =
+        (fun _ ->
+          { name = quant_kernel_name quant ^ "_x4";
+            threadgroup = (256, 1, 1) });
+      accepts =
+        (fun (problem : problem) ->
+          problem.m = 1 && problem.n > 0 && problem.n mod 4 = 0 && problem.k > 0
+          && problem.k mod block_elements quant = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem quant
+          && problem.supports_simd ~threads:256);
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:8
+          ~output_values_per_threadgroup:32 ~split_k_partitions:1
+          ~decoded_weight_reuse:1 ~activation_reuse:4
+          ~threadgroup_sram_bytes:0 ~dispatches:1 }
+
   let full_simd_kquant_registration ~accepts_superblocks quant suffix :
       registration =
     { build =
@@ -532,6 +550,8 @@ module Linear_tactic = struct
     @ List.map paired_quant_registration
       [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
         Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
+    @ List.map four_column_decode_quant_registration
+      [ Ir.Dtype.Q4_0 ]
     @ List.map quant_registration
         [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
           Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
