@@ -1816,6 +1816,22 @@ let () =
     "single-token all-Q4_0 QKV selects the Q4_0 QKV kernel";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+       ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:4
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+    |> expect_ok
+    = "llmopt_q4_0_qkv_linear_f16_m4")
+    "batched prefill (m=4) all-Q4_0 QKV selects the m4 batched kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+       ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:37
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+    |> expect_ok
+    = "llmopt_q4_0_qkv_linear_f16_m4")
+    "prompt prefill (m=37) all-Q4_0 QKV selects the m4 batched kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
        ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
        ~experimental_llama_mv:true ~experimental_mixed_llama_mv:false ~m:1
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
