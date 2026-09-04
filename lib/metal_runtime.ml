@@ -4823,6 +4823,36 @@ let execute_schedule ?workspace ?memory_plan runtime ~schedule ~inputs =
   with_execution_batch runtime (fun batch ->
       encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs)
 
+let bind_schedule_plan ?workspace ?memory_plan runtime ~schedule ~inputs =
+  let* commands = Batch.create runtime in
+  let batch =
+    {
+      Execution_batch.runtime;
+      commands;
+      resources = [];
+      schedules = 0;
+      swiglu_normalized = None;
+      swiglu_product = None;
+      candidates_buffer = None;
+    }
+  in
+  let* execution =
+    encode_schedule ?workspace ?memory_plan batch ~schedule ~inputs
+  in
+  let items_rev = List.rev batch.commands.pending in
+  let dispatches =
+    Array.of_list
+      (List.map
+         (fun (_, it) ->
+            (it.Batch.name, it.Batch.buffers, it.Batch.parameters,
+             it.Batch.grid_x, it.Batch.grid_y, it.Batch.grid_z,
+             it.Batch.group_x, it.Batch.group_y, it.Batch.group_z,
+             it.Batch.barrier_before))
+         items_rev)
+  in
+  ignore (Batch.abort commands);
+  Ok (dispatches, execution)
+
 let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
     ?cache_pack runtime ~schedule ~inputs =
   let* commands = Batch.create runtime in

@@ -112,6 +112,8 @@ type t = {
     (int * int * int, (string * Metal_runtime.Buffer.t) list) Hashtbl.t;
   rope_slice_cache :
     (int * int, (string * Metal_runtime.Buffer.t) list) Hashtbl.t;
+  prefill_executables :
+    (int, Metal_runtime.Prebaked.t * Metal_runtime.Execution.t) Hashtbl.t;
 }
 
 type engine = t
@@ -824,6 +826,7 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         prefill_token_buffers = Hashtbl.create 16;
         auxiliary_inputs_cache = Hashtbl.create 16;
         rope_slice_cache = Hashtbl.create 16;
+        prefill_executables = Hashtbl.create 16;
       }
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -1114,8 +1117,43 @@ let prefill engine ~tokens =
         Ok inputs
   in
   let* execution =
-    Metal_runtime.execute_schedule engine.prefill ~schedule ~memory_plan
-      ~inputs:((engine.contract.input_ids, input) :: (rope_inputs @ auxiliary_inputs))
+    if Sys.getenv_opt "LLMOPT_DISABLE_PREBAKED_PREFILL" = Some "1" then
+      Metal_runtime.execute_schedule engine.prefill ~schedule ~memory_plan
+        ~inputs:
+          ((engine.contract.input_ids, input) :: (rope_inputs @ auxiliary_inputs))
+    else
+      match Hashtbl.find_opt engine.prefill_executables token_count with
+      | Some (plan, execution) ->
+          let* _ =
+            Metal_runtime.Prebaked.execute plan ~token:0 ~past_tokens:0
+              ~checkpoint:0
+          in
+          Ok execution
+      | None ->
+          let inputs =
+            (engine.contract.input_ids, input) :: (rope_inputs @ auxiliary_inputs)
+          in
+          let* dispatches, execution =
+            Metal_runtime.bind_schedule_plan engine.prefill ~schedule
+              ~memory_plan ~inputs
+          in
+          let* dummy_token_buffer =
+            Metal_runtime.Buffer.create ~runtime:engine.prefill ~bytes:8
+          in
+          let* dummy_output_buffer =
+            Metal_runtime.Buffer.create ~runtime:engine.prefill ~bytes:8
+          in
+          let* plan =
+            Metal_runtime.Prebaked.create ~runtime:engine.prefill ~dispatches
+              ~token_buffer:dummy_token_buffer
+              ~output_buffer:dummy_output_buffer
+          in
+          Hashtbl.replace engine.prefill_executables token_count (plan, execution);
+          let* _ =
+            Metal_runtime.Prebaked.execute plan ~token:0 ~past_tokens:0
+              ~checkpoint:0
+          in
+          Ok execution
   in
   let checkpoint_required = engine.contract.recurrents <> [] in
   let* reservation =

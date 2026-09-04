@@ -246,6 +246,14 @@ val execute_schedule :
   inputs:(string * Buffer.t) list ->
   (Execution.t, string) result
 
+val bind_schedule_plan :
+  ?workspace:Buffer.t ->
+  ?memory_plan:Serving_memory_plan.t ->
+  t ->
+  schedule:Serving_schedule.t ->
+  inputs:(string * Buffer.t) list ->
+  ((string * Buffer.t list * bytes * int * int * int * int * int * int * bool) array * Execution.t, string) result
+
 val bind_decode_plan :
   ?workspace:Buffer.t ->
   ?memory_plan:Serving_memory_plan.t ->

@@ -72,7 +72,7 @@ Target performance profile on Apple M4 Pro:
 - **WHY**: Halves decode threadgroups for all QKV and Gated MLP projections, doubling activation register reuse across columns.
 - **GATE**: `ninja -f ninja.build all test` passes cleanly.
 
-### [ ] G4P4-03: Retained prefill plan caching in Serving_engine
+### [x] G4P4-03: Retained prefill plan caching in Serving_engine
 - **REPO**: `llmopt`
 - **WHERE**: `lib/serving_engine.ml`
 - **IMPORTANT FILES**:
