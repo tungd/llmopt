@@ -1087,8 +1087,8 @@ let () =
     |> Option.get
   in
   expect
-    (Metal.Tactic.name gemma_q4_0_decode_tactic = "llmopt_q4_0_linear_f16_x4")
-    "Gemma Q4_0 decode uses the 4-column tiled x4 candidate";
+    (Metal.Tactic.name gemma_q4_0_decode_tactic = "llmopt_q4_0_linear_f16_x8")
+    "Gemma Q4_0 decode uses the 8-column tiled x8 candidate";
   let captured_q4_0 = Ir.Graph.create () in
   let captured_q4_0_input =
     tensor_input captured_q4_0 ~name:"captured_q4_0_input"

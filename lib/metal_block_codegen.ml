@@ -495,6 +495,167 @@ kernel void llmopt_q4_0_linear_f16_x4(
     quant_offset quant_offset quant_offset block_elements zero zero zero zero
     zero zero zero zero block_bytes block_elements
 
+let emit_q4_0_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
+    ~block_bytes =
+  Printf.sprintf {|
+kernel void llmopt_q4_0_linear_f16_x8(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint col_group = gid >> 5u;
+  const uint base_col = col_group << 3u;
+  const uint tg_base_col = ((gid - tid) >> 5u) << 3u;
+  if (tg_base_col >= params.n) return;
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+  device const uchar* row_blocks0 = weight + min(base_col, params.n - 1u) * col_stride;
+  device const uchar* row_blocks1 = weight + min(base_col + 1u, params.n - 1u) * col_stride;
+  device const uchar* row_blocks2 = weight + min(base_col + 2u, params.n - 1u) * col_stride;
+  device const uchar* row_blocks3 = weight + min(base_col + 3u, params.n - 1u) * col_stride;
+  device const uchar* row_blocks4 = weight + min(base_col + 4u, params.n - 1u) * col_stride;
+  device const uchar* row_blocks5 = weight + min(base_col + 5u, params.n - 1u) * col_stride;
+  device const uchar* row_blocks6 = weight + min(base_col + 6u, params.n - 1u) * col_stride;
+  device const uchar* row_blocks7 = weight + min(base_col + 7u, params.n - 1u) * col_stride;
+  device const half* activation = input;
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  float accumulator2 = 0.0f;
+  float accumulator3 = 0.0f;
+  float accumulator4 = 0.0f;
+  float accumulator5 = 0.0f;
+  float accumulator6 = 0.0f;
+  float accumulator7 = 0.0f;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  threadgroup half s_activation[4096];
+  for (uint k_start = 0u; k_start < params.k; k_start += 4096u) {
+    const uint chunk_len = min(4096u, params.k - k_start);
+    for (uint i = tid; i < chunk_len; i += 256u) {
+      s_activation[i] = activation[k_start + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint chunk_blocks = chunk_len / %du;
+    const uint chunk_half_blocks = chunk_blocks >> 1u;
+    const uint b_start = k_start / %du;
+
+    for (uint b = 0u; b < chunk_half_blocks; ++b) {
+      const uint block_idx = b_start + (b << 1u) + b_offset;
+      const uint blk_byte_off = block_idx * %du;
+      device const uchar* blk0 = row_blocks0 + blk_byte_off;
+      device const uchar* blk1 = row_blocks1 + blk_byte_off;
+      device const uchar* blk2 = row_blocks2 + blk_byte_off;
+      device const uchar* blk3 = row_blocks3 + blk_byte_off;
+      device const uchar* blk4 = row_blocks4 + blk_byte_off;
+      device const uchar* blk5 = row_blocks5 + blk_byte_off;
+      device const uchar* blk6 = row_blocks6 + blk_byte_off;
+      device const uchar* blk7 = row_blocks7 + blk_byte_off;
+      const half scale0 = *reinterpret_cast<device const half*>(blk0 + %du);
+      const half scale1 = *reinterpret_cast<device const half*>(blk1 + %du);
+      const half scale2 = *reinterpret_cast<device const half*>(blk2 + %du);
+      const half scale3 = *reinterpret_cast<device const half*>(blk3 + %du);
+      const half scale4 = *reinterpret_cast<device const half*>(blk4 + %du);
+      const half scale5 = *reinterpret_cast<device const half*>(blk5 + %du);
+      const half scale6 = *reinterpret_cast<device const half*>(blk6 + %du);
+      const half scale7 = *reinterpret_cast<device const half*>(blk7 + %du);
+      const uchar packed0 = blk0[%du + l];
+      const uchar packed1 = blk1[%du + l];
+      const uchar packed2 = blk2[%du + l];
+      const uchar packed3 = blk3[%du + l];
+      const uchar packed4 = blk4[%du + l];
+      const uchar packed5 = blk5[%du + l];
+      const uchar packed6 = blk6[%du + l];
+      const uchar packed7 = blk7[%du + l];
+      const uint s_k = ((b << 1u) + b_offset) * %du + l;
+      const float a_low = float(s_activation[s_k]);
+      const float a_high = float(s_activation[s_k + 16u]);
+      const float q0_low = float(int(packed0 & 15u) - %d);
+      const float q0_high = float(int(packed0 >> 4u) - %d);
+      const float q1_low = float(int(packed1 & 15u) - %d);
+      const float q1_high = float(int(packed1 >> 4u) - %d);
+      const float q2_low = float(int(packed2 & 15u) - %d);
+      const float q2_high = float(int(packed2 >> 4u) - %d);
+      const float q3_low = float(int(packed3 & 15u) - %d);
+      const float q3_high = float(int(packed3 >> 4u) - %d);
+      const float q4_low = float(int(packed4 & 15u) - %d);
+      const float q4_high = float(int(packed4 >> 4u) - %d);
+      const float q5_low = float(int(packed5 & 15u) - %d);
+      const float q5_high = float(int(packed5 >> 4u) - %d);
+      const float q6_low = float(int(packed6 & 15u) - %d);
+      const float q6_high = float(int(packed6 >> 4u) - %d);
+      const float q7_low = float(int(packed7 & 15u) - %d);
+      const float q7_high = float(int(packed7 >> 4u) - %d);
+      accumulator0 += float(scale0) * (a_low * q0_low + a_high * q0_high);
+      accumulator1 += float(scale1) * (a_low * q1_low + a_high * q1_high);
+      accumulator2 += float(scale2) * (a_low * q2_low + a_high * q2_high);
+      accumulator3 += float(scale3) * (a_low * q3_low + a_high * q3_high);
+      accumulator4 += float(scale4) * (a_low * q4_low + a_high * q4_high);
+      accumulator5 += float(scale5) * (a_low * q5_low + a_high * q5_high);
+      accumulator6 += float(scale6) * (a_low * q6_low + a_high * q6_high);
+      accumulator7 += float(scale7) * (a_low * q7_low + a_high * q7_high);
+    }
+    if ((chunk_blocks & 1u) != 0u) {
+      const uint block_idx = b_start + chunk_blocks - 1u;
+      const uint blk_byte_off = block_idx * %du;
+      const uint s_k = (chunk_blocks - 1u) * %du + lane;
+      const float a = float(s_activation[s_k]);
+      accumulator0 += a * llmopt_schema_q4_0_value(row_blocks0 + blk_byte_off, lane);
+      accumulator1 += a * llmopt_schema_q4_0_value(row_blocks1 + blk_byte_off, lane);
+      accumulator2 += a * llmopt_schema_q4_0_value(row_blocks2 + blk_byte_off, lane);
+      accumulator3 += a * llmopt_schema_q4_0_value(row_blocks3 + blk_byte_off, lane);
+      accumulator4 += a * llmopt_schema_q4_0_value(row_blocks4 + blk_byte_off, lane);
+      accumulator5 += a * llmopt_schema_q4_0_value(row_blocks5 + blk_byte_off, lane);
+      accumulator6 += a * llmopt_schema_q4_0_value(row_blocks6 + blk_byte_off, lane);
+      accumulator7 += a * llmopt_schema_q4_0_value(row_blocks7 + blk_byte_off, lane);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  accumulator0 = simd_sum(accumulator0);
+  accumulator1 = simd_sum(accumulator1);
+  accumulator2 = simd_sum(accumulator2);
+  accumulator3 = simd_sum(accumulator3);
+  accumulator4 = simd_sum(accumulator4);
+  accumulator5 = simd_sum(accumulator5);
+  accumulator6 = simd_sum(accumulator6);
+  accumulator7 = simd_sum(accumulator7);
+  if (lane == 0u && base_col < params.n) {
+    if (params.has_bias != 0u) {
+      accumulator0 += float(bias[base_col]);
+      if (base_col + 1u < params.n) accumulator1 += float(bias[base_col + 1u]);
+      if (base_col + 2u < params.n) accumulator2 += float(bias[base_col + 2u]);
+      if (base_col + 3u < params.n) accumulator3 += float(bias[base_col + 3u]);
+      if (base_col + 4u < params.n) accumulator4 += float(bias[base_col + 4u]);
+      if (base_col + 5u < params.n) accumulator5 += float(bias[base_col + 5u]);
+      if (base_col + 6u < params.n) accumulator6 += float(bias[base_col + 6u]);
+      if (base_col + 7u < params.n) accumulator7 += float(bias[base_col + 7u]);
+    }
+    output[base_col] = half(accumulator0);
+    if (base_col + 1u < params.n) output[base_col + 1u] = half(accumulator1);
+    if (base_col + 2u < params.n) output[base_col + 2u] = half(accumulator2);
+    if (base_col + 3u < params.n) output[base_col + 3u] = half(accumulator3);
+    if (base_col + 4u < params.n) output[base_col + 4u] = half(accumulator4);
+    if (base_col + 5u < params.n) output[base_col + 5u] = half(accumulator5);
+    if (base_col + 6u < params.n) output[base_col + 6u] = half(accumulator6);
+    if (base_col + 7u < params.n) output[base_col + 7u] = half(accumulator7);
+  }
+}
+|}
+    block_elements block_bytes block_elements block_elements block_bytes
+    scale_offset scale_offset scale_offset scale_offset
+    scale_offset scale_offset scale_offset scale_offset
+    quant_offset quant_offset quant_offset quant_offset
+    quant_offset quant_offset quant_offset quant_offset
+    block_elements
+    zero zero zero zero zero zero zero zero
+    zero zero zero zero zero zero zero zero
+    block_bytes block_elements
+
 let emit_q4_0_linear_f16_m16 ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =
   Printf.sprintf {|
@@ -984,6 +1145,8 @@ kernel void llmopt_q4_0_linear_f16_m4_add(
          block_elements block_bytes block_bytes scale_offset quant_offset
          block_elements zero zero block_bytes block_elements
       ^ emit_q4_0_linear_f16_x4 ~scale_offset ~quant_offset ~zero ~block_elements
+          ~block_bytes
+      ^ emit_q4_0_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes
       ^ emit_q4_0_linear_f16_m16 ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes

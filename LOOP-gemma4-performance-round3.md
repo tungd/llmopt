@@ -62,7 +62,7 @@ Target performance profile on Apple M4 Pro:
   2. In `caml_llmopt_metal_batch_dispatch_all`, track `current_pipeline`, call `setComputePipelineState:` only on state change, and pack buffer arrays to dispatch with `setBuffers:offsets:withRange:`.
 - **GATE**: `ninja -f ninja.build all test` passes cleanly.
 
-### [ ] G4P3-02: Wide decode GEMV ($N_{\text{tile}} = 8$)
+### [x] G4P3-02: Wide decode GEMV ($N_{\text{tile}} = 8$)
 - **REPO**: `llmopt`
 - **WHERE**: `lib/metal_block_codegen.ml`, `lib/kernel_abi.ml`, `lib/metal_runtime.ml`, `lib/metal.ml`, `test/test.ml`
 - **IMPORTANT FILES**:
