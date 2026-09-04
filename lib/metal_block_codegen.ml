@@ -495,6 +495,176 @@ kernel void llmopt_q4_0_linear_f16_x4(
     quant_offset quant_offset quant_offset block_elements zero zero zero zero
     zero zero zero zero block_bytes block_elements
 
+let emit_q4_0_linear_f16_m16 ~scale_offset ~quant_offset ~zero ~block_elements
+    ~block_bytes =
+  Printf.sprintf {|
+kernel void llmopt_q4_0_linear_f16_m16(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint m_tiles = (params.m + 15u) >> 4u;
+  const uint total_tiles = m_tiles * params.n;
+  if (simd_idx >= total_tiles) return;
+  const uint m_tile = simd_idx / params.n;
+  const uint column = simd_idx - m_tile * params.n;
+  const uint row_base = m_tile << 4u;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+
+  float acc[16] = {0.0f};
+
+  const uint half_blocks = blocks >> 1u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  device const half* in_ptrs[16];
+  #pragma unroll
+  for (uint r = 0; r < 16; ++r) {
+    in_ptrs[r] = (row_base + r < params.m) ? input + (row_base + r) * params.k : input;
+  }
+
+  for (uint b = 0u; b < half_blocks; ++b) {
+    const uint block_idx = (b << 1u) + b_offset;
+    device const uchar* blk = row_blocks + block_idx * %du;
+    const half scale = *reinterpret_cast<device const half*>(blk + %du);
+    const uchar packed = blk[%du + l];
+    const float s = float(scale);
+    const uint k = block_idx * %du + l;
+    const float q_low = float(int(packed & 15u) - %d);
+    const float q_high = float(int(packed >> 4u) - %d);
+    const float w_low = s * q_low;
+    const float w_high = s * q_high;
+
+    #pragma unroll
+    for (uint r = 0; r < 16; ++r) {
+      acc[r] += float(in_ptrs[r][k]) * w_low + float(in_ptrs[r][k + 16u]) * w_high;
+    }
+  }
+
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    device const uchar* blk = row_blocks + block_idx * %du;
+    const half scale = *reinterpret_cast<device const half*>(blk + %du);
+    const uint8_t byte_val = (lane < 16u) ? blk[%du + lane] : blk[%du + lane - 16u];
+    const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4u);
+    const float decoded = float(scale) * float(int(nib) - %d);
+    const uint k = block_idx * %du + lane;
+    #pragma unroll
+    for (uint r = 0; r < 16; ++r) {
+      acc[r] += float(in_ptrs[r][k]) * decoded;
+    }
+  }
+
+  #pragma unroll
+  for (uint r = 0; r < 16; ++r) {
+    acc[r] = simd_sum(acc[r]);
+  }
+
+  if (lane == 0u) {
+    const float b_val = (params.has_bias != 0u) ? float(bias[column]) : 0.0f;
+    #pragma unroll
+    for (uint r = 0; r < 16; ++r) {
+      if (row_base + r < params.m) {
+        output[(row_base + r) * params.n + column] = half(acc[r] + b_val);
+      }
+    }
+  }
+}
+|}
+    block_elements block_bytes block_bytes scale_offset quant_offset
+    block_elements zero zero block_bytes scale_offset quant_offset
+    quant_offset zero block_elements
+
+let emit_q4_0_linear_f16_m16_add ~scale_offset ~quant_offset ~zero ~block_elements
+    ~block_bytes =
+  Printf.sprintf {|
+kernel void llmopt_q4_0_linear_f16_m16_add(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint m_tiles = (params.m + 15u) >> 4u;
+  const uint total_tiles = m_tiles * params.n;
+  if (simd_idx >= total_tiles) return;
+  const uint m_tile = simd_idx / params.n;
+  const uint column = simd_idx - m_tile * params.n;
+  const uint row_base = m_tile << 4u;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+
+  float acc[16] = {0.0f};
+
+  const uint half_blocks = blocks >> 1u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  device const half* in_ptrs[16];
+  #pragma unroll
+  for (uint r = 0; r < 16; ++r) {
+    in_ptrs[r] = (row_base + r < params.m) ? input + (row_base + r) * params.k : input;
+  }
+
+  for (uint b = 0u; b < half_blocks; ++b) {
+    const uint block_idx = (b << 1u) + b_offset;
+    device const uchar* blk = row_blocks + block_idx * %du;
+    const half scale = *reinterpret_cast<device const half*>(blk + %du);
+    const uchar packed = blk[%du + l];
+    const float s = float(scale);
+    const uint k = block_idx * %du + l;
+    const float q_low = float(int(packed & 15u) - %d);
+    const float q_high = float(int(packed >> 4u) - %d);
+    const float w_low = s * q_low;
+    const float w_high = s * q_high;
+
+    #pragma unroll
+    for (uint r = 0; r < 16; ++r) {
+      acc[r] += float(in_ptrs[r][k]) * w_low + float(in_ptrs[r][k + 16u]) * w_high;
+    }
+  }
+
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    device const uchar* blk = row_blocks + block_idx * %du;
+    const half scale = *reinterpret_cast<device const half*>(blk + %du);
+    const uint8_t byte_val = (lane < 16u) ? blk[%du + lane] : blk[%du + lane - 16u];
+    const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4u);
+    const float decoded = float(scale) * float(int(nib) - %d);
+    const uint k = block_idx * %du + lane;
+    #pragma unroll
+    for (uint r = 0; r < 16; ++r) {
+      acc[r] += float(in_ptrs[r][k]) * decoded;
+    }
+  }
+
+  #pragma unroll
+  for (uint r = 0; r < 16; ++r) {
+    acc[r] = simd_sum(acc[r]);
+  }
+
+  if (lane == 0u) {
+    #pragma unroll
+    for (uint r = 0; r < 16; ++r) {
+      if (row_base + r < params.m) {
+        const uint out_idx = (row_base + r) * params.n + column;
+        output[out_idx] = half(half(acc[r]) + bias[out_idx]);
+      }
+    }
+  }
+}
+|}
+    block_elements block_bytes block_bytes scale_offset quant_offset
+    block_elements zero zero block_bytes scale_offset quant_offset
+    quant_offset zero block_elements
+
 let q4_0_linear ~target schema =
   let physical = Block_schema.physical_layout schema in
   let logical = Block_schema.logical_decode schema in
@@ -814,6 +984,10 @@ kernel void llmopt_q4_0_linear_f16_m4_add(
          block_elements block_bytes block_bytes scale_offset quant_offset
          block_elements zero zero block_bytes block_elements
       ^ emit_q4_0_linear_f16_x4 ~scale_offset ~quant_offset ~zero ~block_elements
+          ~block_bytes
+      ^ emit_q4_0_linear_f16_m16 ~scale_offset ~quant_offset ~zero ~block_elements
+          ~block_bytes
+      ^ emit_q4_0_linear_f16_m16_add ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes)
 
 let linear_kernels ~target schema =
