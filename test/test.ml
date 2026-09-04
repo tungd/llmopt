@@ -1127,6 +1127,20 @@ let () =
     (List.mem "llmopt_q4_0_linear_f16" captured_q4_0_kernels)
     "captured two-row Q4_0 package also retains the arbitrary-row fallback";
   expect
+    (List.mem "llmopt_q4_0_linear_f16_m4" captured_q4_0_kernels)
+    "captured Q4_0 package retains the m4 batched prefill tactic";
+  expect
+    (List.mem "llmopt_q4_0_linear_f16_m4_add" captured_q4_0_kernels)
+    "captured Q4_0 package retains the m4_add batched prefill tactic";
+  expect
+    (contains_substring (Metal.Program.source captured_q4_0_program)
+       "kernel void llmopt_q4_0_linear_f16_m4_add")
+    "Q4_0 Linear Metal emits the m4_add kernel";
+  expect
+    (contains_substring (Metal.Program.source captured_q4_0_program)
+       "kernel void llmopt_q4_0_gated_linear_f16_m4")
+    "Q4_0 Linear Metal emits the gated linear m4 kernel";
+  expect
     (contains_substring (Metal.Program.source captured_q4_0_program)
        "llmopt_schema_q4_0_value")
     "Q4_0 Linear Metal is emitted constructively from the block schema";
@@ -1787,6 +1801,10 @@ let () =
     (contains_substring (Metal.Program.source q4_qkv_program)
        "kernel void llmopt_q4_0_qkv_linear_f16")
     "Metal lowering emits the all-Q4_0 QKV kernel";
+  expect
+    (contains_substring (Metal.Program.source q4_qkv_program)
+       "kernel void llmopt_q4_0_qkv_linear_f16_m4")
+    "Metal lowering emits the all-Q4_0 QKV m4 batched kernel";
 
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
@@ -4909,6 +4927,8 @@ let () =
   in
   expect (compile_msl_string q8_0_src) "q8_0 MSL compiles cleanly with xcrun metal";
   expect (compile_msl_string q5_0_src) "q5_0 MSL compiles cleanly with xcrun metal";
+  let q4_0_src = Metal.emit_dequant_q4_0 () in
+  expect (compile_msl_string q4_0_src) "q4_0 MSL compiles cleanly with xcrun metal";
 
   (* Superblock-256 K-Quant Metal Dequantization & Shader Tests *)
   let q4_k_src = Metal.emit_dequant_q4_k () in

@@ -696,8 +696,101 @@ kernel void llmopt_q4_0_linear_f16_m4(
       output[(row_base + 3u) * params.n + column] = half(accumulator3 + b_val);
   }
 }
+
+kernel void llmopt_q4_0_linear_f16_m4_add(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint m_tiles = (params.m + 3u) >> 2u;
+  const uint total_tiles = m_tiles * params.n;
+  if (simd_idx >= total_tiles) return;
+  const uint m_tile = simd_idx / params.n;
+  const uint column = simd_idx - m_tile * params.n;
+  const uint row_base = m_tile << 2u;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  float accumulator2 = 0.0f;
+  float accumulator3 = 0.0f;
+
+  const uint half_blocks = blocks >> 1u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  device const half* in0 = input + row_base * params.k;
+  device const half* in1 = (row_base + 1u < params.m) ? in0 + params.k : in0;
+  device const half* in2 = (row_base + 2u < params.m) ? in0 + 2u * params.k : in0;
+  device const half* in3 = (row_base + 3u < params.m) ? in0 + 3u * params.k : in0;
+
+  for (uint b = 0u; b < half_blocks; ++b) {
+    const uint block_idx = (b << 1u) + b_offset;
+    device const uchar* blk = row_blocks + block_idx * %du;
+    const half scale = *reinterpret_cast<device const half*>(blk + %du);
+    const uchar packed = blk[%du + l];
+    const float s = float(scale);
+    const uint k = block_idx * %du + l;
+    const float q_low = float(int(packed & 15u) - %d);
+    const float q_high = float(int(packed >> 4u) - %d);
+
+    const float in0_low = float(in0[k]);
+    const float in0_high = float(in0[k + 16u]);
+    accumulator0 += s * (in0_low * q_low + in0_high * q_high);
+
+    const float in1_low = float(in1[k]);
+    const float in1_high = float(in1[k + 16u]);
+    accumulator1 += s * (in1_low * q_low + in1_high * q_high);
+
+    const float in2_low = float(in2[k]);
+    const float in2_high = float(in2[k + 16u]);
+    accumulator2 += s * (in2_low * q_low + in2_high * q_high);
+
+    const float in3_low = float(in3[k]);
+    const float in3_high = float(in3[k + 16u]);
+    accumulator3 += s * (in3_low * q_low + in3_high * q_high);
+  }
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    device const uchar* blk = row_blocks + block_idx * %du;
+    const uint k = block_idx * %du + lane;
+    const float decoded = llmopt_schema_q4_0_value(blk, lane);
+    accumulator0 += float(in0[k]) * decoded;
+    accumulator1 += float(in1[k]) * decoded;
+    accumulator2 += float(in2[k]) * decoded;
+    accumulator3 += float(in3[k]) * decoded;
+  }
+  accumulator0 = simd_sum(accumulator0);
+  accumulator1 = simd_sum(accumulator1);
+  accumulator2 = simd_sum(accumulator2);
+  accumulator3 = simd_sum(accumulator3);
+
+  if (lane == 0u) {
+    const uint out_idx0 = row_base * params.n + column;
+    output[out_idx0] = half(half(accumulator0) + bias[out_idx0]);
+    if (row_base + 1u < params.m) {
+      const uint out_idx1 = (row_base + 1u) * params.n + column;
+      output[out_idx1] = half(half(accumulator1) + bias[out_idx1]);
+    }
+    if (row_base + 2u < params.m) {
+      const uint out_idx2 = (row_base + 2u) * params.n + column;
+      output[out_idx2] = half(half(accumulator2) + bias[out_idx2]);
+    }
+    if (row_base + 3u < params.m) {
+      const uint out_idx3 = (row_base + 3u) * params.n + column;
+      output[out_idx3] = half(half(accumulator3) + bias[out_idx3]);
+    }
+  }
+}
 |}
          scale_offset quant_offset zero
+         block_elements block_bytes block_bytes scale_offset quant_offset
+         block_elements zero zero block_bytes block_elements
          block_elements block_bytes block_bytes scale_offset quant_offset
          block_elements zero zero block_bytes block_elements
          block_elements block_bytes block_bytes scale_offset quant_offset

@@ -3459,6 +3459,131 @@ kernel void llmopt_q4_0_gated_linear_f16(
   }
 }
 
+kernel void llmopt_q4_0_gated_linear_f16_m4(
+    device const half* input [[buffer(0)]],
+    device const block_q4_0* gate_weight [[buffer(1)]],
+    device const block_q4_0* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint m_tiles = (params.m + 3u) >> 2u;
+  const uint total_simd = m_tiles * params.n;
+  if (simd_idx >= total_simd) return;
+  const uint m_tile = simd_idx / params.n;
+  const uint col = simd_idx - m_tile * params.n;
+  const uint row0 = m_tile << 2u;
+  const uint row1 = row0 + 1u;
+  const uint row2 = row0 + 2u;
+  const uint row3 = row0 + 3u;
+  const bool valid1 = row1 < params.m;
+  const bool valid2 = row2 < params.m;
+  const bool valid3 = row3 < params.m;
+
+  const uint blocks = params.k >> 5u;
+  device const uchar* gate_blocks = reinterpret_cast<device const uchar*>(gate_weight) + col * blocks * 18u;
+  device const uchar* up_blocks = reinterpret_cast<device const uchar*>(up_weight) + col * blocks * 18u;
+
+  device const half* in0 = input + row0 * params.k;
+  device const half* in1 = valid1 ? input + row1 * params.k : in0;
+  device const half* in2 = valid2 ? input + row2 * params.k : in0;
+  device const half* in3 = valid3 ? input + row3 * params.k : in0;
+
+  float gate_acc0 = 0.0f, up_acc0 = 0.0f;
+  float gate_acc1 = 0.0f, up_acc1 = 0.0f;
+  float gate_acc2 = 0.0f, up_acc2 = 0.0f;
+  float gate_acc3 = 0.0f, up_acc3 = 0.0f;
+
+  const uint half_blocks = blocks >> 1u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  for (uint b = 0u; b < half_blocks; ++b) {
+    const uint block_idx = (b << 1u) + b_offset;
+    const uint blk_byte_off = block_idx * 18u;
+    device const uchar* g_blk = gate_blocks + blk_byte_off;
+    device const uchar* u_blk = up_blocks + blk_byte_off;
+
+    const half g_scale = *reinterpret_cast<device const half*>(g_blk);
+    const half u_scale = *reinterpret_cast<device const half*>(u_blk);
+    const uchar g_packed = g_blk[2u + l];
+    const uchar u_packed = u_blk[2u + l];
+
+    const uint k_idx = block_idx * 32u + l;
+    const float g_q_low = float(int(g_packed & 15u) - 8);
+    const float g_q_high = float(int(g_packed >> 4u) - 8);
+    const float u_q_low = float(int(u_packed & 15u) - 8);
+    const float u_q_high = float(int(u_packed >> 4u) - 8);
+    const float gs = float(g_scale);
+    const float us = float(u_scale);
+
+    const float in0_l = float(in0[k_idx]);
+    const float in0_h = float(in0[k_idx + 16u]);
+    gate_acc0 += gs * (in0_l * g_q_low + in0_h * g_q_high);
+    up_acc0 += us * (in0_l * u_q_low + in0_h * u_q_high);
+
+    const float in1_l = float(in1[k_idx]);
+    const float in1_h = float(in1[k_idx + 16u]);
+    gate_acc1 += gs * (in1_l * g_q_low + in1_h * g_q_high);
+    up_acc1 += us * (in1_l * u_q_low + in1_h * u_q_high);
+
+    const float in2_l = float(in2[k_idx]);
+    const float in2_h = float(in2[k_idx + 16u]);
+    gate_acc2 += gs * (in2_l * g_q_low + in2_h * g_q_high);
+    up_acc2 += us * (in2_l * u_q_low + in2_h * u_q_high);
+
+    const float in3_l = float(in3[k_idx]);
+    const float in3_h = float(in3[k_idx + 16u]);
+    gate_acc3 += gs * (in3_l * g_q_low + in3_h * g_q_high);
+    up_acc3 += us * (in3_l * u_q_low + in3_h * u_q_high);
+  }
+
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    const uint blk_byte_off = block_idx * 18u;
+    device const uchar* g_blk = gate_blocks + blk_byte_off;
+    device const uchar* u_blk = up_blocks + blk_byte_off;
+    const half g_scale = *reinterpret_cast<device const half*>(g_blk);
+    const half u_scale = *reinterpret_cast<device const half*>(u_blk);
+    const uint8_t g_byte = (lane < 16u) ? g_blk[2u + lane] : g_blk[2u + lane - 16u];
+    const uint8_t u_byte = (lane < 16u) ? u_blk[2u + lane] : u_blk[2u + lane - 16u];
+    const int g_q = int((lane < 16u) ? (g_byte & 0x0Fu) : (g_byte >> 4u)) - 8;
+    const int u_q = int((lane < 16u) ? (u_byte & 0x0Fu) : (u_byte >> 4u)) - 8;
+    const float g_dec = float(g_scale) * float(g_q);
+    const float u_dec = float(u_scale) * float(u_q);
+    const uint k_idx = block_idx * 32u + lane;
+
+    gate_acc0 += float(in0[k_idx]) * g_dec;
+    up_acc0 += float(in0[k_idx]) * u_dec;
+    gate_acc1 += float(in1[k_idx]) * g_dec;
+    up_acc1 += float(in1[k_idx]) * u_dec;
+    gate_acc2 += float(in2[k_idx]) * g_dec;
+    up_acc2 += float(in2[k_idx]) * u_dec;
+    gate_acc3 += float(in3[k_idx]) * g_dec;
+    up_acc3 += float(in3[k_idx]) * u_dec;
+  }
+
+  gate_acc0 = simd_sum(gate_acc0);
+  up_acc0 = simd_sum(up_acc0);
+  gate_acc1 = simd_sum(gate_acc1);
+  up_acc1 = simd_sum(up_acc1);
+  gate_acc2 = simd_sum(gate_acc2);
+  up_acc2 = simd_sum(up_acc2);
+  gate_acc3 = simd_sum(gate_acc3);
+  up_acc3 = simd_sum(up_acc3);
+
+  if (lane == 0u) {
+    product[row0 * params.n + col] = llmopt_gated_product(gate_acc0, up_acc0, params.has_bias);
+    if (valid1)
+      product[row1 * params.n + col] = llmopt_gated_product(gate_acc1, up_acc1, params.has_bias);
+    if (valid2)
+      product[row2 * params.n + col] = llmopt_gated_product(gate_acc2, up_acc2, params.has_bias);
+    if (valid3)
+      product[row3 * params.n + col] = llmopt_gated_product(gate_acc3, up_acc3, params.has_bias);
+  }
+}
+
 kernel void llmopt_q4_0_dual_swiglu_f16(
     device const half* normalized [[buffer(0)]],
     device const block_q4_0* gate_weight [[buffer(1)]],
@@ -3685,6 +3810,124 @@ kernel void llmopt_q4_0_qkv_linear_f16(
     if (base_col + 1u < limit) out_row[base_col + 1u] = half(accumulator1);
     if (base_col + 2u < limit) out_row[base_col + 2u] = half(accumulator2);
     if (base_col + 3u < limit) out_row[base_col + 3u] = half(accumulator3);
+  }
+}
+
+kernel void llmopt_q4_0_qkv_linear_f16_m4(
+    device const half* input [[buffer(0)]],
+    device const block_q4_0* q_weight [[buffer(1)]],
+    device const block_q4_0* k_weight [[buffer(2)]],
+    device const block_q4_0* v_weight [[buffer(3)]],
+    device half* q_output [[buffer(4)]],
+    device half* k_output [[buffer(5)]],
+    device half* v_output [[buffer(6)]],
+    constant QuantQKVParams& params [[buffer(7)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint total_cols = params.n_q + params.n_k + params.n_v;
+  const uint m_tiles = (params.m + 3u) >> 2u;
+  const uint total_simd = m_tiles * total_cols;
+  if (simd_idx >= total_simd) return;
+  const uint m_tile = simd_idx / total_cols;
+  const uint col_idx = simd_idx - m_tile * total_cols;
+  const uint row0 = m_tile << 2u;
+  const uint row1 = row0 + 1u;
+  const uint row2 = row0 + 2u;
+  const uint row3 = row0 + 3u;
+  const bool valid1 = row1 < params.m;
+  const bool valid2 = row2 < params.m;
+  const bool valid3 = row3 < params.m;
+
+  uint col;
+  device const uchar* weight_ptr;
+  device half* out_ptr;
+  uint out_stride;
+  if (col_idx < params.n_q) {
+    col = col_idx;
+    out_stride = params.n_q;
+    weight_ptr = reinterpret_cast<device const uchar*>(q_weight);
+    out_ptr = q_output;
+  } else if (col_idx < params.n_q + params.n_k) {
+    col = col_idx - params.n_q;
+    out_stride = params.n_k;
+    weight_ptr = reinterpret_cast<device const uchar*>(k_weight);
+    out_ptr = k_output;
+  } else {
+    col = col_idx - (params.n_q + params.n_k);
+    out_stride = params.n_v;
+    weight_ptr = reinterpret_cast<device const uchar*>(v_weight);
+    out_ptr = v_output;
+  }
+
+  const uint blocks = params.k >> 5u;
+  device const uchar* row_blocks = weight_ptr + col * blocks * 18u;
+
+  device const half* in0 = input + row0 * params.k;
+  device const half* in1 = valid1 ? input + row1 * params.k : in0;
+  device const half* in2 = valid2 ? input + row2 * params.k : in0;
+  device const half* in3 = valid3 ? input + row3 * params.k : in0;
+
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  float accumulator2 = 0.0f;
+  float accumulator3 = 0.0f;
+
+  const uint half_blocks = blocks >> 1u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  for (uint b = 0u; b < half_blocks; ++b) {
+    const uint block_idx = (b << 1u) + b_offset;
+    device const uchar* blk = row_blocks + block_idx * 18u;
+    const half scale = *reinterpret_cast<device const half*>(blk);
+    const uchar packed = blk[2u + l];
+    const float s = float(scale);
+    const uint k = block_idx * 32u + l;
+    const float q_low = float(int(packed & 15u) - 8);
+    const float q_high = float(int(packed >> 4u) - 8);
+
+    const float in0_low = float(in0[k]);
+    const float in0_high = float(in0[k + 16u]);
+    accumulator0 += s * (in0_low * q_low + in0_high * q_high);
+
+    const float in1_low = float(in1[k]);
+    const float in1_high = float(in1[k + 16u]);
+    accumulator1 += s * (in1_low * q_low + in1_high * q_high);
+
+    const float in2_low = float(in2[k]);
+    const float in2_high = float(in2[k + 16u]);
+    accumulator2 += s * (in2_low * q_low + in2_high * q_high);
+
+    const float in3_low = float(in3[k]);
+    const float in3_high = float(in3[k + 16u]);
+    accumulator3 += s * (in3_low * q_low + in3_high * q_high);
+  }
+
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    device const uchar* blk = row_blocks + block_idx * 18u;
+    const half scale = *reinterpret_cast<device const half*>(blk);
+    const uint8_t byte_val = (lane < 16u) ? blk[2u + lane] : blk[2u + lane - 16u];
+    const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4u);
+    const float decoded = float(scale) * float(int(nib) - 8);
+    const uint k = block_idx * 32u + lane;
+    accumulator0 += float(in0[k]) * decoded;
+    accumulator1 += float(in1[k]) * decoded;
+    accumulator2 += float(in2[k]) * decoded;
+    accumulator3 += float(in3[k]) * decoded;
+  }
+
+  accumulator0 = simd_sum(accumulator0);
+  accumulator1 = simd_sum(accumulator1);
+  accumulator2 = simd_sum(accumulator2);
+  accumulator3 = simd_sum(accumulator3);
+
+  if (lane == 0u) {
+    out_ptr[row0 * out_stride + col] = half(accumulator0);
+    if (valid1) out_ptr[row1 * out_stride + col] = half(accumulator1);
+    if (valid2) out_ptr[row2 * out_stride + col] = half(accumulator2);
+    if (valid3) out_ptr[row3 * out_stride + col] = half(accumulator3);
   }
 }
 |}
@@ -3952,6 +4195,10 @@ let q4_0_qkv_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_qkv_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_qkv_linear_f16_m4"
+      ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16 ]
 
 let q5_0_qkv_entries =
@@ -4045,11 +4292,19 @@ let block32_entries =
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_linear_f16_m4_add"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_linear_f16_x4"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_gated_linear_f16"
+      ~operation:Kernel_abi.Operation.Gated_linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_gated_linear_f16_m4"
       ~operation:Kernel_abi.Operation.Gated_linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -6530,10 +6785,12 @@ let quant_source ~target = function
 let quant_linear_add_source ~target (quant, tactic) =
   ignore target;
   let name = Tactic.name tactic in
-  let source = extract_kernel (legacy_quant_source quant) name in
-  let replacements =
-    [ ( "kernel void " ^ name ^ "(",
-        "kernel void " ^ name ^ "_add(" );
+  if quant = Ir.Dtype.Q4_0 && String.ends_with ~suffix:"_m4" name then ""
+  else
+    let source = extract_kernel (legacy_quant_source quant) name in
+    let replacements =
+      [ ( "kernel void " ^ name ^ "(",
+          "kernel void " ^ name ^ "_add(" );
       ( "    if (params.has_bias != 0u) acc += float(bias[col]);\n",
         "" );
       ( "    if (params.has_bias != 0u) accumulator += float(bias[col]);\n",
@@ -9953,6 +10210,8 @@ let quant_tactic_entries ~quant_types tactics =
              Kernel_abi.Entry.operation entry <> Kernel_abi.Operation.Linear
              || List.mem (Kernel_abi.Entry.name entry) selected_names
              || List.mem (Kernel_abi.Entry.name entry) generic_names
+             || String.ends_with ~suffix:"_m4" (Kernel_abi.Entry.name entry)
+             || String.ends_with ~suffix:"_m4_add" (Kernel_abi.Entry.name entry)
              || List.mem (Kernel_abi.Entry.name entry)
                   [ "llmopt_q5_0_linear_f16_llama_mv_add";
                     "llmopt_q8_0_linear_f16_llama_mv";
