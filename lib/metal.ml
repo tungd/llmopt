@@ -4804,11 +4804,14 @@ kernel void llmopt_q4_0_qkv_linear_f16_m32(
   const uint simd_idx = gid >> 5u;
   const uint total_cols = params.n_q + params.n_k + params.n_v;
   const uint m_tiles = (params.m + 31u) >> 5u;
-  const uint total_simd = m_tiles * total_cols;
-  if (simd_idx >= total_simd) return;
-  const uint m_tile = simd_idx / total_cols;
-  const uint col_idx = simd_idx - m_tile * total_cols;
+  const uint total_tiles = m_tiles * total_cols;
+  const uint tile_idx = simd_idx >> 1u;
+  const uint simd_in_tile = simd_idx & 1u;
+  if (tile_idx >= total_tiles) return;
+  const uint m_tile = tile_idx / total_cols;
+  const uint col_idx = tile_idx - m_tile * total_cols;
   const uint row_base = m_tile << 5u;
+  const uint sub_row_base = row_base + (simd_in_tile << 4u);
 
   uint col;
   device const uchar* weight_ptr;
@@ -4834,13 +4837,13 @@ kernel void llmopt_q4_0_qkv_linear_f16_m32(
   const uint blocks = params.k >> 5u;
   device const uchar* row_blocks = weight_ptr + col * blocks * 18u;
 
-  device const half* in_ptrs[32];
+  device const half* in_ptrs[16];
   #pragma unroll
-  for (uint r = 0; r < 32; ++r) {
-    in_ptrs[r] = (row_base + r < params.m) ? input + (row_base + r) * params.k : input;
+  for (uint r = 0; r < 16; ++r) {
+    in_ptrs[r] = (sub_row_base + r < params.m) ? input + (sub_row_base + r) * params.k : input;
   }
 
-  float accumulator[32] = {0.0f};
+  float accumulator[16] = {0.0f};
 
   const uint half_blocks = blocks >> 1u;
   const uint l = lane & 15u;
@@ -4859,7 +4862,7 @@ kernel void llmopt_q4_0_qkv_linear_f16_m32(
     const float w_high = s * q_high;
 
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
+    for (uint r = 0; r < 16; ++r) {
       accumulator[r] += float(in_ptrs[r][k]) * w_low + float(in_ptrs[r][k + 16u]) * w_high;
     }
   }
@@ -4873,21 +4876,21 @@ kernel void llmopt_q4_0_qkv_linear_f16_m32(
     const float decoded = float(scale) * float(int(nib) - 8);
     const uint k = block_idx * 32u + lane;
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
+    for (uint r = 0; r < 16; ++r) {
       accumulator[r] += float(in_ptrs[r][k]) * decoded;
     }
   }
 
   #pragma unroll
-  for (uint r = 0; r < 32; ++r) {
+  for (uint r = 0; r < 16; ++r) {
     accumulator[r] = simd_sum(accumulator[r]);
   }
 
   if (lane == 0u) {
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
-      if (row_base + r < params.m) {
-        out_ptr[(row_base + r) * out_stride + col] = half(accumulator[r]);
+    for (uint r = 0; r < 16; ++r) {
+      if (sub_row_base + r < params.m) {
+        out_ptr[(sub_row_base + r) * out_stride + col] = half(accumulator[r]);
       }
     }
   }

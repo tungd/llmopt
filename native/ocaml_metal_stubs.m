@@ -1373,6 +1373,15 @@ CAMLprim value caml_llmopt_metal_dispatch(value arguments) {
   CAMLreturn(Val_unit);
 }
 
+static inline bool llmopt_enable_serial_barriers(void) {
+  static int cached = -1;
+  if (cached == -1) {
+    const char *env = getenv("LLMOPT_ENABLE_SERIAL_BARRIERS");
+    cached = (env != NULL && strcmp(env, "1") == 0) ? 1 : 0;
+  }
+  return cached == 1;
+}
+
 static void *llmopt_worker_loop(void *arg) {
   llmopt_ring_queue *q = (llmopt_ring_queue *)arg;
 
@@ -1474,13 +1483,15 @@ static void *llmopt_worker_loop(void *arg) {
         [enc setBuffer:q->output_buffer offset:q->output_buffer_offset atIndex:0];
         [enc setBuffer:q->token_buffer offset:q->token_buffer_offset atIndex:1];
         [enc dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        if (llmopt_enable_serial_barriers()) {
+          [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        }
       }
 
       id<MTLComputePipelineState> current_pipeline = nil;
       for (size_t i = 0; i < q->record_count; i++) {
         llmopt_dispatch_record *r = &q->records[i];
-        if (r->barrier_before) {
+        if (r->barrier_before && llmopt_enable_serial_barriers()) {
           [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
         }
         if (r->pipeline != current_pipeline) {
@@ -1855,7 +1866,7 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
     id<MTLComputePipelineState> current_pipeline = nil;
     for (size_t i = 0; i < plan->record_count; i++) {
       llmopt_dispatch_record *r = &plan->records[i];
-      if (r->barrier_before) {
+      if (r->barrier_before && llmopt_enable_serial_barriers()) {
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
       }
       if (r->pipeline != current_pipeline) {

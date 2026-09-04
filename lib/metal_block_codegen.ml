@@ -840,23 +840,26 @@ kernel void llmopt_q4_0_linear_f16_m32(
   const uint simd_idx = gid >> 5u;
   const uint m_tiles = (params.m + 31u) >> 5u;
   const uint total_tiles = m_tiles * params.n;
-  if (simd_idx >= total_tiles) return;
-  const uint m_tile = simd_idx / params.n;
-  const uint column = simd_idx - m_tile * params.n;
+  const uint tile_idx = simd_idx >> 1u;
+  const uint simd_in_tile = simd_idx & 1u;
+  if (tile_idx >= total_tiles) return;
+  const uint m_tile = tile_idx / params.n;
+  const uint column = tile_idx - m_tile * params.n;
   const uint row_base = m_tile << 5u;
+  const uint sub_row_base = row_base + (simd_in_tile << 4u);
   const uint blocks = params.k / %du;
   device const uchar* row_blocks = weight + column * blocks * %du;
 
-  float acc[32] = {0.0f};
+  float acc[16] = {0.0f};
 
   const uint half_blocks = blocks >> 1u;
   const uint l = lane & 15u;
   const uint b_offset = lane >> 4u;
 
-  device const half* in_ptrs[32];
+  device const half* in_ptrs[16];
   #pragma unroll
-  for (uint r = 0; r < 32; ++r) {
-    in_ptrs[r] = (row_base + r < params.m) ? input + (row_base + r) * params.k : input;
+  for (uint r = 0; r < 16; ++r) {
+    in_ptrs[r] = (sub_row_base + r < params.m) ? input + (sub_row_base + r) * params.k : input;
   }
 
   for (uint b = 0u; b < half_blocks; ++b) {
@@ -872,7 +875,7 @@ kernel void llmopt_q4_0_linear_f16_m32(
     const float w_high = s * q_high;
 
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
+    for (uint r = 0; r < 16; ++r) {
       acc[r] += float(in_ptrs[r][k]) * w_low + float(in_ptrs[r][k + 16u]) * w_high;
     }
   }
@@ -886,22 +889,22 @@ kernel void llmopt_q4_0_linear_f16_m32(
     const float decoded = float(scale) * float(int(nib) - %d);
     const uint k = block_idx * %du + lane;
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
+    for (uint r = 0; r < 16; ++r) {
       acc[r] += float(in_ptrs[r][k]) * decoded;
     }
   }
 
   #pragma unroll
-  for (uint r = 0; r < 32; ++r) {
+  for (uint r = 0; r < 16; ++r) {
     acc[r] = simd_sum(acc[r]);
   }
 
   if (lane == 0u) {
     const float b_val = (params.has_bias != 0u) ? float(bias[column]) : 0.0f;
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
-      if (row_base + r < params.m) {
-        output[(row_base + r) * params.n + column] = half(acc[r] + b_val);
+    for (uint r = 0; r < 16; ++r) {
+      if (sub_row_base + r < params.m) {
+        output[(sub_row_base + r) * params.n + column] = half(acc[r] + b_val);
       }
     }
   }
@@ -925,23 +928,26 @@ kernel void llmopt_q4_0_linear_f16_m32_add(
   const uint simd_idx = gid >> 5u;
   const uint m_tiles = (params.m + 31u) >> 5u;
   const uint total_tiles = m_tiles * params.n;
-  if (simd_idx >= total_tiles) return;
-  const uint m_tile = simd_idx / params.n;
-  const uint column = simd_idx - m_tile * params.n;
+  const uint tile_idx = simd_idx >> 1u;
+  const uint simd_in_tile = simd_idx & 1u;
+  if (tile_idx >= total_tiles) return;
+  const uint m_tile = tile_idx / params.n;
+  const uint column = tile_idx - m_tile * params.n;
   const uint row_base = m_tile << 5u;
+  const uint sub_row_base = row_base + (simd_in_tile << 4u);
   const uint blocks = params.k / %du;
   device const uchar* row_blocks = weight + column * blocks * %du;
 
-  float acc[32] = {0.0f};
+  float acc[16] = {0.0f};
 
   const uint half_blocks = blocks >> 1u;
   const uint l = lane & 15u;
   const uint b_offset = lane >> 4u;
 
-  device const half* in_ptrs[32];
+  device const half* in_ptrs[16];
   #pragma unroll
-  for (uint r = 0; r < 32; ++r) {
-    in_ptrs[r] = (row_base + r < params.m) ? input + (row_base + r) * params.k : input;
+  for (uint r = 0; r < 16; ++r) {
+    in_ptrs[r] = (sub_row_base + r < params.m) ? input + (sub_row_base + r) * params.k : input;
   }
 
   for (uint b = 0u; b < half_blocks; ++b) {
@@ -957,7 +963,7 @@ kernel void llmopt_q4_0_linear_f16_m32_add(
     const float w_high = s * q_high;
 
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
+    for (uint r = 0; r < 16; ++r) {
       acc[r] += float(in_ptrs[r][k]) * w_low + float(in_ptrs[r][k + 16u]) * w_high;
     }
   }
@@ -971,21 +977,21 @@ kernel void llmopt_q4_0_linear_f16_m32_add(
     const float decoded = float(scale) * float(int(nib) - %d);
     const uint k = block_idx * %du + lane;
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
+    for (uint r = 0; r < 16; ++r) {
       acc[r] += float(in_ptrs[r][k]) * decoded;
     }
   }
 
   #pragma unroll
-  for (uint r = 0; r < 32; ++r) {
+  for (uint r = 0; r < 16; ++r) {
     acc[r] = simd_sum(acc[r]);
   }
 
   if (lane == 0u) {
     #pragma unroll
-    for (uint r = 0; r < 32; ++r) {
-      if (row_base + r < params.m) {
-        const uint out_idx = (row_base + r) * params.n + column;
+    for (uint r = 0; r < 16; ++r) {
+      if (sub_row_base + r < params.m) {
+        const uint out_idx = (sub_row_base + r) * params.n + column;
         output[out_idx] = half(half(acc[r]) + bias[out_idx]);
       }
     }

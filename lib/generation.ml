@@ -11,12 +11,14 @@ module Native_engine = struct
     let* prompt = Serving_engine.prompt engine ~tokens in
     let serving_step = Serving_engine.Prompt.step prompt in
     let sequence_cursor =
-      Sys.getenv_opt "LLMOPT_EXPERIMENTAL_SEQUENCE_CURSOR" = Some "1"
+      Sys.getenv_opt "LLMOPT_DISABLE_SEQUENCE_CURSOR" <> Some "1"
     in
-    let* sequence =
+    let sequence =
       if sequence_cursor then
-        Serving_engine.Sequence.create engine serving_step |> Result.map Option.some
-      else Ok None
+        match Serving_engine.Sequence.create engine serving_step with
+        | Ok seq -> Some seq
+        | Error _ -> None
+      else None
     in
     Ok
       ( { serving_step; sequence },

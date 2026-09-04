@@ -462,7 +462,7 @@ module Quant_qkv_tactic = struct
   let kernel_name ~q_dtype ~experimental_llama_mv
       ~experimental_mixed_llama_mv ~m ~v_dtype =
     match q_dtype, v_dtype with
-    | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 when m >= 64 ->
+    | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 when m >= 32 ->
         Ok "llmopt_q4_0_qkv_linear_f16_m32"
     | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 when m >= 16 ->
         Ok "llmopt_q4_0_qkv_linear_f16_m16"
@@ -2188,7 +2188,7 @@ let dispatch_quant_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k
       else Ok (groups * 128)
     else if String.ends_with ~suffix:"_m32" name then
       let m_tiles = (m + 31) / 32 in
-      linear_f16_grid (m_tiles * (n_q + n_k + n_v))
+      linear_f16_grid (m_tiles * (n_q + n_k + n_v) * 2)
     else if String.ends_with ~suffix:"_x8" name then
       let q_groups = (n_q + 7) / 8 in
       let k_groups = (n_k + 7) / 8 in
@@ -2458,7 +2458,7 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     else if String.ends_with ~suffix:"_m32" tactic_name
          || String.ends_with ~suffix:"_m32_add" tactic_name
     then
-      ((m + 31) / 32) * n
+      ((m + 31) / 32) * n * 2
     else if String.ends_with ~suffix:"_m16" tactic_name
          || String.ends_with ~suffix:"_m16_add" tactic_name
     then
@@ -3167,7 +3167,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                   | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid gate.n
                   | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m32" name ->
                       let m_tiles = (gate.m + 31) / 32 in
-                      linear_f16_grid (m_tiles * gate.n)
+                      linear_f16_grid (m_tiles * gate.n * 2)
                   | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m16" name ->
                       let m_tiles = (gate.m + 15) / 16 in
                       linear_f16_grid (m_tiles * gate.n)
@@ -3713,7 +3713,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
               | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
               | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m32" name ->
                   let m_tiles = (m + 31) / 32 in
-                  linear_f16_grid (m_tiles * n)
+                  linear_f16_grid (m_tiles * n * 2)
               | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m16" name ->
                   let m_tiles = (m + 15) / 16 in
                   linear_f16_grid (m_tiles * n)

@@ -1880,8 +1880,8 @@ let () =
        ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:37
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
     |> expect_ok
-    = "llmopt_q4_0_qkv_linear_f16_m16")
-    "prompt prefill (m=37) all-Q4_0 QKV selects the register-safe m16 batched kernel";
+    = "llmopt_q4_0_qkv_linear_f16_m32")
+    "prompt prefill (m=37) all-Q4_0 QKV selects the register-safe m32 batched kernel";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
        ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)

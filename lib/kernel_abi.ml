@@ -389,7 +389,7 @@ module Linear_tactic = struct
             threadgroup = (256, 1, 1) });
       accepts =
         (fun (problem : problem) ->
-          problem.m >= 64 && problem.n > 0 && problem.k > 0
+          problem.m >= 32 && problem.n > 0 && problem.k > 0
           && problem.k mod block_elements quant = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
