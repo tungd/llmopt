@@ -8,6 +8,11 @@ let is_gpu_command node =
   | Ir.Op.Input _ | Ir.Op.Output _ -> false
   | _ -> true
 
+let is_barrier node =
+  match Ir.node_op node with
+  | Ir.Op.Barrier_wait _ | Ir.Op.Barrier_arrive _ -> true
+  | _ -> false
+
 let run_plan plan =
   let graph = Compute_plan.graph plan in
   let stages = Compute_plan.stages plan in
@@ -19,7 +24,7 @@ let run_plan plan =
         |> List.fold_left (fun maximum node -> max maximum (Ir.node_id node)) (-1)
         |> ( + ) 1)
     in
-    let had_previous_gpu_stage = ref false in
+    let dispatched_since_barrier = ref Compute_plan.Node_set.empty in
     let scheduled_rev = ref [] in
     let emit_node node =
       scheduled_rev := node :: !scheduled_rev
@@ -30,18 +35,52 @@ let run_plan plan =
           ~inputs:[] ~output:None
       in
       incr next_node_id;
-      scheduled_rev := node :: !scheduled_rev
+      scheduled_rev := node :: !scheduled_rev;
+      dispatched_since_barrier := Compute_plan.Node_set.empty
     in
     List.iter
       (fun stage ->
-        let nodes =
-          Compute_plan.Stage.requests stage
-          |> List.map Compute_plan.Request.node
+        let requests = Compute_plan.Stage.requests stage in
+        let gpu_requests =
+          List.filter
+            (fun req -> is_gpu_command (Compute_plan.Request.node req))
+            requests
         in
-        let has_gpu_commands = List.exists is_gpu_command nodes in
-        if !had_previous_gpu_stage && has_gpu_commands then emit_barrier ();
-        List.iter emit_node nodes;
-        if has_gpu_commands then had_previous_gpu_stage := true)
+        if gpu_requests <> [] then (
+          let has_hazard =
+            if Compute_plan.Node_set.is_empty !dispatched_since_barrier then false
+            else
+              List.exists
+                (fun req ->
+                  match Compute_plan.Request.effect_kind req with
+                  | Compute_plan.Effect.Synchronizing | Compute_plan.Effect.Opaque -> true
+                  | _ ->
+                      let deps =
+                        Compute_plan.Request.data_dependencies req
+                        @ Compute_plan.Request.state_dependencies req
+                      in
+                      List.exists
+                        (fun dep ->
+                          Compute_plan.Node_set.mem dep !dispatched_since_barrier)
+                        deps)
+                gpu_requests
+          in
+          if has_hazard then emit_barrier ();
+          let contains_explicit_barrier =
+            List.exists (fun req -> is_barrier (Compute_plan.Request.node req)) gpu_requests
+          in
+          if contains_explicit_barrier then
+            dispatched_since_barrier := Compute_plan.Node_set.empty
+          else
+            List.iter
+              (fun req ->
+                dispatched_since_barrier :=
+                  Compute_plan.Node_set.add (Compute_plan.Request.id req)
+                    !dispatched_since_barrier)
+              gpu_requests
+        );
+        let nodes = List.map Compute_plan.Request.node requests in
+        List.iter emit_node nodes)
       stages;
     Ir.Graph.with_nodes graph (List.rev !scheduled_rev)
 
