@@ -79,6 +79,7 @@ type rope_table = {
 type decode_executable = {
   plan : Metal_runtime.Prebaked.t;
   execution : Metal_runtime.Execution.t;
+  ring_queue : Metal_runtime.Ring_queue.t option;
 }
 
 type t = {
@@ -1244,8 +1245,23 @@ let execute_static_decode engine ~schedule ~inputs ~token ~past_tokens
   match engine.decode_executable with
   | Some executable ->
       let* _ =
-        Metal_runtime.Prebaked.execute executable.plan ~token ~past_tokens
-          ~checkpoint:checkpoint_index
+        match executable.ring_queue with
+        | Some ring when checkpoint_index = 0 && Metal_runtime.Ring_queue.pipeline_depth () > 0 ->
+            let* _ =
+              Metal_runtime.Ring_queue.submit ring ~request_id:past_tokens
+                ~token ~past_tokens ~flags:0
+            in
+            let* _req_id, _next_token, status =
+              Metal_runtime.Ring_queue.wait_completion ring
+            in
+            if status <> 0 then Error "ring queue decode execution failed"
+            else Ok ()
+        | _ ->
+            let* _ =
+              Metal_runtime.Prebaked.execute executable.plan ~token ~past_tokens
+                ~checkpoint:checkpoint_index
+            in
+            Ok ()
       in
       Ok executable.execution
   | None ->
@@ -1276,11 +1292,41 @@ let execute_static_decode engine ~schedule ~inputs ~token ~past_tokens
         Metal_runtime.Prebaked.create ~runtime:engine.decode ~dispatches
           ~token_buffer ~output_buffer
       in
-      let executable = { plan; execution } in
+      let ring_queue =
+        if Sys.getenv_opt "LLMOPT_DISABLE_RING_QUEUE" = Some "1" then None
+        else
+          match Metal_runtime.Ring_queue.create () with
+          | Error _ -> None
+          | Ok ring ->
+              (match
+                 Metal_runtime.Ring_queue.start_worker ring ~runtime:engine.decode
+                   ~dispatches ~token_buffer ~output_buffer
+               with
+              | Ok () -> Some ring
+              | Error _ ->
+                  let _ = Metal_runtime.Ring_queue.destroy ring in
+                  None)
+      in
+      let executable = { plan; execution; ring_queue } in
       engine.decode_executable <- Some executable;
       let* _ =
-        Metal_runtime.Prebaked.execute plan ~token ~past_tokens
-          ~checkpoint:checkpoint_index
+        match ring_queue with
+        | Some ring when checkpoint_index = 0 && Metal_runtime.Ring_queue.pipeline_depth () > 0 ->
+            let* _ =
+              Metal_runtime.Ring_queue.submit ring ~request_id:past_tokens
+                ~token ~past_tokens ~flags:0
+            in
+            let* _req_id, _next_token, status =
+              Metal_runtime.Ring_queue.wait_completion ring
+            in
+            if status <> 0 then Error "ring queue decode execution failed"
+            else Ok ()
+        | _ ->
+            let* _ =
+              Metal_runtime.Prebaked.execute plan ~token ~past_tokens
+                ~checkpoint:checkpoint_index
+            in
+            Ok ()
       in
       Ok execution
 
@@ -1926,6 +1972,12 @@ let reset engine =
   engine.logical_cache <- Serving_cache.create engine.config;
   engine.decode_checkpoint <- None;
   engine.decode_recurrent_buffers <- None;
+  (match engine.decode_executable with
+   | Some { ring_queue = Some ring; _ } ->
+       let _ = Metal_runtime.Ring_queue.destroy ring in
+       ()
+   | _ -> ());
+  engine.decode_executable <- None;
   Ok ()
 
 let warmup_engine engine =

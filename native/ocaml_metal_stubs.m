@@ -115,6 +115,7 @@ typedef struct {
   NSUInteger token_buffer_offset;
   id<MTLBuffer> output_buffer;
   NSUInteger output_buffer_offset;
+  id<MTLComputePipelineState> chain_pipeline;
 } llmopt_ring_queue;
 
 typedef struct {
@@ -304,6 +305,7 @@ static void finalize_ring(value handle) {
     [q->queue release];
     [q->token_buffer release];
     [q->output_buffer release];
+    [q->chain_pipeline release];
     pthread_mutex_destroy(&q->mutex);
     pthread_cond_destroy(&q->sq_cond);
     pthread_cond_destroy(&q->cq_cond);
@@ -966,6 +968,42 @@ pipeline_for_name(llmopt_metal_library *library, const char *kernel_name) {
   return pipeline;
 }
 
+static id<MTLComputePipelineState>
+pipeline_for_name_opt(llmopt_metal_library *library, const char *kernel_name) {
+  if (library == NULL || library->library == nil) return nil;
+  for (uint32_t i = 0; i < library->cache_count; i++) {
+    if (library->cache[i].name == kernel_name ||
+        strcmp(library->cache[i].name, kernel_name) == 0) {
+      return library->cache[i].pipeline;
+    }
+  }
+
+  NSString *name = [NSString stringWithUTF8String:kernel_name];
+  id<MTLComputePipelineState> pipeline =
+      [library->pipelines objectForKey:name];
+  if (pipeline == nil) {
+    id<MTLFunction> function = [library->library newFunctionWithName:name];
+    if (function == nil) {
+      return nil;
+    }
+    NSError *pipeline_error = nil;
+    pipeline = [library->device newComputePipelineStateWithFunction:function
+                                                               error:&pipeline_error];
+    [function release];
+    if (pipeline == nil) {
+      return nil;
+    }
+    [library->pipelines setObject:pipeline forKey:name];
+  }
+
+  if (library->cache_count < LLMOPT_PIPELINE_CACHE_SIZE) {
+    library->cache[library->cache_count].name = strdup(kernel_name);
+    library->cache[library->cache_count].pipeline = pipeline;
+    library->cache_count++;
+  }
+  return pipeline;
+}
+
 CAMLprim value caml_llmopt_metal_preload_pipeline(value library_value,
                                                    value name_value) {
   CAMLparam2(library_value, name_value);
@@ -1327,6 +1365,20 @@ CAMLprim value caml_llmopt_metal_dispatch(value arguments) {
 static void *llmopt_worker_loop(void *arg) {
   llmopt_ring_queue *q = (llmopt_ring_queue *)arg;
 
+  int pipeline_depth = 2;
+  const char *depth_env = getenv("LLMOPT_QUEUE_DEPTH");
+  if (depth_env != NULL) {
+    int d = atoi(depth_env);
+    if (d >= 1) pipeline_depth = d;
+  }
+  if (getenv("LLMOPT_PROFILE_BATCH") != NULL) {
+    pipeline_depth = 1;
+  }
+
+  id<MTLCommandBuffer> prev_cmd = nil;
+  llmopt_sq_entry prev_entry;
+  bool has_prev = false;
+
   while (atomic_load_explicit(&q->running, memory_order_acquire)) {
     uint32_t head = atomic_load_explicit(&q->sq_head, memory_order_relaxed);
     uint32_t tail = atomic_load_explicit(&q->sq_tail, memory_order_acquire);
@@ -1342,6 +1394,28 @@ static void *llmopt_worker_loop(void *arg) {
         sched_yield();
       }
       if (!found) {
+        if (has_prev) {
+          [prev_cmd waitUntilCompleted];
+          int32_t next_token = 0;
+          if (q->output_buffer != nil) {
+            int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+            next_token = *out_ptr;
+          }
+          uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
+          q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = prev_entry.request_id;
+          q->cq[cq_tail % LLMOPT_RING_CAPACITY].token = next_token;
+          q->cq[cq_tail % LLMOPT_RING_CAPACITY].status = (prev_cmd.status == MTLCommandBufferStatusCompleted) ? 0 : 1;
+          atomic_store_explicit(&q->cq_tail, cq_tail + 1, memory_order_release);
+
+          pthread_mutex_lock(&q->mutex);
+          pthread_cond_signal(&q->cq_cond);
+          pthread_mutex_unlock(&q->mutex);
+
+          [prev_cmd release];
+          prev_cmd = nil;
+          has_prev = false;
+        }
+
         pthread_mutex_lock(&q->mutex);
         while (atomic_load_explicit(&q->sq_head, memory_order_relaxed) ==
                atomic_load_explicit(&q->sq_tail, memory_order_relaxed) &&
@@ -1360,14 +1434,37 @@ static void *llmopt_worker_loop(void *arg) {
       break;
     }
 
-    if (q->token_buffer != nil) {
-      int64_t *ptr = (int64_t *)((uint8_t *)[q->token_buffer contents] + q->token_buffer_offset);
-      *ptr = (int64_t)entry.token;
+    bool gpu_chain = false;
+    if (entry.token >= 0) {
+      if (q->token_buffer != nil) {
+        int64_t *ptr = (int64_t *)((uint8_t *)[q->token_buffer contents] + q->token_buffer_offset);
+        *ptr = (int64_t)entry.token;
+      }
+    } else {
+      if (q->chain_pipeline != nil && q->output_buffer != nil && q->token_buffer != nil) {
+        gpu_chain = true;
+      } else if (q->output_buffer != nil && q->token_buffer != nil) {
+        if (has_prev) {
+          [prev_cmd waitUntilCompleted];
+        }
+        int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+        int64_t *ptr = (int64_t *)((uint8_t *)[q->token_buffer contents] + q->token_buffer_offset);
+        *ptr = (int64_t)(*out_ptr);
+      }
     }
 
+    id<MTLCommandBuffer> cmd = nil;
     @autoreleasepool {
-      id<MTLCommandBuffer> cmd = [q->queue commandBuffer];
+      cmd = [[q->queue commandBuffer] retain];
       id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+
+      if (gpu_chain) {
+        [enc setComputePipelineState:q->chain_pipeline];
+        [enc setBuffer:q->output_buffer offset:q->output_buffer_offset atIndex:0];
+        [enc setBuffer:q->token_buffer offset:q->token_buffer_offset atIndex:1];
+        [enc dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+      }
 
       for (size_t i = 0; i < q->record_count; i++) {
         llmopt_dispatch_record *r = &q->records[i];
@@ -1389,24 +1486,76 @@ static void *llmopt_worker_loop(void *arg) {
 
       [enc endEncoding];
       [cmd commit];
-      [cmd waitUntilCompleted];
     }
 
+    if (pipeline_depth <= 1) {
+      [cmd waitUntilCompleted];
+      int32_t next_token = 0;
+      if (q->output_buffer != nil) {
+        int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+        next_token = *out_ptr;
+      }
+      uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
+      q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = entry.request_id;
+      q->cq[cq_tail % LLMOPT_RING_CAPACITY].token = next_token;
+      q->cq[cq_tail % LLMOPT_RING_CAPACITY].status = (cmd.status == MTLCommandBufferStatusCompleted) ? 0 : 1;
+      atomic_store_explicit(&q->cq_tail, cq_tail + 1, memory_order_release);
+
+      pthread_mutex_lock(&q->mutex);
+      pthread_cond_signal(&q->cq_cond);
+      pthread_mutex_unlock(&q->mutex);
+
+      [cmd release];
+      prev_cmd = nil;
+      has_prev = false;
+    } else {
+      if (has_prev) {
+        [prev_cmd waitUntilCompleted];
+        int32_t next_token = 0;
+        if (q->output_buffer != nil) {
+          int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+          next_token = *out_ptr;
+        }
+        uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
+        q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = prev_entry.request_id;
+        q->cq[cq_tail % LLMOPT_RING_CAPACITY].token = next_token;
+        q->cq[cq_tail % LLMOPT_RING_CAPACITY].status = (prev_cmd.status == MTLCommandBufferStatusCompleted) ? 0 : 1;
+        atomic_store_explicit(&q->cq_tail, cq_tail + 1, memory_order_release);
+
+        pthread_mutex_lock(&q->mutex);
+        pthread_cond_signal(&q->cq_cond);
+        pthread_mutex_unlock(&q->mutex);
+
+        [prev_cmd release];
+        prev_cmd = nil;
+        has_prev = false;
+      }
+      prev_cmd = cmd;
+      prev_entry = entry;
+      has_prev = true;
+    }
+  }
+
+  if (has_prev) {
+    [prev_cmd waitUntilCompleted];
     int32_t next_token = 0;
     if (q->output_buffer != nil) {
       int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
       next_token = *out_ptr;
     }
-
     uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
-    q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = entry.request_id;
+    q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = prev_entry.request_id;
     q->cq[cq_tail % LLMOPT_RING_CAPACITY].token = next_token;
-    q->cq[cq_tail % LLMOPT_RING_CAPACITY].status = 0;
+    q->cq[cq_tail % LLMOPT_RING_CAPACITY].status = (prev_cmd.status == MTLCommandBufferStatusCompleted) ? 0 : 1;
     atomic_store_explicit(&q->cq_tail, cq_tail + 1, memory_order_release);
 
     pthread_mutex_lock(&q->mutex);
     pthread_cond_signal(&q->cq_cond);
     pthread_mutex_unlock(&q->mutex);
+
+    [prev_cmd release];
+    prev_cmd = nil;
+    has_prev = false;
   }
 
   return NULL;
@@ -1534,6 +1683,7 @@ CAMLprim value caml_llmopt_ring_start_worker(value v_ring,
     q->output_buffer = [o_buf->buffer retain];
     q->output_buffer_offset = o_buf->offset;
   }
+  q->chain_pipeline = [pipeline_for_name_opt(lib, "llmopt_chain_token_id") retain];
 
   for (mlsize_t i = 0; i < total; i++) {
     value item = Field(v_dispatches, i);

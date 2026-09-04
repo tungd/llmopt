@@ -404,6 +404,16 @@ end
 module Ring_queue = struct
   type t = ring_handle
 
+  let default_pipeline_depth = 2
+
+  let pipeline_depth () =
+    match Sys.getenv_opt "LLMOPT_QUEUE_DEPTH" with
+    | Some s -> (
+        match int_of_string_opt s with
+        | Some d when d >= 1 -> d
+        | _ -> default_pipeline_depth)
+    | None -> default_pipeline_depth
+
   let create () = protect ring_create_stub
 
   let submit ring ~request_id ~token ~past_tokens ~flags =

@@ -8672,20 +8672,30 @@ kernel void llmopt_embedding_q6_k(
   const ulong element = ulong(index) * params.width + dimension;
   output[gid] = llmopt_embedding_q6_k_value(weight[element >> 8], uint(element & 255u));
 }
+
+kernel void llmopt_chain_token_id(
+    device const uint* argmax_in [[buffer(0)]],
+    device long* token_out [[buffer(1)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid == 0) token_out[0] = (long)(argmax_in[0]);
+}
 |}
 
 let embedding_entries =
-  [ "llmopt_embedding_f16";
-    "llmopt_embedding_q8_0";
-    "llmopt_embedding_q5_0";
-    "llmopt_embedding_q4_0";
-    "llmopt_embedding_q4_k";
-    "llmopt_embedding_q5_k";
-    "llmopt_embedding_q6_k" ]
+  ([ "llmopt_embedding_f16";
+     "llmopt_embedding_q8_0";
+     "llmopt_embedding_q5_0";
+     "llmopt_embedding_q4_0";
+     "llmopt_embedding_q4_k";
+     "llmopt_embedding_q5_k";
+     "llmopt_embedding_q6_k" ]
   |> List.map (fun name ->
          kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name
            ~operation:Kernel_abi.Operation.Embedding
-           ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float16)
+           ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Float16))
+  @ [ kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+        ~name:"llmopt_chain_token_id" ~operation:Kernel_abi.Operation.Embedding
+        ~input_dtype:Ir.Dtype.Int64 ~output_dtype:Ir.Dtype.Int64 ]
 
 let arange_source =
   "\nstruct ArangeParams { uint count; long start; long step; };\n\n"

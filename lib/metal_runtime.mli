@@ -282,6 +282,9 @@ val dispatch_speculative_attention :
 module Ring_queue : sig
   type t
 
+  val default_pipeline_depth : int
+  val pipeline_depth : unit -> int
+
   val create : unit -> (t, string) result
 
   val submit :
