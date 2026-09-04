@@ -1457,6 +1457,77 @@ let () =
            = "llmopt_q5_0_gated_linear_f16_llama_mv"))
     "Metal lowering declares the experimental llama-style Q5_0 gated kernel";
 
+  let q4_gated_graph = Ir.Graph.create () in
+  let q4_gated_fresh shape =
+    Ir.Graph.fresh_tensor_value q4_gated_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let q4_gated_input =
+    tensor_input q4_gated_graph ~name:"q4_gated_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 64 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q4_gate_weight =
+    tensor_input q4_gated_graph ~name:"q4_gate_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_gate_weight" })
+      ~shape:[ 128; 64 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_up_weight =
+    tensor_input q4_gated_graph ~name:"q4_up_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_up_weight" })
+      ~shape:[ 128; 64 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_gated_append op inputs =
+    let output = q4_gated_fresh [ 1; 128 ] in
+    Ir.Graph.append q4_gated_graph ~op ~inputs ~output:(Some output);
+    output
+  in
+  let q4_gate_linear =
+    q4_gated_append (Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+      [ q4_gated_input; q4_gate_weight ]
+  in
+  let q4_up_linear =
+    q4_gated_append (Ir.Op.Linear { m = 1; n = 128; k = 64; bias = false })
+      [ q4_gated_input; q4_up_weight ]
+  in
+  let q4_gate_activated =
+    q4_gated_append Ir.Op.Gelu [ q4_gate_linear ]
+  in
+  let q4_gated_product =
+    q4_gated_append
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul,
+                 Ir.Pointwise.Tensor q4_gate_activated,
+                 Ir.Pointwise.Tensor q4_up_linear ))))
+      [ q4_gate_activated; q4_up_linear ]
+  in
+  Ir.Graph.add_output q4_gated_graph ~name:"q4_gated_product"
+    q4_gated_product;
+  let q4_gated_fused =
+    Pass_fuse_linear_bias.fuse_quant_gated_linear q4_gated_graph
+  in
+  expect
+    (Ir.Graph.nodes q4_gated_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Gated_linear
+                 { m = 1; n = 128; k = 64;
+                   activation = Ir.Gated_activation.Gelu },
+               [ input; gate_weight; up_weight ] ) ->
+               Ir.Value.equal input q4_gated_input
+               && Ir.Value.equal gate_weight q4_gate_weight
+               && Ir.Value.equal up_weight q4_up_weight
+           | _ -> false))
+    "single-token Q4_0 gate, up, GELU, and multiply fuse into one typed operation";
+  let q4_gated_program = Metal.lower q4_gated_fused |> expect_ok in
+  expect
+    (Metal.Program.kernels q4_gated_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = "llmopt_q4_0_gated_linear_f16"))
+    "Metal lowering declares the single-token Q4_0 gated kernel";
+
   let mixed_graph = Ir.Graph.create () in
   let mixed_input =
     tensor_input mixed_graph ~name:"mixed_input" ~source:Ir.Input_source.Runtime
@@ -1638,8 +1709,96 @@ let () =
     (contains_substring (Metal.Program.source qkv_program)
        "kernel void llmopt_q5_0_qkv_linear_vq8_f16_llama_mv")
     "Metal lowering emits the llama-style mixed Q5_0/Q8_0 QKV kernel";
+
+  let q4_qkv_graph = Ir.Graph.create () in
+  let q4_qkv_fresh shape =
+    Ir.Graph.fresh_tensor_value q4_qkv_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let q4_qkv_input =
+    tensor_input q4_qkv_graph ~name:"q4_qkv_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 576 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q4_q_weight =
+    tensor_input q4_qkv_graph ~name:"q4_q_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_q_weight" })
+      ~shape:[ 576; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_k_weight =
+    tensor_input q4_qkv_graph ~name:"q4_k_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_k_weight" })
+      ~shape:[ 192; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_v_weight =
+    tensor_input q4_qkv_graph ~name:"q4_v_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_v_weight" })
+      ~shape:[ 192; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_q_out = q4_qkv_fresh [ 1; 576 ] in
+  let q4_k_out = q4_qkv_fresh [ 1; 192 ] in
+  let q4_v_out = q4_qkv_fresh [ 1; 192 ] in
+  Ir.Graph.append q4_qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 576; k = 576; bias = false })
+    ~inputs:[ q4_qkv_input; q4_q_weight ] ~output:(Some q4_q_out);
+  Ir.Graph.append q4_qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 192; k = 576; bias = false })
+    ~inputs:[ q4_qkv_input; q4_k_weight ] ~output:(Some q4_k_out);
+  Ir.Graph.append q4_qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 192; k = 576; bias = false })
+    ~inputs:[ q4_qkv_input; q4_v_weight ] ~output:(Some q4_v_out);
+  let q4_cos =
+    tensor_input q4_qkv_graph ~name:"q4_cosine" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let q4_sin =
+    tensor_input q4_qkv_graph ~name:"q4_sine" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let q4_rot_q = q4_qkv_fresh [ 1; 9; 1; 64 ] in
+  let q4_rot_k = q4_qkv_fresh [ 1; 3; 1; 64 ] in
+  Ir.Graph.append q4_qkv_graph
+    ~op:
+      (Ir.Op.Rotary_qk
+         { q_heads = 9; k_heads = 3; width = 64; half_dimension = 32;
+           extra_outputs = [ q4_rot_k ] })
+    ~inputs:[ q4_q_out; q4_k_out; q4_cos; q4_sin ] ~output:(Some q4_rot_q);
+  Ir.Graph.add_output q4_qkv_graph ~name:"q" q4_rot_q;
+  Ir.Graph.add_output q4_qkv_graph ~name:"k" q4_rot_k;
+  Ir.Graph.add_output q4_qkv_graph ~name:"v" q4_v_out;
+  let q4_qkv_fused = Pass_fuse_linear_bias.fuse_quant_qkv q4_qkv_graph in
+  expect
+    (Ir.Graph.nodes q4_qkv_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Quant_qkv_linear
+                 { m = 1; k = 576; n_q = 576; n_k = 192; n_v = 192;
+                   extra_outputs = [ k; v ] },
+               [ input; q; k_w; v_w ] ) ->
+               Ir.Value.equal input q4_qkv_input
+               && Ir.Value.equal q q4_q_weight
+               && Ir.Value.equal k_w q4_k_weight
+               && Ir.Value.equal v_w q4_v_weight
+               && Ir.Value.equal k q4_k_out && Ir.Value.equal v q4_v_out
+           | _ -> false))
+    "all-Q4_0 QKV topology fuses into one typed operation";
+  let q4_qkv_program = Metal.lower q4_qkv_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source q4_qkv_program)
+       "kernel void llmopt_q4_0_qkv_linear_f16")
+    "Metal lowering emits the all-Q4_0 QKV kernel";
+
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+       ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:1
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+    |> expect_ok
+    = "llmopt_q4_0_qkv_linear_f16")
+    "single-token all-Q4_0 QKV selects the Q4_0 QKV kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
        ~experimental_llama_mv:true ~experimental_mixed_llama_mv:false ~m:1
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
     |> expect_ok
@@ -1647,6 +1806,7 @@ let () =
     "single-token all-Q5_0 QKV selects the experimental llama-style kernel";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
        ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:1
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
     |> expect_ok
@@ -1654,6 +1814,7 @@ let () =
     "all-Q5_0 QKV retains its control kernel when the experiment is disabled";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
        ~experimental_llama_mv:true ~experimental_mixed_llama_mv:true ~m:1
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
     |> expect_ok
@@ -1661,6 +1822,7 @@ let () =
     "single-token mixed Q5_0/Q8_0 QKV selects its llama-style kernel";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
        ~experimental_llama_mv:true ~experimental_mixed_llama_mv:false ~m:1
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
     |> expect_ok
@@ -1668,6 +1830,7 @@ let () =
     "mixed Q5_0/Q8_0 QKV retains its control kernel when disabled";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
        ~experimental_llama_mv:true ~experimental_mixed_llama_mv:true ~m:2
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
     |> expect_ok

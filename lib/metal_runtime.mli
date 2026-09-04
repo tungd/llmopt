@@ -19,6 +19,7 @@ end
 
 module Quant_qkv_tactic : sig
   val kernel_name :
+    q_dtype:Ir.Dtype.t ->
     experimental_llama_mv:bool ->
     experimental_mixed_llama_mv:bool ->
     m:int ->

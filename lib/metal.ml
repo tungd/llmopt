@@ -3398,7 +3398,7 @@ kernel void llmopt_q4_0_down_add_f16(
 }
 |}
 
-let quant_qkv_source = {|
+let quant_qkv_params_source = {|
 struct QuantQKVParams {
   uint m;
   uint k;
@@ -3406,7 +3406,64 @@ struct QuantQKVParams {
   uint n_k;
   uint n_v;
 };
+|}
 
+let q4_0_qkv_source = {|
+kernel void llmopt_q4_0_qkv_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const block_q4_0* q_weight [[buffer(1)]],
+    device const block_q4_0* k_weight [[buffer(2)]],
+    device const block_q4_0* v_weight [[buffer(3)]],
+    device half* q_output [[buffer(4)]],
+    device half* k_output [[buffer(5)]],
+    device half* v_output [[buffer(6)]],
+    constant QuantQKVParams& params [[buffer(7)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5;
+  const uint total_n = params.n_q + params.n_k + params.n_v;
+  const uint total_elements = params.m * total_n;
+  if (simd_idx >= total_elements) return;
+  const uint row = simd_idx / total_n;
+  const uint col_idx = simd_idx - row * total_n;
+  uint col;
+  device const block_q4_0* row_blocks;
+  device half* output;
+  uint stride;
+  if (col_idx < params.n_q) {
+    col = col_idx;
+    row_blocks = q_weight + col * (params.k >> 5);
+    output = q_output;
+    stride = params.n_q;
+  } else if (col_idx < params.n_q + params.n_k) {
+    col = col_idx - params.n_q;
+    row_blocks = k_weight + col * (params.k >> 5);
+    output = k_output;
+    stride = params.n_k;
+  } else {
+    col = col_idx - params.n_q - params.n_k;
+    row_blocks = v_weight + col * (params.k >> 5);
+    output = v_output;
+    stride = params.n_v;
+  }
+  device const half* in_ptr = input + row * params.k;
+  float acc = 0.0f;
+  const uint num_blocks = params.k >> 5;
+  for (uint b = 0; b < num_blocks; ++b) {
+    device const block_q4_0& blk = row_blocks[b];
+    const half d = blk.d;
+    const uint8_t byte_val = (lane < 16u) ? blk.qs[lane] : blk.qs[lane - 16u];
+    const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4);
+    const int q = int(nib) - 8;
+    const half in_val = in_ptr[b * 32u + lane];
+    acc += float(in_val) * (float(d) * float(q));
+  }
+  acc = simd_sum(acc);
+  if (lane == 0u) output[row * stride + col] = half(acc);
+}
+|}
+
+let q5_0_qkv_source = {|
 kernel void llmopt_q5_0_qkv_linear_f16(
     device const half* input [[buffer(0)]],
     device const block_q5_0* q_weight [[buffer(1)]],
@@ -3665,7 +3722,13 @@ kernel void llmopt_q5_0_qkv_linear_vq8_f16_llama_mv(
 }
 |}
 
-let quant_qkv_entries =
+let q4_0_qkv_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_qkv_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16 ]
+
+let q5_0_qkv_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q5_0_qkv_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
@@ -3682,6 +3745,9 @@ let quant_qkv_entries =
       ~name:"llmopt_q5_0_qkv_linear_vq8_f16_llama_mv"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16 ]
+
+let quant_qkv_entries = q4_0_qkv_entries @ q5_0_qkv_entries
+let quant_qkv_source = quant_qkv_params_source ^ q4_0_qkv_source ^ q5_0_qkv_source
 
 let block32_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -10001,9 +10067,29 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
   let selected_quant_entries =
     quant_tactic_entries ~quant_types quant_tactics
   in
-  let quant_qkv = has_quant_qkv_linear graph in
-  let quant_qkv_source = if quant_qkv then quant_qkv_source else "" in
-  let quant_qkv_entries = if quant_qkv then quant_qkv_entries else [] in
+  let quant_qkv_types =
+    Ir.Graph.nodes graph
+    |> List.filter_map (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | Ir.Op.Quant_qkv_linear _, _ :: q_weight :: _ ->
+               (match Ir.Value.dtype q_weight with
+               | Ir.Dtype.Quant quant -> Some quant
+               | _ -> None)
+           | _ -> None)
+    |> List.sort_uniq Stdlib.compare
+  in
+  let quant_qkv = quant_qkv_types <> [] in
+  let quant_qkv_source =
+    if not quant_qkv then ""
+    else
+      quant_qkv_params_source
+      ^ (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_source else "")
+      ^ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then q5_0_qkv_source else "")
+  in
+  let quant_qkv_entries =
+    (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_entries else [])
+    @ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then q5_0_qkv_entries else [])
+  in
   let quant_add_tactics =
     quant_linear_add_tactics ~target graph @ region_quant_add_tactics
     |> List.sort_uniq Stdlib.compare

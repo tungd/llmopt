@@ -449,20 +449,25 @@ let tensor runtime ~name =
                 tensor )))
 
 module Quant_qkv_tactic = struct
-  let kernel_name ~experimental_llama_mv ~experimental_mixed_llama_mv ~m
-      ~v_dtype =
-    match v_dtype with
-    | Ir.Dtype.Quant Ir.Dtype.Q5_0 when experimental_llama_mv && m = 1 ->
+  let kernel_name ~q_dtype ~experimental_llama_mv
+      ~experimental_mixed_llama_mv ~m ~v_dtype =
+    match q_dtype, v_dtype with
+    | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
+        Ok "llmopt_q4_0_qkv_linear_f16"
+    | Ir.Dtype.Quant Ir.Dtype.Q5_0, Ir.Dtype.Quant Ir.Dtype.Q5_0
+      when experimental_llama_mv && m = 1 ->
         Ok "llmopt_q5_0_qkv_linear_f16_llama_mv"
-    | Ir.Dtype.Quant Ir.Dtype.Q5_0 -> Ok "llmopt_q5_0_qkv_linear_f16"
-    | Ir.Dtype.Quant Ir.Dtype.Q8_0
+    | Ir.Dtype.Quant Ir.Dtype.Q5_0, Ir.Dtype.Quant Ir.Dtype.Q5_0 ->
+        Ok "llmopt_q5_0_qkv_linear_f16"
+    | Ir.Dtype.Quant Ir.Dtype.Q5_0, Ir.Dtype.Quant Ir.Dtype.Q8_0
       when experimental_mixed_llama_mv && m = 1 ->
         Ok "llmopt_q5_0_qkv_linear_vq8_f16_llama_mv"
-    | Ir.Dtype.Quant Ir.Dtype.Q8_0 -> Ok "llmopt_q5_0_qkv_linear_vq8_f16"
-    | dtype ->
+    | Ir.Dtype.Quant Ir.Dtype.Q5_0, Ir.Dtype.Quant Ir.Dtype.Q8_0 ->
+        Ok "llmopt_q5_0_qkv_linear_vq8_f16"
+    | _ ->
         Error
-          (Printf.sprintf "unsupported quantized QKV value weight dtype: %s"
-             (Ir.Dtype.to_string dtype))
+          (Printf.sprintf "unsupported quantized QKV weight dtypes: q=%s v=%s"
+             (Ir.Dtype.to_string q_dtype) (Ir.Dtype.to_string v_dtype))
 end
 
 module Paged_attention_tactic = struct
@@ -2147,15 +2152,16 @@ let dispatch_quant_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k
   let experimental_mixed_llama_mv =
     Sys.getenv_opt "LLMOPT_EXPERIMENTAL_MIXED_QKV_LLAMA_MV" = Some "1"
   in
+  let q_dtype = Ir.Value.dtype q_weight_value in
   let v_dtype = Ir.Value.dtype v_weight_value in
   let* name =
-    Quant_qkv_tactic.kernel_name ~experimental_llama_mv
+    Quant_qkv_tactic.kernel_name ~q_dtype ~experimental_llama_mv
       ~experimental_mixed_llama_mv ~m ~v_dtype
   in
   let llama_mv = String.ends_with ~suffix:"_llama_mv" name in
   let* entry =
     kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Ir.Dtype.Q5_0)
+      ~input_dtype:q_dtype
       ~output_dtype:Ir.Dtype.Float16
   in
   let* grid_x =

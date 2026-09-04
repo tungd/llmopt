@@ -1027,6 +1027,8 @@ let optimize ?(target = Target_hardware.default) graph =
   let fused_graph = run_uncovered_epilogues scan_lowered_graph lowering in
   let final_semantic_graph =
     Pass_fuse_linear_bias.canonicalize_layouts fused_graph
+    |> Pass_fuse_linear_bias.fuse_w4a16_qkv
+    |> Pass_fuse_linear_bias.fuse_quant_qkv
   in
   let* semantic_plan = Compute_plan.of_graph final_semantic_graph in
   let execution_input = Pass.Pipeline.run execution_pipeline final_semantic_graph in

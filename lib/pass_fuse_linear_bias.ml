@@ -198,18 +198,26 @@ let fuse_quant_linear_add graph =
 let fuse_quant_gated_linear graph =
   let nodes = Ir.Graph.nodes graph in
   let executable quant m =
-    quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_0
+    quant = Ir.Dtype.Q4_K || quant = Ir.Dtype.Q5_0 || quant = Ir.Dtype.Q4_0
     || (m = 2
        && (quant = Ir.Dtype.Q5_K || quant = Ir.Dtype.IQ4_XS))
   in
-  let pointwise_silu node =
+  let pointwise_activation node =
     match Ir.node_op node, Ir.node_inputs node, Ir.node_output node with
     | ( Ir.Op.Primitive
           (Ir.Primitive.Pointwise
             (Ir.Pointwise.Unary (Ir.Pointwise.Silu, declared))),
         [ input ],
         Some output )
-      when value_is declared input -> Some (input, output)
+      when value_is declared input -> Some (input, output, Ir.Gated_activation.Silu)
+    | Ir.Op.Gelu, [ input ], Some output ->
+        Some (input, output, Ir.Gated_activation.Gelu)
+    | ( Ir.Op.Primitive
+          (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Sigmoid, declared))),
+        [ input ],
+        Some output )
+      when value_is declared input -> Some (input, output, Ir.Gated_activation.Sigmoid)
     | _ -> None
   in
   let pointwise_mul node =
@@ -229,9 +237,9 @@ let fuse_quant_gated_linear graph =
     | _ -> None
   in
   let try_match mul_node activated up =
-    let* silu_node = producer nodes activated in
-    let* gate_linear_value, silu_output = pointwise_silu silu_node in
-    if not (value_is silu_output activated) then None
+    let* act_node = producer nodes activated in
+    let* gate_linear_value, act_output, activation = pointwise_activation act_node in
+    if not (value_is act_output activated) then None
     else
       let* gate_node = producer nodes gate_linear_value in
       let* up_node = producer nodes up in
@@ -251,13 +259,13 @@ let fuse_quant_gated_linear graph =
         m = up_m && n = up_n && k = up_k && executable quant m
         && value_is input up_input && value_is gate_output gate_linear_value
         && value_is up_output up
-        && only_consumer nodes gate_output silu_node
-        && only_consumer nodes silu_output mul_node
+        && only_consumer nodes gate_output act_node
+        && only_consumer nodes act_output mul_node
         && only_consumer nodes up_output mul_node
         && not (is_graph_output graph gate_output)
-        && not (is_graph_output graph silu_output)
+        && not (is_graph_output graph act_output)
         && not (is_graph_output graph up_output)
-      then Some (gate_node, up_node, silu_node, m, n, k, input, gate_weight, up_weight)
+      then Some (gate_node, up_node, act_node, m, n, k, input, gate_weight, up_weight, activation)
       else None
   in
   let matches =
@@ -272,26 +280,26 @@ let fuse_quant_gated_linear graph =
                  | None -> try_match mul_node right left
                in
                Option.map
-                 (fun (gate_node, up_node, silu_node, m, n, k, input,
-                       gate_weight, up_weight) ->
+                 (fun (gate_node, up_node, act_node, m, n, k, input,
+                       gate_weight, up_weight, activation) ->
                    ( mul_node,
                      gate_node,
                      up_node,
-                     silu_node,
+                     act_node,
                      Ir.node_replace mul_node
                        ~op:
                          (Ir.Op.Gated_linear
-                            { m; n; k; activation = Ir.Gated_activation.Silu })
+                            { m; n; k; activation })
                        ~inputs:[ input; gate_weight; up_weight ] ))
                  matched)
   in
   let removed, replacements =
     List.fold_left
       (fun (removed, replacements)
-           (mul_node, gate_node, up_node, silu_node, replacement) ->
+           (mul_node, gate_node, up_node, act_node, replacement) ->
         ( removed |> Node_id_set.add (Ir.node_id gate_node)
           |> Node_id_set.add (Ir.node_id up_node)
-          |> Node_id_set.add (Ir.node_id silu_node),
+          |> Node_id_set.add (Ir.node_id act_node),
           Node_id_map.add (Ir.node_id mul_node) replacement replacements ))
       (Node_id_set.empty, Node_id_map.empty) matches
   in
@@ -437,7 +445,7 @@ let fuse_quant_qkv graph =
         | Ir.Op.Linear { m; n; k; bias = false }, Some output,
           [ input; weight ] ->
             (match Ir.Value.dtype weight with
-            | Ir.Dtype.Quant (Ir.Dtype.Q5_0 | Ir.Dtype.Q8_0) ->
+            | Ir.Dtype.Quant (Ir.Dtype.Q4_0 | Ir.Dtype.Q5_0 | Ir.Dtype.Q8_0) ->
                 Some (node, m, n, k, output, input, weight)
             | _ -> None)
         | _ -> None)
@@ -484,17 +492,25 @@ let fuse_quant_qkv graph =
                  n_q > n_first && n_first = n_second
                  && feeds_rotary_math 0 q_out
                  && Bool.compare first_is_k second_is_k <> 0
-                 && q_quant = Ir.Dtype.Quant Ir.Dtype.Q5_0
+                 && (q_quant = Ir.Dtype.Quant Ir.Dtype.Q5_0
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Q4_0)
                then
                  let k_node, v_node = if first_is_k then first, second else second, first in
                  let k_node', _, n_k, _, k_out, _, k_weight = k_node in
                  let v_node', _, n_v, _, v_out, _, v_weight = v_node in
-                 if
-                   Ir.Value.dtype k_weight = Ir.Dtype.Quant Ir.Dtype.Q5_0
-                   &&
-                   (Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Q5_0
-                   || Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Q8_0)
-                 then
+                 let valid_weights =
+                   match q_quant with
+                   | Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
+                       Ir.Value.dtype k_weight = Ir.Dtype.Quant Ir.Dtype.Q4_0
+                       && Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Q4_0
+                   | Ir.Dtype.Quant Ir.Dtype.Q5_0 ->
+                       Ir.Value.dtype k_weight = Ir.Dtype.Quant Ir.Dtype.Q5_0
+                       &&
+                       (Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Q5_0
+                       || Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Q8_0)
+                   | _ -> false
+                 in
+                 if valid_weights then
                    Some
                      ( q_node, k_node', v_node', m, k, n_q, n_k, n_v,
                        normalized, q_weight, k_weight, v_weight, k_out, v_out )
