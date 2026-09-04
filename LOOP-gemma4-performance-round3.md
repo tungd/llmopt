@@ -75,7 +75,7 @@ Target performance profile on Apple M4 Pro:
 - **WHY**: In decode GEMV ($M=1$), computing 8 columns per SIMD group cuts the total dispatched threadgroups in half, doubles activation value register reuse across columns, and reduces threadgroup barrier overhead.
 - **GATE**: `ninja -f ninja.build all test` passes cleanly.
 
-### [ ] G4P3-03: Prefill auxiliary mask buffer caching & retained token buffer
+### [x] G4P3-03: Prefill auxiliary mask buffer caching & retained token buffer
 - **REPO**: `llmopt`
 - **WHERE**: `lib/serving_engine.ml`
 - **IMPORTANT FILES**:

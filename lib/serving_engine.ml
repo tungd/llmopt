@@ -107,6 +107,11 @@ type t = {
     Serving_replay.Decode_buffers.t
     option;
   mutable decode_checkpoint : Kv_cache.Checkpoint.t option;
+  prefill_token_buffers : (int, Metal_runtime.Buffer.t) Hashtbl.t;
+  auxiliary_inputs_cache :
+    (int * int * int, (string * Metal_runtime.Buffer.t) list) Hashtbl.t;
+  rope_slice_cache :
+    (int * int, (string * Metal_runtime.Buffer.t) list) Hashtbl.t;
 }
 
 type engine = t
@@ -816,6 +821,9 @@ let create_internal ?program ?verification ~config ~prefill ~decode () =
         verification_schedules = Hashtbl.create 64;
         decode_recurrent_buffers = None;
         decode_checkpoint = None;
+        prefill_token_buffers = Hashtbl.create 16;
+        auxiliary_inputs_cache = Hashtbl.create 16;
+        rope_slice_cache = Hashtbl.create 16;
       }
 
 let prefill_tokens engine = engine.contract.prefill_tokens
@@ -1049,24 +1057,61 @@ let prefill engine ~tokens =
   let* () = validate_tokens engine tokens in
   let token_count = Array.length tokens in
   let* schedule, memory_plan = prefill_schedule engine token_count in
-  let* input = token_buffer engine.prefill tokens in
+  let* input =
+    match Hashtbl.find_opt engine.prefill_token_buffers token_count with
+    | Some buf ->
+        let rec write_tokens index =
+          if index >= token_count then Ok ()
+          else
+            let* () =
+              Metal_runtime.Buffer.set_int64 buf ~offset:(8 * index)
+                (Int64.of_int tokens.(index))
+            in
+            write_tokens (index + 1)
+        in
+        let* () = write_tokens 0 in
+        Ok buf
+    | None ->
+        let* buf = token_buffer engine.prefill tokens in
+        Hashtbl.replace engine.prefill_token_buffers token_count buf;
+        Ok buf
+  in
   let* rope_inputs =
-    match engine.rope_table with
-    | None -> Ok []
-    | Some table ->
-        let* cosine, sine = Rope_table.slice table ~position:0 ~length:token_count in
-        let spec = specialization_of engine in
-        (match
-           Model_program.Specialization.rope_cosine_input spec,
-           Model_program.Specialization.rope_sine_input spec
-         with
-        | Some cosine_name, Some sine_name ->
-            Ok [ cosine_name, cosine; sine_name, sine ]
-        | _ -> Ok [])
+    match Hashtbl.find_opt engine.rope_slice_cache (0, token_count) with
+    | Some inputs -> Ok inputs
+    | None ->
+        let* inputs =
+          match engine.rope_table with
+          | None -> Ok []
+          | Some table ->
+              let* cosine, sine =
+                Rope_table.slice table ~position:0 ~length:token_count
+              in
+              let spec = specialization_of engine in
+              (match
+                 Model_program.Specialization.rope_cosine_input spec,
+                 Model_program.Specialization.rope_sine_input spec
+               with
+              | Some cosine_name, Some sine_name ->
+                  Ok [ cosine_name, cosine; sine_name, sine ]
+              | _ -> Ok [])
+        in
+        Hashtbl.replace engine.rope_slice_cache (0, token_count) inputs;
+        Ok inputs
   in
   let* auxiliary_inputs =
-    transformer_auxiliary_inputs engine ~runtime:engine.prefill ~query_start:0
-      ~query_tokens:token_count ~total_tokens:token_count
+    match
+      Hashtbl.find_opt engine.auxiliary_inputs_cache (0, token_count, token_count)
+    with
+    | Some inputs -> Ok inputs
+    | None ->
+        let* inputs =
+          transformer_auxiliary_inputs engine ~runtime:engine.prefill
+            ~query_start:0 ~query_tokens:token_count ~total_tokens:token_count
+        in
+        Hashtbl.replace engine.auxiliary_inputs_cache
+          (0, token_count, token_count) inputs;
+        Ok inputs
   in
   let* execution =
     Metal_runtime.execute_schedule engine.prefill ~schedule ~memory_plan
