@@ -3282,14 +3282,26 @@ kernel void llmopt_q4_0_gated_linear_f16(
     device half* product [[buffer(3)]],
     constant QuantLinearParams& params [[buffer(4)]],
     uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
+  const uint tg_simd_idx = (gid - tid) >> 5u;
   const uint col_groups = (params.n + 3u) >> 2u;
   const uint total_elements = params.m * col_groups;
-  if (simd_idx >= total_elements) return;
+  if (tg_simd_idx >= total_elements) return;
+
   const uint row = simd_idx / col_groups;
   const uint group_idx = simd_idx - row * col_groups;
   const uint base_col = group_idx << 2u;
+
+  device const half* in_ptr = input + row * params.k;
+  threadgroup half s_activation[4096];
+  for (uint i = tid; i < params.k; i += 256u) {
+    s_activation[i] = in_ptr[i];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simd_idx >= total_elements) return;
 
   const uint blocks = params.k >> 5u;
   const uint col_stride = blocks * 18u;
@@ -3306,7 +3318,6 @@ kernel void llmopt_q4_0_gated_linear_f16(
   device const uchar* up_row2 = up_base + min(base_col + 2u, params.n - 1u) * col_stride;
   device const uchar* up_row3 = up_base + min(base_col + 3u, params.n - 1u) * col_stride;
 
-  device const half* in_ptr = input + row * params.k;
   float gate_acc0 = 0.0f, gate_acc1 = 0.0f, gate_acc2 = 0.0f, gate_acc3 = 0.0f;
   float up_acc0 = 0.0f, up_acc1 = 0.0f, up_acc2 = 0.0f, up_acc3 = 0.0f;
 
@@ -3349,8 +3360,8 @@ kernel void llmopt_q4_0_gated_linear_f16(
     const uchar u_packed3 = u_blk3[2u + l];
 
     const uint k_idx = block_idx * 32u + l;
-    const float a_low = float(in_ptr[k_idx]);
-    const float a_high = float(in_ptr[k_idx + 16u]);
+    const float a_low = float(s_activation[k_idx]);
+    const float a_high = float(s_activation[k_idx + 16u]);
 
     const float g_q0_l = float(int(g_packed0 & 15u) - 8);
     const float g_q0_h = float(int(g_packed0 >> 4u) - 8);
@@ -3425,7 +3436,7 @@ kernel void llmopt_q4_0_gated_linear_f16(
     const int u_q2 = int((lane < 16u) ? (u_byte2 & 0x0Fu) : (u_byte2 >> 4)) - 8;
     const int u_q3 = int((lane < 16u) ? (u_byte3 & 0x0Fu) : (u_byte3 >> 4)) - 8;
 
-    const float a = float(in_ptr[block_idx * 32u + lane]);
+    const float a = float(s_activation[block_idx * 32u + lane]);
     gate_acc0 += float(g_scale0) * float(g_q0) * a;
     gate_acc1 += float(g_scale1) * float(g_q1) * a;
     gate_acc2 += float(g_scale2) * float(g_q2) * a;
@@ -3679,16 +3690,28 @@ kernel void llmopt_q4_0_qkv_linear_f16(
     device half* v_output [[buffer(6)]],
     constant QuantQKVParams& params [[buffer(7)]],
     uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
+  const uint tg_simd_idx = (gid - tid) >> 5u;
   const uint q_groups = (params.n_q + 3u) >> 2u;
   const uint k_groups = (params.n_k + 3u) >> 2u;
   const uint v_groups = (params.n_v + 3u) >> 2u;
   const uint total_groups = q_groups + k_groups + v_groups;
   const uint total_elements = params.m * total_groups;
-  if (simd_idx >= total_elements) return;
+  if (tg_simd_idx >= total_elements) return;
+
   const uint row = simd_idx / total_groups;
   const uint group_idx = simd_idx - row * total_groups;
+
+  device const half* activation = input + row * params.k;
+  threadgroup half s_activation[4096];
+  for (uint i = tid; i < params.k; i += 256u) {
+    s_activation[i] = activation[i];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simd_idx >= total_elements) return;
 
   uint base_col;
   device const uchar* weight_ptr;
@@ -3722,7 +3745,6 @@ kernel void llmopt_q4_0_qkv_linear_f16(
   device const uchar* row_blocks2 = weight_ptr + min(base_col + 2u, limit - 1u) * col_stride;
   device const uchar* row_blocks3 = weight_ptr + min(base_col + 3u, limit - 1u) * col_stride;
 
-  device const half* activation = input + row * params.k;
   float accumulator0 = 0.0f;
   float accumulator1 = 0.0f;
   float accumulator2 = 0.0f;
@@ -3751,8 +3773,8 @@ kernel void llmopt_q4_0_qkv_linear_f16(
     const uchar packed3 = blk3[2u + l];
 
     const uint k_idx = block_idx * 32u + l;
-    const float a_low = float(activation[k_idx]);
-    const float a_high = float(activation[k_idx + 16u]);
+    const float a_low = float(s_activation[k_idx]);
+    const float a_high = float(s_activation[k_idx + 16u]);
 
     const float q0_low = float(int(packed0 & 15u) - 8);
     const float q0_high = float(int(packed0 >> 4u) - 8);
@@ -3792,7 +3814,7 @@ kernel void llmopt_q4_0_qkv_linear_f16(
     const int q2 = int((lane < 16u) ? (byte2 & 0x0Fu) : (byte2 >> 4)) - 8;
     const int q3 = int((lane < 16u) ? (byte3 & 0x0Fu) : (byte3 >> 4)) - 8;
 
-    const float a = float(activation[block_idx * 32u + lane]);
+    const float a = float(s_activation[block_idx * 32u + lane]);
     accumulator0 += float(scale0) * float(q0) * a;
     accumulator1 += float(scale1) * float(q1) * a;
     accumulator2 += float(scale2) * float(q2) * a;
