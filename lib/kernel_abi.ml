@@ -382,6 +382,26 @@ module Linear_tactic = struct
           ~decoded_weight_reuse:2 ~activation_reuse:1
           ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
+  let m32_quant_registration quant : registration =
+    { build =
+        (fun _ ->
+          { name = quant_kernel_name quant ^ "_m32";
+            threadgroup = (256, 1, 1) });
+      accepts =
+        (fun (problem : problem) ->
+          problem.m >= 32 && problem.n > 0 && problem.k > 0
+          && problem.k mod block_elements quant = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem quant
+          && problem.supports_simd ~threads:256);
+      (* The m32 batched GEMM kernels share one decoded weight row across thirty-two
+         input rows; eight SIMDgroups produce 256 output values per group. *)
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:8
+          ~output_values_per_threadgroup:256 ~split_k_partitions:1
+          ~decoded_weight_reuse:32 ~activation_reuse:1
+          ~threadgroup_sram_bytes:0 ~dispatches:1 }
+
   let m16_quant_registration quant : registration =
     { build =
         (fun _ ->
@@ -583,6 +603,8 @@ module Linear_tactic = struct
       [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
     @ List.map four_column_quant_registration
       [ Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
+    @ List.map m32_quant_registration
+      [ Ir.Dtype.Q4_0 ]
     @ List.map m16_quant_registration
       [ Ir.Dtype.Q4_0 ]
     @ List.map m4_quant_registration
