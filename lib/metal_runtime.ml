@@ -2170,7 +2170,14 @@ let dispatch_quant_qkv_linear_command batch runtime state ~m ~k ~n_q ~n_k
       if groups > max_int / 128 then
         Error "llama-style Q5_0 QKV grid overflows"
       else Ok (groups * 128)
-    else linear_f16_grid (m * (n_q + n_k + n_v))
+    else
+      match q_dtype with
+      | Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
+          let q_groups = (n_q + 3) / 4 in
+          let k_groups = (n_k + 3) / 4 in
+          let v_groups = (n_v + 3) / 4 in
+          linear_f16_grid (m * (q_groups + k_groups + v_groups))
+      | _ -> linear_f16_grid (m * (n_q + n_k + n_v))
   in
   let* kernel =
     dispatch ~batch runtime entry
@@ -3117,7 +3124,10 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                       if groups > max_int / 256 then Error "assignment gated grid overflows"
                       else Ok (groups * 256)
                   | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid gate.n
-                  | (Ir.Dtype.Q4_K | Ir.Dtype.Q4_0), _ ->
+                  | Ir.Dtype.Q4_0, _ ->
+                      let groups = (gate.n + 3) / 4 in
+                      linear_f16_grid (gate.m * groups)
+                  | Ir.Dtype.Q4_K, _ ->
                       linear_f16_grid (gate.m * gate.n)
                   | _ -> Error "assignment gated product has unsupported geometry"
                 in
@@ -3648,7 +3658,10 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                     Error "Q5_0 gated Linear grid dimension overflows"
                   else Ok (groups * 256)
               | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
-              | (Ir.Dtype.Q4_K | Ir.Dtype.Q4_0), _ ->
+              | Ir.Dtype.Q4_0, _ ->
+                  let groups = (n + 3) / 4 in
+                  linear_f16_grid (m * groups)
+              | Ir.Dtype.Q4_K, _ ->
                   linear_f16_grid (m * n)
               | _ -> assert false
             in

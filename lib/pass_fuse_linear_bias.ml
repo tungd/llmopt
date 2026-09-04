@@ -457,15 +457,24 @@ let fuse_quant_qkv graph =
       nodes
   in
   let rec feeds_rotary_math depth value =
-    if depth > 5 then false
+    if depth > 10 then false
     else
-      consumers value
+      let cs = consumers value in
+      cs
       |> List.exists (fun consumer ->
-             match Ir.node_op consumer with
+             let op = Ir.node_op consumer in
+             match op with
              | Ir.Op.Rms_rope _ | Ir.Op.Rms_rope_qk _ | Ir.Op.Rotary_qk _ ->
                  true
-             | Ir.Op.Primitive (Ir.Primitive.Pointwise _) -> true
-             | Ir.Op.Primitive (Ir.Primitive.Movement _) ->
+             | Ir.Op.Primitive
+                 (Ir.Primitive.Pointwise
+                    (Ir.Pointwise.Unary (Ir.Pointwise.Neg, _))) ->
+                 true
+             | Ir.Op.Primitive (Ir.Primitive.Cast _)
+             | Ir.Op.Primitive (Ir.Primitive.Pointwise _)
+             | Ir.Op.Primitive (Ir.Primitive.Movement _)
+             | Ir.Op.Primitive (Ir.Primitive.Reduce _)
+             | Ir.Op.Rms_norm _ | Ir.Op.Rms_norm_add _ ->
                  Option.exists
                    (feeds_rotary_math (depth + 1))
                    (Ir.node_output consumer)
@@ -488,14 +497,18 @@ let fuse_quant_qkv graph =
                let q_quant = Ir.Value.dtype q_weight in
                let first_is_k = feeds_rotary_math 0 first_out in
                let second_is_k = feeds_rotary_math 0 second_out in
+               let q_rotary = feeds_rotary_math 0 q_out in
                if
                  n_q > n_first && n_first = n_second
-                 && feeds_rotary_math 0 q_out
-                 && Bool.compare first_is_k second_is_k <> 0
+                 && q_rotary
                  && (q_quant = Ir.Dtype.Quant Ir.Dtype.Q5_0
                     || q_quant = Ir.Dtype.Quant Ir.Dtype.Q4_0)
                then
-                 let k_node, v_node = if first_is_k then first, second else second, first in
+                 let k_node, v_node =
+                   if first_is_k && not second_is_k then first, second
+                   else if second_is_k && not first_is_k then second, first
+                   else first, second
+                 in
                  let k_node', _, n_k, _, k_out, _, k_weight = k_node in
                  let v_node', _, n_v, _, v_out, _, v_weight = v_node in
                  let valid_weights =

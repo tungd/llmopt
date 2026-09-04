@@ -208,11 +208,15 @@ let quant_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output
   | [ input; qw; kw; vw ], [ k_out; v_out ] ->
       m > 0 && k > 0 && n_q > 0 && n_k > 0 && n_v > 0
       && k mod 32 = 0 && f16 input && f16 output && f16 k_out && f16 v_out
-      && Ir.Value.dtype qw = Ir.Dtype.Quant Ir.Dtype.Q5_0
-      && Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q5_0
-      &&
-      (Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q5_0
-      || Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q8_0)
+      && (match Ir.Value.dtype qw with
+          | Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q4_0
+              && Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q4_0
+          | Ir.Dtype.Quant Ir.Dtype.Q5_0 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q5_0
+              && (Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q5_0
+                 || Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q8_0)
+          | _ -> false)
       && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
       && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n_q
       && Tensor_shape.numel (Ir.Value.logical_shape k_out) = m * n_k

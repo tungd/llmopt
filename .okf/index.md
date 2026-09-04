@@ -45,6 +45,7 @@ configuration.
 * [Experimental Vulkan portability backend](decisions/vulkan-portability-backend.md) - portable SPIR-V compute runtime and paired MoltenVK/Metal device measurement, with the model-serving boundary stated explicitly.
 * [Parametric Epilogue Inlining and Hardware Prefill Tiling](decisions/parametric-epilogues-and-hardware-tiling.md) - algebraic epilogue fusion replacing 2,500 lines of AST matchers, plus bank-swizzled simdgroup_matrix staging for prefill GEMM.
 * [Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md) - one assignment/dependency/effect/cost model for separate fusion-region and antichain-stage formation, target-aware quant tactics, and AOT GPU queue solidification.
+* [Batched Prefill GEMM and Pipelined Queue Execution](decisions/gemma4-batched-prefill-and-pipelined-queue.md) - M-tiled prefill GEMM (M >= 4) eliminating redundant weight streaming, and pipelined depth-2 queue execution eliminating host-GPU driver bubbles while rejecting bespoke kernel-zoo proliferation.
 
 ## Prior art
 
