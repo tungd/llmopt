@@ -35,7 +35,7 @@ Target performance profile on Apple M4 Pro:
 - `.okf/decisions/gemma4-batched-prefill-and-pipelined-queue.md`: `EXISTING` - Round 1 architectural decision record.
 - `.okf/decisions/llama-cpp-target.md`: `EXISTING` - Target parity definition against `llama.cpp`.
 - `.okf/experiments/exp-0148-gemma4-performance-round3-2026-09-04.md`: `EXISTING` - Round 3 benchmark receipt.
-- `.okf/experiments/exp-0149-gemma4-performance-round4-2026-09-04.md`: `PENDING` - Benchmark receipt and experiment tracking document.
+- `.okf/experiments/exp-0149-gemma4-performance-round4-2026-09-04.md`: `EXISTING` - Benchmark receipt and experiment tracking document.
 
 ## Complete when
 
@@ -81,14 +81,14 @@ Target performance profile on Apple M4 Pro:
 - **WHY**: Re-encoding schedule AST on every prefill step adds CPU dispatch overhead.
 - **GATE**: `ninja -f ninja.build all test` passes cleanly.
 
-### [ ] G4P4-04: Compile Round 4 bundle and verify 128-token bit-exact parity
+### [x] G4P4-04: Compile Round 4 bundle and verify 128-token bit-exact parity
 - **REPO**: `llmopt`
 - **WHERE**: `bin/pipeline.ml`, `_artifacts/gemma4-12b-qat-round4-2026-09-04`
 - **COMMAND**: Compile bundle `_artifacts/gemma4-12b-qat-round4-2026-09-04` using `llmopt-pipeline` from existing weights, then run 128-token benchmark with `llmopt-bench-tokens`.
 - **GATE**: Verify 128 completion tokens match pinned golden sequence bit-for-bit:
   `100, 45518, 107, 14947, 135383, 568, 11124, 568, 147505, 236789, ...`.
 
-### [ ] G4P4-05: Record benchmark receipt and experiment tracking
+### [x] G4P4-05: Record benchmark receipt and experiment tracking
 - **REPO**: `llmopt`
 - **WHERE**: `bench/results/uoc-gemma4-performance-round4-2026-09-04.txt`, `.okf/experiments/exp-0149-gemma4-performance-round4-2026-09-04.md`, `.okf/tracking.md`
 - **GATE**: Commit all changes with clean git tree and test validation.
