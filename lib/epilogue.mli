@@ -1,8 +1,10 @@
 (** Typed writeback epilogues for linear, normalization, and elementwise kernels.
 
-    Epilogues describe scalar arithmetic inlined directly into a producer kernel's
-    register writeback site, eliminating intermediate DRAM activation spills and
-    dedicated elementwise kernel dispatches. *)
+    Epilogues form a mathematical Monoid (E, ⋄, ε) over contraction accumulator
+    registers, allowing arbitrary downstream pointwise operations to be folded
+    directly into kernel writebacks by associative substitution. *)
+
+type slot = Acc
 
 type t =
   | None
@@ -15,6 +17,7 @@ type t =
   | Bias_residual_add of { bias : Ir.Value.t; residual : Ir.Value.t }
   | Silu_mul_residual_add of { up : Ir.Value.t; residual : Ir.Value.t }
   | Gelu_mul_residual_add of { up : Ir.Value.t; residual : Ir.Value.t }
+  | Expr of slot Applicative_expr.t
 
 val none : t
 
@@ -28,16 +31,29 @@ val bias_residual_add : bias:Ir.Value.t -> residual:Ir.Value.t -> t
 val silu_mul_residual_add : up:Ir.Value.t -> residual:Ir.Value.t -> t
 val gelu_mul_residual_add : up:Ir.Value.t -> residual:Ir.Value.t -> t
 
+val of_expr : slot Applicative_expr.t -> t
+val to_expr : t -> slot Applicative_expr.t
+
 val inputs : t -> Ir.Value.t list
-(** Returns the auxiliary tensor inputs required by this epilogue (e.g. [up], [bias], [residual]). *)
+(** Returns the auxiliary tensor inputs required by this epilogue. *)
 
 val equal : t -> t -> bool
 val to_string : t -> string
 
 val compose : producer:t -> consumer:t -> (t, string) result
-(** Combines a producer epilogue with a consumer elementwise operation. *)
+(** Combines a producer epilogue with a consumer elementwise operation.
+    Uses associative substitution (producer ⋄ consumer) for arbitrary combinations. *)
 
 val emit_msl_writeback : acc:string -> idx:string -> t -> string
-(** Emits the inlined C++/MSL scalar expression for register writeback.
-    [acc] is the variable holding the accumulated value.
-    [idx] is the expression for the index into auxiliary buffer operands. *)
+(** Emits the inlined C++/MSL scalar expression for register writeback. *)
+
+module Monoid : sig
+  type t = slot Applicative_expr.t
+
+  val empty : t
+  val append : t -> t -> t
+  val is_empty : t -> bool
+  val equal : t -> t -> bool
+  val to_string : t -> string
+  val emit_msl : t -> acc:string -> idx:string -> string
+end

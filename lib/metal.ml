@@ -10915,6 +10915,34 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
 
 let emit ?target graph = Result.map Program.source (lower ?target graph)
 
+(* Extra buffer declarations for [Epilogue.Expr] applicative epilogue trees.
+
+   [Applicative_expr.emit_msl_expr] (the emitter behind
+   [Epilogue.emit_msl_writeback] for the [Expr] variant) names every tensor
+   value read through a [Read { value; _ }] node with the deterministic
+   device name [buf_<Value_id>].  For the emitted MSL to compile and link
+   against actual tensor storage, each distinct required value must be
+   declared as a matching buffer parameter starting at slot [start_index].
+   Legacy [Epilogue.t] variants keep their fixed role-based bindings
+   ([bias]/[up]/[residual]) and add no extra parameters here. *)
+let epilogue_expr_buffer_decls ~start_index epilogue =
+  match epilogue with
+  | Epilogue.Expr _ ->
+      (* inputs for Expr = Applicative_expr.required_values: de-duplicated,
+         stable first-occurrence order *)
+      Epilogue.inputs epilogue
+      |> List.mapi (fun i value ->
+             let slot = start_index + i in
+             let storage_type =
+               match Ir.Value.dtype value with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf ",\n    device const %s* buf_%d [[buffer(%d)]]" storage_type
+               (Ir.Value_id.to_int (Ir.Value.id value)) slot)
+      |> String.concat ""
+  | _ -> ""
+
 let emit_parametric_w4a16_linear ~name ~epilogue =
   let epilogue_code = Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"col" epilogue in
   let epilogue_buffers =
@@ -10926,6 +10954,7 @@ let emit_parametric_w4a16_linear ~name ~epilogue =
     | Epilogue.Bias_residual_add _ -> ",\n    device const half* bias [[buffer(6)]],\n    device const half* residual [[buffer(7)]]"
     | Epilogue.Silu_mul_residual_add _ | Epilogue.Gelu_mul_residual_add _ ->
         ",\n    device const half* up [[buffer(6)]],\n    device const half* residual [[buffer(7)]]"
+    | Epilogue.Expr _ -> epilogue_expr_buffer_decls ~start_index:6 epilogue
   in
   Printf.sprintf "kernel void %s(\n\
    \    device const half* input [[buffer(0)]],\n\
@@ -10972,6 +11001,7 @@ let emit_parametric_q4_k_linear ~name ~epilogue =
     | Epilogue.Bias_residual_add _ -> ",\n    device const half* bias [[buffer(6)]],\n    device const half* residual [[buffer(7)]]"
     | Epilogue.Silu_mul_residual_add _ | Epilogue.Gelu_mul_residual_add _ ->
         ",\n    device const half* up [[buffer(6)]],\n    device const half* residual [[buffer(7)]]"
+    | Epilogue.Expr _ -> epilogue_expr_buffer_decls ~start_index:6 epilogue
   in
   Printf.sprintf "kernel void %s(\n\
    \    device const half* input [[buffer(0)]],\n\
@@ -11025,6 +11055,7 @@ let emit_simdgroup_matrix_gemm ~name ~epilogue =
     | Epilogue.Bias_residual_add _ -> ",\n    device const half* bias [[buffer(4)]],\n    device const half* residual [[buffer(5)]]"
     | Epilogue.Silu_mul_residual_add _ | Epilogue.Gelu_mul_residual_add _ ->
         ",\n    device const half* up [[buffer(4)]],\n    device const half* residual [[buffer(5)]]"
+    | Epilogue.Expr _ -> epilogue_expr_buffer_decls ~start_index:4 epilogue
   in
   Printf.sprintf "struct GEMMParams { uint m; uint n; uint k; };\n\n\
    kernel void %s(\n\

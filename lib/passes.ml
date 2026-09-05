@@ -798,7 +798,8 @@ end
    it uses this private semantic prefix and lowers those families from the
    resulting immutable plan. *)
 let optimize_pre_analysis_pipeline =
-  Pass.Pipeline.of_list [ Pass_fuse_linear_bias.pass ]
+  Pass.Pipeline.of_list
+    [ Pass_algebraic_canonicalization.pass; Pass_fuse_linear_bias.pass ]
 
 let execution_passes =
   [
@@ -1029,6 +1030,7 @@ let optimize ?(target = Target_hardware.default) graph =
     Pass_fuse_linear_bias.canonicalize_layouts fused_graph
     |> Pass_fuse_linear_bias.fuse_w4a16_qkv
     |> Pass_fuse_linear_bias.fuse_quant_qkv
+    |> Pass_algebraic_canonicalization.run
   in
   let* semantic_plan = Compute_plan.of_graph final_semantic_graph in
   let execution_input = Pass.Pipeline.run execution_pipeline final_semantic_graph in

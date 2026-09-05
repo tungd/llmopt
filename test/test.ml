@@ -6847,4 +6847,7 @@ let () =
     (uoc06_artifact_json = uoc06_json)
     "UOC-06 writes a deterministic pipeline receipt artifact";
 
+  Test_epilogue_monoid.run ();
+  Test_algebraic_canonicalization.run ();
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"

@@ -1453,6 +1453,39 @@ let attach_fusion_region commands region =
         (Printf.sprintf "fusion region %s maps to multiple schedule commands"
            (Kernel_ir.name region))
 
+let is_gpu_command_in_schedule cmd =
+  match cmd.Command.fusion_region with
+  | Some _ -> true
+  | None ->
+      (match cmd.Command.op with
+      | Ir.Op.Input _ | Ir.Op.Output _ | Ir.Op.Alloc _
+      | Ir.Op.Barrier_create _ | Ir.Op.Barrier_arrive _ | Ir.Op.Barrier_wait _ -> false
+      | Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.View | Ir.Movement.Reshape
+                                              | Ir.Movement.Unsqueeze _ | Ir.Movement.Contiguous)) -> false
+      | Ir.Op.Primitive (Ir.Primitive.Cast dtype) ->
+          (match cmd.Command.inputs with
+          | [ input ] -> Ir.Value.dtype input <> dtype
+          | _ -> true)
+      | _ -> true)
+
+let prune_redundant_barriers commands =
+  let rec loop acc has_gpu_since_barrier = function
+    | [] -> List.rev acc
+    | cmd :: rest ->
+        (match cmd.Command.op with
+        | Ir.Op.Barrier_wait _ ->
+            if not has_gpu_since_barrier then
+              loop acc false rest
+            else if not (List.exists is_gpu_command_in_schedule rest) then
+              loop acc false rest
+            else
+              loop (cmd :: acc) false rest
+        | _ ->
+            let is_gpu = is_gpu_command_in_schedule cmd in
+            loop (cmd :: acc) (has_gpu_since_barrier || is_gpu) rest)
+  in
+  loop [] false commands
+
 let of_graph ?(fusion_regions = []) graph =
   let commands =
     graph |> Ir.Graph.nodes
@@ -1472,6 +1505,7 @@ let of_graph ?(fusion_regions = []) graph =
         attach_fusion_region commands region)
       (Ok commands) fusion_regions
   in
+  let commands = prune_redundant_barriers commands in
   create commands
 
 let tensor_inputs schedule =

@@ -5,7 +5,14 @@ let description =
 
 let is_gpu_command node =
   match Ir.node_op node with
-  | Ir.Op.Input _ | Ir.Op.Output _ -> false
+  | Ir.Op.Input _ | Ir.Op.Output _ | Ir.Op.Alloc _
+  | Ir.Op.Barrier_create _ | Ir.Op.Barrier_arrive _ | Ir.Op.Barrier_wait _ -> false
+  | Ir.Op.Primitive (Ir.Primitive.Movement (Ir.Movement.View | Ir.Movement.Reshape
+                                          | Ir.Movement.Unsqueeze _ | Ir.Movement.Contiguous)) -> false
+  | Ir.Op.Primitive (Ir.Primitive.Cast dtype) ->
+      (match Ir.node_inputs node with
+      | [ input ] -> Ir.Value.dtype input <> dtype
+      | _ -> true)
   | _ -> true
 
 let is_barrier node =
