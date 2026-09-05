@@ -44,7 +44,9 @@ val pure : float -> 'var t
 (** Embeds a constant scalar into the applicative functor (pure x = λi. x). *)
 
 val fmap : unop -> 'var t -> 'var t
-(** Applies a unary operator. Evaluates [fmap id = id] for identity casts. *)
+(** Applies a unary operator, eliding identity casts ([fmap id = id]) at
+    construction.  All other constructors ([lift2], [lift3], [fmap]) build raw
+    trees; run [simplify] explicitly when normalized terms are required. *)
 
 val lift2 : binop -> 'var t -> 'var t -> 'var t
 (** Combines two applicative expressions via a binary operator. *)
@@ -56,13 +58,23 @@ val subst : ('a -> 'b t) -> 'a t -> 'b t
 (** Capture-avoiding monadic bind / variable substitution. *)
 
 val simplify : 'var t -> 'var t
-(** Applies algebraic reduction rules (identity casts, zero add, unit mul, constant folding). *)
+(** Applies algebraic reduction rules (identity casts, zero add, unit mul,
+    constant folding).  [simplify] is idempotent.  Soundness contract: rules
+    such as [x * 0.0 -> 0.0] and constant [log]/[rsqrt] folding interpret the
+    expression over finite reals, so callers must feed values that are
+    IEEE-sound under those rules (as the property tests do); no NaN/inf
+    semantics are intended. *)
 
 val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
-(** Structural and algebraic equality between expression trees. *)
+(** Algebraic equality between expression trees: both sides are [simplify]ed
+    before structural comparison, so equal terms with different raw trees
+    (e.g. [Add x (Const 0.0)] vs [x]) compare equal. *)
 
 val required_values : 'var t -> Ir.Value.t list
-(** Returns all unique tensor inputs required to evaluate this expression tree. *)
+(** Returns all unique tensor inputs required to evaluate this expression
+    tree, in stable first-syntactic-occurrence (left-to-right pre-order)
+    order, deduplicated by [Value_id].  This order is what device-buffer
+    binding derives its slot numbering from. *)
 
 val to_string : ('a -> string) -> 'a t -> string
 (** Human-readable representation of the expression tree. *)

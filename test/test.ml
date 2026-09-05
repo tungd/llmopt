@@ -5146,7 +5146,7 @@ let () =
 
   let epi_composed = Epilogue.compose ~producer:epi_silu_mul ~consumer:(Epilogue.residual_add ~residual:v_res) in
   (match epi_composed with
-  | Ok (Epilogue.Silu_mul_residual_add { up; residual }) ->
+  | Epilogue.Silu_mul_residual_add { up; residual } ->
       expect (Ir.Value.equal up v_up) "composed up matches";
       expect (Ir.Value.equal residual v_res) "composed residual matches"
   | _ -> failwith "Epilogue.compose failed for silu_mul + residual_add");

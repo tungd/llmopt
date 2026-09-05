@@ -62,26 +62,11 @@ let inputs = function
   | Gelu_mul_residual_add { up; residual } -> [ up; residual ]
   | Expr e -> Applicative_expr.required_values e
 
-let value_equal a b = Ir.Value.equal a b
-
 let equal left right =
-  match left, right with
-  | None, None -> true
-  | Silu, Silu -> true
-  | Gelu, Gelu -> true
-  | Bias { bias = b1 }, Bias { bias = b2 } -> value_equal b1 b2
-  | Silu_mul { up = u1 }, Silu_mul { up = u2 } -> value_equal u1 u2
-  | Gelu_mul { up = u1 }, Gelu_mul { up = u2 } -> value_equal u1 u2
-  | Residual_add { residual = r1 }, Residual_add { residual = r2 } -> value_equal r1 r2
-  | Bias_residual_add { bias = b1; residual = r1 }, Bias_residual_add { bias = b2; residual = r2 } ->
-      value_equal b1 b2 && value_equal r1 r2
-  | Silu_mul_residual_add { up = u1; residual = r1 }, Silu_mul_residual_add { up = u2; residual = r2 } ->
-      value_equal u1 u2 && value_equal r1 r2
-  | Gelu_mul_residual_add { up = u1; residual = r1 }, Gelu_mul_residual_add { up = u2; residual = r2 } ->
-      value_equal u1 u2 && value_equal r1 r2
-  | Expr e1, Expr e2 -> Applicative_expr.equal (fun Acc Acc -> true) e1 e2
-  | l, r ->
-      Applicative_expr.equal (fun Acc Acc -> true) (to_expr l) (to_expr r)
+  (* Algebraic equality: tags and expressions are compared through their
+     [to_expr] forms so that equal terms with different raw trees compare
+     equal, congruent with [Monoid.equal]. *)
+  Applicative_expr.equal (fun Acc Acc -> true) (to_expr left) (to_expr right)
 
 let to_string = function
   | None -> "none"
@@ -98,21 +83,21 @@ let to_string = function
 
 let compose ~producer ~consumer =
   match producer, consumer with
-  | None, consumer -> Ok consumer
-  | producer, None -> Ok producer
+  | None, consumer -> consumer
+  | producer, None -> producer
   | Bias { bias }, Residual_add { residual } ->
-      Ok (Bias_residual_add { bias; residual })
+      Bias_residual_add { bias; residual }
   | Residual_add { residual }, Bias { bias } ->
-      Ok (Bias_residual_add { bias; residual })
+      Bias_residual_add { bias; residual }
   | Silu_mul { up }, Residual_add { residual } ->
-      Ok (Silu_mul_residual_add { up; residual })
+      Silu_mul_residual_add { up; residual }
   | Gelu_mul { up }, Residual_add { residual } ->
-      Ok (Gelu_mul_residual_add { up; residual })
+      Gelu_mul_residual_add { up; residual }
   | p, c ->
       let ep = to_expr p in
       let ec = to_expr c in
       let composed = Applicative_expr.subst (function Acc -> ep) ec in
-      Ok (Expr (Applicative_expr.simplify composed))
+      Expr (Applicative_expr.simplify composed)
 
 let emit_msl_writeback ~acc ~idx = function
   | None -> acc
@@ -156,7 +141,7 @@ module Monoid = struct
     | _ -> false
 
   let equal a b =
-    Applicative_expr.equal (fun Acc Acc -> true) (Applicative_expr.simplify a) (Applicative_expr.simplify b)
+    Applicative_expr.equal (fun Acc Acc -> true) a b
 
   let to_string e =
     Applicative_expr.to_string (fun Acc -> "acc") e

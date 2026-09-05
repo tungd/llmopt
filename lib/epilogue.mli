@@ -38,11 +38,16 @@ val inputs : t -> Ir.Value.t list
 (** Returns the auxiliary tensor inputs required by this epilogue. *)
 
 val equal : t -> t -> bool
-val to_string : t -> string
+(** Algebraic equality: both sides are compared through their [to_expr] forms
+    after [Applicative_expr.simplify], congruent with [Monoid.equal]. *)
 
-val compose : producer:t -> consumer:t -> (t, string) result
-(** Combines a producer epilogue with a consumer elementwise operation.
-    Uses associative substitution (producer ⋄ consumer) for arbitrary combinations. *)
+val compose : producer:t -> consumer:t -> t
+(** Combines a producer epilogue with a consumer elementwise operation via
+    associative substitution (producer ⋄ consumer).  Composition is total and
+    cannot fail: [compose ~producer:ε ~consumer] and
+    [compose ~producer ~consumer:ε] return the non-empty operand. *)
+
+val to_string : t -> string
 
 val emit_msl_writeback : acc:string -> idx:string -> t -> string
 (** Emits the inlined C++/MSL scalar expression for register writeback. *)

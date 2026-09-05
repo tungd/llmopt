@@ -522,3 +522,33 @@ output[out_idx0] = (half) ((((acc0 * rsqrt_val) * scale0) + residual[out_idx0]))
    No hardcoded `llmopt_gemma4_*` kernels. All kernels must be constructively synthesized from schema-driven block codegen (`lib/metal_block_codegen.ml`) and the Epilogue Monoid.
 4. **Monoid Law Validation Unit Tests**:
    Before wiring into the runtime pipeline, `test/test_epilogue_monoid.ml` must execute property-based tests verifying identity and associativity laws across 10,000 synthetic expression trees.
+
+---
+
+## Addendum 1 (2026-09-06): sealed Coordinate_map + algebraic equality contracts
+
+Round-8 idiomatic-OCaml review of the shipped slice refined the public API
+without changing its category semantics:
+
+- `Coordinate_map.t` is now **abstract** (`lib/coordinate_map.mli`), built only
+  through validating smart constructors `permute`, `slice ~offsets ~strides`,
+  `reshape ~in_shape ~out_shape`, `broadcast ~in_shape ~out_shape`, which raise
+  `Invalid_argument` for non-permutations, length/rank mismatches,
+  element-count mismatches, negative offsets, and non-positive strides, and
+  normalize identity-shaped morphisms to `Identity`.  This makes the invalid
+  states listed in the type sketch above unrepresentable.
+- `Coordinate_map.emit_msl_index` is **total and loud**: morphisms that cannot
+  be resolved to a single linear index expression (identity, the 2-D transpose
+  `permute [1; 0]`, and single-axis slices) now raise `Invalid_argument`
+  naming the morphism instead of silently emitting an identity index or a
+  reference to the nonexistent `permute_index<N>` helper.
+- Permutation composition direction is pinned by non-involutive law tests
+  (`compose p (inverse p) = identity` and an explicit `[1;2;0]`-then-`[0;2;1]`
+  composite equal to `[1;0;2]`) matching the documented convention
+  `(compose t1 t2)(j) = t2(t1(j))`.
+- `Applicative_expr.equal` is algebraic (both sides simplified before
+  structural comparison), `required_values` returns stable
+  first-syntactic-occurrence order (deduplicated by `Value_id`; no Binop
+  hack), and `Epilogue.equal` is congruent with `Epilogue.Monoid.equal`
+  (comparison through `to_expr` + simplify).  `Epilogue.compose` no longer
+  returns a `result` — composition is total.

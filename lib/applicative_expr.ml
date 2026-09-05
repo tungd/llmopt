@@ -89,35 +89,52 @@ let rec simplify = function
   | Triop (op, a, b, c) ->
       Triop (op, simplify a, simplify b, simplify c)
 
-let rec equal cmp_slot a b =
+let rec structural_equal cmp_slot a b =
   match a, b with
   | Slot s1, Slot s2 -> cmp_slot s1 s2
   | Const c1, Const c2 -> Float.equal c1 c2
   | Read r1, Read r2 ->
-      Ir.Value.equal r1.value r2.value && Coordinate_map.equal r1.coord r2.coord
-  | Unop (op1, a1), Unop (op2, a2) -> op1 = op2 && equal cmp_slot a1 a2
+      Ir.Value.equal r1.value r2.value
+      && Coordinate_map.equal r1.coord r2.coord
+  | Unop (op1, a1), Unop (op2, a2) -> op1 = op2 && structural_equal cmp_slot a1 a2
   | Binop (op1, a1, b1), Binop (op2, a2, b2) ->
-      op1 = op2 && equal cmp_slot a1 a2 && equal cmp_slot b1 b2
+      op1 = op2 && structural_equal cmp_slot a1 a2 && structural_equal cmp_slot b1 b2
   | Triop (op1, a1, b1, c1), Triop (op2, a2, b2, c2) ->
-      op1 = op2 && equal cmp_slot a1 a2 && equal cmp_slot b1 b2 && equal cmp_slot c1 c2
+      op1 = op2 && structural_equal cmp_slot a1 a2
+      && structural_equal cmp_slot b1 b2 && structural_equal cmp_slot c1 c2
   | _ -> false
 
-let rec required_values = function
-  | Slot _ | Const _ -> []
-  | Read { value; _ } -> [ value ]
-  | Unop (_, a) -> required_values a
-  | Binop (_, a, b) ->
-      let v1 = required_values a in
-      let v2 = required_values b in
-      List.fold_left
-        (fun acc v -> if List.exists (Ir.Value.equal v) acc then acc else v :: acc)
-        v1 v2
-  | Triop (_, a, b, c) ->
-      let v12 = required_values (Binop (Add, a, b)) in
-      let v3 = required_values c in
-      List.fold_left
-        (fun acc v -> if List.exists (Ir.Value.equal v) acc then acc else v :: acc)
-        v12 v3
+(* Algebraic equality: both sides are normalized by the idempotent [simplify]
+   before structural comparison, so e.g. [Add x (Const 0.0)] equals [x]. *)
+let equal cmp_slot a b =
+  structural_equal cmp_slot (simplify a) (simplify b)
+
+module Value_id_set = Set.Make (struct
+    type t = Ir.Value_id.t
+
+    let compare = Ir.Value_id.compare
+  end)
+
+(* Collects unique tensor inputs in stable first-syntactic-occurrence order
+   (left-to-right, pre-order), deduplicating by [Value_id]. *)
+let required_values expr =
+  let rec walk seen acc = function
+    | Slot _ | Const _ -> (seen, acc)
+    | Read { value; _ } ->
+        let id = Ir.Value.id value in
+        if Value_id_set.mem id seen then (seen, acc)
+        else (Value_id_set.add id seen, value :: acc)
+    | Unop (_, a) -> walk seen acc a
+    | Binop (_, a, b) ->
+        let seen, acc = walk seen acc a in
+        walk seen acc b
+    | Triop (_, a, b, c) ->
+        let seen, acc = walk seen acc a in
+        let seen, acc = walk seen acc b in
+        walk seen acc c
+  in
+  let _, reversed = walk Value_id_set.empty [] expr in
+  List.rev reversed
 
 let unop_to_string = function
   | Neg -> "-"
@@ -190,7 +207,17 @@ let rec emit_msl_expr ?value_var ~slot_emitter ~index_expr expr =
       Printf.sprintf "metal::rsqrt(%s)" (emit_msl_expr ?value_var ~slot_emitter ~index_expr a)
   | Unop (Cast Ir.Dtype.Float16, a) ->
       Printf.sprintf "((half)(%s))" (emit_msl_expr ?value_var ~slot_emitter ~index_expr a)
-  | Unop (Cast _, a) -> emit_msl_expr ?value_var ~slot_emitter ~index_expr a
+  | Unop (Cast Ir.Dtype.Float32, a) ->
+      (* All arithmetic in this emitter is float; a float32 cast of the inner
+         expression is an identity in this context (half operands promote
+         implicitly), so the cast is intentionally elided. *)
+      emit_msl_expr ?value_var ~slot_emitter ~index_expr a
+  | Unop (Cast dtype, _) ->
+      invalid_arg
+        (Printf.sprintf
+           "Applicative_expr.emit_msl_expr: cast to %s is not representable \
+            (only Float16 and Float32 casts are supported)"
+           (Ir.Dtype.to_string dtype))
   | Binop (Add, a, b) ->
       Printf.sprintf "(%s + %s)"
         (emit_msl_expr ?value_var ~slot_emitter ~index_expr a)

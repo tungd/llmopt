@@ -20,7 +20,7 @@ let run () =
   assert (Coordinate_map.is_identity id);
 
   (* Law: id ∘ T = T *)
-  let perm = Coordinate_map.Permute [ 1; 0 ] in
+  let perm = Coordinate_map.permute [ 1; 0 ] in
   let id_perm = Coordinate_map.compose id perm in
   assert (Coordinate_map.equal id_perm perm);
 
@@ -32,12 +32,77 @@ let run () =
   let double_perm = Coordinate_map.compose perm perm in
   assert (Coordinate_map.is_identity double_perm);
 
+  (* Law: non-involutive permutation composition follows the documented
+     contract (compose t1 t2)(j) = t2(t1(j)): Permute p reads source axis i
+     from output axis p[i], so composing p = [1;2;0] then q = [0;2;1] yields
+     the composite index map [1;0;2]. *)
+  let p3 = Coordinate_map.permute [ 1; 2; 0 ] in
+  let q3 = Coordinate_map.permute [ 0; 2; 1 ] in
+  assert (
+    Coordinate_map.equal
+      (Coordinate_map.compose p3 q3)
+      (Coordinate_map.permute [ 1; 0; 2 ]));
+  (* Law: compose p p⁻¹ = compose p⁻¹ p = identity *)
+  let inv_p3 = Coordinate_map.permute [ 2; 0; 1 ] in
+  assert (Coordinate_map.is_identity (Coordinate_map.compose p3 inv_p3));
+  assert (Coordinate_map.is_identity (Coordinate_map.compose inv_p3 p3));
+
+  (* Sealed smart constructors reject invalid morphisms at construction *)
+  let expect_invalid label f =
+    match f () with
+    | _ -> failwith (Printf.sprintf "%s: expected Invalid_argument" label)
+    | exception Invalid_argument _ -> ()
+  in
+  expect_invalid "non-permutation duplicate" (fun () -> Coordinate_map.permute [ 0; 0 ]);
+  expect_invalid "permutation out of range" (fun () -> Coordinate_map.permute [ 0; 3 ]);
+  expect_invalid "slice offsets/strides length mismatch" (fun () ->
+      Coordinate_map.slice ~offsets:[ 1 ] ~strides:[ 1; 1 ]);
+  expect_invalid "slice negative offset" (fun () ->
+      Coordinate_map.slice ~offsets:[ -1 ] ~strides:[ 1 ]);
+  expect_invalid "slice non-positive stride" (fun () ->
+      Coordinate_map.slice ~offsets:[ 0 ] ~strides:[ 0 ]);
+  expect_invalid "reshape element count mismatch" (fun () ->
+      Coordinate_map.reshape ~in_shape:[ 2; 2 ] ~out_shape:[ 3 ]);
+  expect_invalid "broadcast rank mismatch" (fun () ->
+      Coordinate_map.broadcast ~in_shape:[ 2 ] ~out_shape:[ 2; 2 ]);
+  expect_invalid "broadcast non-expansive axis" (fun () ->
+      Coordinate_map.broadcast ~in_shape:[ 2 ] ~out_shape:[ 3 ]);
+
+  (* Identity-shaped morphisms normalize to identity *)
+  assert (Coordinate_map.is_identity (Coordinate_map.permute [ 0; 1 ]));
+  assert (
+    Coordinate_map.is_identity
+      (Coordinate_map.reshape ~in_shape:[ 2; 4 ] ~out_shape:[ 2; 4 ]));
+  assert (
+    Coordinate_map.is_identity (Coordinate_map.slice ~offsets:[ 0 ] ~strides:[ 1 ]));
+
   (* MSL index emission *)
   let idx_id = Coordinate_map.emit_msl_index id ~index_var:"col" ~shape:[ 32; 64 ] in
   assert (idx_id = "col");
 
   let idx_perm = Coordinate_map.emit_msl_index perm ~index_var:"col" ~shape:[ 32; 64 ] in
   assert (idx_perm = "((col % 64u) * 32u + (col / 64u))");
+
+  (* Unresolvable morphisms fail loudly at emission instead of emitting an
+     identity index *)
+  expect_invalid "3-D permute emission" (fun () ->
+      Coordinate_map.emit_msl_index (Coordinate_map.permute [ 1; 2; 0 ])
+        ~index_var:"c" ~shape:[ 2; 2; 2 ]);
+  expect_invalid "multi-axis slice emission" (fun () ->
+      Coordinate_map.emit_msl_index
+        (Coordinate_map.slice ~offsets:[ 0; 0 ] ~strides:[ 1; 1 ])
+        ~index_var:"c" ~shape:[ 2; 4 ]);
+  expect_invalid "reshape emission" (fun () ->
+      Coordinate_map.emit_msl_index
+        (Coordinate_map.reshape ~in_shape:[ 2; 4 ] ~out_shape:[ 8 ])
+        ~index_var:"c" ~shape:[ 8 ]);
+
+  Printf.printf
+    "  [PASS] Coordinate_map sealed constructors validate permutation/shape invariants\n%!";
+  Printf.printf
+    "  [PASS] Non-involutive permute composition follows the documented convention (p ⋄ p⁻¹ = id)\n%!";
+  Printf.printf
+    "  [PASS] Unresolvable coordinate morphisms fail loudly at MSL emission\n%!";
 
   Printf.printf "  [PASS] Coordinate Category axioms (identity, composition, involution)\n%!";
 
@@ -65,7 +130,23 @@ let run () =
   let c2_plus_c3 = simplify (lift2 Add (pure 2.0) (pure 3.0)) in
   assert (c2_plus_c3 = Const 5.0);
 
+  (* equal is algebraic: simplify-then-compare *)
+  let add_zero = lift2 Add read_f16 (pure 0.0) in
+  assert (Applicative_expr.equal (fun _ _ -> true) add_zero read_f16);
+  let cast_chain =
+    Unop (Cast Ir.Dtype.Float16, Unop (Cast Ir.Dtype.Float16, read_f16))
+  in
+  assert (Applicative_expr.equal (fun _ _ -> true) cast_chain read_f16);
+
+  (* simplify is idempotent *)
+  let folded =
+    simplify (lift2 Add (lift2 Mul read_f16 (pure 1.0)) (pure 0.0))
+  in
+  assert (simplify folded = folded);
+  assert (Applicative_expr.equal (fun _ _ -> true) (simplify folded) folded);
+
   Printf.printf "  [PASS] Pointwise Applicative Functor laws (cast cancellation, constant folding)\n%!";
+  Printf.printf "  [PASS] Applicative_expr equal is algebraic and simplify is idempotent\n%!";
 
   (* ========================================================================= *)
   (* 3. Epilogue Monoid Tests (E, ⋄, ε)                                        *)
@@ -92,6 +173,20 @@ let run () =
 
   Printf.printf "  [PASS] Epilogue Monoid strict laws (Left Identity, Right Identity, Associativity)\n%!";
 
+  (* Epilogue.equal is congruent with Monoid.equal: raw unsimplified trees
+     compare equal to their simplified forms, and tag forms compare equal to
+     their Expr denotations. *)
+  let raw_id_add =
+    Epilogue.of_expr (Binop (Add, Slot Epilogue.Acc, pure 0.0))
+  in
+  assert (Epilogue.equal raw_id_add Epilogue.none);
+  let bias_denotation = Epilogue.of_expr (Epilogue.to_expr (Epilogue.bias v_bias)) in
+  assert (Epilogue.equal bias_denotation (Epilogue.bias v_bias));
+  assert (not (Epilogue.equal bias_denotation Epilogue.none));
+  let silu_denotation = Epilogue.of_expr (Unop (Silu, Slot Epilogue.Acc)) in
+  assert (Epilogue.equal silu_denotation Epilogue.silu);
+  Printf.printf "  [PASS] Epilogue.equal congruent with Monoid.equal over raw and tag forms\n%!";
+
   (* ========================================================================= *)
   (* 4. Arbitrary Composite Epilogue Fusion (e.g. Gemma 4)                     *)
   (* ========================================================================= *)
@@ -104,19 +199,13 @@ let run () =
   in
 
   (* Compose silu with bias *)
-  let comp_res = Epilogue.compose ~producer:epi_silu ~consumer:epi_bias in
-  assert (Result.is_ok comp_res);
-  let fused_epi = Result.get_ok comp_res in
+  let fused_epi = Epilogue.compose ~producer:epi_silu ~consumer:epi_bias in
 
   (* Further compose with residual_add *)
-  let comp_res2 = Epilogue.compose ~producer:fused_epi ~consumer:epi_res in
-  assert (Result.is_ok comp_res2);
-  let multi_fused = Result.get_ok comp_res2 in
+  let multi_fused = Epilogue.compose ~producer:fused_epi ~consumer:epi_res in
 
   (* Further compose with scale *)
-  let comp_res3 = Epilogue.compose ~producer:multi_fused ~consumer:epi_scale in
-  assert (Result.is_ok comp_res3);
-  let gemma_chain = Result.get_ok comp_res3 in
+  let gemma_chain = Epilogue.compose ~producer:multi_fused ~consumer:epi_scale in
 
   let msl = Epilogue.emit_msl_writeback ~acc:"acc0" ~idx:"out_idx" gemma_chain in
   assert (String.length msl > 10);
@@ -141,6 +230,24 @@ let run () =
      with the same deterministic buf_<Value_id> name the write-back
      expression uses, in stable required_values order. *)
   let chain_inputs = Epilogue.inputs gemma_chain in
+  (* required_values returns stable first-syntactic-occurrence order: bias,
+     residual, scale for this silu-bias-residual-scale chain.  Buffer slots and
+     write-back names both derive from this order, so pin it. *)
+  let input_ids =
+    List.map (fun value -> Ir.Value_id.to_int (Ir.Value.id value)) chain_inputs
+  in
+  let expected_input_ids =
+    [
+      Ir.Value_id.to_int (Ir.Value.id v_bias);
+      Ir.Value_id.to_int (Ir.Value.id v_res);
+      Ir.Value_id.to_int (Ir.Value.id v_scale);
+    ]
+  in
+  if input_ids <> expected_input_ids then
+    failwith
+      (Printf.sprintf "required_values order mismatch: got [%s], expected [%s]"
+         (String.concat ";" (List.map string_of_int input_ids))
+         (String.concat ";" (List.map string_of_int expected_input_ids)));
   expect_contains "w4a16 Expr epilogue declares all three buffers"
     (Metal.emit_parametric_w4a16_linear ~name:"test_w4_expr" ~epilogue:gemma_chain)
     (List.mapi
@@ -213,14 +320,13 @@ let run () =
     Hashtbl.find pv_env (Ir.Value_id.to_int (Ir.Value.id value))
   in
   let coord_index value coord index =
-    match coord with
-    | Coordinate_map.Identity -> index
-    | Coordinate_map.Permute [ 1; 0 ] -> (
-        let dims = Tensor_shape.dimensions (Ir.Value.logical_shape value) in
-        match dims with
-        | m :: n :: _ -> (index mod n) * m + (index / n)
-        | _ -> index)
-    | _ -> index
+    if Coordinate_map.is_identity coord then index
+    else if Coordinate_map.equal coord (Coordinate_map.permute [ 1; 0 ]) then (
+      let dims = Tensor_shape.dimensions (Ir.Value.logical_shape value) in
+      match dims with
+      | m :: n :: _ -> (index mod n) * m + (index / n)
+      | _ -> index)
+    else index
   in
   (* IEEE-sound constant domain: strictly positive and nonzero. The algebraic
      simplifier folds Const leaves (Mul(_, Const 0.0) -> Const 0.0 and
@@ -249,7 +355,8 @@ let run () =
     else
       let value = pick pv_list in
       let coord =
-        if Random.bool () then Coordinate_map.identity else Coordinate_map.Permute [ 1; 0 ]
+        if Random.bool () then Coordinate_map.identity
+        else Coordinate_map.permute [ 1; 0 ]
       in
       Applicative_expr.Read { value; coord }
   in
