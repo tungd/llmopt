@@ -264,7 +264,7 @@ build _build/ocaml/pass_fuse_lm_head_argmax.cmi: ocaml_interface lib/pass_fuse_l
 build _build/ocaml/pass_fuse_lm_head_argmax.cmx: ocaml_module lib/pass_fuse_lm_head_argmax.ml | _build/ocaml/pass_fuse_lm_head_argmax.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx
 
 build _build/ocaml/pass_fuse_epilogues.cmi: ocaml_interface lib/pass_fuse_epilogues.mli | _build/ocaml/pass.cmi _build/ocaml/ir.cmi
-build _build/ocaml/pass_fuse_epilogues.cmx: ocaml_module lib/pass_fuse_epilogues.ml | _build/ocaml/pass_fuse_epilogues.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx
+build _build/ocaml/pass_fuse_epilogues.cmx: ocaml_module lib/pass_fuse_epilogues.ml | _build/ocaml/pass_fuse_epilogues.cmi _build/ocaml/pass.cmx _build/ocaml/ir.cmx _build/ocaml/pass_fuse_linear_bias.cmx
 
 build _build/ocaml/passes.cmi: ocaml_interface lib/passes.mli | _build/ocaml/pass.cmi _build/ocaml/kernel_ir.cmi _build/ocaml/compute_plan.cmi _build/ocaml/constructive_lowering.cmi _build/ocaml/pass_fuse_linear_bias.cmi _build/ocaml/pass_fuse_short_conv_step.cmi _build/ocaml/pass_fuse_lm_head_argmax.cmi _build/ocaml/pass_co_schedule.cmi _build/ocaml/target_hardware.cmi _build/ocaml/pass_fuse_epilogues.cmi _build/ocaml/kernel_abi.cmi
 build _build/ocaml/passes.cmx: ocaml_module lib/passes.ml | _build/ocaml/passes.cmi _build/ocaml/pass.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/compute_plan.cmx _build/ocaml/constructive_lowering.cmx _build/ocaml/pass_fuse_linear_bias.cmx _build/ocaml/pass_fuse_short_conv_step.cmx _build/ocaml/pass_fuse_lm_head_argmax.cmx _build/ocaml/pass_co_schedule.cmx _build/ocaml/target_hardware.cmx _build/ocaml/pass_fuse_epilogues.cmx _build/ocaml/kernel_abi.cmx

@@ -253,11 +253,13 @@ end
 
 module Slot = struct
   type t = int
+  let of_int slot = slot
   let to_int slot = slot
 end
 
 module Checkpoint = struct
   type t = int
+  let of_int checkpoint = checkpoint
   let to_int checkpoint = checkpoint
 end
 

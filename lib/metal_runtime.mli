@@ -200,6 +200,7 @@ val encode_schedule :
   ?workspace:Buffer.t ->
   ?memory_plan:Serving_memory_plan.t ->
   ?decode_uniforms:Decode_uniforms.t ->
+  ?cache:Cache.t ->
   Execution_batch.t ->
   schedule:Serving_schedule.t ->
   inputs:(string * Buffer.t) list ->

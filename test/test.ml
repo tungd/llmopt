@@ -1571,7 +1571,7 @@ let () =
   expect
     (Metal.Program.kernels q4_gated_program
     |> List.exists (fun entry ->
-           Kernel_abi.Entry.name entry = "llmopt_q4_0_gated_linear_f16"))
+           Kernel_abi.Entry.name entry = "llmopt_q4_0_gated_linear_f16_x8"))
     "Metal lowering declares the single-token Q4_0 gated kernel";
 
   let mixed_graph = Ir.Graph.create () in
@@ -6121,7 +6121,7 @@ let () =
   expect
     (Metal.Program.kernels uoc05_gelu_q4_program
     |> List.exists (fun entry ->
-           Kernel_abi.Entry.name entry = "llmopt_q4_0_gated_linear_f16"
+           Kernel_abi.Entry.name entry = "llmopt_q4_0_gated_linear_f16_x8"
            && Kernel_abi.Entry.operation entry
               = Kernel_abi.Operation.Gated_linear))
     "Q4_0 constructive GELU lowering declares its gated Metal tactic";

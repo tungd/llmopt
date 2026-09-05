@@ -1293,8 +1293,8 @@ let decode_inputs engine ~slots ~token_input ~rope_buffers buffers =
 
 let attention_pack_slice _engine ~past_tokens:_ = 1, 0
 
-let rec pack_decode_attention batch execution slots ~source_items
-    ~source_offset (bindings : attention_binding list) =
+let rec pack_decode_attention batch execution slots
+    ~source_items ~source_offset (bindings : attention_binding list) =
   match bindings with
   | [] -> Ok ()
   | binding :: rest ->
@@ -1305,8 +1305,8 @@ let rec pack_decode_attention batch execution slots ~source_items
           ~layer:binding.cache_layer ~slots ~source_items ~source_offset
           ~key_source:key ~value_source:value
       in
-      pack_decode_attention batch execution slots ~source_items ~source_offset
-        rest
+      pack_decode_attention batch execution slots ~source_items
+        ~source_offset rest
 
 let rec pack_decode_recurrent batch checkpoint
     (buffers : (recurrent_binding * Metal_runtime.Buffer.t) list) =
@@ -1376,7 +1376,7 @@ let execute_static_decode engine ~schedule ~inputs ~token ~past_tokens
           ~token_buffer ~output_buffer
       in
       let ring_queue =
-        if Sys.getenv_opt "LLMOPT_DISABLE_RING_QUEUE" = Some "1" then None
+        if Sys.getenv_opt "LLMOPT_ENABLE_RING_QUEUE" <> Some "1" then None
         else
           match Metal_runtime.Ring_queue.create () with
           | Error _ -> None

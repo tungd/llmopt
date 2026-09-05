@@ -68,12 +68,14 @@ end
 module Slot : sig
   type t
 
+  val of_int : int -> t
   val to_int : t -> int
 end
 
 module Checkpoint : sig
   type t
 
+  val of_int : int -> t
   val to_int : t -> int
 end
 

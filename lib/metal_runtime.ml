@@ -2449,7 +2449,7 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     else if String.ends_with ~suffix:"_m2_x2_l32" tactic_name then
       m * ((n + 1) / 2)
     else if String.ends_with ~suffix:"_m2_x1_l32" tactic_name then m * n
-    else if String.ends_with ~suffix:"_x8" tactic_name then (n + 7) / 8
+    else if String.ends_with ~suffix:"_x8" tactic_name then ((n + 7) / 8) * 2
     else if String.ends_with ~suffix:"_m2_x4" tactic_name
          || String.ends_with ~suffix:"_x4" tactic_name
     then (n + 3) / 4
@@ -2774,8 +2774,8 @@ let assignment_execution command =
       Some (Assignment_gated_delta { query; key; value; gate; beta; output })
   | None -> None
 
-let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
-    ~schedule ~inputs =
+let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
+    execution_batch ~schedule ~inputs =
   let runtime = execution_batch.Execution_batch.runtime in
   let batch = execution_batch.commands in
   let* runtime_inputs = runtime_input_map inputs in
@@ -3145,7 +3145,10 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                   when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
                     "llmopt_q5_0_gated_linear_f16_llama_mv"
                 | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
-                | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
+                | Ir.Dtype.Q4_0, m when m >= 32 -> "llmopt_q4_0_gated_linear_f16_m32"
+                | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
+                | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
+                | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16_x8"
                 | Ir.Dtype.IQ4_XS, 2 -> "llmopt_iq4_xs_gated_linear_f16_m2"
                 | _ -> ""
               in
@@ -3165,20 +3168,17 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                       if groups > max_int / 256 then Error "assignment gated grid overflows"
                       else Ok (groups * 256)
                   | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid gate.n
-                  | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m32" name ->
+                  | Ir.Dtype.Q4_0, m when m >= 32 ->
                       let m_tiles = (gate.m + 31) / 32 in
                       linear_f16_grid (m_tiles * gate.n * 2)
-                  | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m16" name ->
+                  | Ir.Dtype.Q4_0, m when m >= 16 ->
                       let m_tiles = (gate.m + 15) / 16 in
                       linear_f16_grid (m_tiles * gate.n)
-                  | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m4" name ->
+                  | Ir.Dtype.Q4_0, m when m >= 4 ->
                       let m_tiles = (gate.m + 3) / 4 in
                       linear_f16_grid (m_tiles * gate.n)
-                  | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_x8" name ->
-                      let groups = (gate.n + 7) / 8 in
-                      linear_f16_grid (gate.m * groups)
                   | Ir.Dtype.Q4_0, _ ->
-                      let groups = (gate.n + 3) / 4 in
+                      let groups = (gate.n + 7) / 8 in
                       linear_f16_grid (gate.m * groups)
                   | Ir.Dtype.Q4_K, _ ->
                       linear_f16_grid (gate.m * gate.n)
@@ -3689,7 +3689,10 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                      = Some "1" ->
                   "llmopt_q5_0_gated_linear_f16_llama_mv"
               | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
-              | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16"
+              | Ir.Dtype.Q4_0, m when m >= 32 -> "llmopt_q4_0_gated_linear_f16_m32"
+              | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
+              | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
+              | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16_x8"
               | Ir.Dtype.IQ4_XS, 2 ->
                   "llmopt_iq4_xs_gated_linear_f16_m2"
               | _ -> assert false
@@ -3711,20 +3714,17 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms execution_batch
                     Error "Q5_0 gated Linear grid dimension overflows"
                   else Ok (groups * 256)
               | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid n
-              | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m32" name ->
+              | Ir.Dtype.Q4_0, m when m >= 32 ->
                   let m_tiles = (m + 31) / 32 in
                   linear_f16_grid (m_tiles * n * 2)
-              | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m16" name ->
+              | Ir.Dtype.Q4_0, m when m >= 16 ->
                   let m_tiles = (m + 15) / 16 in
                   linear_f16_grid (m_tiles * n)
-              | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_m4" name ->
+              | Ir.Dtype.Q4_0, m when m >= 4 ->
                   let m_tiles = (m + 3) / 4 in
                   linear_f16_grid (m_tiles * n)
-              | Ir.Dtype.Q4_0, _ when String.ends_with ~suffix:"_x8" name ->
-                  let groups = (n + 7) / 8 in
-                  linear_f16_grid (m * groups)
               | Ir.Dtype.Q4_0, _ ->
-                  let groups = (n + 3) / 4 in
+                  let groups = (n + 7) / 8 in
                   linear_f16_grid (m * groups)
               | Ir.Dtype.Q4_K, _ ->
                   linear_f16_grid (m * n)
@@ -4862,8 +4862,8 @@ let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
     }
   in
   let* execution =
-    encode_schedule ?workspace ?memory_plan ~decode_uniforms batch ~schedule
-      ~inputs
+    encode_schedule ?workspace ?memory_plan ~decode_uniforms ?cache batch
+      ~schedule ~inputs
   in
   let* () =
     match cache, cache_pack with
