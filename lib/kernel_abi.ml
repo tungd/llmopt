@@ -495,9 +495,9 @@ module Linear_tactic = struct
           && problem.supports_simd ~threads:256);
       work_sharing =
         Work_sharing.make ~simdgroups_per_threadgroup:8
-          ~output_values_per_threadgroup:32 ~split_k_partitions:2
+          ~output_values_per_threadgroup:64 ~split_k_partitions:1
           ~decoded_weight_reuse:1 ~activation_reuse:8
-          ~threadgroup_sram_bytes:256 ~dispatches:1 }
+          ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
   let full_simd_kquant_registration ~accepts_superblocks quant suffix :
       registration =

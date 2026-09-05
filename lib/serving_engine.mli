@@ -63,6 +63,7 @@ val create_from_program :
   ?checkpoint_capacity:int ->
   ?page_size:int ->
   ?warmup:bool ->
+  ?warmup_prompt_lengths:int list ->
   unit ->
   (t, string) result
 
@@ -96,7 +97,8 @@ val step_batch :
 val stats : t -> Serving_cache.Stats.t
 val validate : t -> (unit, string) result
 val reset : t -> (unit, string) result
-val warmup : t -> (unit, string) result
+val warmup : ?prompt_lengths:int list -> t -> (unit, string) result
+val warmup_engine : ?prompt_lengths:int list -> t -> (unit, string) result
 
 module Speculative_acceptance : sig
   type t

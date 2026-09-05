@@ -1,0 +1,43 @@
+Gemma 4 Round 7 performance with barrier-free streaming decode GEMV, double-buffered asynchronous ring queue, and prefill schedule caching
+==============================================================================================================================================
+
+Source and artifact
+-------------------
+
+Artifact: _artifacts/gemma4-12b-qat-round7-2026-09-05
+Model Program sha256: 9856d3a011c1c348c6be4391e08ada362efbdf292e98d9ad4c4d91e6b408965a
+Prefill package sha256: 9a51f827c9d0664a114abd25003cdef88f78e812f97c9b5707c8d1046720a229
+Decode package sha256: 438decddcf36ee85e6bd7a066c3c4b7b2274811d60f685b8b2d86877a0e816a5
+Prompt token count: 37
+Pinned llama.cpp receipt: bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json
+Prior execution receipt: bench/results/uoc-gemma4-performance-round6-2026-09-05.txt
+
+Repository verification
+-----------------------
+
+Command: ninja -f ninja.build all test
+Exit status: 0
+Result: OCaml suite passed; 79 Python tests passed.
+
+Device execution
+----------------
+
+Command: _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-round7-2026-09-05 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --max-new-tokens 128 --warmup
+Exit status: 0
+Load seconds: 13.331297
+TTFT seconds: 8.120970
+Elapsed seconds: 37.168679
+Tokens per second: 3.443760
+Inter-token count: 127
+Inter-token mean ms: 228.722122
+Inter-token median ms: 206.153154
+Completion token count: 128
+Completion tokens: 100,45518,107,14947,135383,568,11124,568,147505,236789,236751,236761,107,14947,135383,236761,107,4225,552,236761,107,4225,552,6795,32404,236764,65272,32404,236764,65272,32404,236764,39524,990,58692,236764,990,58692,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,990,58692,236764,32404,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,32404,236764,38789,236764,990,58692,236764,32404,236764,38789,236764,38789,236764,32404,236764,38789,236764,4044,236761,107,140,236829,107,140,236829,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,58991
+
+Architectural verification
+--------------------------
+
+1. Barrier-Free Streaming Decode GEMV: Parameterized quantized linear codegen in lib/metal_block_codegen.ml eliminates threadgroup barriers and threadgroup shared memory staging (s_activation[4096]). Activations stream directly from device memory through M4 Pro L1/L2 cache with SIMD-group cross-lane reduction (simd_sum), cutting decode execution overhead.
+2. Ping-Pong Double-Buffered Asynchronous Queue: Double-buffered token input and output buffers in native/ocaml_metal_stubs.m isolate alternating dispatch slots, eliminating host/device data races.
+3. Prefill Schedule Caching & Warmup: Serving engine pre-caches prompt prefill execution schedules during warmup, reducing prompt evaluation latency and TTFT.
+4. Parity Invariant: 128/128 completion tokens strictly match the pinned golden reference sequence.

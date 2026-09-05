@@ -89,6 +89,8 @@ typedef struct {
   bool barrier_before;
   bool is_paged_attention;
   bool is_checkpoint_pack;
+  int8_t token_buffer_index;
+  int8_t output_buffer_index;
 } llmopt_dispatch_record;
 
 typedef struct {
@@ -111,10 +113,10 @@ typedef struct {
   llmopt_metal_library *library;
   llmopt_dispatch_record *records;
   size_t record_count;
-  id<MTLBuffer> token_buffer;
-  NSUInteger token_buffer_offset;
-  id<MTLBuffer> output_buffer;
-  NSUInteger output_buffer_offset;
+  id<MTLBuffer> token_buffers[2];
+  NSUInteger token_buffer_offsets[2];
+  id<MTLBuffer> output_buffers[2];
+  NSUInteger output_buffer_offsets[2];
   id<MTLComputePipelineState> chain_pipeline;
 } llmopt_ring_queue;
 
@@ -303,8 +305,10 @@ static void finalize_ring(value handle) {
       free(q->records);
     }
     [q->queue release];
-    [q->token_buffer release];
-    [q->output_buffer release];
+    if (q->token_buffers[0] != nil) [q->token_buffers[0] release];
+    if (q->token_buffers[1] != nil) [q->token_buffers[1] release];
+    if (q->output_buffers[0] != nil) [q->output_buffers[0] release];
+    if (q->output_buffers[1] != nil) [q->output_buffers[1] release];
     [q->chain_pipeline release];
     pthread_mutex_destroy(&q->mutex);
     pthread_cond_destroy(&q->sq_cond);
@@ -1397,6 +1401,7 @@ static void *llmopt_worker_loop(void *arg) {
 
   id<MTLCommandBuffer> prev_cmd = nil;
   llmopt_sq_entry prev_entry;
+  uint32_t prev_slot = 0;
   bool has_prev = false;
 
   while (atomic_load_explicit(&q->running, memory_order_acquire)) {
@@ -1417,9 +1422,13 @@ static void *llmopt_worker_loop(void *arg) {
         if (has_prev) {
           [prev_cmd waitUntilCompleted];
           int32_t next_token = 0;
-          if (q->output_buffer != nil) {
-            int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+          if (q->output_buffers[prev_slot] != nil) {
+            int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffers[prev_slot] contents] + q->output_buffer_offsets[prev_slot]);
             next_token = *out_ptr;
+            if (prev_slot != 0 && q->output_buffers[0] != nil) {
+              int32_t *out0 = (int32_t *)((uint8_t *)[q->output_buffers[0] contents] + q->output_buffer_offsets[0]);
+              *out0 = next_token;
+            }
           }
           uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
           q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = prev_entry.request_id;
@@ -1454,21 +1463,23 @@ static void *llmopt_worker_loop(void *arg) {
       break;
     }
 
+    uint32_t slot = head % 2;
     bool gpu_chain = false;
     if (entry.token >= 0) {
-      if (q->token_buffer != nil) {
-        int64_t *ptr = (int64_t *)((uint8_t *)[q->token_buffer contents] + q->token_buffer_offset);
+      if (q->token_buffers[slot] != nil) {
+        int64_t *ptr = (int64_t *)((uint8_t *)[q->token_buffers[slot] contents] + q->token_buffer_offsets[slot]);
         *ptr = (int64_t)entry.token;
       }
     } else {
-      if (q->chain_pipeline != nil && q->output_buffer != nil && q->token_buffer != nil) {
+      uint32_t last_slot = (slot == 0) ? 1 : 0;
+      if (q->chain_pipeline != nil && q->output_buffers[last_slot] != nil && q->token_buffers[slot] != nil) {
         gpu_chain = true;
-      } else if (q->output_buffer != nil && q->token_buffer != nil) {
+      } else if (q->output_buffers[last_slot] != nil && q->token_buffers[slot] != nil) {
         if (has_prev) {
           [prev_cmd waitUntilCompleted];
         }
-        int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
-        int64_t *ptr = (int64_t *)((uint8_t *)[q->token_buffer contents] + q->token_buffer_offset);
+        int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffers[last_slot] contents] + q->output_buffer_offsets[last_slot]);
+        int64_t *ptr = (int64_t *)((uint8_t *)[q->token_buffers[slot] contents] + q->token_buffer_offsets[slot]);
         *ptr = (int64_t)(*out_ptr);
       }
     }
@@ -1479,9 +1490,10 @@ static void *llmopt_worker_loop(void *arg) {
       id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
 
       if (gpu_chain) {
+        uint32_t last_slot = (slot == 0) ? 1 : 0;
         [enc setComputePipelineState:q->chain_pipeline];
-        [enc setBuffer:q->output_buffer offset:q->output_buffer_offset atIndex:0];
-        [enc setBuffer:q->token_buffer offset:q->token_buffer_offset atIndex:1];
+        [enc setBuffer:q->output_buffers[last_slot] offset:q->output_buffer_offsets[last_slot] atIndex:0];
+        [enc setBuffer:q->token_buffers[slot] offset:q->token_buffer_offsets[slot] atIndex:1];
         [enc dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
         if (llmopt_enable_serial_barriers()) {
           [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -1500,6 +1512,14 @@ static void *llmopt_worker_loop(void *arg) {
         }
         if (r->buffer_count > 0) {
           [enc setBuffers:r->buffers offsets:r->offsets withRange:NSMakeRange(0, r->buffer_count)];
+          if (r->token_buffer_index >= 0) {
+            NSUInteger off = (slot == 0) ? r->offsets[r->token_buffer_index] : (r->offsets[r->token_buffer_index] - q->token_buffer_offsets[0] + q->token_buffer_offsets[1]);
+            [enc setBuffer:q->token_buffers[slot] offset:off atIndex:(NSUInteger)r->token_buffer_index];
+          }
+          if (r->output_buffer_index >= 0) {
+            NSUInteger off = (slot == 0) ? r->offsets[r->output_buffer_index] : (r->offsets[r->output_buffer_index] - q->output_buffer_offsets[0] + q->output_buffer_offsets[1]);
+            [enc setBuffer:q->output_buffers[slot] offset:off atIndex:(NSUInteger)r->output_buffer_index];
+          }
         }
         if (r->parameter_length > 0) {
           if (r->is_paged_attention && r->parameter_length >= 16) {
@@ -1517,9 +1537,13 @@ static void *llmopt_worker_loop(void *arg) {
     if (pipeline_depth <= 1) {
       [cmd waitUntilCompleted];
       int32_t next_token = 0;
-      if (q->output_buffer != nil) {
-        int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+      if (q->output_buffers[slot] != nil) {
+        int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffers[slot] contents] + q->output_buffer_offsets[slot]);
         next_token = *out_ptr;
+        if (slot != 0 && q->output_buffers[0] != nil) {
+          int32_t *out0 = (int32_t *)((uint8_t *)[q->output_buffers[0] contents] + q->output_buffer_offsets[0]);
+          *out0 = next_token;
+        }
       }
       uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
       q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = entry.request_id;
@@ -1538,9 +1562,13 @@ static void *llmopt_worker_loop(void *arg) {
       if (has_prev) {
         [prev_cmd waitUntilCompleted];
         int32_t next_token = 0;
-        if (q->output_buffer != nil) {
-          int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+        if (q->output_buffers[prev_slot] != nil) {
+          int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffers[prev_slot] contents] + q->output_buffer_offsets[prev_slot]);
           next_token = *out_ptr;
+          if (prev_slot != 0 && q->output_buffers[0] != nil) {
+            int32_t *out0 = (int32_t *)((uint8_t *)[q->output_buffers[0] contents] + q->output_buffer_offsets[0]);
+            *out0 = next_token;
+          }
         }
         uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
         q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = prev_entry.request_id;
@@ -1558,6 +1586,7 @@ static void *llmopt_worker_loop(void *arg) {
       }
       prev_cmd = cmd;
       prev_entry = entry;
+      prev_slot = slot;
       has_prev = true;
     }
   }
@@ -1565,9 +1594,13 @@ static void *llmopt_worker_loop(void *arg) {
   if (has_prev) {
     [prev_cmd waitUntilCompleted];
     int32_t next_token = 0;
-    if (q->output_buffer != nil) {
-      int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffer contents] + q->output_buffer_offset);
+    if (q->output_buffers[prev_slot] != nil) {
+      int32_t *out_ptr = (int32_t *)((uint8_t *)[q->output_buffers[prev_slot] contents] + q->output_buffer_offsets[prev_slot]);
       next_token = *out_ptr;
+      if (prev_slot != 0 && q->output_buffers[0] != nil) {
+        int32_t *out0 = (int32_t *)((uint8_t *)[q->output_buffers[0] contents] + q->output_buffer_offsets[0]);
+        *out0 = next_token;
+      }
     }
     uint32_t cq_tail = atomic_load_explicit(&q->cq_tail, memory_order_relaxed);
     q->cq[cq_tail % LLMOPT_RING_CAPACITY].request_id = prev_entry.request_id;
@@ -1702,12 +1735,16 @@ CAMLprim value caml_llmopt_ring_start_worker(value v_ring,
   q->queue = [lib->queue retain];
 
   if (t_buf != NULL) {
-    q->token_buffer = [t_buf->buffer retain];
-    q->token_buffer_offset = t_buf->offset;
+    q->token_buffers[0] = [t_buf->buffer retain];
+    q->token_buffer_offsets[0] = t_buf->offset;
+    q->token_buffers[1] = [lib->device newBufferWithLength:t_buf->buffer.length options:MTLResourceStorageModeShared];
+    q->token_buffer_offsets[1] = 0;
   }
   if (o_buf != NULL) {
-    q->output_buffer = [o_buf->buffer retain];
-    q->output_buffer_offset = o_buf->offset;
+    q->output_buffers[0] = [o_buf->buffer retain];
+    q->output_buffer_offsets[0] = o_buf->offset;
+    q->output_buffers[1] = [lib->device newBufferWithLength:o_buf->buffer.length options:MTLResourceStorageModeShared];
+    q->output_buffer_offsets[1] = 0;
   }
   q->chain_pipeline = [pipeline_for_name_opt(lib, "llmopt_chain_token_id") retain];
 
@@ -1721,6 +1758,8 @@ CAMLprim value caml_llmopt_ring_start_worker(value v_ring,
     q->records[i].barrier_before = Bool_val(Field(item, 9));
     q->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
     q->records[i].is_paged_attention = is_paged_attention_kernel(kname);
+    q->records[i].token_buffer_index = -1;
+    q->records[i].output_buffer_index = -1;
 
     NSUInteger b_idx = 0;
     value rem = buffers;
@@ -1729,6 +1768,12 @@ CAMLprim value caml_llmopt_ring_start_worker(value v_ring,
       if (b != NULL) {
         q->records[i].buffers[b_idx] = [b->buffer retain];
         q->records[i].offsets[b_idx] = b->offset;
+        if (q->token_buffers[0] != nil && b->buffer == q->token_buffers[0]) {
+          q->records[i].token_buffer_index = (int8_t)b_idx;
+        }
+        if (q->output_buffers[0] != nil && b->buffer == q->output_buffers[0]) {
+          q->records[i].output_buffer_index = (int8_t)b_idx;
+        }
       }
       b_idx++;
       rem = Field(rem, 1);

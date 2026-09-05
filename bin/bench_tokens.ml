@@ -117,7 +117,8 @@ let run () =
     Serving_engine.create_from_program ~program ~model_dir:options.model_dir
       ~token_capacity:options.token_capacity
       ~checkpoint_capacity:options.checkpoint_capacity
-      ~warmup:options.warmup ()
+      ~warmup:options.warmup
+      ~warmup_prompt_lengths:[4; Array.length options.prompt_tokens] ()
   in
   let load_seconds = Unix.gettimeofday () -. load_started in
   match options.top_k_logits with

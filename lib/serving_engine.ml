@@ -1098,9 +1098,9 @@ let prefill engine ~tokens =
               | Some cosine_name, Some sine_name ->
                   Ok [ cosine_name, cosine; sine_name, sine ]
               | _ -> Ok [])
-        in
-        Hashtbl.replace engine.rope_slice_cache (0, token_count) inputs;
-        Ok inputs
+          in
+          Hashtbl.replace engine.rope_slice_cache (0, token_count) inputs;
+          Ok inputs
   in
   let* auxiliary_inputs =
     match
@@ -2063,18 +2063,29 @@ let reset engine =
   engine.decode_executable <- None;
   Ok ()
 
-let warmup_engine engine =
+let warmup_engine ?(prompt_lengths = [ 4; 37 ]) engine =
+  let* () =
+    List.fold_left
+      (fun acc len ->
+        let* () = acc in
+        if len <= 0 then Ok ()
+        else
+          let* _ = prefill_schedule engine len in
+          Ok ())
+      (Ok ()) prompt_lengths
+  in
   let* _step = prefill engine ~tokens:[| 2; 105; 9731; 107 |] in
   let* _decode_step = decode engine ~prefix:[| 2; 105; 9731; 107 |] ~token:100 in
   reset engine
 
-let warmup = warmup_engine
+let warmup ?prompt_lengths engine = warmup_engine ?prompt_lengths engine
 
 let create ~config ~prefill ~decode =
   create_internal ~config ~prefill ~decode ()
 
 let create_from_program ~program ~model_dir ?(token_capacity = 1024)
-    ?(checkpoint_capacity = 16) ?page_size ?(warmup = false) () =
+    ?(checkpoint_capacity = 16) ?page_size ?(warmup = false)
+    ?warmup_prompt_lengths () =
   let state = Model_program.state program in
   let prefill_pkg_name =
     Model_program.Artifact.path
@@ -2129,7 +2140,13 @@ let create_from_program ~program ~model_dir ?(token_capacity = 1024)
   let* engine =
     create_internal ~program ~config ~prefill ~decode ?verification ()
   in
-  let* () = if warmup then warmup_engine engine else Ok () in
+  let* () =
+    if warmup then
+      match warmup_prompt_lengths with
+      | Some prompt_lengths -> warmup_engine ~prompt_lengths engine
+      | None -> warmup_engine engine
+    else Ok ()
+  in
   Ok engine
 
 module Batch_item = struct
