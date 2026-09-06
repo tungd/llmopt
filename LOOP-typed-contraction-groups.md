@@ -1,0 +1,57 @@
+# Typed Contraction Groups: the Shared Assignment Graph as the Algebraic Object (G4P12)
+
+Supersedes `LOOP-quant-family-parametric.md` (G4P11) as the **active** program. G4P11-01 (the canonicalization crash fix, `049b0c7`) stands; G4P11-02..06 are folded into this round's later slices (emission widening appears below as G4P12-04/05/06).
+
+## Goal
+
+The critique's recommendation, accepted as scope: **make the shared assignment graph the algebraic object**, retaining the epilogue monoid as its scalar sublanguage. That means composition is defined over SSA binding graphs with a typed environment of scalar values (multiple contraction results may coexist), not over single-slot tags; discovery becomes generic semantic elaboration over that graph; physical fusion becomes a target-aware schedule choice over the composed program; reduction phases and numerical contracts are explicit.
+
+Concessions verified against HEAD (`049b0c7`):
+- `Kernel_ir.chain_of` (lib/kernel_ir.ml:2302-2317) rejects two folded operands: `Mul`/`Add` admit only `Folded × External`, so `z = y * y` → `Nonfoldable` although `Expr (Binop (Mul, Slot Acc, Slot Acc))` is expressible in the same Applicative IR the algebra already uses. An expressive-power limit of the single-slot recognizer, not a structural necessity.
+- `Epilogue.compose` (lib/epilogue.ml:87-103) still runs typed compatibility cases (`Bias × Residual_add` → `Bias_residual_add`, `Silu_mul × Residual_add` → `Silu_mul_residual_add`, …) *before* the substitution fallback. The implementation has not reduced to the algebraic description.
+
+## Verified design facts (read before coding)
+
+- `Applicative_expr` is already polymorphic in its variable type (`'var t`, lib/applicative_expr.mli:35). The singleton restriction comes from its instantiation as `Epilogue.slot = Acc` (lib/epilogue.ml:3) and from `Fused_tactic`/recognizers consuming tags.
+- `Epilogue` tags are **expression templates + role metadata**: `Bias {bias}` and `Residual_add {residual}` share the scalar tree `Binop (Add, Slot Acc, Read {identity})`. The role (bias vs residual vs up) is **not recoverable from the expression tree alone** — it lives in the tag constructor and drives legacy named-buffer emission (`msl_buffer_decls`, `emit_msl_writeback` role names; lib/epilogue.ml:186-220). The digest path (`algebraic_kernel_name`, `canonicalize`) uses ordinal-renamed `Expr` trees and is role-agnostic.
+- Consequence: "composition reduced to pure substitution" can hold *semantically* (the monoid), but tag identity cannot be recovered by structural matching on scalar trees. The correct reduction is: **compose over the assignment graph (an SSA step list), where roles/buffers are explicit bindings; tags become recognized normal forms** of the resulting scalar sub-DAG, derived for legacy buffer binding only. This is precisely the user's "shared assignment graph as the algebraic object, epilogue monoid retained as its scalar sublanguage."
+- The fold already runs over an SSA chain — the region's scalar bindings (lib/kernel_ir.ml:2275-2318 walks `binding.primitive`/`binding.inputs`). The graph exists; what is missing is (i) multi-slot typed composition over it, (ii) generic elaboration replacing each topology recognizer, (iii) branch/broadcast-DAG handling (`Mul(acc,acc)`, fan-out), (iv) emission/runtime serving of the resulting normal forms.
+- Emission state: single-acc digest serving today is Q4_0-x8-only (`Metal.lower` lib/metal.ml:10966-10984; runtime lib/metal_runtime.ml:3060-3067), through the text-splice path (G4P11's target). Multi-acc serving exists only as the `Gated_product` recognizer + `_gated` kernel families (fixed `silu/gelu/sigmoid` topology, lib/kernel_ir.ml:2380-2430).
+- Existing test pins that must keep passing: test.ml Fold_catalog G (bare linear folds to identity, select refuses), H (stacked residual adds fold associatively to one composite), I (cast on accumulator cuts the chain), J (two-result fan-out is rejected by fold and select), plus Sigmoid cuts (test.ml:403-420). The `y*y` shape is **not yet pinned** — new pins get added, existing ones change only where a slice explicitly widens admission.
+
+## Architecture (five changes, concretized)
+
+1. **Typed environment of values (multi-slot).** Replace the singleton `slot = Acc` instantiation, at the group level, with a typed register environment: a group holds several contraction bindings (`g = reduce x·decode(Wg)`, `u = reduce x·decode(Wu)`) and pointwise SSA bindings over earlier slots (`z = silu(g)·u + residual`). Gated projection is then an ordinary expression over two slots — no `Gated_product` constructor needed. `Epilogue.t`/`Monoid` remain the scalar sublanguage for one register (the special case).
+2. **Explicit sharing.** Composition operates on SSA bindings (region bindings / step lists), so repeated references preserve producer identity. Fan-out is a *use obligation* recorded in the group (a slot can be exported while also feeding a fused consumer); materialization is a later schedule decision, never implicit tree duplication.
+3. **Generic elaboration, not shape recognition.** One fold classifies each region binding as contraction (Linear) or foldable scalar (Unary/Binary/Cast in the Applicative grammar) or non-foldable (everything else, incl. effects/movement); group formation checks domains/access maps/shared input, not topology. `chain_of`/`linear_epilogue`/`gated_product` become projections of this one fold. Reference discipline: MLIR Linalg (structured ops over iteration spaces/access maps).
+4. **Fusion as schedule choice.** The normalized group is a semantic program; partitioning into kernels (single-acc, multi-acc, materialize/export intermediates, dispatch boundaries) is a target-aware schedule over it, scored by the existing cost model. Fusion is no longer the unique normal form.
+5. **Reduction phases and numerics explicit.** Multi-slot does not make `Linear → RMSNorm` expressible: normalization needs cross-coordinate (cross-thread/group) information. Represent reduction phases (domain, retained values, synchronization) so normalization emerges from reduction + pointwise semantics; surface `Applicative_expr.simplify`'s finite-reals contract (lib/applicative_expr.mli:60-66) to scheduling.
+
+## Executor slices (each commits green: `ninja -f ninja.build ocaml-test`, `ninja -f ninja.build test`, `git diff --check`; docs in separate `docs(okf):` commits)
+
+1. **G4P12-01 — algebra core, additive, zero behavior change.** Introduce the scalar-DAG elaboration + typed-group normal form used by all later slices (module-level, `of_region : Kernel_ir.region -> group option` and inverse helpers). Unit-test equivalence: every chain-shaped region the existing fold accepts today yields the identical `Epilogue.t` under the new elaboration (tags incl. roles reconstructed from the step list, not from trees), and the three slice exercises fold at the algebra level: (a) `y*y` → single-slot normal form `Expr (Mul (Slot Acc, Slot Acc))`; (b) two projections + arbitrary pointwise over two slots → two-slot group (gate/up sharing `x`, compatible domains); (c) exported intermediate feeding a fused consumer → group with two results (use obligation on the shared slot). Do **not** route `select`/`fold_linear_epilogue` through the new elaboration yet. Invariant: no currently-passing test changes.
+2. **G4P12-02 — route recognition through the elaboration (single-acc proof).** Replace `chain_of` with the elaboration restricted to one contraction output; admission widens to include single-slot branch shapes (`y*y`), keeping every tag shape byte-identical (tags reconstructed) and keeping casts/Sigmoid cuts. New pins: `y*y` region → `Linear_epilogue` with `Expr (Mul (Acc, Acc))`; full-stack single-acc proof through existing serialization/lower/runtime for Q4_0-x8 (the one digest-served family today). Non-Q4_0 quants keep failing loudly at `lower` (existing behavior, exact message).
+3. **G4P12-03 — compose reduced to the graph.** `Epilogue.compose` loses its typed cases; composition = step-list append + monoid substitution; tags produced only by normal-form reconstruction from the step list (roles explicit). Pin: all Fold_catalog + §12/§13 epilogue suite compositions unchanged (same tags, same inputs order, same emitted text).
+4. **G4P12-04 — emission widening (was G4P11-02/03).** Give `Metal_block_codegen` Q4_0 family emitters an `epilogue : Epilogue.t` tail parameter (byte-identical flat default); retire `Metal.q4_0_x8_digest_*` text splice and `quant_linear_add_source`; widen `lower` digest admission to all Q4_0 tiles. Golden-capture digest kernel text in a unit test *before* deleting the splice.
+5. **G4P12-05 — remaining quant families (was G4P11-04/05).** Port Q4_K/Q5_K/Q6_K/Q8_0/Q5_0/IQ4_XS legacy tile strings into the parametric emitters per (quant, tile) with the tail parameter; runtime admission + loud-error tests land per widening; delete legacy strings only when unreferenced.
+6. **G4P12-06 — multi-slot groups through the stack.** Replace the `Gated_product` recognizer + `_gated` kernels with the typed group: two-slot (and n-slot) groups schedule to multi-accumulator kernels with generic scalar writebacks over the slots; arbitrary pointwise over two projections lowers without a new topology matcher. Runtime keys widen for multi-slot digest shapes; every still-unservable combination errors loudly.
+7. **G4P12-07 — fan-out/export scheduling.** Groups with exported intermediates get schedule choices (keep local / materialize between dispatches / export + continue), scored by the cost model; two-result fan-out regions (today's rejected test J) become selectable where the schedule is legal.
+8. **G4P12-08 — reduction phases.** RMSNorm/rope and normalization as reduction-phase semantics over the group; numerical contracts surfaced; close round docs (ADR into `.okf/decisions/`, exp file, OKF validate, user-run device handoff).
+
+## Invariants
+
+- Byte-identical flat decode: plain kernels and legacy `_add`/gated routing unchanged until a byte-identical parametric substitute exists (existing pins guard; do not delete legacy static kernels).
+- No new bespoke recognizers or monolithic kernels; elaboration and scheduling stay generic.
+- No silent compute loss: every still-unservable (group shape × quant × tile) combination fails loudly at `lower`/runtime with an exact message.
+- No currently-green test changes except where a slice explicitly widens admission (G4P12-02, G4P12-06, G4P12-07) with new pins added in the same commit.
+- Composition never duplicates shared producers (SSA), never loses role/buffer metadata, and never reassociates FP unless the owning tag's template already does (byte-identity).
+
+## Out of scope
+
+- Device/bundle builds and benchmarks (user-run, standing constraint).
+- Fixing recorded W4A16/Q4_K parametric-emitter indexing bugs unless a slice needs them on a real path.
+- Expanding into full attention/recurrence algebra beyond the regions these slices reach.
+
+## Checkpoint state
+
+Tree clean at `b6cb142` (G4P11-01 `049b0c7` + G4P11 LOOP doc). G4P12-01 is the next executor slice. Relevant files: `lib/applicative_expr.ml/.mli`, `lib/epilogue.ml/.mli`, `lib/kernel_ir.ml/.mli` (`Fused_tactic`, `chain_of` :2275-2318, recognizers :2320-2477), `lib/constructive_lowering.ml`, `lib/metal_block_codegen.ml`, `lib/metal.ml`, `lib/metal_runtime.ml`, `test/test.ml` (Fold_catalog :104-494), `test/test_epilogue_monoid.ml`.
