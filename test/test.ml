@@ -7421,6 +7421,142 @@ let () =
            && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
     "Metal lowering registers the digest kernel ABI entry";
 
+  (* G4P10-04d chain absorption: a single Q4_0 decode contraction whose output
+     flows through Silu/Mul/Add pointwise hops is one region / one event / one
+     folded Linear_epilogue writeback.  The constructive claim consumes all
+     four assignments, so nothing leaks to the legacy gated fallback, and the
+     Metal digest route registers a two-buffer epilogue kernel (up then
+     residual) after the input/weight pair. *)
+  let chain_graph = Ir.Graph.create () in
+  let chain_input =
+    tensor_input chain_graph ~name:"chain-input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 3840 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let chain_weight =
+    tensor_input chain_graph ~name:"chain-weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "chain-weight" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let chain_projected =
+    Ir.Graph.fresh_tensor_value chain_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append chain_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ chain_input; chain_weight ] ~output:(Some chain_projected);
+  let chain_activated =
+    Ir.Graph.fresh_tensor_value chain_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append chain_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, chain_projected))))
+    ~inputs:[ chain_projected ] ~output:(Some chain_activated);
+  let chain_up =
+    tensor_input chain_graph ~name:"chain-up"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 4096 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let chain_combined =
+    Ir.Graph.fresh_tensor_value chain_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append chain_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor chain_activated,
+                 Ir.Pointwise.Tensor chain_up ))))
+    ~inputs:[ chain_activated; chain_up ] ~output:(Some chain_combined);
+  let chain_residual =
+    tensor_input chain_graph ~name:"chain-residual"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 4096 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let chain_output =
+    Ir.Graph.fresh_tensor_value chain_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append chain_graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+    ~inputs:[ chain_combined; chain_residual ]
+    ~output:(Some chain_output);
+  Ir.Graph.add_output chain_graph ~name:"chain-output" chain_output;
+  let chain_optimization = Passes.optimize chain_graph |> expect_ok in
+  let chain_lowering = Passes.Optimization.lowering chain_optimization in
+  let chain_events = Constructive_lowering.Lowering.events chain_lowering in
+  expect
+    ((match chain_events with
+     | [ event ] ->
+         Constructive_lowering.Lowering.Event.kind event
+         = Constructive_lowering.Lowering.Kind.Linear_add
+         && List.length
+              (Constructive_lowering.Lowering.Event.source_member_node_ids event)
+            = 4
+         && (let inputs =
+               Constructive_lowering.Lowering.Event.inputs event
+             in
+             List.length inputs = 4
+             && List.for_all
+                  (fun expected ->
+                    List.exists (Ir.Value.equal expected) inputs)
+                  [ chain_input; chain_weight; chain_up; chain_residual ])
+     | _ -> false)
+    && (match chain_events with
+       | [ event ] ->
+           List.for_all2 Ir.Value.equal
+             (Constructive_lowering.Lowering.Event.outputs event)
+             [ chain_output ]
+       | _ -> false)
+    && Passes.Optimization.legacy_fallbacks chain_optimization = [])
+    "G4P10-04d absorbs a Silu/Mul/Add chain into one Linear_add event";
+  expect
+    ((match Passes.Optimization.fusion_regions chain_optimization with
+     | [ region ] ->
+         List.map Kernel_ir.binding_primitive (Kernel_ir.bindings region)
+         = [ Kernel_ir.Primitive.linear ~m:1 ~n:4096 ~k:3840 ~bias:false
+               ~storage:
+                 (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0);
+             Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu;
+             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul;
+             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add ]
+     | _ -> false))
+    "G4P10-04d folds the chain into a four-binding Linear_epilogue region";
+  let chain_program =
+    Metal.lower
+      ~fusion_regions:
+        (Passes.Optimization.fusion_regions chain_optimization)
+      (Passes.Optimization.execution_graph chain_optimization)
+    |> expect_ok
+  in
+  let chain_kernels =
+    Metal.Program.kernels chain_program |> List.map Kernel_abi.Entry.name
+  in
+  let chain_digest =
+    List.find_opt (fun name -> contains_substring name "_x8_") chain_kernels
+  in
+  let chain_source = Metal.Program.source chain_program in
+  expect
+    (List.mem "llmopt_q4_0_linear_f16_x8" chain_kernels
+    && Option.is_some chain_digest
+    && not (List.mem "llmopt_q4_0_linear_f16_x8_add" chain_kernels))
+    "G4P10-04d chain lowering registers plain and digest Q4_0 x8 kernels";
+  expect
+    (contains_substring chain_source
+       "device const half* buf_0 [[buffer(2)]]"
+    && contains_substring chain_source
+         "device const half* buf_1 [[buffer(3)]]"
+    && contains_substring chain_source
+         "device half* output [[buffer(4)]]")
+    "G4P10-04d digest kernel binds the two epilogue tensors after the weights";
+  print_endline "llmopt chain-absorption fold catalog passed";
 
   Fold_catalog.run ();
 

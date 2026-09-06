@@ -3011,6 +3011,51 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                     validate_linear_shapes ~m:linear.m ~n:linear.n ~k:linear.k
                       linear.input linear.weight output
                   in
+                  let* input_buffer = find_value state linear.input in
+                  let* weight_buffer = find_value state linear.weight in
+                  (* Shared digest dispatch: the package has no servable legacy
+                     writeback for [epilogue] (no _add twin for a flat region,
+                     or a richer folded epilogue).  When a digest-keyed kernel
+                     exists - today the Q4_0 x8 decode family - it is
+                     dispatched with the contraction buffers followed by the
+                     epilogue tensor inputs in [Epilogue.inputs] order, the
+                     same order the emitter used to declare and read them. *)
+                  let digest_epilogue () =
+                    let* tactic_entry =
+                      select_quant_linear_kernel runtime ~m:linear.m ~n:linear.n
+                        ~k:linear.k ~output_dtype:(Ir.Value.dtype output) quant
+                    in
+                    let base_name = Kernel_abi.Entry.name tactic_entry in
+                    if
+                      not
+                        (quant = Ir.Dtype.Q4_0
+                        && String.ends_with ~suffix:"_x8" base_name)
+                    then
+                      Error
+                        (Printf.sprintf
+                           "assignment Linear-epilogue %s is not servable: digest emission is defined only for Q4_0 x8 decode regions (plain tactic %s)"
+                           (Epilogue.to_string epilogue) base_name)
+                    else
+                      let digest_name =
+                        Epilogue.algebraic_kernel_name ~base:base_name epilogue
+                      in
+                      let* parameters =
+                        Parameters.u32s [ linear.m; linear.n; linear.k; 0 ]
+                      in
+                      let* grid_x =
+                        linear_f16_grid ((linear.n + 7) / 8)
+                      in
+                      let* additive_buffers =
+                        find_values state (Epilogue.inputs epilogue)
+                      in
+                      dispatched
+                        (dispatch_output ~name:digest_name runtime state output
+                           ~operation:Kernel_abi.Operation.Linear
+                           ~input_dtype:(Ir.Dtype.Quant quant)
+                           ~buffers:
+                             ( input_buffer :: weight_buffer :: additive_buffers )
+                           ~parameters ~grid:(grid_x, 1, 1))
+                  in
                   (match epilogue with
                   | Epilogue.Residual_add { residual } ->
                       let* () =
@@ -3021,88 +3066,45 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                         then Ok ()
                         else Error "assignment Linear-epilogue metadata is inconsistent"
                       in
-                      let* buffers =
-                        find_values state
-                          [ linear.input; linear.weight; residual ]
-                      in
-                      let* input_buffer, weight_buffer, additive_buffer =
-                        match buffers with
-                        | [ input_buffer; weight_buffer; additive_buffer ] ->
-                            Ok (input_buffer, weight_buffer, additive_buffer)
-                        | _ ->
-                            Error "assignment Linear-epilogue buffers are inconsistent"
-                      in
                       (match
                          select_quant_linear_kernel ~suffix:"_add" runtime
                            ~m:linear.m ~n:linear.n ~k:linear.k
                            ~output_dtype:(Ir.Value.dtype output) quant
                        with
                       | Ok _ ->
+                          let* additive_buffer = find_value state residual in
                           dispatched
                             (dispatch_quant_linear ~batch runtime state output
                                ~m:linear.m ~n:linear.n ~k:linear.k ~quant
                                ~input_buffer ~weight_buffer ~additive_buffer
                                ~epilogue_mode:2)
-                      | Error _ ->
-                          (* The package has no legacy _add twin: the region
-                             lowered through the digest-keyed emitter (a Q4_0
-                             x8 decode region whose static zoo has no _add
-                             kernel), so dispatch the digest kernel the emitter
-                             registered under the plain x8 tactic name. *)
-                          let* tactic_entry =
-                            select_quant_linear_kernel runtime ~m:linear.m
-                              ~n:linear.n ~k:linear.k
-                              ~output_dtype:(Ir.Value.dtype output) quant
-                          in
-                          let base_name = Kernel_abi.Entry.name tactic_entry in
-                          if
-                            not
-                              (quant = Ir.Dtype.Q4_0
-                              && String.ends_with ~suffix:"_x8" base_name)
-                          then
-                            Error
-                              (Printf.sprintf
-                                 "assignment Linear-epilogue %s is not servable: the package has no legacy %s _add twin and digest emission is defined only for Q4_0 x8 decode regions (plain tactic %s)"
-                                 (Epilogue.to_string epilogue)
-                                 (Ir.Dtype.quant_to_string quant) base_name)
-                          else
-                            let digest_name =
-                              Epilogue.algebraic_kernel_name ~base:base_name
-                                epilogue
-                            in
-                            let* parameters =
-                              Parameters.u32s
-                                [ linear.m; linear.n; linear.k; 0 ]
-                            in
-                            let* grid_x =
-                              linear_f16_grid ((linear.n + 7) / 8)
-                            in
-                            dispatched
-                              (dispatch_output ~name:digest_name runtime state
-                                 output
-                                 ~operation:Kernel_abi.Operation.Linear
-                                 ~input_dtype:(Ir.Dtype.Quant quant)
-                                 ~buffers:
-                                   [ input_buffer; weight_buffer;
-                                     additive_buffer ]
-                                 ~parameters ~grid:(grid_x, 1, 1)))
-                  | Epilogue.None | Epilogue.Bias _
-                  | Epilogue.Silu | Epilogue.Gelu
-                  | Epilogue.Silu_mul _ | Epilogue.Gelu_mul _
+                      | Error _ -> digest_epilogue ())
+                  | Epilogue.None | Epilogue.Bias _ | Epilogue.Silu
+                  | Epilogue.Gelu | Epilogue.Silu_mul _ | Epilogue.Gelu_mul _
                   | Epilogue.Bias_residual_add _
                   | Epilogue.Silu_mul_residual_add _
                   | Epilogue.Gelu_mul_residual_add _ | Epilogue.Expr _ ->
-                      (* The legacy quantized kernel zoo only services the flat
-                         residual-add writeback.  Any richer epilogue is an
-                         encoding error here (never a silent fallback): the
-                         region/parametric emitters must grow before kernel_ir
-                         selection may admit it. *)
-                      Error
-                        (Printf.sprintf
-                           "assignment Linear-epilogue %s is not servable by the legacy %s kernel family yet"
-                           (Epilogue.to_string epilogue)
-                           (Ir.Dtype.quant_to_string quant))
-                  )
+                      (* Richer epilogues (silu/mul chains and beyond) have no
+                         legacy _add twin.  They are served by the digest-keyed
+                         kernel family when one exists for the plain tactic -
+                         today the Q4_0 x8 decode kernel - and otherwise fail
+                         loudly: a folded epilogue must never decay into a
+                         partial writeback. *)
+                      let* () =
+                        if
+                          Ir.Value.dtype linear.input = Ir.Dtype.Float16
+                          && Ir.Value.dtype output = Ir.Dtype.Float16
+                          && List.for_all
+                               (fun value ->
+                                 Ir.Value.dtype value = Ir.Dtype.Float16
+                                 && same_value_metadata value output)
+                               (Epilogue.inputs epilogue)
+                        then Ok ()
+                        else
+                          Error
+                            "assignment Linear-epilogue chain metadata is inconsistent"
+                      in
+                      digest_epilogue ())
               | Ir.Linear_storage.Groupwise_packed
                   { bits = 4; group_elements = 64 } ->
                   (match epilogue with

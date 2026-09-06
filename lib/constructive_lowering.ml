@@ -1417,7 +1417,16 @@ let lower analysis =
     | Kernel_ir.Fused_tactic.Gated_delta
         { query; key; value; gate; beta; output } ->
         [ query; key; value; gate; beta ], output
-    | Kernel_ir.Fused_tactic.Linear_epilogue _
+    | Kernel_ir.Fused_tactic.Linear_epilogue
+        { linear; epilogue; output; _ } ->
+        (* The folded tactic carries its own boundary values: the contraction
+           activation/weight/parameter tensors followed by the epilogue's
+           tensor inputs in stable [Epilogue.inputs] order.  Unlike the
+           RMS/Gated families there is no topology helper here - the epilogue
+           monoid already normalizes every read into those two lists. *)
+        ( linear.Kernel_ir.Fused_tactic.input
+          :: linear.weight :: linear.Kernel_ir.Fused_tactic.parameters )
+        @ Epilogue.inputs epilogue, output
     | Kernel_ir.Fused_tactic.Gated_product _ -> assert false
   in
   let assignment_slice assignments tactic =
@@ -1453,7 +1462,7 @@ let lower analysis =
     |> List.filter (fun assignment ->
            Node_set.mem (assignment_id assignment) selected)
   in
-  let rms_candidates =
+  let folded_candidates =
     regions
     |> List.concat_map (fun region ->
            let assignments = Region.assignments region in
@@ -1473,6 +1482,36 @@ let lower analysis =
                         | Kernel_ir.Fused_tactic.Gated_delta _) as tactic ->
                           let selected = assignment_slice assignments tactic in
                           if selected = [] then None else Some (tactic, selected)
+                      | Kernel_ir.Fused_tactic.Linear_epilogue
+                          { linear; epilogue; output; _ } as tactic
+                        when (match Region.outputs region with
+                              | [ region_output ] ->
+                                  Ir.Value.equal region_output output
+                              | _ -> false) -> (
+                          (* A downstream silu/mul/add chain over a single
+                             block-quantized contraction forms one folded
+                             epilogue writeback.  Claiming it here absorbs the
+                             whole chain; the backends serve block-quantized
+                             regions through the epilogue digest machinery (the
+                             Q4_0 x8 decode emitter) or fail loudly.  Gated
+                             two-contraction regions never reach this case: the
+                             gate claim already won them, and any remaining
+                             single-output region with more than one linear has
+                             no [Linear_epilogue] tactic from [select_all]. *)
+                          match linear.Kernel_ir.Fused_tactic.storage with
+                          | Ir.Linear_storage.Block_quantized _ ->
+                              let selected =
+                                assignment_slice assignments tactic
+                              in
+                              if selected = [] then None
+                              else Some (tactic, selected)
+                          | Ir.Linear_storage.Dense _
+                          | Ir.Linear_storage.Groupwise_packed _ ->
+                              (* Groupwise-packed (W4A16) and dense chains keep
+                                 their pre-existing per-node servicing: no
+                                 emission route exists yet for a folded
+                                 writeback of those storages. *)
+                              None)
                       | _ -> None))
   in
   let all_assignment_producers =
@@ -1495,8 +1534,8 @@ let lower analysis =
            | None -> true)
     |> unique_values
   in
-  let claimed, rms_events =
-    rms_candidates
+  let claimed, folded_events =
+    folded_candidates
     |> List.fold_left
          (fun (claimed, events) (tactic, assignments) ->
            match overlap claimed assignments, List.rev assignments with
@@ -1511,6 +1550,17 @@ let lower analysis =
                      Lowering.Kind.Short_conv_silu
                  | Kernel_ir.Fused_tactic.Gated_delta _ ->
                      Lowering.Kind.Gated_delta
+                 | Kernel_ir.Fused_tactic.Linear_epilogue { linear; _ } ->
+                     (* Chain events reuse the existing linear-add kinds: the
+                        block-quantized family already maps to [Linear_add]
+                        events and reusing it keeps fallback matchers,
+                        executable-region names and coverage keys exhaustive
+                        without an eighth constructor. *)
+                     (match linear.Kernel_ir.Fused_tactic.storage with
+                     | Ir.Linear_storage.Block_quantized _ ->
+                         Lowering.Kind.Linear_add
+                     | Ir.Linear_storage.Dense _
+                     | Ir.Linear_storage.Groupwise_packed _ -> assert false)
                  | _ -> assert false
                in
                let _, output = tactic_boundary_values tactic in
@@ -1543,9 +1593,8 @@ let lower analysis =
            | _ -> claimed, events)
          (claimed, [])
   in
-  let _ = claimed in
-  let rms_events = List.rev rms_events in
-  let events = gated_events @ linear_events @ rms_events in
+  let folded_events = List.rev folded_events in
+  let events = gated_events @ linear_events @ folded_events in
   let cut_uncovered =
     decisions
     |> List.filter_map (function
@@ -1567,6 +1616,10 @@ let lower analysis =
            if
              Option.is_some
                (gated_match ~target ~graph ~decisions assignments)
+             || List.for_all
+                  (fun assignment ->
+                    Node_set.mem (assignment_id assignment) claimed)
+                  assignments
            then []
            else
              List.concat_map
