@@ -7297,6 +7297,90 @@ let () =
          "acc0 += float(bias_or_scale[row0 * params.bias_row_stride + col]);")
     "prefill lowering keeps the legacy flat bias_or_scale writeback";
 
+  let q4_x8_decode_digest_program () =
+    let graph = Ir.Graph.create () in
+    let input =
+      tensor_input graph ~name:"q4-digest-input"
+        ~source:Ir.Input_source.Runtime
+        ~shape:[ 1; 3840 ]
+        ~dtype:Ir.Dtype.Float16
+    in
+    let weight =
+      tensor_input graph ~name:"q4-digest-weight"
+        ~source:(Ir.Input_source.Tensor_store { key = "q4-digest-weight" })
+        ~shape:[ 4096; 3840 ]
+        ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+    in
+    let projected =
+      Ir.Graph.fresh_tensor_value graph
+        ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append graph
+      ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+      ~inputs:[ input; weight ] ~output:(Some projected);
+    let residual =
+      tensor_input graph ~name:"q4-digest-residual"
+        ~source:Ir.Input_source.Runtime
+        ~shape:[ 1; 4096 ]
+        ~dtype:Ir.Dtype.Float16
+    in
+    let output =
+      Ir.Graph.fresh_tensor_value graph
+        ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+      ~inputs:[ projected; residual ] ~output:(Some output);
+    Ir.Graph.add_output graph ~name:"q4-digest-output" output;
+    let optimization = Passes.optimize graph |> expect_ok in
+    let regions = Passes.Optimization.fusion_regions optimization in
+    Metal.lower ~fusion_regions:regions
+      (Passes.Optimization.execution_graph optimization)
+    |> expect_ok
+  in
+  let q4_digest_program = q4_x8_decode_digest_program () in
+  let q4_digest_source = Metal.Program.source q4_digest_program in
+  let q4_digest_kernels =
+    Metal.Program.kernels q4_digest_program |> List.map Kernel_abi.Entry.name
+  in
+  let q4_digest =
+    List.find (fun name -> contains_substring name "_x8_")
+      q4_digest_kernels
+  in
+  expect
+    (List.mem "llmopt_q4_0_linear_f16_x8" q4_digest_kernels)
+    "Q4_0 decode Linear-add regions still register the plain x8 kernel";
+  expect
+    (not (List.mem "llmopt_q4_0_linear_f16_x8_add" q4_digest_kernels))
+    "Q4_0 decode Linear-add regions never register a legacy x8 _add twin";
+  expect
+    (not
+       (contains_substring q4_digest_source
+          "kernel void llmopt_q4_0_linear_f16_x8_add"))
+    "Q4_0 decode Linear-add regions emit no legacy x8 _add source";
+  expect
+    (contains_substring q4_digest_source ("kernel void " ^ q4_digest))
+    "Q4_0 decode Linear-add regions emit the digest-keyed folded kernel";
+  expect
+    (contains_substring q4_digest_source
+       "device const half* buf_0 [[buffer(2)]]")
+    "digest kernel binds the folded epilogue input at buffer 2";
+  expect
+    (contains_substring q4_digest_source
+       ",\n    device half* output [[buffer(3)]],\n    constant QuantLinearParams& params [[buffer(4)]],")
+    "digest kernel binds the output and params after the epilogue buffers";
+  expect
+    (Metal.Program.kernels q4_digest_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = q4_digest
+           && Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Linear
+           && Kernel_abi.Entry.input_dtype entry
+              = Ir.Dtype.Quant Ir.Dtype.Q4_0
+           && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16
+           && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
+    "Metal lowering registers the digest kernel ABI entry";
+
 
   Fold_catalog.run ();
 

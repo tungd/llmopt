@@ -7039,15 +7039,33 @@ let quant_linear_add_source ~target (quant, tactic) =
 (* kernel in which each SIMDgroup reduces a whole column group and the      *)
 (* eight [accumulator0..7] registers own one output column each.  The       *)
 (* digest-variant emitter rewrites that kernel's column-guarded store tail  *)
-(* into eight stores that apply an arbitrary [Epilogue.t] readback,         *)
-(* appends the epilogue's buffer declarations after the                     *)
-(* [QuantLinearParams] parameter, and renames the kernel to the             *)
-(* deterministic digest name derived from the canonicalized epilogue (see   *)
-(* [Epilogue.algebraic_kernel_name]).  The plain kernel text is left        *)
-(* untouched, so the legacy flat decode path stays byte-identical.  The     *)
-(* epilogue is canonicalized first so the emitted buffer names ([buf_0],    *)
-(* [buf_1], ...) and the digest name agree with the stable first-occurrence *)
-(* order of [Epilogue.inputs]. *)
+(* into eight stores that apply an arbitrary [Epilogue.t] readback and      *)
+(* renames the kernel to the deterministic digest name derived from the     *)
+(* canonicalized epilogue (see [Epilogue.algebraic_kernel_name]).           *)
+(*                                                                          *)
+(* The rewritten kernel header drops the legacy [bias] slot (buffer(2);     *)
+(* the store tail that read it is replaced wholesale) and instead declares  *)
+(* the canonicalized epilogue's input buffers immediately after the weight  *)
+(* parameter, before the output workspace:                                 *)
+(*                                                                          *)
+(*   kernel void <digest>(                                                  *)
+(*       device const half* input [[buffer(0)]],                            *)
+(*       device const uchar* weight [[buffer(1)]],                          *)
+(*       device const half* buf_0 [[buffer(2)]],   (p canonical buffers)    *)
+(*       ...                                                                 *)
+(*       device half* output [[buffer(2 + p)]],                             *)
+(*       constant QuantLinearParams& params [[buffer(3 + p)]],              *)
+(*       uint gid ..., uint tid ..., uint lane ...)                         *)
+(*                                                                          *)
+(* The OCaml dispatch stub binds buffers positionally and then writes the   *)
+(* parameter bytes at the next index, so a program whose dispatch buffer    *)
+(* list is [input; weight] @ epilogue buffers (output appended last by      *)
+(* [dispatch_output]) lands on exactly these indices with the parameter     *)
+(* bytes at 3 + p.  The plain kernel text is left untouched, so the legacy  *)
+(* flat decode path stays byte-identical.  The epilogue is canonicalized    *)
+(* first so the emitted buffer names ([buf_0], [buf_1], ...) and the        *)
+(* digest name agree with the stable first-occurrence order of              *)
+(* [Epilogue.inputs]. *)
 let q4_0_x8_digest_store epilogue =
   List.init 8 (fun j ->
       let acc = Printf.sprintf "accumulator%d" j in
@@ -7062,6 +7080,55 @@ let q4_0_x8_digest_store epilogue =
           j j expr)
   |> String.concat "\n"
 
+let q4_0_x8_digest_rewrite ~name epilogue kernel =
+  (* The tail of the plain kernel's argument list (the thread-position
+     attributes through the closing ") {") is shared verbatim by its digest
+     variant; everything before it is re-emitted with the canonicalized
+     epilogue buffers inserted between the weight and the output workspace. *)
+  let attr_marker = "    uint gid [[thread_position_in_grid]]," in
+  match find_substring_from kernel attr_marker 0 with
+  | None ->
+      Error
+        "Metal Q4_0 x8 digest emission: decode kernel thread attributes are \
+         absent"
+  | Some attr_start -> (
+      match find_substring_from kernel ") {" attr_start with
+      | None ->
+          Error
+            "Metal Q4_0 x8 digest emission: decode kernel header is unterminated"
+      | Some close ->
+          let header_stop = close + 3 in
+          let attributes =
+            String.sub kernel attr_start (header_stop - attr_start)
+          in
+          let body =
+            String.sub kernel header_stop (String.length kernel - header_stop)
+          in
+          let buffer_count = List.length (Epilogue.inputs epilogue) in
+          let header =
+            "kernel void " ^ name ^ "(\n"
+            ^ "    device const half* input [[buffer(0)]],\n"
+            ^ "    device const uchar* weight [[buffer(1)]]"
+            ^ Epilogue.msl_buffer_decls ~start_index:2 epilogue
+            ^ Printf.sprintf
+                ",\n    device half* output [[buffer(%d)]],\n    constant \
+                 QuantLinearParams& params [[buffer(%d)]],\n"
+                (2 + buffer_count) (3 + buffer_count)
+            ^ attributes
+          in
+          let tail_marker = "  if (lane == 0u && base_col < params.n) {" in
+          let full = header ^ body in
+          match find_substring_from full tail_marker 0 with
+          | None ->
+              Error
+                "Metal Q4_0 x8 digest emission: writeback tail is absent from \
+                 the decode kernel"
+          | Some tail_start ->
+              let head = String.sub full 0 tail_start in
+              Ok
+                (head ^ tail_marker ^ "\n" ^ q4_0_x8_digest_store epilogue
+                ^ "\n  }\n}\n"))
+
 let emit_q4_0_x8_epilogue_kernel ~name ~epilogue =
   let epilogue = Epilogue.canonicalize epilogue in
   let base_name = "llmopt_q4_0_linear_f16_x8" in
@@ -7073,7 +7140,7 @@ let emit_q4_0_x8_epilogue_kernel ~name ~epilogue =
           Error
             "Metal Q4_0 x8 digest emission: decode kernel is absent from the \
              Q4_0 family source"
-      | Some kernel_start -> (
+      | Some kernel_start ->
           let kernel_stop =
             match find_substring_from family "\nkernel void " (kernel_start + 1)
             with
@@ -7083,32 +7150,7 @@ let emit_q4_0_x8_epilogue_kernel ~name ~epilogue =
           let kernel =
             String.sub family kernel_start (kernel_stop - kernel_start)
           in
-          let renamed =
-            replace_all kernel
-              ~pattern:("kernel void " ^ base_name ^ "(")
-              ~replacement:("kernel void " ^ name ^ "(")
-          in
-          let params_line =
-            "constant QuantLinearParams& params [[buffer(4)]],"
-          in
-          let with_decls =
-            replace_all renamed ~pattern:params_line
-              ~replacement:
-                (params_line ^ Epilogue.msl_buffer_decls ~start_index:5 epilogue)
-          in
-          let tail_marker = "  if (lane == 0u && base_col < params.n) {" in
-          match find_substring_from with_decls tail_marker 0 with
-          | None ->
-              Error
-                "Metal Q4_0 x8 digest emission: writeback tail is absent from \
-                 the decode kernel"
-          | Some tail_start ->
-              let head = String.sub with_decls 0 tail_start in
-              Ok
-                (head
-                ^ "  if (lane == 0u && base_col < params.n) {\n"
-                ^ q4_0_x8_digest_store epilogue
-                ^ "\n  }\n}\n")))
+          q4_0_x8_digest_rewrite ~name epilogue kernel)
 
 let kquant_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
@@ -10720,6 +10762,28 @@ let without_region_nodes graph regions =
     |> List.filter (fun node ->
            not (Region_node_set.mem (Ir.node_id node) removed)))
 
+let quant_add_twin_servable (storage : Ir.Dtype.quant_type)
+    (tactic : Tactic.t) =
+  (* A folded region's linear is served by the legacy textual _add twin only
+     when the static kernel zoo (legacy_quant_source) really contains the base
+     kernel the textual rename rewrites.  The Q4_0 x8/x4 decode kernels exist
+     only in the family source (quant_source), not in the static zoo, so
+     regions whose costed tactic is one of them have no legacy twin and must
+     instead be served by a digest-keyed emitter kernel; every other
+     quantization keeps its pre-existing twin handling untouched. *)
+  match storage with
+  | Ir.Dtype.Q4_0 ->
+      let name = Tactic.name tactic in
+      not
+        (String.ends_with ~suffix:"_x8" name
+        || String.ends_with ~suffix:"_x4" name)
+  | _ -> true
+
+let is_residual_add_epilogue epilogue =
+  match epilogue with
+  | Epilogue.Residual_add _ -> true
+  | _ -> false
+
 let region_tactics ~target regions =
   let select_linear linear output =
     Tactic.select_linear ~target ~m:linear.Kernel_ir.Fused_tactic.m
@@ -10728,23 +10792,31 @@ let region_tactics ~target regions =
   in
   regions
   |> List.fold_left
-       (fun (quant, quant_add, has_w4, has_rms, has_rms_rope,
+       (fun (quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
              has_short_conv_silu, gated_delta) region ->
          match Kernel_ir.Fused_tactic.select region with
          | Some
              (Kernel_ir.Fused_tactic.Linear_epilogue
-               { linear; output; _ }) ->
+               { linear; epilogue; output }) ->
              (match linear.storage, select_linear linear output with
              | Ir.Linear_storage.Block_quantized storage, Some tactic ->
-                 (storage, tactic) :: quant,
-                 (storage, tactic) :: quant_add,
-                 has_w4, has_rms, has_rms_rope, has_short_conv_silu,
-                 gated_delta
+                 let quant = (storage, tactic) :: quant in
+                 if
+                   quant_add_twin_servable storage tactic
+                   && is_residual_add_epilogue epilogue
+                 then
+                   quant, (storage, tactic) :: quant_add, quant_digest,
+                   has_w4, has_rms, has_rms_rope, has_short_conv_silu,
+                   gated_delta
+                 else
+                   quant, quant_add, (storage, tactic, epilogue) :: quant_digest,
+                   has_w4, has_rms, has_rms_rope, has_short_conv_silu,
+                   gated_delta
              | Ir.Linear_storage.Groupwise_packed _, _ ->
-                 quant, quant_add, true, has_rms, has_rms_rope,
+                 quant, quant_add, quant_digest, true, has_rms, has_rms_rope,
                  has_short_conv_silu, gated_delta
-             | _ -> quant, quant_add, has_w4, has_rms, has_rms_rope,
-                 has_short_conv_silu, gated_delta)
+             | _ -> quant, quant_add, quant_digest, has_w4, has_rms,
+                 has_rms_rope, has_short_conv_silu, gated_delta)
          | Some
              (Kernel_ir.Fused_tactic.Gated_product
                { gate; up; output; _ }) ->
@@ -10764,17 +10836,17 @@ let region_tactics ~target regions =
                       Ir.Linear_storage.Groupwise_packed _ ) -> true
                   | _ -> false)
              in
-             quant, quant_add, has_w4, has_rms, has_rms_rope,
+             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
              has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Rms_normalize _) ->
-             quant, quant_add, has_w4, true, has_rms_rope,
+             quant, quant_add, quant_digest, has_w4, true, has_rms_rope,
              has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Rms_rope _) ->
-             quant, quant_add, has_w4, has_rms, true,
+             quant, quant_add, quant_digest, has_w4, has_rms, true,
              has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Short_conv_silu _) ->
-             quant, quant_add, has_w4, has_rms, has_rms_rope, true,
-             gated_delta
+             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
+             true, gated_delta
          | Some (Kernel_ir.Fused_tactic.Gated_delta { query; _ }) ->
              let gated_delta =
                match
@@ -10785,23 +10857,37 @@ let region_tactics ~target regions =
                    Gated_delta_head_major_f32 width :: gated_delta
                | _ -> gated_delta
              in
-             quant, quant_add, has_w4, has_rms, has_rms_rope,
+             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
              has_short_conv_silu, gated_delta
          | None ->
-             quant, quant_add, has_w4, has_rms, has_rms_rope,
+             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
              has_short_conv_silu, gated_delta)
-       ([], [], false, false, false, false, [])
-  |> fun (quant, quant_add, has_w4, has_rms, has_rms_rope,
-           has_short_conv_silu, gated_delta) ->
+       ([], [], [], false, false, false, false, [])
+  |> fun (quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
+          has_short_conv_silu, gated_delta) ->
+  let compare_digest (storage, tactic, epilogue)
+      (storage', tactic', epilogue') =
+    let c = Stdlib.compare storage storage' in
+    if c <> 0 then c
+    else
+      let c = String.compare (Tactic.name tactic) (Tactic.name tactic') in
+      if c <> 0 then c
+      else
+        String.compare
+          (Epilogue.algebraic_kernel_name ~base:(Tactic.name tactic) epilogue)
+          (Epilogue.algebraic_kernel_name ~base:(Tactic.name tactic') epilogue')
+  in
   ( List.sort_uniq Stdlib.compare quant,
     List.sort_uniq Stdlib.compare quant_add,
+    List.sort_uniq compare_digest quant_digest,
     has_w4, has_rms, has_rms_rope, has_short_conv_silu,
     List.sort_uniq Stdlib.compare gated_delta )
 
 let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
   let graph = without_region_nodes graph fusion_regions in
-  let ( region_quant_tactics, region_quant_add_tactics, regions_have_w4,
-        regions_have_rms, regions_have_rms_rope, regions_have_short_conv_silu,
+  let ( region_quant_tactics, region_quant_add_tactics,
+        region_quant_digest_tactics, regions_have_w4, regions_have_rms,
+        regions_have_rms_rope, regions_have_short_conv_silu,
         region_gated_delta_tactics ) =
     region_tactics ~target fusion_regions
   in
@@ -10868,6 +10954,36 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     |> String.concat "\n"
   in
   let quant_add_entries = List.map quant_linear_add_entry quant_add_tactics in
+  let region_quant_digest_source_result =
+    region_quant_digest_tactics
+    |> List.fold_left
+         (fun result (quant, tactic, epilogue) ->
+           let* source = result in
+           let base = Tactic.name tactic in
+           let kernel_name = Epilogue.algebraic_kernel_name ~base epilogue in
+           match quant, String.ends_with ~suffix:"_x8" base with
+           | Ir.Dtype.Q4_0, true ->
+               let* kernel =
+                 emit_q4_0_x8_epilogue_kernel ~name:kernel_name ~epilogue
+               in
+               Ok (source ^ kernel)
+           | _ ->
+               Error
+                 (Printf.sprintf
+                    "Metal lower: digest epilogue emission is defined only for \
+                     Q4_0 x8 decode regions (got %s serving %s)"
+                    (Ir.Dtype.quant_to_string quant) base))
+         (Ok "")
+  in
+  let region_quant_digest_entries =
+    region_quant_digest_tactics
+    |> List.map (fun (quant, tactic, epilogue) ->
+           kernel_entry_with_threadgroup ~threadgroup:(Tactic.threadgroup tactic)
+             ~name:(Epilogue.algebraic_kernel_name ~base:(Tactic.name tactic) epilogue)
+             ~operation:Kernel_abi.Operation.Linear
+             ~input_dtype:(Ir.Dtype.Quant quant)
+             ~output_dtype:Ir.Dtype.Float16)
+  in
   let gated_delta_tactics =
     gated_delta_tactics graph @ region_gated_delta_tactics
     |> List.sort_uniq Stdlib.compare
@@ -10885,6 +11001,9 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            Ok (source ^ component))
          (Ok "")
   in
+  let* region_quant_digest_source =
+    region_quant_digest_source_result
+  in
   let components =
     [ ( has_w4a16_linear graph || regions_have_w4,
         w4a16_source,
@@ -10899,9 +11018,10 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
       ( has_quant_linear graph || region_quant_tactics <> [] || quant_qkv,
-        quant_common_source ^ quant_format_source
-        ^ quant_qkv_source ^ quant_add_source,
-        selected_quant_entries @ quant_qkv_entries @ quant_add_entries );
+        quant_common_source ^ quant_format_source ^ quant_qkv_source
+        ^ quant_add_source ^ region_quant_digest_source,
+        selected_quant_entries @ quant_qkv_entries @ quant_add_entries
+        @ region_quant_digest_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       ( has_f16_bf16_linear graph,
         linear_f16_bf16_source,

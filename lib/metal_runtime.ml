@@ -3032,11 +3032,60 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                         | _ ->
                             Error "assignment Linear-epilogue buffers are inconsistent"
                       in
-                      dispatched
-                        (dispatch_quant_linear ~batch runtime state output
-                           ~m:linear.m ~n:linear.n ~k:linear.k ~quant
-                           ~input_buffer ~weight_buffer ~additive_buffer
-                           ~epilogue_mode:2)
+                      (match
+                         select_quant_linear_kernel ~suffix:"_add" runtime
+                           ~m:linear.m ~n:linear.n ~k:linear.k
+                           ~output_dtype:(Ir.Value.dtype output) quant
+                       with
+                      | Ok _ ->
+                          dispatched
+                            (dispatch_quant_linear ~batch runtime state output
+                               ~m:linear.m ~n:linear.n ~k:linear.k ~quant
+                               ~input_buffer ~weight_buffer ~additive_buffer
+                               ~epilogue_mode:2)
+                      | Error _ ->
+                          (* The package has no legacy _add twin: the region
+                             lowered through the digest-keyed emitter (a Q4_0
+                             x8 decode region whose static zoo has no _add
+                             kernel), so dispatch the digest kernel the emitter
+                             registered under the plain x8 tactic name. *)
+                          let* tactic_entry =
+                            select_quant_linear_kernel runtime ~m:linear.m
+                              ~n:linear.n ~k:linear.k
+                              ~output_dtype:(Ir.Value.dtype output) quant
+                          in
+                          let base_name = Kernel_abi.Entry.name tactic_entry in
+                          if
+                            not
+                              (quant = Ir.Dtype.Q4_0
+                              && String.ends_with ~suffix:"_x8" base_name)
+                          then
+                            Error
+                              (Printf.sprintf
+                                 "assignment Linear-epilogue %s is not servable: the package has no legacy %s _add twin and digest emission is defined only for Q4_0 x8 decode regions (plain tactic %s)"
+                                 (Epilogue.to_string epilogue)
+                                 (Ir.Dtype.quant_to_string quant) base_name)
+                          else
+                            let digest_name =
+                              Epilogue.algebraic_kernel_name ~base:base_name
+                                epilogue
+                            in
+                            let* parameters =
+                              Parameters.u32s
+                                [ linear.m; linear.n; linear.k; 0 ]
+                            in
+                            let* grid_x =
+                              linear_f16_grid ((linear.n + 7) / 8)
+                            in
+                            dispatched
+                              (dispatch_output ~name:digest_name runtime state
+                                 output
+                                 ~operation:Kernel_abi.Operation.Linear
+                                 ~input_dtype:(Ir.Dtype.Quant quant)
+                                 ~buffers:
+                                   [ input_buffer; weight_buffer;
+                                     additive_buffer ]
+                                 ~parameters ~grid:(grid_x, 1, 1)))
                   | Epilogue.None | Epilogue.Bias _
                   | Epilogue.Silu | Epilogue.Gelu
                   | Epilogue.Silu_mul _ | Epilogue.Gelu_mul _

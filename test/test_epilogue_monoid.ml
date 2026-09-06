@@ -298,11 +298,12 @@ let run () =
 
   (* The real Gemma-4 decode base is the Q4_0 x8 kernel (m = 1, n a multiple
      of 8, k < 4096, 256 threads, eight accumulator0..7 registers owning one
-     output column each).  The digest-variant emitter must rewrite its
-     store tail into eight column-guarded stores applying an arbitrary
-     Epilogue.t, append the canonicalized epilogue's buffer declarations
-     after the QuantLinearParams parameter (buffer(4) -> declarations at
-     buffer(5)+), and rename the kernel to the deterministic digest name --
+     output column each).  The digest-variant emitter must rewrite its store
+     tail into eight column-guarded stores applying an arbitrary Epilogue.t,
+     re-emit the kernel header with the canonicalized epilogue buffers
+     declared between weight (buffer(1)) and the output workspace
+     (buffer(2 + p); params at buffer(3 + p), dropping the unused legacy
+     [bias] slot), and rename the kernel to the deterministic digest name --
      while leaving the legacy kernel text untouched for byte-identical flat
      dispatch.  Canonicalization renumbers the reads to buf_0..buf_k-1 in
      stable required_values order, so declarations, write-backs and the
@@ -320,15 +321,25 @@ let run () =
   expect_contains "q4_0 x8 digest kernel renamed to digest name"
     x8_source
     ("kernel void " ^ digest_name gemma_chain ^ "(");
-  expect_contains "q4_0 x8 digest kernel appends canonicalized buffer declarations"
+  (* gemma_chain reads three f16 tensors, so the digest header carries three
+     canonicalized buffers at buffer(2..4), the output at buffer(5) and the
+     parameters at buffer(6). *)
+  expect_contains "q4_0 x8 digest kernel declares the first canonicalized buffer"
     x8_source
-    ",\n    device const half* buf_0 [[buffer(5)]]";
+    ",\n    device const half* buf_0 [[buffer(2)]]";
   expect_contains "q4_0 x8 digest kernel declares second canonicalized buffer"
     x8_source
-    "device const half* buf_1 [[buffer(6)]]";
+    "device const half* buf_1 [[buffer(3)]]";
   expect_contains "q4_0 x8 digest kernel declares third canonicalized buffer"
     x8_source
-    "device const half* buf_2 [[buffer(7)]]";
+    "device const half* buf_2 [[buffer(4)]]";
+  expect_contains "q4_0 x8 digest kernel places the output after the epilogue buffers"
+    x8_source
+    ",\n    device half* output [[buffer(5)]],\n    constant QuantLinearParams& \
+     params [[buffer(6)]],";
+  expect_contains "q4_0 x8 digest kernel retains the thread-position attributes"
+    x8_source
+    "uint lane [[thread_index_in_simdgroup]]) {";
   expect_contains "q4_0 x8 digest write-back reads first canonical buffer at column 0"
     x8_source
     "(float)buf_0[base_col]";
@@ -340,6 +351,8 @@ let run () =
     "accumulator7";
   if contains x8_source "params.has_bias" then
     failwith "q4_0 x8 digest kernel must not read the legacy has_bias store block";
+  if contains x8_source "device const half* bias [[buffer" then
+    failwith "q4_0 x8 digest kernel must not declare the unused legacy bias slot";
   (* The digest store tail must replace the plain kernel's guarded 8-wide
      tail, never duplicate it: exactly eight unguarded/guarded output stores
      must remain after the store rewrite. *)
@@ -364,7 +377,12 @@ let run () =
   let f32_digest_source = emit_digest f32_expr in
   expect_contains "q4_0 x8 digest Float32 read declares float buffer"
     f32_digest_source
-    "device const float* buf_0 [[buffer(5)]]";
+    "device const float* buf_0 [[buffer(2)]]";
+  (* The single-buffer epilogue shifts the output/params indices by one *)
+  expect_contains "q4_0 x8 digest single buffer shifts output and params indices"
+    f32_digest_source
+    ",\n    device half* output [[buffer(3)]],\n    constant QuantLinearParams& \
+     params [[buffer(4)]],";
   Printf.printf "  [PASS] Q4_0 x8 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
 
   (* ========================================================================= *)
