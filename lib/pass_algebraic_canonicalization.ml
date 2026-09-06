@@ -107,8 +107,16 @@ let step graph =
                let resolved_inputs =
                  List.map (resolve !subst) (Ir.node_inputs node)
                in
+               (* Values are embedded inside the op payload as well (pointwise
+                  tensor operands, opaque arguments): rewrite them through the
+                  same substitution, otherwise consumers of an eliminated
+                  cast/movement keep reading a value whose producer node is
+                  gone. *)
+               let resolved_op =
+                 Ir.Op.map_values (resolve !subst) (Ir.node_op node)
+               in
                Some
-                 (Ir.node_replace node ~op:(Ir.node_op node)
+                 (Ir.node_replace node ~op:resolved_op
                     ~inputs:resolved_inputs))
     in
     let rewritten_outputs =

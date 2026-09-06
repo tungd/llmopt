@@ -124,6 +124,7 @@ module Pointwise : sig
   type t = Unary of unary * Value.t | Binary of binary * operand * operand
 
   val values : t -> Value.t list
+  val map_values : (Value.t -> Value.t) -> t -> t
   val to_string : t -> string
 end
 
@@ -339,6 +340,7 @@ module Argument : sig
     | Slice of { start : t; stop : t; step : t }
 
   val values : t -> Value.t list
+  val map_values : (Value.t -> Value.t) -> t -> t
 end
 
 type node
@@ -419,6 +421,11 @@ module Op : sig
         extra_outputs : Value.t list;
       }
   val additional_outputs : t -> Value.t list
+
+  (* Rewrite the values consumed inside the op payload (pointwise tensor
+     operands, opaque arguments).  Producer-side [additional_outputs] values are
+     not mapped. *)
+  val map_values : (Value.t -> Value.t) -> t -> t
 
   val to_string : t -> string
 end

@@ -244,6 +244,15 @@ module Pointwise = struct
         [ left; right ]
         |> List.filter_map (function Tensor value -> Some value | Scalar _ -> None)
 
+  let map_values f = function
+    | Unary (unary, value) -> Unary (unary, f value)
+    | Binary (binary, left, right) ->
+        let map_operand = function
+          | Tensor value -> Tensor (f value)
+          | Scalar scalar -> Scalar scalar
+        in
+        Binary (binary, map_operand left, map_operand right)
+
   let unary_to_string = function
     | Neg -> "neg"
     | Rsqrt -> "rsqrt"
@@ -674,6 +683,24 @@ module Argument = struct
     | List arguments | Tuple arguments -> List.concat_map values arguments
     | Mapping fields -> fields |> List.map snd |> List.concat_map values
     | Slice { start; stop; step } -> values start @ values stop @ values step
+
+  let rec map_values f = function
+    | Value value -> Value (f value)
+    | (Null | Ellipsis | Bool _ | Int _ | Float _ | String _ | Symbol _) as
+      argument ->
+        argument
+    | List arguments -> List (List.map (map_values f) arguments)
+    | Tuple arguments -> Tuple (List.map (map_values f) arguments)
+    | Mapping fields ->
+        Mapping
+          (List.map
+             (fun (key, argument) -> (key, map_values f argument))
+             fields)
+    | Slice { start; stop; step } ->
+        Slice
+          { start = map_values f start;
+            stop = map_values f stop;
+            step = map_values f step }
 end
 
 module Op = struct
@@ -758,6 +785,22 @@ module Op = struct
     | Rms_rope_qk { extra_outputs; _ } -> extra_outputs
     | Rotary_qk { extra_outputs; _ } -> extra_outputs
     | _ -> []
+
+  (* Rewrite the values consumed inside the op payload (pointwise tensor
+     operands and opaque arguments).  Producer-side values -- [additional_outputs]
+     -- are outputs of the node itself and are intentionally left untouched. *)
+  let map_values f = function
+    | Primitive (Primitive.Pointwise operation) ->
+        Primitive (Primitive.Pointwise (Pointwise.map_values f operation))
+    | Opaque { op; target; arguments; keyword_arguments } ->
+        Opaque
+          { op; target;
+            arguments = List.map (Argument.map_values f) arguments;
+            keyword_arguments =
+              List.map
+                (fun (key, argument) -> (key, Argument.map_values f argument))
+                keyword_arguments }
+    | other -> other
 
   let to_string = function
     | Input { name; source } ->
