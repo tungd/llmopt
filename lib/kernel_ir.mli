@@ -268,9 +268,9 @@ module Fused_tactic : sig
   }
 
   type t =
-    | Linear_additive of {
+    | Linear_epilogue of {
         linear : linear;
-        additive : Ir.Value.t;
+        epilogue : Epilogue.t;
         output : Ir.Value.t;
       }
     | Gated_product of {
@@ -314,6 +314,16 @@ module Fused_tactic : sig
       results, in sink-first order.  This permits a legal maximal component to
       contain several independently executable constructive subregions. *)
   val select_all : region -> t list
+
+  val fold_linear_epilogue : region -> Epilogue.t option
+  (** Folds the pure single-linear pointwise consumer chain of a region --
+      Silu/Gelu activations and Add/Mul applications to external tensors,
+      composed forward through [Epilogue.compose] -- into the [Epilogue.t]
+      that writes the final region result.  Returns [Some] with the identity
+      epilogue for a bare linear region and [None] when the region contains
+      no unique linear contraction or the result chain leaves the foldable
+      pointwise grammar.  This is the algebraic core shared by tactic
+      selection, code emission, and runtime routing. *)
 end
 
 val result_slot : result -> Slot.t

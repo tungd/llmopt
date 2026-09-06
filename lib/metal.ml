@@ -10653,7 +10653,7 @@ let region_tactics ~target regions =
              has_short_conv_silu, gated_delta) region ->
          match Kernel_ir.Fused_tactic.select region with
          | Some
-             (Kernel_ir.Fused_tactic.Linear_additive
+             (Kernel_ir.Fused_tactic.Linear_epilogue
                { linear; output; _ }) ->
              (match linear.storage, select_linear linear output with
              | Ir.Linear_storage.Block_quantized storage, Some tactic ->

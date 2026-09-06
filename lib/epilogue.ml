@@ -27,6 +27,9 @@ let bias_residual_add ~bias ~residual = Bias_residual_add { bias; residual }
 let silu_mul_residual_add ~up ~residual = Silu_mul_residual_add { up; residual }
 let gelu_mul_residual_add ~up ~residual = Gelu_mul_residual_add { up; residual }
 
+let mul ~factor =
+  Expr (Binop (Mul, Slot Acc, Read { value = factor; coord = Coordinate_map.identity }))
+
 let of_expr e = Expr e
 
 let to_expr = function

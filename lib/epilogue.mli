@@ -30,6 +30,10 @@ val residual_add : residual:Ir.Value.t -> t
 val bias_residual_add : bias:Ir.Value.t -> residual:Ir.Value.t -> t
 val silu_mul_residual_add : up:Ir.Value.t -> residual:Ir.Value.t -> t
 val gelu_mul_residual_add : up:Ir.Value.t -> residual:Ir.Value.t -> t
+val mul : factor:Ir.Value.t -> t
+(** [mul ~factor] is the total pointwise scale [acc * factor] in pure
+    [Expr] form, used by consumers that multiply the contraction result by
+    an external same-shape tensor (e.g. an MLP gate's up-projection). *)
 
 val of_expr : slot Applicative_expr.t -> t
 val to_expr : t -> slot Applicative_expr.t

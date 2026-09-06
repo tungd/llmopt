@@ -2747,9 +2747,14 @@ let assignment_execution command =
       Kernel_ir.Fused_tactic.select
   with
   | Some
-      (Kernel_ir.Fused_tactic.Linear_additive
-        { linear; additive; output }) ->
-      Some (Assignment_linear_add (linear, additive, output))
+      (Kernel_ir.Fused_tactic.Linear_epilogue
+        { linear; epilogue = Epilogue.Residual_add { residual }; output }) ->
+      Some (Assignment_linear_add (linear, residual, output))
+  | Some (Kernel_ir.Fused_tactic.Linear_epilogue _) ->
+      (* Non-flat epilogues are not yet encodable as legacy assignments; the
+         caller keeps the region out of fused dispatch until parametric
+         emission (Metal.lower / Metal_block_codegen) can serve them. *)
+      None
   | Some
       (Kernel_ir.Fused_tactic.Gated_product
         { gate; up; activation; output }) ->

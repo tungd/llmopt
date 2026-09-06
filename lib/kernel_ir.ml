@@ -1504,9 +1504,9 @@ module Fused_tactic = struct
   }
 
   type t =
-    | Linear_additive of {
+    | Linear_epilogue of {
         linear : linear;
-        additive : Ir.Value.t;
+        epilogue : Epilogue.t;
         output : Ir.Value.t;
       }
     | Gated_product of {
@@ -2250,34 +2250,139 @@ module Fused_tactic = struct
                  beta = beta_pad.source_value;
                  output = result.value })
 
-  let linear_additive region values =
-    let linear_bindings =
+  (* Generalized epilogue folding for single-linear regions.
+
+     [chain_of region values linear_output slot] classifies the value bound
+     at [slot] relative to the linear contraction's output slot:
+
+     - [Folded (epilogue, depth)] when [slot] is reachable from the linear
+       output through the foldable pointwise grammar (Silu/Gelu unaries and
+       Add/Mul binaries whose non-chain operand is an external region input),
+       carrying the [Epilogue.t] that rewrites [slot] as a function of the
+       contraction accumulator together with the number of chain bindings;
+     - [External value] when [slot] is a region input leaf;
+     - [Nonfoldable] otherwise (multiple linears, internal fan-out to a
+       non-chain consumer, unary operators outside the Applicative IR, ...).
+
+     Composition runs outward from the accumulator with [Epilogue.compose],
+     so the returned expression is the full associative pointwise readback. *)
+
+  type chain =
+    | Folded of Epilogue.t * int
+    | External of Ir.Value.t
+    | Nonfoldable
+
+  let rec chain_of region values linear_output slot =
+    if Slot.equal slot linear_output then Folded (Epilogue.none, 0)
+    else
+      match producer region slot with
+      | None -> (
+          match Slot_map.find_opt slot values with
+          | Some value -> External value
+          | None -> Nonfoldable)
+      | Some binding -> (
+          match binding.primitive, binding.inputs with
+          | Primitive.Unary activation, [ operand ]
+            when
+              (match activation with
+              | Primitive.Silu | Primitive.Gelu -> true
+              | Primitive.Sigmoid | Primitive.Neg | Primitive.Rsqrt
+              | Primitive.Cos | Primitive.Sin | Primitive.Tanh
+              | Primitive.Exp | Primitive.Softplus | Primitive.Pow _ ->
+                  false) -> (
+              match chain_of region values linear_output operand with
+              | Folded (producer, depth) ->
+                  let consumer =
+                    match activation with
+                    | Primitive.Silu -> Epilogue.silu
+                    | _ -> Epilogue.gelu
+                  in
+                  Folded (Epilogue.compose ~producer ~consumer, depth + 1)
+              | External _ | Nonfoldable -> Nonfoldable)
+          | Primitive.Binary Primitive.Add, [ left; right ]
+          | Primitive.Binary Primitive.Mul, [ left; right ] -> (
+              match
+                (chain_of region values linear_output left,
+                 chain_of region values linear_output right)
+              with
+              | Folded (producer, depth), External value
+              | External value, Folded (producer, depth) ->
+                  let consumer =
+                    match binding.primitive with
+                    | Primitive.Binary Primitive.Add ->
+                        Epilogue.residual_add ~residual:value
+                    | _ -> Epilogue.mul ~factor:value
+                  in
+                  Folded (Epilogue.compose ~producer ~consumer, depth + 1)
+              | _ -> Nonfoldable)
+          | _ -> Nonfoldable)
+
+  let linear_epilogue region values =
+    let linears =
       region.bindings
       |> List.filter_map (fun binding ->
              match linear values binding, output_slot binding with
              | Some linear, Some output -> Some (linear, output)
              | _ -> None)
     in
-    let additions =
+    match linears with
+    | [ (linear, linear_output) ] ->
+        (* Admission: select only regions whose entire binding set lies on the
+           foldable chain and whose folded epilogue reduces to the legacy flat
+           residual-add form.  Richer chains become selectable in the same
+           change that teaches code emission and runtime dispatch to serve
+           [Epilogue.Expr] writebacks; until then selection stays byte-identical
+           to the retired [Linear_additive] matcher so decode/prefill regions
+           dispatch through the existing legacy kernels. *)
+        let candidates =
+          region.results
+          |> List.filter_map (fun result ->
+                 match chain_of region values linear_output result.slot with
+                 | Folded (epilogue, depth) when depth >= 1 -> (
+                     match epilogue with
+                     | Epilogue.Residual_add { residual } ->
+                         Some (result, residual, depth)
+                     | Epilogue.None | Epilogue.Bias _ | Epilogue.Silu
+                     | Epilogue.Gelu | Epilogue.Silu_mul _
+                     | Epilogue.Gelu_mul _ | Epilogue.Bias_residual_add _
+                     | Epilogue.Silu_mul_residual_add _
+                     | Epilogue.Gelu_mul_residual_add _ | Epilogue.Expr _ ->
+                         None)
+                 | Folded (_, _) | External _ | Nonfoldable -> None)
+        in
+        (match candidates with
+        | [ (result, residual, depth) ]
+          when depth + 1 = List.length region.bindings ->
+            Some
+              (Linear_epilogue
+                 { linear;
+                   epilogue = Epilogue.residual_add ~residual;
+                   output = result.value })
+        | _ -> None)
+    | _ -> None
+
+  let fold_linear_epilogue region =
+    let values = value_map region in
+    let linears =
       region.bindings
       |> List.filter_map (fun binding ->
-             match binding.primitive, binding.inputs, output_slot binding with
-             | Primitive.Binary Primitive.Add, [ left; right ], Some output ->
-                 Some (left, right, output)
+             match linear values binding, output_slot binding with
+             | Some linear, Some output -> Some (linear, output)
              | _ -> None)
     in
-    match linear_bindings, additions with
-    | [ (linear, linear_output) ], [ (left, right, output) ] ->
-        let additive_slot =
-          if Slot.equal left linear_output then Some right
-          else if Slot.equal right linear_output then Some left
-          else None
+    match linears with
+    | [ (_, linear_output) ] ->
+        let folded =
+          region.results
+          |> List.filter_map (fun result ->
+                 match chain_of region values linear_output result.slot with
+                 | Folded (epilogue, depth) -> Some (epilogue, depth)
+                 | External _ | Nonfoldable -> None)
         in
-        (match additive_slot, result_value region output with
-        | Some additive_slot, Some output ->
-            input_value values additive_slot
-            |> Option.map (fun additive ->
-                   Linear_additive { linear; additive; output })
+        (match folded with
+        | [ (epilogue, depth) ]
+          when depth + 1 = List.length region.bindings ->
+            Some epilogue
         | _ -> None)
     | _ -> None
 
@@ -2341,7 +2446,7 @@ module Fused_tactic = struct
     match short_conv_silu region values with
     | Some tactic -> Some tactic
     | None -> (
-    match linear_additive region values with
+    match linear_epilogue region values with
     | Some tactic -> Some tactic
     | None -> (
         match gated_product region values with

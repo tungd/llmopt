@@ -1417,7 +1417,7 @@ let lower analysis =
     | Kernel_ir.Fused_tactic.Gated_delta
         { query; key; value; gate; beta; output } ->
         [ query; key; value; gate; beta ], output
-    | Kernel_ir.Fused_tactic.Linear_additive _
+    | Kernel_ir.Fused_tactic.Linear_epilogue _
     | Kernel_ir.Fused_tactic.Gated_product _ -> assert false
   in
   let assignment_slice assignments tactic =
