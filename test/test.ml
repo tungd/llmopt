@@ -7243,6 +7243,7 @@ let () =
 
   Test_epilogue_monoid.run ();
   Test_algebraic_canonicalization.run ();
+  Test_contraction_group.run ();
 
   (* 12. Fused W4A16 Linear-add regions dispatch through the legacy static
      kernel family.  The single-row algebraic route and its duplicate
