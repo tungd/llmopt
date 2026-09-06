@@ -57,12 +57,4 @@ val attention_source : string
 val emit_parametric_w4a16_linear : name:string -> epilogue:Epilogue.t -> string
 val emit_parametric_q4_k_linear : name:string -> epilogue:Epilogue.t -> string
 val emit_simdgroup_matrix_gemm : name:string -> epilogue:Epilogue.t -> string
-val emit_w4a16_algebraic_kernels : (string * Epilogue.t) list -> string
-(** Emits the [W4A16EpiParams]-parameterized single-row W4A16 linear kernels
-    that the fused Linear-add schedule routing selects.  Each [name] must be
-    the routing name shared with the runtime ([Epilogue.algebraic_kernel_name
-    ~base:Epilogue.w4a16_algebraic_base]); buffer slots follow the legacy
-    convention ([input 0, packed_weight 1, scale 2, output 3], epilogue
-    buffers after [output], [params] last) so the OCaml dispatch binder can
-    bind them in list order.  Returns the empty string for an empty list. *)
 

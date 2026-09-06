@@ -216,7 +216,7 @@ build _build/ocaml/applicative_expr.cmx: ocaml_module lib/applicative_expr.ml | 
 build _build/ocaml/epilogue.cmi: ocaml_interface lib/epilogue.mli | _build/ocaml/ir.cmi _build/ocaml/coordinate_map.cmi _build/ocaml/applicative_expr.cmi
 build _build/ocaml/epilogue.cmx: ocaml_module lib/epilogue.ml | _build/ocaml/epilogue.cmi _build/ocaml/ir.cmx _build/ocaml/coordinate_map.cmx _build/ocaml/applicative_expr.cmx
 
-build _build/ocaml/test_epilogue_monoid.cmx: ocaml_module test/test_epilogue_monoid.ml | _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/coordinate_map.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/epilogue.cmx _build/ocaml/metal.cmi
+build _build/ocaml/test_epilogue_monoid.cmx: ocaml_module test/test_epilogue_monoid.ml | _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/coordinate_map.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/epilogue.cmx _build/ocaml/metal.cmx
 build _build/ocaml/test_algebraic_canonicalization.cmx: ocaml_module test/test_algebraic_canonicalization.ml | _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/pass_algebraic_canonicalization.cmx
 
 build _build/ocaml/kernel_ir.cmi: ocaml_interface lib/kernel_ir.mli | _build/ocaml/ir.cmi _build/ocaml/tensor_shape.cmi

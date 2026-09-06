@@ -150,13 +150,6 @@ module Monoid = struct
     Applicative_expr.emit_msl_expr ~slot_emitter:(fun Acc -> acc) ~index_expr:idx (Applicative_expr.simplify e)
 end
 
-let algebraic_residual_add ~residual =
-  Expr
-    (Binop
-       ( Add,
-         Slot Acc,
-         Read { value = residual; coord = Coordinate_map.identity } ))
-
 let map_reads ~rename expr =
   let rec go expr =
     match expr with
@@ -215,12 +208,3 @@ let algebraic_kernel_name ~base epilogue =
   in
   let digest = Digest.string (dtypes ^ "|" ^ writeback) in
   base ^ "_" ^ String.sub (Digest.to_hex digest) 0 8
-
-let w4a16_algebraic_base = "llmopt_w4a16_linear_f16_g64_epi"
-
-let w4a16_algebraic_route ~storage ~m ~residual =
-  match storage with
-  | Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 64 }
-    when m = 1 ->
-      Some (canonicalize (algebraic_residual_add ~residual))
-  | _ -> None

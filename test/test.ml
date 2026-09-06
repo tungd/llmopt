@@ -6850,19 +6850,17 @@ let () =
   Test_epilogue_monoid.run ();
   Test_algebraic_canonicalization.run ();
 
-  (* 12. Fused W4A16 Linear-add epilogue schedule routing.  The shared pure
-     route [Epilogue.w4a16_algebraic_route] is the single scheduling key that
-     [Metal.lower]'s region tactics and [Metal_runtime] dispatch both
-     recompute, so a decode-shaped (m = 1) groupwise-4/64 Linear-add region
-     lowers to one deterministic parametric kernel and every other geometry
-     stays on the legacy static kernel path unchanged. *)
+  (* 12. Fused W4A16 Linear-add regions dispatch through the legacy static
+     kernel family.  The single-row algebraic route and its duplicate
+     [W4A16EpiParams] emitter family were retired: every groupwise-4/64
+     Linear-add region — decode (m = 1) and prefill (m > 1) alike — lowers
+     against the byte-identical legacy [llmopt_w4a16_linear_f16_g64*]
+     kernels, which fold the flat residual add through [has_bias] /
+     [bias_row_stride] exactly as they did before the algebraic detour. *)
   let routing_shape rows cols = Tensor_shape.of_ints_exn [ rows; cols ] in
   let routing_tensor graph name rows cols =
     Ir.Graph.tensor_input graph ~name ~source:Ir.Input_source.Runtime
       ~shape:(routing_shape rows cols) ~dtype:Ir.Dtype.Float16
-  in
-  let routing_w4_storage =
-    Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 64 }
   in
   let routing_optimize ~m =
     let graph = Ir.Graph.create () in
@@ -6894,130 +6892,56 @@ let () =
     Ir.Graph.add_output graph ~name:"routing-output" added;
     let optimization = Passes.optimize graph |> expect_ok in
     let regions = Passes.Optimization.fusion_regions optimization in
-    ( residual, optimization, regions )
+    ( optimization, regions )
   in
-  expect
-    (match
-       Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
-         ~residual:
-           (Ir.Value.make_tensor ~id:7
-              ~shape:(routing_shape 1 64) ~dtype:Ir.Dtype.Float16)
-     with
-    | Some _ -> true
-    | None -> false)
-    "routing admits single-row groupwise-4/64 Linear-add residuals";
-  expect
-    (Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:4
-       ~residual:
-         (Ir.Value.make_tensor ~id:8
-            ~shape:(routing_shape 4 64) ~dtype:Ir.Dtype.Float16)
-    = None)
-    "routing declines multi-row W4A16 Linear-add regions";
-  expect
-    (Epilogue.w4a16_algebraic_route
-       ~storage:(Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 32 })
-       ~m:1
-       ~residual:
-         (Ir.Value.make_tensor ~id:9
-            ~shape:(routing_shape 1 64) ~dtype:Ir.Dtype.Float16)
-    = None
-    && Epilogue.w4a16_algebraic_route
-         ~storage:(Ir.Linear_storage.Dense Ir.Dtype.Float16)
-         ~m:1
-         ~residual:
-           (Ir.Value.make_tensor ~id:10
-              ~shape:(routing_shape 1 64) ~dtype:Ir.Dtype.Float16)
-       = None)
-    "routing keeps non-groupwise-4/64 layouts on the legacy kernel path";
-  let routing_decode_residual, decode_optimization, decode_regions =
-    routing_optimize ~m:1
-  in
-  expect
-    (match
-       Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
-         ~residual:routing_decode_residual
-     with
-    | Some epilogue ->
-        (match Epilogue.inputs epilogue with
-        | [ buffer_value ] ->
-            Ir.Value_id.to_int (Ir.Value.id buffer_value) = 0
-        | _ -> false)
-    | None -> false)
-    "routing canonicalizes the residual read to buffer ordinal 0";
-
-  let decode_epilogue =
-    match
-      Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
-        ~residual:routing_decode_residual
-    with
-    | Some epilogue -> epilogue
-    | None -> fail "decode routing unexpectedly declined"
-  in
-  let decode_name =
-    Epilogue.algebraic_kernel_name ~base:Epilogue.w4a16_algebraic_base
-      decode_epilogue
-  in
-  expect
-    (String.length decode_name > String.length Epilogue.w4a16_algebraic_base
-    && String.starts_with ~prefix:(Epilogue.w4a16_algebraic_base ^ "_") decode_name)
-    "routed kernel names are deterministic digests under the epi base";
-  expect
-    (Epilogue.msl_buffer_decls ~start_index:4 decode_epilogue
-    = ",\n    device const half* buf_0 [[buffer(4)]]")
-    "msl_buffer_decls binds the canonical residual at buffer(4)";
   let decode_program =
-    Metal.lower ~fusion_regions:decode_regions
-      (Passes.Optimization.execution_graph decode_optimization)
+    let optimization, regions = routing_optimize ~m:1 in
+    Metal.lower ~fusion_regions:regions
+      (Passes.Optimization.execution_graph optimization)
     |> expect_ok
   in
   let decode_source = Metal.Program.source decode_program in
   expect
-    (contains_substring decode_source ("kernel void " ^ decode_name)
-    && contains_substring decode_source "W4A16EpiParams"
-    && contains_substring decode_source
-         "device const half* buf_0 [[buffer(4)]]"
-    && contains_substring decode_source "(acc + ((float)buf_0[col]))")
-    "Metal lowering emits the routed parametric W4A16 Linear-add kernel";
+    (contains_substring decode_source
+       "kernel void llmopt_w4a16_linear_f16_g64"
+    && not (contains_substring decode_source "W4A16EpiParams")
+    && not
+         (contains_substring decode_source
+            "llmopt_w4a16_linear_f16_g64_epi"))
+    "decode W4A16 Linear-add regions reuse the legacy static g64 kernel";
   expect
     (Metal.Program.kernels decode_program
     |> List.exists (fun entry ->
-           Kernel_abi.Entry.name entry = decode_name
+           Kernel_abi.Entry.name entry = "llmopt_w4a16_linear_f16_g64"
            && Kernel_abi.Entry.operation entry
               = Kernel_abi.Operation.W4a16_linear
            && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)
            && Kernel_abi.Entry.input_dtype entry = Ir.Dtype.Float16
            && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16))
-    "Metal lowering registers the routed kernel ABI entry";
-  let decoding_residual_alias =
-    Ir.Value.make_tensor ~id:777 ~shape:(routing_shape 1 64)
-      ~dtype:Ir.Dtype.Float16
-  in
-  expect
-    (match
-       Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
-         ~residual:decoding_residual_alias
-     with
-    | Some alias_epilogue ->
-        Epilogue.equal decode_epilogue alias_epilogue
-        && Epilogue.algebraic_kernel_name ~base:Epilogue.w4a16_algebraic_base
-             alias_epilogue
-           = decode_name
-    | None -> false)
-    "routed kernel names survive structural renaming of the residual tensor";
-  let _, prefill_optimization, prefill_regions = routing_optimize ~m:4 in
+    "Metal lowering registers the legacy g64 kernel ABI entry";
   let prefill_program =
-    Metal.lower ~fusion_regions:prefill_regions
-      (Passes.Optimization.execution_graph prefill_optimization)
+    let optimization, regions = routing_optimize ~m:4 in
+    Metal.lower ~fusion_regions:regions
+      (Passes.Optimization.execution_graph optimization)
     |> expect_ok
   in
+  let prefill_source = Metal.Program.source prefill_program in
   expect
-    (not
-       (contains_substring (Metal.Program.source prefill_program)
-          ("kernel void " ^ Epilogue.w4a16_algebraic_base))
+    (contains_substring prefill_source
+       "kernel void llmopt_w4a16_linear_f16_g64_m4"
+    && contains_substring prefill_source
+         "kernel void llmopt_w4a16_linear_f16_g64"
+    && not (contains_substring prefill_source "W4A16EpiParams")
     && not
-         (contains_substring (Metal.Program.source prefill_program)
-            "W4A16EpiParams"))
-    "multi-row regions keep today's static legacy W4A16 kernel path";
+         (contains_substring prefill_source
+            "llmopt_w4a16_linear_f16_g64_epi"))
+    "prefill W4A16 Linear-add regions reuse the legacy static g64_m4 kernel";
+  expect
+    (contains_substring prefill_source
+       "const bool has_bias = (params.has_bias != 0u);"
+    && contains_substring prefill_source
+         "acc0 += float(bias_or_scale[row0 * params.bias_row_stride + col]);")
+    "prefill lowering keeps the legacy flat bias_or_scale writeback";
 
 
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"

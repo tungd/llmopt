@@ -52,12 +52,6 @@ val to_string : t -> string
 val emit_msl_writeback : acc:string -> idx:string -> t -> string
 (** Emits the inlined C++/MSL scalar expression for register writeback. *)
 
-val algebraic_residual_add : residual:Ir.Value.t -> t
-(** Algebraic ([Expr]) form of a fused residual add: additively identical to
-    [residual_add] but represented as an applicative read over the residual
-    tensor, so kernels can bind the tensor through dynamic buffer
-    declarations instead of the fixed role buffer of the legacy tags. *)
-
 val canonicalize : t -> t
 (** Re-numbers the tensor inputs of the epilogue's applicative form by stable
     first-occurrence ordinal, so structurally equal epilogues render
@@ -79,20 +73,6 @@ val algebraic_kernel_name : base:string -> t -> string
     equal epilogues always derive the same name; callers use this as the
     schedule-routing key shared between code emission ([Metal.lower]) and
     runtime dispatch ([Metal_runtime]). *)
-
-val w4a16_algebraic_base : string
-(** Kernel-name base of the single-row W4A16 residual-add kernel family that
-    the fused Linear-add schedule routing emits. *)
-
-val w4a16_algebraic_route :
-  storage:Ir.Linear_storage.layout -> m:int -> residual:Ir.Value.t -> t option
-(** Routing policy shared by Metal lowering and the runtime for fused
-    W4A16 Linear-add regions: yields the canonical algebraic epilogue for a
-    single row ([m = 1]) of [Groupwise_packed { bits = 4; group_elements =
-    64 }] storage — exactly the geometry the legacy static
-    [llmopt_w4a16_linear_f16_g64] kernel covered with a flat
-    [bias_or_scale] add — and [None] for every other layout or geometry,
-    which keeps those regions on the legacy kernel path. *)
 
 module Monoid : sig
   type t = slot Applicative_expr.t
