@@ -149,3 +149,78 @@ module Monoid = struct
   let emit_msl e ~acc ~idx =
     Applicative_expr.emit_msl_expr ~slot_emitter:(fun Acc -> acc) ~index_expr:idx (Applicative_expr.simplify e)
 end
+
+let algebraic_residual_add ~residual =
+  Expr
+    (Binop
+       ( Add,
+         Slot Acc,
+         Read { value = residual; coord = Coordinate_map.identity } ))
+
+let map_reads ~rename expr =
+  let rec go expr =
+    match expr with
+    | Slot _ | Const _ as leaf -> leaf
+    | Read { value; coord } -> Read { value = rename value; coord }
+    | Unop (op, operand) -> Unop (op, go operand)
+    | Binop (op, left, right) -> Binop (op, go left, go right)
+    | Triop (op, a, b, c) -> Triop (op, go a, go b, go c)
+  in
+  go expr
+
+let canonicalize epilogue =
+  let expr = to_expr epilogue in
+  let required = Applicative_expr.required_values expr in
+  let ordinal value =
+    let rec find index = function
+      | [] ->
+          invalid_arg
+            "Epilogue.canonicalize: tensor not required by the epilogue expression"
+      | candidate :: rest ->
+          if Ir.Value.equal value candidate then index else find (index + 1) rest
+    in
+    find 0 required
+  in
+  let rename value =
+    Ir.Value.make_tensor ~id:(ordinal value)
+      ~shape:(Ir.Value.logical_shape value) ~dtype:(Ir.Value.dtype value)
+  in
+  Expr (map_reads ~rename expr)
+
+let msl_buffer_decls ~start_index = function
+  | Expr expr ->
+      Applicative_expr.required_values expr
+      |> List.mapi (fun offset value ->
+             let type_name = function
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf ",\n    device const %s* buf_%d [[buffer(%d)]]"
+               (type_name (Ir.Value.dtype value))
+               (Ir.Value_id.to_int (Ir.Value.id value))
+               (start_index + offset))
+      |> String.concat ""
+  | _ -> ""
+
+let algebraic_kernel_name ~base epilogue =
+  let canonical = to_expr (canonicalize epilogue) in
+  let writeback =
+    Applicative_expr.emit_msl_expr
+      ~slot_emitter:(fun Acc -> "acc") ~index_expr:"col" canonical
+  in
+  let dtypes =
+    Applicative_expr.required_values canonical
+    |> List.map (fun value -> Ir.Dtype.to_string (Ir.Value.dtype value))
+    |> String.concat ","
+  in
+  let digest = Digest.string (dtypes ^ "|" ^ writeback) in
+  base ^ "_" ^ String.sub (Digest.to_hex digest) 0 8
+
+let w4a16_algebraic_base = "llmopt_w4a16_linear_f16_g64_epi"
+
+let w4a16_algebraic_route ~storage ~m ~residual =
+  match storage with
+  | Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 64 }
+    when m = 1 ->
+      Some (canonicalize (algebraic_residual_add ~residual))
+  | _ -> None

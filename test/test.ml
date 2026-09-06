@@ -6850,4 +6850,174 @@ let () =
   Test_epilogue_monoid.run ();
   Test_algebraic_canonicalization.run ();
 
+  (* 12. Fused W4A16 Linear-add epilogue schedule routing.  The shared pure
+     route [Epilogue.w4a16_algebraic_route] is the single scheduling key that
+     [Metal.lower]'s region tactics and [Metal_runtime] dispatch both
+     recompute, so a decode-shaped (m = 1) groupwise-4/64 Linear-add region
+     lowers to one deterministic parametric kernel and every other geometry
+     stays on the legacy static kernel path unchanged. *)
+  let routing_shape rows cols = Tensor_shape.of_ints_exn [ rows; cols ] in
+  let routing_tensor graph name rows cols =
+    Ir.Graph.tensor_input graph ~name ~source:Ir.Input_source.Runtime
+      ~shape:(routing_shape rows cols) ~dtype:Ir.Dtype.Float16
+  in
+  let routing_w4_storage =
+    Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 64 }
+  in
+  let routing_optimize ~m =
+    let graph = Ir.Graph.create () in
+    let input = routing_tensor graph "routing-input" m 64 in
+    let weight =
+      Ir.Graph.tensor_input graph ~name:"routing-weight"
+        ~source:(Ir.Input_source.Tensor_store { key = "routing-weight" })
+        ~shape:(routing_shape 64 32) ~dtype:Ir.Dtype.UInt8
+    in
+    let scale =
+      Ir.Graph.tensor_input graph ~name:"routing-scale"
+        ~source:(Ir.Input_source.Tensor_store { key = "routing-scale" })
+        ~shape:(routing_shape 64 1) ~dtype:Ir.Dtype.Float16
+    in
+    let projected =
+      Ir.Graph.fresh_tensor_value graph ~shape:(routing_shape m 64)
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append graph
+      ~op:(Ir.Op.W4a16_linear { m; n = 64; k = 64; bias = false })
+      ~inputs:[ input; weight; scale ] ~output:(Some projected);
+    let residual = routing_tensor graph "routing-residual" m 64 in
+    let added =
+      Ir.Graph.fresh_tensor_value graph ~shape:(routing_shape m 64)
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append graph ~op:(Ir.Op.Add { broadcast = Shape.Same })
+      ~inputs:[ projected; residual ] ~output:(Some added);
+    Ir.Graph.add_output graph ~name:"routing-output" added;
+    let optimization = Passes.optimize graph |> expect_ok in
+    let regions = Passes.Optimization.fusion_regions optimization in
+    ( residual, optimization, regions )
+  in
+  expect
+    (match
+       Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
+         ~residual:
+           (Ir.Value.make_tensor ~id:7
+              ~shape:(routing_shape 1 64) ~dtype:Ir.Dtype.Float16)
+     with
+    | Some _ -> true
+    | None -> false)
+    "routing admits single-row groupwise-4/64 Linear-add residuals";
+  expect
+    (Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:4
+       ~residual:
+         (Ir.Value.make_tensor ~id:8
+            ~shape:(routing_shape 4 64) ~dtype:Ir.Dtype.Float16)
+    = None)
+    "routing declines multi-row W4A16 Linear-add regions";
+  expect
+    (Epilogue.w4a16_algebraic_route
+       ~storage:(Ir.Linear_storage.Groupwise_packed { bits = 4; group_elements = 32 })
+       ~m:1
+       ~residual:
+         (Ir.Value.make_tensor ~id:9
+            ~shape:(routing_shape 1 64) ~dtype:Ir.Dtype.Float16)
+    = None
+    && Epilogue.w4a16_algebraic_route
+         ~storage:(Ir.Linear_storage.Dense Ir.Dtype.Float16)
+         ~m:1
+         ~residual:
+           (Ir.Value.make_tensor ~id:10
+              ~shape:(routing_shape 1 64) ~dtype:Ir.Dtype.Float16)
+       = None)
+    "routing keeps non-groupwise-4/64 layouts on the legacy kernel path";
+  let routing_decode_residual, decode_optimization, decode_regions =
+    routing_optimize ~m:1
+  in
+  expect
+    (match
+       Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
+         ~residual:routing_decode_residual
+     with
+    | Some epilogue ->
+        (match Epilogue.inputs epilogue with
+        | [ buffer_value ] ->
+            Ir.Value_id.to_int (Ir.Value.id buffer_value) = 0
+        | _ -> false)
+    | None -> false)
+    "routing canonicalizes the residual read to buffer ordinal 0";
+
+  let decode_epilogue =
+    match
+      Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
+        ~residual:routing_decode_residual
+    with
+    | Some epilogue -> epilogue
+    | None -> fail "decode routing unexpectedly declined"
+  in
+  let decode_name =
+    Epilogue.algebraic_kernel_name ~base:Epilogue.w4a16_algebraic_base
+      decode_epilogue
+  in
+  expect
+    (String.length decode_name > String.length Epilogue.w4a16_algebraic_base
+    && String.starts_with ~prefix:(Epilogue.w4a16_algebraic_base ^ "_") decode_name)
+    "routed kernel names are deterministic digests under the epi base";
+  expect
+    (Epilogue.msl_buffer_decls ~start_index:4 decode_epilogue
+    = ",\n    device const half* buf_0 [[buffer(4)]]")
+    "msl_buffer_decls binds the canonical residual at buffer(4)";
+  let decode_program =
+    Metal.lower ~fusion_regions:decode_regions
+      (Passes.Optimization.execution_graph decode_optimization)
+    |> expect_ok
+  in
+  let decode_source = Metal.Program.source decode_program in
+  expect
+    (contains_substring decode_source ("kernel void " ^ decode_name)
+    && contains_substring decode_source "W4A16EpiParams"
+    && contains_substring decode_source
+         "device const half* buf_0 [[buffer(4)]]"
+    && contains_substring decode_source "(acc + ((float)buf_0[col]))")
+    "Metal lowering emits the routed parametric W4A16 Linear-add kernel";
+  expect
+    (Metal.Program.kernels decode_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = decode_name
+           && Kernel_abi.Entry.operation entry
+              = Kernel_abi.Operation.W4a16_linear
+           && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)
+           && Kernel_abi.Entry.input_dtype entry = Ir.Dtype.Float16
+           && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16))
+    "Metal lowering registers the routed kernel ABI entry";
+  let decoding_residual_alias =
+    Ir.Value.make_tensor ~id:777 ~shape:(routing_shape 1 64)
+      ~dtype:Ir.Dtype.Float16
+  in
+  expect
+    (match
+       Epilogue.w4a16_algebraic_route ~storage:routing_w4_storage ~m:1
+         ~residual:decoding_residual_alias
+     with
+    | Some alias_epilogue ->
+        Epilogue.equal decode_epilogue alias_epilogue
+        && Epilogue.algebraic_kernel_name ~base:Epilogue.w4a16_algebraic_base
+             alias_epilogue
+           = decode_name
+    | None -> false)
+    "routed kernel names survive structural renaming of the residual tensor";
+  let _, prefill_optimization, prefill_regions = routing_optimize ~m:4 in
+  let prefill_program =
+    Metal.lower ~fusion_regions:prefill_regions
+      (Passes.Optimization.execution_graph prefill_optimization)
+    |> expect_ok
+  in
+  expect
+    (not
+       (contains_substring (Metal.Program.source prefill_program)
+          ("kernel void " ^ Epilogue.w4a16_algebraic_base))
+    && not
+         (contains_substring (Metal.Program.source prefill_program)
+            "W4A16EpiParams"))
+    "multi-row regions keep today's static legacy W4A16 kernel path";
+
+
   print_endline "llmopt canonical W4A16/KVQ8 tests passed"

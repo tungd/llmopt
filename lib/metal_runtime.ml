@@ -3040,31 +3040,63 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                   let* weight = find_value state linear.weight in
                   let* scale_buffer = find_value state scale in
                   let* additive_buffer = find_value state additive in
-                  let bias_row_stride =
-                    if
-                      Tensor_shape.numel (Ir.Value.logical_shape additive)
-                      = linear.m * linear.n
-                    then linear.n
-                    else 0
-                  in
-                  let* parameters =
-                    Parameters.u32s
-                      [ linear.m; linear.n; linear.k; 1; bias_row_stride ]
-                  in
-                  let name, rows =
-                    if linear.m = 1 then
-                      "llmopt_w4a16_linear_f16_g64", linear.m * linear.n
-                    else
-                      "llmopt_w4a16_linear_f16_g64_m4",
-                      ((linear.m + 3) / 4) * linear.n
-                  in
-                  let* grid_x = linear_f16_grid rows in
-                  dispatched
-                    (dispatch_output ~name runtime state output
-                       ~operation:Kernel_abi.Operation.W4a16_linear
-                       ~input_dtype:Ir.Dtype.Float16
-                       ~buffers:[ input; weight; scale_buffer; additive_buffer ]
-                   ~parameters ~grid:(grid_x, 1, 1))
+                  (match
+                     Epilogue.w4a16_algebraic_route ~storage:linear.storage
+                       ~m:linear.m ~residual:additive
+                   with
+                  | Some epilogue ->
+                      let name =
+                        Epilogue.algebraic_kernel_name
+                          ~base:Epilogue.w4a16_algebraic_base epilogue
+                      in
+                      let* output_buffer = workspace_buffer state output in
+                      let* entry =
+                        kernel_entry ~name runtime
+                          ~operation:Kernel_abi.Operation.W4a16_linear
+                          ~input_dtype:Ir.Dtype.Float16
+                          ~output_dtype:Ir.Dtype.Float16
+                      in
+                      let* parameters =
+                        Parameters.u32s [ linear.m; linear.n; linear.k ]
+                      in
+                      let* grid_x = linear_f16_grid (linear.m * linear.n) in
+                      let* kernel =
+                        dispatch ~batch runtime entry
+                          ~buffers:
+                            [ input; weight; scale_buffer; output_buffer;
+                              additive_buffer ]
+                          ~parameters ~grid:(grid_x, 1, 1)
+                      in
+                      dispatched
+                        (Ok (bind_value state output output_buffer, kernel))
+                  | None ->
+                      let bias_row_stride =
+                        if
+                          Tensor_shape.numel
+                            (Ir.Value.logical_shape additive)
+                          = linear.m * linear.n
+                        then linear.n
+                        else 0
+                      in
+                      let* parameters =
+                        Parameters.u32s
+                          [ linear.m; linear.n; linear.k; 1; bias_row_stride ]
+                      in
+                      let name, rows =
+                        if linear.m = 1 then
+                          "llmopt_w4a16_linear_f16_g64", linear.m * linear.n
+                        else
+                          "llmopt_w4a16_linear_f16_g64_m4",
+                          ((linear.m + 3) / 4) * linear.n
+                      in
+                      let* grid_x = linear_f16_grid rows in
+                      dispatched
+                        (dispatch_output ~name runtime state output
+                           ~operation:Kernel_abi.Operation.W4a16_linear
+                           ~input_dtype:Ir.Dtype.Float16
+                           ~buffers:
+                             [ input; weight; scale_buffer; additive_buffer ]
+                           ~parameters ~grid:(grid_x, 1, 1)))
               | Ir.Linear_storage.Groupwise_packed _ ->
                   Error "assignment Linear-add has unsupported packed storage"
               | Ir.Linear_storage.Dense _ ->

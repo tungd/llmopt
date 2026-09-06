@@ -324,6 +324,57 @@ let w4a16_entries =
       ~operation:Kernel_abi.Operation.W4a16_linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
+let emit_w4a16_algebraic_kernels epilogues =
+  match epilogues with
+  | [] -> ""
+  | _ :: _ ->
+      let params = "W4A16EpiParams" in
+      ("\nstruct " ^ params ^ " { uint m; uint n; uint k; };\n\n")
+      ^ (epilogues
+        |> List.map (fun (name, epilogue) ->
+               let buffer_decls =
+                 Epilogue.msl_buffer_decls ~start_index:4 epilogue
+               in
+               let buffer_count = List.length (Epilogue.inputs epilogue) in
+               let writeback =
+                 Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"col" epilogue
+               in
+               "kernel void " ^ name ^ "(\n"
+               ^ "    device const half* input [[buffer(0)]],\n"
+               ^ "    device const uchar* packed_weight [[buffer(1)]],\n"
+               ^ "    device const half* scale [[buffer(2)]],\n"
+               ^ "    device half* output [[buffer(3)]]"
+               ^ buffer_decls
+               ^ ",\n    constant " ^ params ^ "& params [[buffer("
+               ^ string_of_int (4 + buffer_count) ^ ")]],\n"
+               ^ "    uint gid [[thread_position_in_grid]],\n"
+               ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+               ^ "  const uint simd_idx = gid >> 5;\n"
+               ^ "  const uint total_elements = params.m * params.n;\n"
+               ^ "  if (simd_idx >= total_elements) return;\n"
+               ^ "  const uint row = simd_idx / params.n;\n"
+               ^ "  const uint col = simd_idx - row * params.n;\n"
+               ^ "  const uint groups = params.k >> 6;\n"
+               ^ "  const uint packed_base = col * (params.k >> 1);\n"
+               ^ "  const uint scale_base = col * groups;\n"
+               ^ "  const uint input_base = row * params.k;\n"
+               ^ "  float acc = 0.0f;\n"
+               ^ "  for (uint g = 0; g < groups; ++g) {\n"
+               ^ "    const float s = float(scale[scale_base + g]);\n"
+               ^ "    const uchar packed = packed_weight[packed_base + (g << 5) + lane];\n"
+               ^ "    const int q0 = int(packed & 15u) - ((packed & 8u) ? 16 : 0);\n"
+               ^ "    const int q1 = int(packed >> 4) - ((packed & 128u) ? 16 : 0);\n"
+               ^ "    const uint in_idx = input_base + (g << 6) + (lane << 1);\n"
+               ^ "    const half2 in_val = *reinterpret_cast<device const half2*>(input + in_idx);\n"
+               ^ "    acc += (float(in_val.x) * float(q0) + float(in_val.y) * float(q1)) * s;\n"
+               ^ "  }\n"
+               ^ "  acc = simd_sum(acc);\n"
+               ^ "  if (lane == 0) {\n"
+               ^ "    output[row * params.n + col] = half(" ^ writeback ^ ");\n"
+               ^ "  }\n"
+               ^ "}\n\n")
+        |> String.concat "")
+
 let w4a16_qkv_linear_source =
   "\nstruct W4A16QKVParams {\n"
   ^ "  uint m;\n"
@@ -10650,22 +10701,35 @@ let region_tactics ~target regions =
   regions
   |> List.fold_left
        (fun (quant, quant_add, has_w4, has_rms, has_rms_rope,
-              has_short_conv_silu, gated_delta) region ->
+             has_short_conv_silu, gated_delta, region_w4_algebraic) region ->
          match Kernel_ir.Fused_tactic.select region with
          | Some
              (Kernel_ir.Fused_tactic.Linear_additive
-               { linear; output; _ }) ->
+               { linear; additive; output; _ }) ->
              (match linear.storage, select_linear linear output with
              | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                  (storage, tactic) :: quant,
                  (storage, tactic) :: quant_add,
                  has_w4, has_rms, has_rms_rope, has_short_conv_silu,
-                 gated_delta
+                 gated_delta, region_w4_algebraic
              | Ir.Linear_storage.Groupwise_packed _, _ ->
+                 let region_w4_algebraic =
+                   match
+                     Epilogue.w4a16_algebraic_route ~storage:linear.storage
+                       ~m:linear.m ~residual:additive
+                   with
+                   | Some epilogue ->
+                       ( Epilogue.algebraic_kernel_name
+                           ~base:Epilogue.w4a16_algebraic_base epilogue,
+                         epilogue )
+                       :: region_w4_algebraic
+                   | None -> region_w4_algebraic
+                 in
                  quant, quant_add, true, has_rms, has_rms_rope,
-                 has_short_conv_silu, gated_delta
-             | _ -> quant, quant_add, has_w4, has_rms, has_rms_rope,
-                 has_short_conv_silu, gated_delta)
+                 has_short_conv_silu, gated_delta, region_w4_algebraic
+             | _ ->
+                 quant, quant_add, has_w4, has_rms, has_rms_rope,
+                 has_short_conv_silu, gated_delta, region_w4_algebraic)
          | Some
              (Kernel_ir.Fused_tactic.Gated_product
                { gate; up; output; _ }) ->
@@ -10686,16 +10750,16 @@ let region_tactics ~target regions =
                   | _ -> false)
              in
              quant, quant_add, has_w4, has_rms, has_rms_rope,
-             has_short_conv_silu, gated_delta
+             has_short_conv_silu, gated_delta, region_w4_algebraic
          | Some (Kernel_ir.Fused_tactic.Rms_normalize _) ->
              quant, quant_add, has_w4, true, has_rms_rope,
-             has_short_conv_silu, gated_delta
+             has_short_conv_silu, gated_delta, region_w4_algebraic
          | Some (Kernel_ir.Fused_tactic.Rms_rope _) ->
              quant, quant_add, has_w4, has_rms, true,
-             has_short_conv_silu, gated_delta
+             has_short_conv_silu, gated_delta, region_w4_algebraic
          | Some (Kernel_ir.Fused_tactic.Short_conv_silu _) ->
              quant, quant_add, has_w4, has_rms, has_rms_rope, true,
-             gated_delta
+             gated_delta, region_w4_algebraic
          | Some (Kernel_ir.Fused_tactic.Gated_delta { query; _ }) ->
              let gated_delta =
                match
@@ -10707,23 +10771,24 @@ let region_tactics ~target regions =
                | _ -> gated_delta
              in
              quant, quant_add, has_w4, has_rms, has_rms_rope,
-             has_short_conv_silu, gated_delta
+             has_short_conv_silu, gated_delta, region_w4_algebraic
          | None ->
              quant, quant_add, has_w4, has_rms, has_rms_rope,
-             has_short_conv_silu, gated_delta)
-       ([], [], false, false, false, false, [])
+             has_short_conv_silu, gated_delta, region_w4_algebraic)
+       ([], [], false, false, false, false, [], [])
   |> fun (quant, quant_add, has_w4, has_rms, has_rms_rope,
-           has_short_conv_silu, gated_delta) ->
+          has_short_conv_silu, gated_delta, region_w4_algebraic) ->
   ( List.sort_uniq Stdlib.compare quant,
     List.sort_uniq Stdlib.compare quant_add,
     has_w4, has_rms, has_rms_rope, has_short_conv_silu,
-    List.sort_uniq Stdlib.compare gated_delta )
+    List.sort_uniq Stdlib.compare gated_delta,
+    List.sort_uniq Stdlib.compare region_w4_algebraic )
 
 let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
   let graph = without_region_nodes graph fusion_regions in
   let ( region_quant_tactics, region_quant_add_tactics, regions_have_w4,
         regions_have_rms, regions_have_rms_rope, regions_have_short_conv_silu,
-        region_gated_delta_tactics ) =
+        region_gated_delta_tactics, region_w4_algebraic ) =
     region_tactics ~target fusion_regions
   in
   let materialized_movement = has_materialized_movement graph in
@@ -10819,6 +10884,14 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
       ( has_w4a16_lm_head_argmax graph,
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
+      ( region_w4_algebraic <> [],
+        emit_w4a16_algebraic_kernels region_w4_algebraic,
+        region_w4_algebraic
+        |> List.map (fun (name, _) ->
+               kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+                 ~name ~operation:Kernel_abi.Operation.W4a16_linear
+                 ~input_dtype:Ir.Dtype.Float16
+                 ~output_dtype:Ir.Dtype.Float16) );
       ( has_quant_linear graph || region_quant_tactics <> [] || quant_qkv,
         quant_common_source ^ quant_format_source
         ^ quant_qkv_source ^ quant_add_source,
