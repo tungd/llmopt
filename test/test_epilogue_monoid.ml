@@ -296,6 +296,77 @@ let run () =
 
   Printf.printf "  [PASS] Expr epilogues bind dynamic buf_<Value_id> buffers in parametric emitters\n%!";
 
+  (* The real Gemma-4 decode base is the Q4_0 x8 kernel (m = 1, n a multiple
+     of 8, k < 4096, 256 threads, eight accumulator0..7 registers owning one
+     output column each).  The digest-variant emitter must rewrite its
+     store tail into eight column-guarded stores applying an arbitrary
+     Epilogue.t, append the canonicalized epilogue's buffer declarations
+     after the QuantLinearParams parameter (buffer(4) -> declarations at
+     buffer(5)+), and rename the kernel to the deterministic digest name --
+     while leaving the legacy kernel text untouched for byte-identical flat
+     dispatch.  Canonicalization renumbers the reads to buf_0..buf_k-1 in
+     stable required_values order, so declarations, write-backs and the
+     digest suffix all agree with Epilogue.inputs. *)
+  let x8_base = "llmopt_q4_0_linear_f16_x8" in
+  let digest_name epi =
+    Epilogue.algebraic_kernel_name ~base:x8_base epi
+  in
+  let emit_digest epi =
+    match Metal.emit_q4_0_x8_epilogue_kernel ~name:(digest_name epi) ~epilogue:epi with
+    | Error message -> failwith ("q4_0 x8 digest emission failed: " ^ message)
+    | Ok source -> source
+  in
+  let x8_source = emit_digest gemma_chain in
+  expect_contains "q4_0 x8 digest kernel renamed to digest name"
+    x8_source
+    ("kernel void " ^ digest_name gemma_chain ^ "(");
+  expect_contains "q4_0 x8 digest kernel appends canonicalized buffer declarations"
+    x8_source
+    ",\n    device const half* buf_0 [[buffer(5)]]";
+  expect_contains "q4_0 x8 digest kernel declares second canonicalized buffer"
+    x8_source
+    "device const half* buf_1 [[buffer(6)]]";
+  expect_contains "q4_0 x8 digest kernel declares third canonicalized buffer"
+    x8_source
+    "device const half* buf_2 [[buffer(7)]]";
+  expect_contains "q4_0 x8 digest write-back reads first canonical buffer at column 0"
+    x8_source
+    "(float)buf_0[base_col]";
+  expect_contains "q4_0 x8 digest write-back guards column 7"
+    x8_source
+    "if (base_col + 7u < params.n) output[base_col + 7u] = half(";
+  expect_contains "q4_0 x8 digest write-back uses accumulator7 register"
+    x8_source
+    "accumulator7";
+  if contains x8_source "params.has_bias" then
+    failwith "q4_0 x8 digest kernel must not read the legacy has_bias store block";
+  (* The digest store tail must replace the plain kernel's guarded 8-wide
+     tail, never duplicate it: exactly eight unguarded/guarded output stores
+     must remain after the store rewrite. *)
+  let output_store_count =
+    let len = String.length x8_source in
+    let rec count i acc =
+      if i + 7 > len then acc
+      else if String.sub x8_source i 7 = "output[" then count (i + 1) (acc + 1)
+      else count (i + 1) acc
+    in
+    count 0 0
+  in
+  if output_store_count <> 8 then
+    failwith
+      (Printf.sprintf "q4_0 x8 digest kernel must contain exactly 8 output stores (got %d)"
+         output_store_count);
+  (* Digest name and emitted text are deterministic for the same epilogue *)
+  let x8_source_again = emit_digest gemma_chain in
+  if x8_source <> x8_source_again then
+    failwith "q4_0 x8 digest emission is not deterministic";
+  (* A Float32 read must declare a float (not half) canonicalized buffer *)
+  let f32_digest_source = emit_digest f32_expr in
+  expect_contains "q4_0 x8 digest Float32 read declares float buffer"
+    f32_digest_source
+    "device const float* buf_0 [[buffer(5)]]";
+  Printf.printf "  [PASS] Q4_0 x8 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
+
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)
   (* ========================================================================= *)

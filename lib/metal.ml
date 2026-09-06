@@ -7031,6 +7031,85 @@ let quant_linear_add_source ~target (quant, tactic) =
   in
   fused ^ "\n"
 
+(* ------------------------------------------------------------------------ *)
+(* Digest-keyed epilogue variants of the real Q4_0 decode kernel.            *)
+(*                                                                          *)
+(* [llmopt_q4_0_linear_f16_x8] is the costed decode kernel for the real     *)
+(* Gemma-4 decode shape (m = 1, k < 4096, n a multiple of 8): a 256-thread  *)
+(* kernel in which each SIMDgroup reduces a whole column group and the      *)
+(* eight [accumulator0..7] registers own one output column each.  The       *)
+(* digest-variant emitter rewrites that kernel's column-guarded store tail  *)
+(* into eight stores that apply an arbitrary [Epilogue.t] readback,         *)
+(* appends the epilogue's buffer declarations after the                     *)
+(* [QuantLinearParams] parameter, and renames the kernel to the             *)
+(* deterministic digest name derived from the canonicalized epilogue (see   *)
+(* [Epilogue.algebraic_kernel_name]).  The plain kernel text is left        *)
+(* untouched, so the legacy flat decode path stays byte-identical.  The     *)
+(* epilogue is canonicalized first so the emitted buffer names ([buf_0],    *)
+(* [buf_1], ...) and the digest name agree with the stable first-occurrence *)
+(* order of [Epilogue.inputs]. *)
+let q4_0_x8_digest_store epilogue =
+  List.init 8 (fun j ->
+      let acc = Printf.sprintf "accumulator%d" j in
+      let idx =
+        if j = 0 then "base_col" else Printf.sprintf "(base_col + %du)" j
+      in
+      let expr = Epilogue.emit_msl_writeback ~acc ~idx epilogue in
+      if j = 0 then Printf.sprintf "    output[base_col] = half(%s);" expr
+      else
+        Printf.sprintf
+          "    if (base_col + %du < params.n) output[base_col + %du] = half(%s);"
+          j j expr)
+  |> String.concat "\n"
+
+let emit_q4_0_x8_epilogue_kernel ~name ~epilogue =
+  let epilogue = Epilogue.canonicalize epilogue in
+  let base_name = "llmopt_q4_0_linear_f16_x8" in
+  match quant_source ~target:Target_hardware.default Ir.Dtype.Q4_0 with
+  | Error message -> Error message
+  | Ok family -> (
+      match find_substring_from family ("kernel void " ^ base_name ^ "(") 0 with
+      | None ->
+          Error
+            "Metal Q4_0 x8 digest emission: decode kernel is absent from the \
+             Q4_0 family source"
+      | Some kernel_start -> (
+          let kernel_stop =
+            match find_substring_from family "\nkernel void " (kernel_start + 1)
+            with
+            | Some stop -> stop
+            | None -> String.length family
+          in
+          let kernel =
+            String.sub family kernel_start (kernel_stop - kernel_start)
+          in
+          let renamed =
+            replace_all kernel
+              ~pattern:("kernel void " ^ base_name ^ "(")
+              ~replacement:("kernel void " ^ name ^ "(")
+          in
+          let params_line =
+            "constant QuantLinearParams& params [[buffer(4)]],"
+          in
+          let with_decls =
+            replace_all renamed ~pattern:params_line
+              ~replacement:
+                (params_line ^ Epilogue.msl_buffer_decls ~start_index:5 epilogue)
+          in
+          let tail_marker = "  if (lane == 0u && base_col < params.n) {" in
+          match find_substring_from with_decls tail_marker 0 with
+          | None ->
+              Error
+                "Metal Q4_0 x8 digest emission: writeback tail is absent from \
+                 the decode kernel"
+          | Some tail_start ->
+              let head = String.sub with_decls 0 tail_start in
+              Ok
+                (head
+                ^ "  if (lane == 0u && base_col < params.n) {\n"
+                ^ q4_0_x8_digest_store epilogue
+                ^ "\n  }\n}\n")))
+
 let kquant_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_dequant_q4_k"
