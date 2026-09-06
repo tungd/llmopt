@@ -63,12 +63,14 @@ val canonicalize : t -> t
     text.  [canonicalize] is total and idempotent. *)
 
 val msl_buffer_decls : start_index:int -> t -> string
-(** Metal buffer declarations ([device const <half|float>* buf_N
-    [[buffer(i)]]], one per [inputs], beginning at [start_index]) for the
-    [Expr] variant; returns the empty string for every legacy variant.  This
-    is the single source of the declaration layout that
-    [Applicative_expr.emit_msl_expr]'s [buf_<Value_id>] reads compile
-    against. *)
+(** Metal buffer declarations ([device const <half|float>* <name>
+    [[buffer(i)]]], one per [inputs], beginning at [start_index]) whose names
+    and order match the tensor reads of [emit_msl_writeback]: the typed
+    variants bind their role-named buffers ([bias]/[up]/[residual]) while the
+    [Expr] variant binds [buf_<Value_id>] in the stable first-occurrence order
+    of [Applicative_expr.required_values].  This is the single source of the
+    declaration layout that emitters and the runtime's dynamic buffer binding
+    must agree on; returns the empty string when [inputs] is empty. *)
 
 val algebraic_kernel_name : base:string -> t -> string
 (** Deterministic kernel name for the [base] body with [epilogue] folded in:

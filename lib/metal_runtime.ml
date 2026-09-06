@@ -2704,7 +2704,11 @@ let update_slice_kernel destination source output =
            (Ir.Dtype.to_string output_dtype))
 
 type assignment_execution =
-  | Assignment_linear_add of Kernel_ir.Fused_tactic.linear * Ir.Value.t * Ir.Value.t
+  | Assignment_linear_epilogue of {
+      linear : Kernel_ir.Fused_tactic.linear;
+      epilogue : Epilogue.t;
+      output : Ir.Value.t;
+    }
   | Assignment_gated_product of {
       gate : Kernel_ir.Fused_tactic.linear;
       up : Kernel_ir.Fused_tactic.linear;
@@ -2747,14 +2751,8 @@ let assignment_execution command =
       Kernel_ir.Fused_tactic.select
   with
   | Some
-      (Kernel_ir.Fused_tactic.Linear_epilogue
-        { linear; epilogue = Epilogue.Residual_add { residual }; output }) ->
-      Some (Assignment_linear_add (linear, residual, output))
-  | Some (Kernel_ir.Fused_tactic.Linear_epilogue _) ->
-      (* Non-flat epilogues are not yet encodable as legacy assignments; the
-         caller keeps the region out of fused dispatch until parametric
-         emission (Metal.lower / Metal_block_codegen) can serve them. *)
-      None
+      (Kernel_ir.Fused_tactic.Linear_epilogue { linear; epilogue; output }) ->
+      Some (Assignment_linear_epilogue { linear; epilogue; output })
   | Some
       (Kernel_ir.Fused_tactic.Gated_product
         { gate; up; activation; output }) ->
@@ -3006,76 +3004,111 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                   ~grid:(grid_x, 1, 1)
               in
               dispatched (Ok (bind_value state output output_buffer, kernel))
-          | Assignment_linear_add (linear, additive, output) ->
+          | Assignment_linear_epilogue { linear; epilogue; output } ->
               (match linear.Kernel_ir.Fused_tactic.storage with
               | Ir.Linear_storage.Block_quantized quant ->
                   let* () =
                     validate_linear_shapes ~m:linear.m ~n:linear.n ~k:linear.k
                       linear.input linear.weight output
                   in
-                  let* () =
-                    if
-                      same_value_metadata additive output
-                      && Ir.Value.dtype linear.input = Ir.Dtype.Float16
-                      && Ir.Value.dtype output = Ir.Dtype.Float16
-                    then Ok ()
-                    else Error "assignment Linear-add metadata is inconsistent"
-                  in
-                  let* buffers =
-                    find_values state [ linear.input; linear.weight; additive ]
-                  in
-                  let* input_buffer, weight_buffer, additive_buffer =
-                    match buffers with
-                    | [ input_buffer; weight_buffer; additive_buffer ] ->
-                        Ok (input_buffer, weight_buffer, additive_buffer)
-                    | _ -> Error "assignment Linear-add buffers are inconsistent"
-                  in
-                  dispatched
-                    (dispatch_quant_linear ~batch runtime state output
-                       ~m:linear.m ~n:linear.n ~k:linear.k ~quant ~input_buffer
-                       ~weight_buffer ~additive_buffer ~epilogue_mode:2)
+                  (match epilogue with
+                  | Epilogue.Residual_add { residual } ->
+                      let* () =
+                        if
+                          same_value_metadata residual output
+                          && Ir.Value.dtype linear.input = Ir.Dtype.Float16
+                          && Ir.Value.dtype output = Ir.Dtype.Float16
+                        then Ok ()
+                        else Error "assignment Linear-epilogue metadata is inconsistent"
+                      in
+                      let* buffers =
+                        find_values state
+                          [ linear.input; linear.weight; residual ]
+                      in
+                      let* input_buffer, weight_buffer, additive_buffer =
+                        match buffers with
+                        | [ input_buffer; weight_buffer; additive_buffer ] ->
+                            Ok (input_buffer, weight_buffer, additive_buffer)
+                        | _ ->
+                            Error "assignment Linear-epilogue buffers are inconsistent"
+                      in
+                      dispatched
+                        (dispatch_quant_linear ~batch runtime state output
+                           ~m:linear.m ~n:linear.n ~k:linear.k ~quant
+                           ~input_buffer ~weight_buffer ~additive_buffer
+                           ~epilogue_mode:2)
+                  | Epilogue.None | Epilogue.Bias _
+                  | Epilogue.Silu | Epilogue.Gelu
+                  | Epilogue.Silu_mul _ | Epilogue.Gelu_mul _
+                  | Epilogue.Bias_residual_add _
+                  | Epilogue.Silu_mul_residual_add _
+                  | Epilogue.Gelu_mul_residual_add _ | Epilogue.Expr _ ->
+                      (* The legacy quantized kernel zoo only services the flat
+                         residual-add writeback.  Any richer epilogue is an
+                         encoding error here (never a silent fallback): the
+                         region/parametric emitters must grow before kernel_ir
+                         selection may admit it. *)
+                      Error
+                        (Printf.sprintf
+                           "assignment Linear-epilogue %s is not servable by the legacy %s kernel family yet"
+                           (Epilogue.to_string epilogue)
+                           (Ir.Dtype.quant_to_string quant))
+                  )
               | Ir.Linear_storage.Groupwise_packed
                   { bits = 4; group_elements = 64 } ->
-                  let* scale =
-                    match linear.parameters with
-                    | [ scale ] -> Ok scale
-                    | _ -> Error "assignment W4A16 Linear-add requires one scale"
-                  in
-                  let* input = find_value state linear.input in
-                  let* weight = find_value state linear.weight in
-                  let* scale_buffer = find_value state scale in
-                  let* additive_buffer = find_value state additive in
-                  let bias_row_stride =
-                    if
-                      Tensor_shape.numel
-                        (Ir.Value.logical_shape additive)
-                      = linear.m * linear.n
-                    then linear.n
-                    else 0
-                  in
-                  let* parameters =
-                    Parameters.u32s
-                      [ linear.m; linear.n; linear.k; 1; bias_row_stride ]
-                  in
-                  let name, rows =
-                    if linear.m = 1 then
-                      "llmopt_w4a16_linear_f16_g64", linear.m * linear.n
-                    else
-                      "llmopt_w4a16_linear_f16_g64_m4",
-                      ((linear.m + 3) / 4) * linear.n
-                  in
-                  let* grid_x = linear_f16_grid rows in
-                  dispatched
-                    (dispatch_output ~name runtime state output
-                       ~operation:Kernel_abi.Operation.W4a16_linear
-                       ~input_dtype:Ir.Dtype.Float16
-                       ~buffers:
-                         [ input; weight; scale_buffer; additive_buffer ]
-                       ~parameters ~grid:(grid_x, 1, 1))
+                  (match epilogue with
+                  | Epilogue.Residual_add { residual } ->
+                      let additive = residual in
+                      let* scale =
+                        match linear.parameters with
+                        | [ scale ] -> Ok scale
+                        | _ -> Error "assignment W4A16 Linear-epilogue requires one scale"
+                      in
+                      let* input = find_value state linear.input in
+                      let* weight = find_value state linear.weight in
+                      let* scale_buffer = find_value state scale in
+                      let* additive_buffer = find_value state additive in
+                      let bias_row_stride =
+                        if
+                          Tensor_shape.numel
+                            (Ir.Value.logical_shape additive)
+                          = linear.m * linear.n
+                        then linear.n
+                        else 0
+                      in
+                      let* parameters =
+                        Parameters.u32s
+                          [ linear.m; linear.n; linear.k; 1; bias_row_stride ]
+                      in
+                      let name, rows =
+                        if linear.m = 1 then
+                          "llmopt_w4a16_linear_f16_g64", linear.m * linear.n
+                        else
+                          "llmopt_w4a16_linear_f16_g64_m4",
+                          ((linear.m + 3) / 4) * linear.n
+                      in
+                      let* grid_x = linear_f16_grid rows in
+                      dispatched
+                        (dispatch_output ~name runtime state output
+                           ~operation:Kernel_abi.Operation.W4a16_linear
+                           ~input_dtype:Ir.Dtype.Float16
+                           ~buffers:
+                             [ input; weight; scale_buffer; additive_buffer ]
+                           ~parameters ~grid:(grid_x, 1, 1))
+                  | Epilogue.None | Epilogue.Bias _
+                  | Epilogue.Silu | Epilogue.Gelu
+                  | Epilogue.Silu_mul _ | Epilogue.Gelu_mul _
+                  | Epilogue.Bias_residual_add _
+                  | Epilogue.Silu_mul_residual_add _
+                  | Epilogue.Gelu_mul_residual_add _ | Epilogue.Expr _ ->
+                      Error
+                        (Printf.sprintf
+                           "assignment Linear-epilogue %s is not servable by the W4A16 legacy kernel family yet"
+                           (Epilogue.to_string epilogue)))
               | Ir.Linear_storage.Groupwise_packed _ ->
-                  Error "assignment Linear-add has unsupported packed storage"
+                  Error "assignment Linear-epilogue has unsupported packed storage"
               | Ir.Linear_storage.Dense _ ->
-                  Error "assignment Linear-add requires quantized storage")
+                  Error "assignment Linear-epilogue requires quantized storage")
           | Assignment_gated_delta
               { query; key; value; gate; beta; output } ->
               let shape value =

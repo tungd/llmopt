@@ -183,20 +183,41 @@ let canonicalize epilogue =
   in
   Expr (map_reads ~rename expr)
 
-let msl_buffer_decls ~start_index = function
-  | Expr expr ->
-      Applicative_expr.required_values expr
-      |> List.mapi (fun offset value ->
-             let type_name = function
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf ",\n    device const %s* buf_%d [[buffer(%d)]]"
-               (type_name (Ir.Value.dtype value))
-               (Ir.Value_id.to_int (Ir.Value.id value))
-               (start_index + offset))
-      |> String.concat ""
-  | _ -> ""
+let msl_buffer_decls ~start_index epilogue =
+  (* Buffer order and identity must agree exactly with the tensor reads of
+     [emit_msl_writeback]: the typed variants read their role-named buffers
+     ([bias]/[up]/[residual]) while [Expr] trees read [buf_<Value_id>]
+     (matching [Applicative_expr.emit_msl_expr]).  Enumerating [inputs] here
+     keeps the declaration layout and the readback names in one place, ordered
+     by the stable first-occurrence order of [Epilogue.inputs]. *)
+  let bindings =
+    match epilogue with
+    | None | Silu | Gelu -> []
+    | Bias { bias } -> [ (bias, "bias") ]
+    | Silu_mul { up } | Gelu_mul { up } -> [ (up, "up") ]
+    | Residual_add { residual } -> [ (residual, "residual") ]
+    | Bias_residual_add { bias; residual } ->
+        [ (bias, "bias"); (residual, "residual") ]
+    | Silu_mul_residual_add { up; residual }
+    | Gelu_mul_residual_add { up; residual } ->
+        [ (up, "up"); (residual, "residual") ]
+    | Expr expr ->
+        Applicative_expr.required_values expr
+        |> List.map (fun value ->
+               ( value,
+                 Printf.sprintf "buf_%d"
+                   (Ir.Value_id.to_int (Ir.Value.id value)) ))
+  in
+  bindings
+  |> List.mapi (fun offset (value, name) ->
+         let type_name =
+           match Ir.Value.dtype value with
+           | Ir.Dtype.Float16 -> "half"
+           | _ -> "float"
+         in
+         Printf.sprintf ",\n    device const %s* %s [[buffer(%d)]]" type_name
+           name (start_index + offset))
+  |> String.concat ""
 
 let algebraic_kernel_name ~base epilogue =
   let canonical = to_expr (canonicalize epilogue) in
