@@ -2327,37 +2327,28 @@ module Fused_tactic = struct
     in
     match linears with
     | [ (linear, linear_output) ] ->
-        (* Admission: select only regions whose entire binding set lies on the
-           foldable chain and whose folded epilogue reduces to the legacy flat
-           residual-add form.  Richer chains become selectable in the same
-           change that teaches code emission and runtime dispatch to serve
-           [Epilogue.Expr] writebacks; until then selection stays byte-identical
-           to the retired [Linear_additive] matcher so decode/prefill regions
-           dispatch through the existing legacy kernels. *)
+        (* Admission: select every region whose entire binding set lies on the
+           foldable pointwise chain.  Flat residual-add regions keep routing
+           through the legacy _add kernels (byte-identical), and richer chains
+           are served by digest-keyed kernels whose header carries the
+           canonical epilogue buffers; an admitted-but-unserved epilogue is
+           never silent because Metal_runtime fails loudly.  A bare single
+           linear (identity epilogue, depth 0) is not a fused tactic and stays
+           unclaimed. *)
         let candidates =
           region.results
           |> List.filter_map (fun result ->
                  match chain_of region values linear_output result.slot with
-                 | Folded (epilogue, depth) when depth >= 1 -> (
-                     match epilogue with
-                     | Epilogue.Residual_add { residual } ->
-                         Some (result, residual, depth)
-                     | Epilogue.None | Epilogue.Bias _ | Epilogue.Silu
-                     | Epilogue.Gelu | Epilogue.Silu_mul _
-                     | Epilogue.Gelu_mul _ | Epilogue.Bias_residual_add _
-                     | Epilogue.Silu_mul_residual_add _
-                     | Epilogue.Gelu_mul_residual_add _ | Epilogue.Expr _ ->
-                         None)
+                 | Folded (epilogue, depth) when depth >= 1 ->
+                     Some (result, epilogue, depth)
                  | Folded (_, _) | External _ | Nonfoldable -> None)
         in
         (match candidates with
-        | [ (result, residual, depth) ]
+        | [ (result, epilogue, depth) ]
           when depth + 1 = List.length region.bindings ->
             Some
               (Linear_epilogue
-                 { linear;
-                   epilogue = Epilogue.residual_add ~residual;
-                   output = result.value })
+                 { linear; epilogue; output = result.value })
         | _ -> None)
     | _ -> None
 

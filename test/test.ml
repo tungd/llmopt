@@ -228,6 +228,24 @@ module Fold_catalog = struct
     in
     expect (Kernel_ir.Fused_tactic.select region = None) name
 
+  let select_matches ~name ~inputs ~steps ~result_index result_value epilogue =
+    let region =
+      single_result_region ~name ~inputs ~steps ~result_index result_value
+    in
+    expect
+      (match Kernel_ir.Fused_tactic.select region with
+      | Some
+          (Kernel_ir.Fused_tactic.Linear_epilogue { linear; epilogue = ep;
+                                                    output }) ->
+          linear.Kernel_ir.Fused_tactic.m = 1
+          && linear.n = 64
+          && linear.k = 64
+          && Epilogue.equal ep epilogue
+          && Ir.Value.equal output result_value
+      | Some _ -> false
+      | None -> false)
+      name
+
   let run () =
     Printf.printf "Running fused Linear_epilogue fold catalog tests...\n%!";
     (* Unique metadata per fixture.  Ids never meet across regions, so the
@@ -296,8 +314,13 @@ module Fold_catalog = struct
       ~result_index:5 o_add (Epilogue.residual_add ~residual);
 
     (* B. Linear -> Silu -> Add(external residual): the chain folds into a
-       composite epilogue but selection stays closed (admission gate), because
-       legacy emitters cannot yet write an Expr epilogue. *)
+       composite epilogue and is now selectable; selection hands the region to
+       the digest-keyed emitter whose writeback honors the full chain, while
+       the runtime keeps flat residual-add regions on the legacy _add path. *)
+    let silu_residual =
+      Epilogue.compose ~producer:Epilogue.silu
+        ~consumer:(Epilogue.residual_add ~residual)
+    in
     fold_matches ~name:"fold composes Silu over the flat residual add"
       ~inputs:inputs_4
       ~steps:
@@ -306,10 +329,8 @@ module Fold_catalog = struct
           (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
           add_step 5 2 o_add;
         ]
-      ~result_index:6 o_add
-      (Epilogue.compose ~producer:Epilogue.silu
-         ~consumer:(Epilogue.residual_add ~residual));
-    select_is_none ~name:"select keeps the Silu chain out of legacy dispatch"
+      ~result_index:6 o_add silu_residual;
+    select_matches ~name:"select admits the Silu-residual chain as one folded epilogue"
       ~inputs:inputs_4
       ~steps:
         [
@@ -317,17 +338,29 @@ module Fold_catalog = struct
           (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
           add_step 5 2 o_add;
         ]
-      ~result_index:6 o_add;
+      ~result_index:6 o_add silu_residual;
 
     (* C. Linear -> Mul(linear, external up): the pointwise scale by an
-       external tensor (an MLP gate's up projection) folds in place. *)
+       external tensor (an MLP gate's up projection) folds in place and is
+       selectable as a one-step scale epilogue. *)
     fold_matches ~name:"fold folds the external-tensor scale (mul by up)"
+      ~inputs:inputs_4
+      ~steps:[ linear_step; mul_step 4 3 o_mul ]
+      ~result_index:5 o_mul (Epilogue.mul ~factor:up);
+    select_matches ~name:"select admits the external-tensor scale epilogue"
       ~inputs:inputs_4
       ~steps:[ linear_step; mul_step 4 3 o_mul ]
       ~result_index:5 o_mul (Epilogue.mul ~factor:up);
 
     (* D. Linear -> Silu -> Mul(up) -> Add(residual): the full gated-MLP tail
-       collapses to one associative epilogue expression. *)
+       collapses to one associative epilogue expression that selection now
+       admits in full. *)
+    let silu_mul_residual =
+      Epilogue.compose ~producer:Epilogue.silu
+        ~consumer:(Epilogue.mul ~factor:up)
+      |> fun producer ->
+      Epilogue.compose ~producer ~consumer:(Epilogue.residual_add ~residual)
+    in
     fold_matches ~name:"fold collapses the Silu-mul-residual chain"
       ~inputs:inputs_4
       ~steps:
@@ -337,12 +370,17 @@ module Fold_catalog = struct
           mul_step 5 3 o_mul;
           add_step 6 2 o_add;
         ]
-      ~result_index:7 o_add
-      (Epilogue.compose ~producer:Epilogue.silu
-         ~consumer:(Epilogue.mul ~factor:up)
-      |> fun producer ->
-      Epilogue.compose ~producer
-        ~consumer:(Epilogue.residual_add ~residual));
+      ~result_index:7 o_add silu_mul_residual;
+    select_matches ~name:"select admits the full Silu-mul-residual chain"
+      ~inputs:inputs_4
+      ~steps:
+        [
+          linear_step;
+          (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
+          mul_step 5 3 o_mul;
+          add_step 6 2 o_add;
+        ]
+      ~result_index:7 o_add silu_mul_residual;
 
     (* E. Regions without a unique linear contraction do not fold or select. *)
     fold_is_none ~name:"fold rejects a two-linear region"
@@ -396,8 +434,10 @@ module Fold_catalog = struct
     expect (Kernel_ir.Fused_tactic.select bare_region = None)
       "select refuses the bare linear region";
 
-    (* H. Double residual add does not reduce to the flat tag and stays out of
-       legacy selection, though the algebra still folds it associatively. *)
+    (* H. Double residual add does not reduce to the flat tag but the algebra
+       still folds it associatively, and selection now admits the composite as
+       one digest-keyed epilogue (runtime dispatch keeps the flat single-add
+       region byte-identical on the legacy _add path). *)
     let double_add =
       Epilogue.compose ~producer:(Epilogue.residual_add ~residual)
         ~consumer:(Epilogue.residual_add ~residual:up)
@@ -406,10 +446,10 @@ module Fold_catalog = struct
       ~inputs:inputs_4
       ~steps:[ linear_step; add_step 4 2 o_add; add_step 5 3 o_mul ]
       ~result_index:6 o_mul double_add;
-    select_is_none ~name:"select keeps stacked residual adds out of dispatch"
+    select_matches ~name:"select admits stacked residual adds as one folded epilogue"
       ~inputs:inputs_4
       ~steps:[ linear_step; add_step 4 2 o_add; add_step 5 3 o_mul ]
-      ~result_index:6 o_mul;
+      ~result_index:6 o_mul double_add;
 
     (* I. A cast on the accumulator is not yet part of the foldable grammar:
        conservative cut, no silent mis-fuse. *)
