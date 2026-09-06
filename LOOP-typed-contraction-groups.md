@@ -54,4 +54,4 @@ Concessions verified against HEAD (`049b0c7`):
 
 ## Checkpoint state
 
-Tree clean at `b6cb142` (G4P11-01 `049b0c7` + G4P11 LOOP doc). G4P12-01 is the next executor slice. Relevant files: `lib/applicative_expr.ml/.mli`, `lib/epilogue.ml/.mli`, `lib/kernel_ir.ml/.mli` (`Fused_tactic`, `chain_of` :2275-2318, recognizers :2320-2477), `lib/constructive_lowering.ml`, `lib/metal_block_codegen.ml`, `lib/metal.ml`, `lib/metal_runtime.ml`, `test/test.ml` (Fold_catalog :104-494), `test/test_epilogue_monoid.ml`.
+G4P12-01 landed at `9c2cdab` (typed-group algebra core `lib/contraction_group.ml/.mli`, `test/test_contraction_group.ml`, both gates green). G4P12-02 is the next executor slice. Relevant files: `lib/contraction_group.ml/.mli` (new algebra core), `lib/applicative_expr.ml/.mli`, `lib/epilogue.ml/.mli`, `lib/kernel_ir.ml/.mli` (`Fused_tactic`, `chain_of` :2275-2318, recognizers :2320-2477), `lib/constructive_lowering.ml`, `lib/metal_block_codegen.ml`, `lib/metal.ml`, `lib/metal_runtime.ml`, `test/test.ml` (Fold_catalog :104-494), `test/test_contraction_group.ml`.
