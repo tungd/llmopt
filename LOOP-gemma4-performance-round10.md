@@ -115,14 +115,13 @@ G4P10-01..03 are committed and green on `feat/unified-optimizing-compiler` (HEAD
 - **DONE WHEN**: Commit(s) present; a folded-epilogue region lowers to a digest-keyed kernel whose writeback honors the `Epilogue.t`, runtime dispatch binds all `Epilogue.inputs` buffers dynamically, and the legacy decode path is byte-identical.
 - **ESCALATE IF**: A digest name diverges between lowering and runtime, or `extract_kernel` cannot find a base kernel for a tactic that needs an epilogue twin.
 
-### [ ] G4P10-04c: Un-gate `Kernel_ir` selection to fully-folded epilogues
+### [x] G4P10-04c: Un-gate `Kernel_ir` selection to fully-folded epilogues
 - **REPO**: `llmopt`
 - **WHERE**: `lib/kernel_ir.ml`, `lib/kernel_ir.mli`, `test/test.ml`
-- **IMPORTANT SYMBOLS**: `Fused_tactic.linear_epilogue` (~kernel_ir.ml :2320-2362), `chain_of`, `fold_linear_epilogue` (:2364-2387), `Fused_tactic.select` order (:2441-2457).
-- **FIX**: Widen admission from `Epilogue.Residual_add`-only to ANY `Folded (epilogue, depth)` with `depth + 1 = List.length region.bindings` (full-chain coverage). Flat `Residual_add` regions must stay byte-identical on the legacy `_add` path.
-- **VERIFY**: Flip the select-is-`None` pins at test.ml ~:312 (Silu chain), ~:375 (Sigmoid chain), ~:409 (stacked residual adds) to `Some` with the exact folded `Epilogue.t`; extend Fold_catalog; full suites + `git diff --check`.
-- **DONE WHEN**: Commit present; suites green; §12/§13 legacy pins unchanged.
-- **ESCALATE IF**: Any selected-but-unserved epilogue remains (the G4P10-03 fail-stop `Error` will surface it in tests before any device run).
+- **IMPORTANT SYMBOLS**: `Fused_tactic.linear_epilogue` (~kernel_ir.ml :2320-2362), `chain_of`, `fold_linear_epilogue`, `Fused_tactic.select` order.
+- **FIX**: DONE (`a366791`) - admission widened from `Epilogue.Residual_add`-only to ANY `Folded (epilogue, depth)` with `depth >= 1` and `depth + 1 = List.length region.bindings` (full-chain coverage). Bare single-linear regions (depth 0), out-of-grammar cuts (Sigmoid/cast), fan-outs, and multi-linear regions stay unclaimed. Flat `Residual_add` regions stay byte-identical on the legacy `_add` path; richer chains reach the digest-keyed emitter from G4P10-04b, and any admitted-but-unserved epilogue trips the runtime fail-stop.
+- **VERIFY**: Fold catalog extended: Silu-residual, external-scale (mul by up), full Silu-mul-residual, and stacked residual-add regions now `select` a `Linear_epilogue` carrying the exact folded `Epilogue.t` (the Sigmoid/cast/bare/multi-linear/fan-out `None` pins remain: those are grammar cuts, not admission gates); full suites green + `git diff --check`.
+- **DONE WHEN**: DONE - commit `a366791` present; `ninja ocaml-test` + `ninja test` green; §12/§13 legacy pins unchanged.
 
 ### [ ] G4P10-04d: Widen `constructive_lowering` region formation to pointwise consumer chains
 - **REPO**: `llmopt`
