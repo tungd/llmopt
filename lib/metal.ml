@@ -10851,16 +10851,23 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            let* source = result in
            let base = Tactic.name tactic in
            let kernel_name = Epilogue.algebraic_kernel_name ~base epilogue in
-           match quant, String.ends_with ~suffix:"_x8" base with
-           | Ir.Dtype.Q4_0, true ->
+           let q4_0_digest_emitter base =
+             if String.ends_with ~suffix:"_x8" base then
+               Some Metal_block_codegen.q4_0_x8_epilogue_kernel
+             else if String.ends_with ~suffix:"_x4" base then
+               Some Metal_block_codegen.q4_0_x4_epilogue_kernel
+             else None
+           in
+           match quant, q4_0_digest_emitter base with
+           | Ir.Dtype.Q4_0, Some emit ->
                let* kernel =
-                 (* The schema-level emitter, like the other parametric
-                    emitters, expects an already-canonicalized epilogue; the
+                 (* The schema-level emitters, like the other parametric
+                    emitters, expect an already-canonicalized epilogue; the
                     retired splice canonicalized internally, so canonicalize
                     here to keep byte-identical output.  kernel_name is still
                     derived from the tactic epilogue so the ABI entry name
                     registered below agrees with the emitted kernel text. *)
-                 Metal_block_codegen.q4_0_x8_epilogue_kernel ~name:kernel_name
+                 emit ~name:kernel_name
                    ~epilogue:(Epilogue.canonicalize epilogue) ~target
                    q4_0_digest_schema
                in
@@ -10869,7 +10876,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                Error
                  (Printf.sprintf
                     "Metal lower: digest epilogue emission is defined only for \
-                     Q4_0 x8 decode regions (got %s serving %s)"
+                     Q4_0 x8/x4 decode regions (got %s serving %s)"
                     (Ir.Dtype.quant_to_string quant) base))
          (Ok "")
   in

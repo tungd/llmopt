@@ -493,6 +493,77 @@ let run () =
      params [[buffer(4)]],";
   Printf.printf "  [PASS] Q4_0 x8 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
 
+  (* G4P12-04c-1: the x4 decode tile is the companion to x8 for output
+     widths that are multiples of four but not eight.  The same shared
+     single-row digest machinery rewrites its store tail into four
+     column-guarded stores applying an arbitrary Epilogue.t, re-emits the
+     header with the canonicalized epilogue buffers, and renames the kernel
+     to the deterministic digest name -- while the flat default (None)
+     keeps the plain x4 kernel text untouched for byte-identical flat
+     dispatch.  The x8 golden fixtures above pin the shared machinery. *)
+  let x4_base = "llmopt_q4_0_linear_f16_x4" in
+  let x4_digest_name epi =
+    Epilogue.algebraic_kernel_name ~base:x4_base epi
+  in
+  let emit_x4_digest epi =
+    let canonical = Epilogue.canonicalize epi in
+    match
+      Metal_block_codegen.q4_0_x4_epilogue_kernel
+        ~name:(x4_digest_name canonical)
+        ~epilogue:canonical ~target:Target_hardware.default q4_0_schema
+    with
+    | Ok source -> source
+    | Error message ->
+        failwith ("q4_0 x4 digest emission failed: " ^ message)
+  in
+  let x4_flat =
+    match
+      Metal_block_codegen.q4_0_x4_epilogue_kernel
+        ~name:x4_base ~epilogue:Epilogue.none
+        ~target:Target_hardware.default q4_0_schema
+    with
+    | Ok source -> source
+    | Error message ->
+        failwith ("q4_0 x4 flat emission failed: " ^ message)
+  in
+  if not (contains x4_flat ("kernel void " ^ x4_base ^ "(")) then
+    failwith "q4_0 x4 flat default must keep the plain kernel name";
+  if contains x4_flat "device const half* buf_" then
+    failwith "q4_0 x4 flat default must not declare epilogue buffers";
+  let x4_digest_source = emit_x4_digest gemma_chain in
+  expect_contains "q4_0 x4 digest kernel renamed to digest name"
+    x4_digest_source
+    ("kernel void " ^ x4_digest_name gemma_chain ^ "(");
+  expect_contains "q4_0 x4 digest write-back guards column 3"
+    x4_digest_source
+    "if (base_col + 3u < params.n) output[base_col + 3u] = half(";
+  expect_contains "q4_0 x4 digest write-back uses accumulator3 register"
+    x4_digest_source
+    "accumulator3";
+  if contains x4_digest_source "params.has_bias" then
+    failwith "q4_0 x4 digest kernel must not read the legacy has_bias store block";
+  if contains x4_digest_source "device const half* bias [[buffer" then
+    failwith "q4_0 x4 digest kernel must not declare the unused legacy bias slot";
+  let x4_output_store_count =
+    let len = String.length x4_digest_source in
+    let rec count i acc =
+      if i + 7 > len then acc
+      else if String.sub x4_digest_source i 7 = "output[" then
+        count (i + 1) (acc + 1)
+      else count (i + 1) acc
+    in
+    count 0 0
+  in
+  if x4_output_store_count <> 4 then
+    failwith
+      (Printf.sprintf
+         "q4_0 x4 digest kernel must contain exactly 4 output stores (got %d)"
+         x4_output_store_count);
+  let x4_digest_source_again = emit_x4_digest gemma_chain in
+  if x4_digest_source <> x4_digest_source_again then
+    failwith "q4_0 x4 digest emission is not deterministic";
+  Printf.printf "  [PASS] Q4_0 x4 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
+
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)
   (* ========================================================================= *)

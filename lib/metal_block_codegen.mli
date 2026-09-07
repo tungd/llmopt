@@ -14,3 +14,10 @@ val q4_0_x8_epilogue_kernel :
   target:Target_hardware.t ->
   Block_schema.t ->
   (string, string) result
+
+val q4_0_x4_epilogue_kernel :
+  name:string ->
+  epilogue:Epilogue.t ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
