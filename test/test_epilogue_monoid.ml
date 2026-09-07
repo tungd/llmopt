@@ -941,6 +941,38 @@ let run () =
   Printf.printf
     "  [PASS] Q8_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (G4P12-05-1 emission oracle)\n%!";
 
+  (* G4P12-05-1 completes the block32 family pair: Q5_0's generic/m2 _add
+     twins reuse the emit_block32 twin templates through the q5_0 schema
+     admissions.  Q5_0's Linear-add selection is generic/_m2-only like Q8_0
+     (five-bit offset codes, 22-byte blocks), so the two fixtures cover every
+     reachable shape. *)
+  pin_twin_fixture ~quant:Ir.Dtype.Q5_0 ~label:"q5_0" ~m:1 ~n:62 ~k:32
+    ~kernel:"llmopt_q5_0_linear_f16_add" ~fixture:"q5_0_linear_f16_add";
+  pin_twin_fixture ~quant:Ir.Dtype.Q5_0 ~label:"q5_0" ~m:2 ~n:64 ~k:32
+    ~kernel:"llmopt_q5_0_linear_f16_m2_add"
+    ~fixture:"q5_0_linear_f16_m2_add";
+  let q5_generic_add = golden_twin_fixture "q5_0_linear_f16_add" in
+  if contains q5_generic_add "block_q5_0" then
+    failwith "q5_0 generic _add twin must be parametric-style (no block_q5_0 weight)";
+  expect_contains "q5_0 generic _add twin reads the additive tensor element-wise"
+    q5_generic_add
+    "output[output_index] = half(half(accumulator) + bias[output_index]);";
+  expect_contains "q5_0 generic _add twin decodes through the schema helper"
+    q5_generic_add "llmopt_schema_q5_0_value(row_blocks + block * ";
+  let q5_m2_add = golden_twin_fixture "q5_0_linear_f16_m2_add" in
+  if contains q5_m2_add "block_q5_0" then
+    failwith "q5_0 m2 _add twin must be parametric-style (no block_q5_0 weight)";
+  expect_contains "q5_0 m2 _add twin stores row 0 through the double-rounding tail"
+    q5_m2_add
+    "output[column] = half(half(accumulator0) + bias[column]);";
+  expect_contains "q5_0 m2 _add twin stores row 1 through the double-rounding tail"
+    q5_m2_add
+    "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
+  if contains q5_m2_add "params.has_bias" then
+    failwith "q5_0 m2 _add twin must not keep the flat has_bias store block";
+  Printf.printf
+    "  [PASS] Q5_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (G4P12-05-1 block32 pair complete)\n%!";
+
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)
   (* ========================================================================= *)

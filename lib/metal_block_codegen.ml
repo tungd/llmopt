@@ -2683,6 +2683,51 @@ let q8_0_m2_add_kernel ~name ~target schema =
     (emit_block32_m2_add ~name ~value_function:"llmopt_schema_q8_0_value"
        ~block_elements ~block_bytes)
 
+(* G4P12-05-1: same block32 twin admissions for Q5_0 (five-bit offset codes;
+   the schema-value decode reads the scale/high/low offsets directly, so the
+   twin body again carries no offsets of its own). *)
+let q5_0_twin_schema_geometry ~label ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let logical = Block_schema.logical_decode schema in
+  let equation = Block_schema.Logical_decode.equation logical in
+  let* _scale_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Block_scale
+  in
+  let* _high_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized_high
+  in
+  let* _low_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized_low
+  in
+  let* () = require_block32 ~target physical "Q5_0" in
+  if Block_schema.quant_type schema <> Some Ir.Dtype.Q5_0 then
+    Error
+      (Printf.sprintf
+         "constructive Q5_0 %s twin emitter received another storage schema"
+         label)
+  else if Block_schema.Logical_decode.code_bits equation <> 5 then
+    Error "constructive Q5_0 twin emitter requires five-bit codes"
+  else
+    let block_elements = Block_schema.Physical_layout.block_elements physical in
+    let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+    Ok (block_elements, block_bytes)
+
+let q5_0_linear_add_kernel ~name ~target schema =
+  let* block_elements, block_bytes =
+    q5_0_twin_schema_geometry ~label:"linear-add" ~target schema
+  in
+  Ok
+    (emit_block32_linear_add ~name ~value_function:"llmopt_schema_q5_0_value"
+       ~block_elements ~block_bytes)
+
+let q5_0_m2_add_kernel ~name ~target schema =
+  let* block_elements, block_bytes =
+    q5_0_twin_schema_geometry ~label:"m2-add" ~target schema
+  in
+  Ok
+    (emit_block32_m2_add ~name ~value_function:"llmopt_schema_q5_0_value"
+       ~block_elements ~block_bytes)
+
 let linear_kernels ~target schema =
   match Block_schema.quant_type schema with
   | Some Ir.Dtype.Q8_0 -> q8_0_linear ~target schema

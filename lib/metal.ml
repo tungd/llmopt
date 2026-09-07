@@ -6974,14 +6974,13 @@ let quant_source ~target = function
                   (Ir.Dtype.quant_to_string quant |> String.lowercase_ascii))))
 
 (* G4P12-04d-A2 + G4P12-05-1: this text-patcher now serves the families and
-   tiles that have no structural Metal_block_codegen twin yet.  Q4_0 and
-   Q8_0 generic/_m2 _add twins (and the Q4_0 m4/m16/m32 zoo statics) are all
-   produced structurally (Metal.lower dispatches them before this shim is
+   tiles that have no structural Metal_block_codegen twin yet.  Q4_0, Q8_0
+   and Q5_0 generic/_m2 _add twins (and the Q4_0 m4/m16/m32 zoo statics) are
+   all produced structurally (Metal.lower dispatches them before this shim is
    reached); this legacy llama-style extract + store rewrite survives for the
-   Q4_K/Q5_K/Q6_K/Q5_0/IQ4_XS families' generic/m2 twins and any exotic
-   llama-zoo base until G4P12-05 widens the structural twins, keeping every
-   family's _add entry served (all-quants Linear-add test at
-   test.ml:1828-1858). *)
+   Q4_K/Q5_K/Q6_K/IQ4_XS families' generic/m2 twins and any exotic llama-zoo
+   base until G4P12-05 widens the structural twins, keeping every family's
+   _add entry served (all-quants Linear-add test at test.ml:1828-1858). *)
 let quant_linear_add_source ~target (quant, tactic) =
   ignore target;
   let name = Tactic.name tactic in
@@ -10859,7 +10858,14 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     | Ok schema -> schema
     | Error err -> failwith (Block_schema.Error.to_string err)
   in
-  (* G4P12-04d-A2 + G4P12-05-1: Q4_0 and Q8_0 _add twins are emitted by
+  let q5_0_twin_schema =
+    match
+      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q5_0)
+    with
+    | Ok schema -> schema
+    | Error err -> failwith (Block_schema.Error.to_string err)
+  in
+  (* G4P12-04d-A2 + G4P12-05-1: Q4_0/Q8_0/Q5_0 _add twins are emitted by
      Metal_block_codegen -- the generic and _m2 twins structurally here
      (parametric-style, double-rounding store), the Q4_0 m4/m16/m32 twins by
      the unconditional q4_0_linear zoo statics.  Q4_0 x8/x4 bases never had
@@ -10897,6 +10903,19 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                  Metal_block_codegen.q8_0_m2_add_kernel
                    ~name:"llmopt_q8_0_linear_f16_m2_add" ~target
                    q8_0_twin_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16" ->
+               let* kernel =
+                 Metal_block_codegen.q5_0_linear_add_kernel
+                   ~name:"llmopt_q5_0_linear_f16_add" ~target q5_0_twin_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16_m2" ->
+               let* kernel =
+                 Metal_block_codegen.q5_0_m2_add_kernel
+                   ~name:"llmopt_q5_0_linear_f16_m2_add" ~target
+                   q5_0_twin_schema
                in
                Ok (source ^ kernel)
            | Ir.Dtype.Q4_0, base
