@@ -51,7 +51,7 @@ The OCaml self-type constraint is the reason the widening lives in `contraction_
 ## Status of the slice
 
 - **Done through G4P12-02.** All legacy pins (Fold_catalog A–J incl. bare-identity, stacked residual-add, cast cuts, two-result fan-out, Sigmoid cuts) unchanged and green; new y*y pins green; full `ninja -f ninja.build test` ends `Ran 79 tests ... OK`; `git diff --check` clean; HEAD `b516513`.
-- **Next**: G4P12-03 strips the typed cases from `Epilogue.compose` (graph-level composition; tags = normal-form reconstruction with explicit roles; byte-identical pins), then emission widening (G4P12-04/05), multi-slot groups through the stack (G4P12-06), fan-out/export scheduling (G4P12-07), reduction phases + numerics + round close-out (G4P12-08).
+- **Next**: G4P12-03 landed at `29451b0` after this record (see exp-0157): `Epilogue.compose` reduced to graph-level composition (tags = normal-form reconstruction with explicit roles, byte-identical pins). Remaining: emission widening (G4P12-04/05), multi-slot groups through the stack (G4P12-06), fan-out/export scheduling (G4P12-07), reduction phases + numerics + round close-out (G4P12-08).
 - Device/bundle benchmarks remain user-run (standing constraint).
 
 ## Supersedes
