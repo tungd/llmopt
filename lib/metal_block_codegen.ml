@@ -579,6 +579,14 @@ let q4_0_m16_digest_of_flat ~name epilogue kernel =
   q4_0_row_block_digest_of_flat ~rows:16 ~row_guard:"row_base" ~label:"m16"
     ~name epilogue kernel
 
+(* The m32 tile runs two simdgroups per 32-row tile; each simdgroup
+   [simd_in_tile] covers a 16-row half through [sub_row_base], so its
+   writeback is structurally the same sixteen guarded stores as m16 but
+   guarded against [sub_row_base]. *)
+let q4_0_m32_digest_of_flat ~name epilogue kernel =
+  q4_0_row_block_digest_of_flat ~rows:16 ~row_guard:"sub_row_base" ~label:"m32"
+    ~name epilogue kernel
+
 let emit_q4_0_linear_f16_x4 ?(name = "llmopt_q4_0_linear_f16_x4")
     ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes () =
@@ -1784,9 +1792,10 @@ kernel void llmopt_q4_0_linear_f16_m16_add(
     block_elements zero zero block_bytes scale_offset quant_offset
     quant_offset zero block_elements
 
-let emit_q4_0_linear_f16_m32 ~scale_offset ~quant_offset ~zero ~block_elements
-    ~block_bytes =
-  Printf.sprintf {|
+let emit_q4_0_linear_f16_m32 ?(name = "llmopt_q4_0_linear_f16_m32")
+    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
+    ~block_bytes () =
+  let flat = Printf.sprintf {|
 kernel void llmopt_q4_0_linear_f16_m32(
     device const half* input [[buffer(0)]],
     device const uchar* weight [[buffer(1)]],
@@ -1871,6 +1880,14 @@ kernel void llmopt_q4_0_linear_f16_m32(
     block_elements block_bytes block_bytes scale_offset quant_offset
     block_elements zero zero block_bytes scale_offset quant_offset
     quant_offset zero block_elements
+  in
+  if Epilogue.equal epilogue Epilogue.none then flat
+  else
+    match q4_0_m32_digest_of_flat ~name epilogue flat with
+    | Ok text -> text
+    | Error message ->
+        invalid_arg
+          (Printf.sprintf "Metal_block_codegen q4_0_linear_f16_m32: %s" message)
 
 let emit_q4_0_linear_f16_m32_add ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =
@@ -2287,7 +2304,7 @@ kernel void llmopt_q4_0_linear_f16_m4_add(
       ^ emit_q4_0_linear_f16_m16_add ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes
       ^ emit_q4_0_linear_f16_m32 ~scale_offset ~quant_offset ~zero ~block_elements
-          ~block_bytes
+          ~block_bytes ()
       ^ emit_q4_0_linear_f16_m32_add ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes
       ^ emit_q4_0_gated_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
@@ -2362,6 +2379,15 @@ let q4_0_m16_epilogue_kernel ~name ~epilogue ~target schema =
     ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
                     ~block_bytes ->
       emit_q4_0_linear_f16_m16 ~scale_offset ~quant_offset ~zero ~block_elements
+        ~block_bytes ())
+    ~name ~epilogue ~target schema
+
+let q4_0_m32_epilogue_kernel ~name ~epilogue ~target schema =
+  q4_0_decode_epilogue_kernel ~rows:16 ~row_guard:"sub_row_base" ~columns:16
+    ~label:"m32"
+    ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
+                    ~block_bytes ->
+      emit_q4_0_linear_f16_m32 ~scale_offset ~quant_offset ~zero ~block_elements
         ~block_bytes ())
     ~name ~epilogue ~target schema
 

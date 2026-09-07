@@ -28,3 +28,10 @@ val q4_0_m16_epilogue_kernel :
   target:Target_hardware.t ->
   Block_schema.t ->
   (string, string) result
+
+val q4_0_m32_epilogue_kernel :
+  name:string ->
+  epilogue:Epilogue.t ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
