@@ -47,3 +47,15 @@ val q4_0_m2_add_kernel :
   target:Target_hardware.t ->
   Block_schema.t ->
   (string, string) result
+
+val q8_0_linear_add_kernel :
+  name:string ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val q8_0_m2_add_kernel :
+  name:string ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result

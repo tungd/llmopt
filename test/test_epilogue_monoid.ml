@@ -766,7 +766,7 @@ let run () =
      kernels; decode order matches the parametric flat bodies already
      serving plain decode. *)
   let golden_twin_fixture name = read_file ("test/golden/" ^ name ^ ".msl") in
-  let lower_linear_add_result ~m ~n ~k ~tag =
+  let lower_linear_add_result ~quant ~m ~n ~k ~tag =
     let graph = Ir.Graph.create () in
     let input =
       Ir.Graph.tensor_input graph ~name:(tag ^ "-input")
@@ -778,7 +778,7 @@ let run () =
       Ir.Graph.tensor_input graph ~name:(tag ^ "-weight")
         ~source:(Ir.Input_source.Tensor_store { key = tag ^ "-weight" })
         ~shape:(Tensor_shape.of_ints_exn [ n; k ])
-        ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+        ~dtype:(Ir.Dtype.Quant quant)
     in
     let residual =
       Ir.Graph.tensor_input graph ~name:(tag ^ "-residual")
@@ -796,11 +796,11 @@ let run () =
     Ir.Graph.add_output graph ~name:(tag ^ "-output") output;
     Metal.lower graph
   in
-  let lower_linear_add ~m ~n ~k ~tag =
-    match lower_linear_add_result ~m ~n ~k ~tag with
+  let lower_linear_add ~quant ~m ~n ~k ~tag =
+    match lower_linear_add_result ~quant ~m ~n ~k ~tag with
     | Ok program -> program
     | Error message ->
-        failwith ("q4_0 Linear-add lowering failed: " ^ message)
+        failwith ("quant Linear-add lowering failed: " ^ message)
   in
   let kernel_text source name =
     let needle = "kernel void " ^ name ^ "(" in
@@ -821,26 +821,28 @@ let run () =
         in
         Some (String.sub source start (cut (start + 1) - start))
   in
-  let pin_twin_fixture ~m ~n ~k ~kernel ~fixture =
+  let pin_twin_fixture ~quant ~label ~m ~n ~k ~kernel ~fixture =
     (* m=1 with n not a multiple of 4 selects the generic tile (x8/x4 need
        m=1 widths that are multiples of 4/8); m=2 selects the paired _m2
-       tile.  Both twins are emitted by Metal_block_codegen since 04d-A2 and
-       must stay byte-identical to the fixtures. *)
-    let program = lower_linear_add ~m ~n ~k ~tag:fixture in
+       tile.  Both twins are emitted structurally by Metal_block_codegen
+       (Q4_0 since 04d-A2, Q8_0 since G4P12-05-1) and must stay byte-
+       identical to the fixtures. *)
+    let program = lower_linear_add ~quant ~m ~n ~k ~tag:fixture in
     match kernel_text (Metal.Program.source program) kernel with
     | None ->
         failwith
-          (Printf.sprintf "q4_0 Linear-add lowering emits no %s twin" kernel)
+          (Printf.sprintf "%s Linear-add lowering emits no %s twin" label kernel)
     | Some text ->
         if text <> golden_twin_fixture fixture then
           failwith
             (Printf.sprintf
-               "q4_0 %s twin drifted from the test/golden/%s.msl emission oracle"
-               kernel fixture)
+               "%s %s twin drifted from the test/golden/%s.msl emission oracle"
+               label kernel fixture)
   in
-  pin_twin_fixture ~m:1 ~n:62 ~k:32 ~kernel:"llmopt_q4_0_linear_f16_add"
-    ~fixture:"q4_0_linear_f16_add";
-  pin_twin_fixture ~m:2 ~n:64 ~k:32 ~kernel:"llmopt_q4_0_linear_f16_m2_add"
+  pin_twin_fixture ~quant:Ir.Dtype.Q4_0 ~label:"q4_0" ~m:1 ~n:62 ~k:32
+    ~kernel:"llmopt_q4_0_linear_f16_add" ~fixture:"q4_0_linear_f16_add";
+  pin_twin_fixture ~quant:Ir.Dtype.Q4_0 ~label:"q4_0" ~m:2 ~n:64 ~k:32
+    ~kernel:"llmopt_q4_0_linear_f16_m2_add"
     ~fixture:"q4_0_linear_f16_m2_add";
   (* Structural sanity of the parametric-style twins: the double-rounding
      store is the contract 04d-A2 preserves, the kernel keeps the flat [bias]
@@ -876,7 +878,10 @@ let run () =
      crash Metal.lower with an Invalid_argument raised by the retired text-
      patcher's extract_kernel; since 04d-A2 it is a clean loud Error telling
      the user the node must be served by the Linear_epilogue digest route. *)
-  (match lower_linear_add_result ~m:1 ~n:32 ~k:32 ~tag:"q4_0_linear_add_x8" with
+  (match
+     lower_linear_add_result ~quant:Ir.Dtype.Q4_0 ~m:1 ~n:32 ~k:32
+       ~tag:"q4_0_linear_add_x8"
+   with
   | Ok _ ->
       failwith "Q4_0 x8 graph-level Linear-add must fail loudly (no _add twin)"
   | Error message ->
@@ -884,6 +889,57 @@ let run () =
         failwith ("Q4_0 x8 graph-level Linear-add error changed: " ^ message));
   Printf.printf
     "  [PASS] Q4_0 x8/x4 graph-level Linear-add fails loudly with the digest-route hint (04d-A2)\n%!";
+
+  (* G4P12-05-1: the Q8_0 generic/m2 _add twins are re-homed the same way
+     (Metal_block_codegen block32 twin templates, parametric-style with the
+     double-rounding store).  Q8_0's costed Linear-add selection only ever
+     names the generic/_m2 tiles (the uniform catalog's x8/x4/m4/m16/m32
+     candidates exist only for families with parametric kernels), so every
+     Q8_0 graph-level Linear-add shape is served by one of these two twins. *)
+  pin_twin_fixture ~quant:Ir.Dtype.Q8_0 ~label:"q8_0" ~m:1 ~n:62 ~k:32
+    ~kernel:"llmopt_q8_0_linear_f16_add" ~fixture:"q8_0_linear_f16_add";
+  pin_twin_fixture ~quant:Ir.Dtype.Q8_0 ~label:"q8_0" ~m:2 ~n:64 ~k:32
+    ~kernel:"llmopt_q8_0_linear_f16_m2_add"
+    ~fixture:"q8_0_linear_f16_m2_add";
+  let q8_generic_add = golden_twin_fixture "q8_0_linear_f16_add" in
+  if contains q8_generic_add "block_q8_0" then
+    failwith "q8_0 generic _add twin must be parametric-style (no block_q8_0 weight)";
+  expect_contains "q8_0 generic _add twin reads the additive tensor element-wise"
+    q8_generic_add
+    "output[output_index] = half(half(accumulator) + bias[output_index]);";
+  expect_contains "q8_0 generic _add twin decodes through the schema helper"
+    q8_generic_add "llmopt_schema_q8_0_value(row_blocks + block * ";
+  let q8_m2_add = golden_twin_fixture "q8_0_linear_f16_m2_add" in
+  if contains q8_m2_add "block_q8_0" then
+    failwith "q8_0 m2 _add twin must be parametric-style (no block_q8_0 weight)";
+  expect_contains "q8_0 m2 _add twin stores row 0 through the double-rounding tail"
+    q8_m2_add
+    "output[column] = half(half(accumulator0) + bias[column]);";
+  expect_contains "q8_0 m2 _add twin stores row 1 through the double-rounding tail"
+    q8_m2_add
+    "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
+  if contains q8_m2_add "params.has_bias" then
+    failwith "q8_0 m2 _add twin must not keep the flat has_bias store block";
+  if contains q8_m2_add "bias_value" then
+    failwith "q8_0 m2 _add twin must not keep the flat bias_value store block";
+  (* Q8_0's m=1 wide decode (n a multiple of 8, where Q4_0 picks the x8 tile
+     and crashes without a twin) is served by the generic twin: assert the
+     m=1 n=4096 Linear-add lowers and carries the parametric generic_add. *)
+  let q8_wide =
+    lower_linear_add ~quant:Ir.Dtype.Q8_0 ~m:1 ~n:4096 ~k:32
+      ~tag:"q8_0_linear_add_wide"
+  in
+  (match
+     kernel_text (Metal.Program.source q8_wide)
+       "llmopt_q8_0_linear_f16_add"
+   with
+  | None -> failwith "Q8_0 m=1 n=4096 Linear-add emits no generic _add twin"
+  | Some text ->
+      if text <> golden_twin_fixture "q8_0_linear_f16_add" then
+        failwith
+          "Q8_0 m=1 n=4096 generic _add twin drifted from the q8_0 emission oracle");
+  Printf.printf
+    "  [PASS] Q8_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (G4P12-05-1 emission oracle)\n%!";
 
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)

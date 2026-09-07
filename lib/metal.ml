@@ -6973,19 +6973,22 @@ let quant_source ~target = function
                (Printf.sprintf "llmopt_%s_linear_f16_m2"
                   (Ir.Dtype.quant_to_string quant |> String.lowercase_ascii))))
 
-(* G4P12-04d-A2: this text-patcher is now the non-Q4_0 shim.  Q4_0 _add twins
-   (generic, _m2, and the zoo m4/m16/m32 statics) are all produced by
-   Metal_block_codegen; this legacy llama-style extract + store rewrite
-   survives only for the six non-Q4_0 families until G4P12-05 makes them
-   parametric (the all-quants Linear-add test at test.ml:1828-1858 keeps
-   every family's _add entry). *)
+(* G4P12-04d-A2 + G4P12-05-1: this text-patcher now serves the families and
+   tiles that have no structural Metal_block_codegen twin yet.  Q4_0 and
+   Q8_0 generic/_m2 _add twins (and the Q4_0 m4/m16/m32 zoo statics) are all
+   produced structurally (Metal.lower dispatches them before this shim is
+   reached); this legacy llama-style extract + store rewrite survives for the
+   Q4_K/Q5_K/Q6_K/Q5_0/IQ4_XS families' generic/m2 twins and any exotic
+   llama-zoo base until G4P12-05 widens the structural twins, keeping every
+   family's _add entry served (all-quants Linear-add test at
+   test.ml:1828-1858). *)
 let quant_linear_add_source ~target (quant, tactic) =
   ignore target;
   let name = Tactic.name tactic in
   if quant = Ir.Dtype.Q4_0 then
     invalid_arg
-      "quant_linear_add_source is the non-Q4_0 shim; Q4_0 _add twins come \
-       from Metal_block_codegen (G4P12-04d-A2)"
+      "quant_linear_add_source: Q4_0 _add twins come from Metal_block_codegen \
+       (G4P12-04d-A2); dispatch Q4_0 bases before reaching this shim"
   else
     let source = extract_kernel (legacy_quant_source quant) name in
     let replacements =
@@ -10849,13 +10852,21 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     | Ok schema -> schema
     | Error err -> failwith (Block_schema.Error.to_string err)
   in
-  (* G4P12-04d-A2: Q4_0 _add twins are emitted by Metal_block_codegen -- the
-     generic and _m2 twins structurally here (parametric-style, double-
-     rounding store), the m4/m16/m32 twins by the unconditional q4_0_linear
-     zoo statics.  x8/x4 Q4_0 bases never had twins and have no digest route
-     for graph-level Linear_add nodes, so they fail loudly with a clear Error
-     (the retired text-patcher raised Invalid_argument inside extract_kernel
-     instead).  Every non-Q4_0 family keeps the legacy shim. *)
+  let q8_0_twin_schema =
+    match
+      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
+    with
+    | Ok schema -> schema
+    | Error err -> failwith (Block_schema.Error.to_string err)
+  in
+  (* G4P12-04d-A2 + G4P12-05-1: Q4_0 and Q8_0 _add twins are emitted by
+     Metal_block_codegen -- the generic and _m2 twins structurally here
+     (parametric-style, double-rounding store), the Q4_0 m4/m16/m32 twins by
+     the unconditional q4_0_linear zoo statics.  Q4_0 x8/x4 bases never had
+     twins and have no digest route for graph-level Linear_add nodes, so they
+     fail loudly with a clear Error (the retired text-patcher raised
+     Invalid_argument inside extract_kernel instead).  Every family/base not
+     dispatched here keeps the legacy shim unchanged. *)
   let quant_add_source_result =
     quant_add_tactics
     |> List.fold_left
@@ -10873,6 +10884,19 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                  Metal_block_codegen.q4_0_m2_add_kernel
                    ~name:"llmopt_q4_0_linear_f16_m2_add" ~target
                    q4_0_digest_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16" ->
+               let* kernel =
+                 Metal_block_codegen.q8_0_linear_add_kernel
+                   ~name:"llmopt_q8_0_linear_f16_add" ~target q8_0_twin_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2" ->
+               let* kernel =
+                 Metal_block_codegen.q8_0_m2_add_kernel
+                   ~name:"llmopt_q8_0_linear_f16_m2_add" ~target
+                   q8_0_twin_schema
                in
                Ok (source ^ kernel)
            | Ir.Dtype.Q4_0, base

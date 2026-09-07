@@ -86,6 +86,81 @@ kernel void llmopt_%s_linear_f16_m2(
     name block_elements block_bytes block_elements value_function block_bytes
     name block_elements block_bytes block_elements value_function block_bytes
 
+(* G4P12-05-1: parametric-style _add twins for the generic and paired-row
+   (_m2) tiles of the block32 families (Q8_0 first; Q5_0 reuses these once it
+   leaves the legacy shim).  The decode bodies mirror emit_linear_pair
+   byte-for-byte except the writeback tail: the additive tensor (the residual,
+   bound to the flat [bias] buffer(2) slot) is applied element-wise with the
+   double-rounding store half(half(acc) + bias[idx]) -- the legacy twin
+   numerics contract, numerically distinct from a single-rounding digest tail.
+   Same ABI as the flat kernels: input buffer(0), weight buffer(1), bias
+   buffer(2), output buffer(3), params buffer(4).  Emitted on demand through
+   the schema-level q8_0_linear_add_kernel/q8_0_m2_add_kernel admissions;
+   the zoo text (emit_linear_pair output) is untouched. *)
+let emit_block32_linear_add ~name ~value_function ~block_elements ~block_bytes =
+  Printf.sprintf {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint output_index = gid >> 5u;
+  const uint output_elements = params.m * params.n;
+  if (output_index >= output_elements) return;
+  const uint row = output_index / params.n;
+  const uint column = output_index - row * params.n;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+  device const half* activation = input + row * params.k;
+  float accumulator = 0.0f;
+  for (uint block = 0; block < blocks; ++block) {
+    const uint k = block * %du + lane;
+    accumulator += float(activation[k])
+        * %s(row_blocks + block * %du, lane);
+  }
+  accumulator = simd_sum(accumulator);
+  if (lane == 0u) {
+    output[output_index] = half(half(accumulator) + bias[output_index]);
+  }
+}
+|}
+    name block_elements block_bytes block_elements value_function block_bytes
+
+let emit_block32_m2_add ~name ~value_function ~block_elements ~block_bytes =
+  Printf.sprintf {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column = gid >> 5u;
+  if (column >= params.n) return;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  for (uint block = 0; block < blocks; ++block) {
+    const uint k = block * %du + lane;
+    const float decoded = %s(row_blocks + block * %du, lane);
+    accumulator0 += float(input[k]) * decoded;
+    accumulator1 += float(input[params.k + k]) * decoded;
+  }
+  accumulator0 = simd_sum(accumulator0);
+  accumulator1 = simd_sum(accumulator1);
+  if (lane == 0u) {
+    output[column] = half(half(accumulator0) + bias[column]);
+    output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);
+  }
+}
+|}
+    name block_elements block_bytes block_elements value_function block_bytes
+
 let emit_superblock_linear_pair ~name ~value_function ~block_elements
     ~block_bytes ~subblock_elements =
   let subblocks = block_elements / subblock_elements in
@@ -2560,6 +2635,52 @@ let q4_0_m2_add_kernel ~name ~target schema =
   in
   Ok
     (emit_q4_0_linear_f16_m2_add ~name ~scale_offset ~quant_offset ~zero
+       ~block_elements ~block_bytes)
+
+(* G4P12-05-1 schema-level admission for the Q8_0 generic and _m2 _add twins
+   (the block32 twin templates above, parameterized by the Q8_0 value
+   function).  The geometry validation mirrors q8_0_linear's preamble; the
+   offsets only prove the physical fields exist (the value function reads the
+   block directly, so the twin body itself carries no offsets). *)
+let q8_0_twin_schema_geometry ~label ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let logical = Block_schema.logical_decode schema in
+  let equation = Block_schema.Logical_decode.equation logical in
+  let* _scale_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Block_scale
+  in
+  let* _quant_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized
+  in
+  let* () = require_block32 ~target physical "Q8_0" in
+  if Block_schema.quant_type schema <> Some Ir.Dtype.Q8_0 then
+    Error
+      (Printf.sprintf
+         "constructive Q8_0 %s twin emitter received another storage schema"
+         label)
+  else if Block_schema.Logical_decode.code_bits equation <> 8
+       || Block_schema.Logical_decode.code_signedness equation
+          <> Block_schema.Physical_layout.Signedness.Signed
+  then Error "constructive Q8_0 twin emitter requires signed eight-bit codes"
+  else
+    let block_elements = Block_schema.Physical_layout.block_elements physical in
+    let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+    Ok (block_elements, block_bytes)
+
+let q8_0_linear_add_kernel ~name ~target schema =
+  let* block_elements, block_bytes =
+    q8_0_twin_schema_geometry ~label:"linear-add" ~target schema
+  in
+  Ok
+    (emit_block32_linear_add ~name ~value_function:"llmopt_schema_q8_0_value"
+       ~block_elements ~block_bytes)
+
+let q8_0_m2_add_kernel ~name ~target schema =
+  let* block_elements, block_bytes =
+    q8_0_twin_schema_geometry ~label:"m2-add" ~target schema
+  in
+  Ok
+    (emit_block32_m2_add ~name ~value_function:"llmopt_schema_q8_0_value"
        ~block_elements ~block_bytes)
 
 let linear_kernels ~target schema =
