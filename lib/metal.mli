@@ -57,6 +57,4 @@ val attention_source : string
 val emit_parametric_w4a16_linear : name:string -> epilogue:Epilogue.t -> string
 val emit_parametric_q4_k_linear : name:string -> epilogue:Epilogue.t -> string
 val emit_simdgroup_matrix_gemm : name:string -> epilogue:Epilogue.t -> string
-val emit_q4_0_x8_epilogue_kernel :
-  name:string -> epilogue:Epilogue.t -> (string, string) result
 

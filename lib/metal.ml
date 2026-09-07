@@ -7031,127 +7031,6 @@ let quant_linear_add_source ~target (quant, tactic) =
   in
   fused ^ "\n"
 
-(* ------------------------------------------------------------------------ *)
-(* Digest-keyed epilogue variants of the real Q4_0 decode kernel.            *)
-(*                                                                          *)
-(* [llmopt_q4_0_linear_f16_x8] is the costed decode kernel for the real     *)
-(* Gemma-4 decode shape (m = 1, k < 4096, n a multiple of 8): a 256-thread  *)
-(* kernel in which each SIMDgroup reduces a whole column group and the      *)
-(* eight [accumulator0..7] registers own one output column each.  The       *)
-(* digest-variant emitter rewrites that kernel's column-guarded store tail  *)
-(* into eight stores that apply an arbitrary [Epilogue.t] readback and      *)
-(* renames the kernel to the deterministic digest name derived from the     *)
-(* canonicalized epilogue (see [Epilogue.algebraic_kernel_name]).           *)
-(*                                                                          *)
-(* The rewritten kernel header drops the legacy [bias] slot (buffer(2);     *)
-(* the store tail that read it is replaced wholesale) and instead declares  *)
-(* the canonicalized epilogue's input buffers immediately after the weight  *)
-(* parameter, before the output workspace:                                 *)
-(*                                                                          *)
-(*   kernel void <digest>(                                                  *)
-(*       device const half* input [[buffer(0)]],                            *)
-(*       device const uchar* weight [[buffer(1)]],                          *)
-(*       device const half* buf_0 [[buffer(2)]],   (p canonical buffers)    *)
-(*       ...                                                                 *)
-(*       device half* output [[buffer(2 + p)]],                             *)
-(*       constant QuantLinearParams& params [[buffer(3 + p)]],              *)
-(*       uint gid ..., uint tid ..., uint lane ...)                         *)
-(*                                                                          *)
-(* The OCaml dispatch stub binds buffers positionally and then writes the   *)
-(* parameter bytes at the next index, so a program whose dispatch buffer    *)
-(* list is [input; weight] @ epilogue buffers (output appended last by      *)
-(* [dispatch_output]) lands on exactly these indices with the parameter     *)
-(* bytes at 3 + p.  The plain kernel text is left untouched, so the legacy  *)
-(* flat decode path stays byte-identical.  The epilogue is canonicalized    *)
-(* first so the emitted buffer names ([buf_0], [buf_1], ...) and the        *)
-(* digest name agree with the stable first-occurrence order of              *)
-(* [Epilogue.inputs]. *)
-let q4_0_x8_digest_store epilogue =
-  List.init 8 (fun j ->
-      let acc = Printf.sprintf "accumulator%d" j in
-      let idx =
-        if j = 0 then "base_col" else Printf.sprintf "(base_col + %du)" j
-      in
-      let expr = Epilogue.emit_msl_writeback ~acc ~idx epilogue in
-      if j = 0 then Printf.sprintf "    output[base_col] = half(%s);" expr
-      else
-        Printf.sprintf
-          "    if (base_col + %du < params.n) output[base_col + %du] = half(%s);"
-          j j expr)
-  |> String.concat "\n"
-
-let q4_0_x8_digest_rewrite ~name epilogue kernel =
-  (* The tail of the plain kernel's argument list (the thread-position
-     attributes through the closing ") {") is shared verbatim by its digest
-     variant; everything before it is re-emitted with the canonicalized
-     epilogue buffers inserted between the weight and the output workspace. *)
-  let attr_marker = "    uint gid [[thread_position_in_grid]]," in
-  match find_substring_from kernel attr_marker 0 with
-  | None ->
-      Error
-        "Metal Q4_0 x8 digest emission: decode kernel thread attributes are \
-         absent"
-  | Some attr_start -> (
-      match find_substring_from kernel ") {" attr_start with
-      | None ->
-          Error
-            "Metal Q4_0 x8 digest emission: decode kernel header is unterminated"
-      | Some close ->
-          let header_stop = close + 3 in
-          let attributes =
-            String.sub kernel attr_start (header_stop - attr_start)
-          in
-          let body =
-            String.sub kernel header_stop (String.length kernel - header_stop)
-          in
-          let buffer_count = List.length (Epilogue.inputs epilogue) in
-          let header =
-            "kernel void " ^ name ^ "(\n"
-            ^ "    device const half* input [[buffer(0)]],\n"
-            ^ "    device const uchar* weight [[buffer(1)]]"
-            ^ Epilogue.msl_buffer_decls ~start_index:2 epilogue
-            ^ Printf.sprintf
-                ",\n    device half* output [[buffer(%d)]],\n    constant \
-                 QuantLinearParams& params [[buffer(%d)]],\n"
-                (2 + buffer_count) (3 + buffer_count)
-            ^ attributes
-          in
-          let tail_marker = "  if (lane == 0u && base_col < params.n) {" in
-          let full = header ^ body in
-          match find_substring_from full tail_marker 0 with
-          | None ->
-              Error
-                "Metal Q4_0 x8 digest emission: writeback tail is absent from \
-                 the decode kernel"
-          | Some tail_start ->
-              let head = String.sub full 0 tail_start in
-              Ok
-                (head ^ tail_marker ^ "\n" ^ q4_0_x8_digest_store epilogue
-                ^ "\n  }\n}\n"))
-
-let emit_q4_0_x8_epilogue_kernel ~name ~epilogue =
-  let epilogue = Epilogue.canonicalize epilogue in
-  let base_name = "llmopt_q4_0_linear_f16_x8" in
-  match quant_source ~target:Target_hardware.default Ir.Dtype.Q4_0 with
-  | Error message -> Error message
-  | Ok family -> (
-      match find_substring_from family ("kernel void " ^ base_name ^ "(") 0 with
-      | None ->
-          Error
-            "Metal Q4_0 x8 digest emission: decode kernel is absent from the \
-             Q4_0 family source"
-      | Some kernel_start ->
-          let kernel_stop =
-            match find_substring_from family "\nkernel void " (kernel_start + 1)
-            with
-            | Some stop -> stop
-            | None -> String.length family
-          in
-          let kernel =
-            String.sub family kernel_start (kernel_stop - kernel_start)
-          in
-          q4_0_x8_digest_rewrite ~name epilogue kernel)
-
 let kquant_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_dequant_q4_k"
@@ -10958,6 +10837,13 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     |> String.concat "\n"
   in
   let quant_add_entries = List.map quant_linear_add_entry quant_add_tactics in
+  let q4_0_digest_schema =
+    match
+      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0)
+    with
+    | Ok schema -> schema
+    | Error err -> failwith (Block_schema.Error.to_string err)
+  in
   let region_quant_digest_source_result =
     region_quant_digest_tactics
     |> List.fold_left
@@ -10968,7 +10854,15 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            match quant, String.ends_with ~suffix:"_x8" base with
            | Ir.Dtype.Q4_0, true ->
                let* kernel =
-                 emit_q4_0_x8_epilogue_kernel ~name:kernel_name ~epilogue
+                 (* The schema-level emitter, like the other parametric
+                    emitters, expects an already-canonicalized epilogue; the
+                    retired splice canonicalized internally, so canonicalize
+                    here to keep byte-identical output.  kernel_name is still
+                    derived from the tactic epilogue so the ABI entry name
+                    registered below agrees with the emitted kernel text. *)
+                 Metal_block_codegen.q4_0_x8_epilogue_kernel ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   q4_0_digest_schema
                in
                Ok (source ^ kernel)
            | _ ->

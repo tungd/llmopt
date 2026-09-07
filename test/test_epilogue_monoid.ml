@@ -381,17 +381,6 @@ let run () =
   let digest_name epi =
     Epilogue.algebraic_kernel_name ~base:x8_base epi
   in
-  let emit_digest epi =
-    match Metal.emit_q4_0_x8_epilogue_kernel ~name:(digest_name epi) ~epilogue:epi with
-    | Error message -> failwith ("q4_0 x8 digest emission failed: " ^ message)
-    | Ok source -> source
-  in
-  (* G4P12-04a: the structural epilogue-tail emitter in Metal_block_codegen
-     must reproduce the legacy digest splice byte-for-byte.  The golden
-     kernels were captured from the legacy splice before its retirement and
-     are frozen as fixtures under test/golden/; byte-equality of the
-     structural output against both the still-present legacy splice and the
-     frozen fixtures is what lets 04b delete the splice. *)
   let q4_0_schema =
     match
       Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0)
@@ -399,10 +388,15 @@ let run () =
     | Ok s -> s
     | Error err -> failwith (Block_schema.Error.to_string err)
   in
-  let emit_structural epi =
-    (* The schema-level emitter, like the other parametric emitters, expects an
-       already-canonicalized epilogue; canonicalize here to mirror the legacy
-       splice, which canonicalized internally. *)
+  (* G4P12-04b: the schema-level structural emitter (Metal_block_codegen) is
+     now the ONLY digest emitter; the legacy Metal.q4_0_x8_digest_* text
+     splice was deleted at this commit after 04a proved byte-identity against
+     it.  The golden kernels captured from the splice are frozen under
+     test/golden/ and remain the oracle: the structural output must stay
+     byte-identical to them. *)
+  let emit_digest epi =
+    (* The schema-level emitter, like the other parametric emitters, expects
+       an already-canonicalized epilogue. *)
     let canonical = Epilogue.canonicalize epi in
     match
       Metal_block_codegen.q4_0_x8_epilogue_kernel ~name:(digest_name canonical)
@@ -410,7 +404,7 @@ let run () =
     with
     | Ok source -> source
     | Error message ->
-        failwith ("structural q4_0 x8 digest emission failed: " ^ message)
+        failwith ("q4_0 x8 digest emission failed: " ^ message)
   in
   let golden_fixture name =
     (* Fixtures were captured by printing the digest source followed by one
@@ -421,15 +415,8 @@ let run () =
   in
   List.iter
     (fun (label, epi) ->
-      let legacy = emit_digest epi in
-      let structural = emit_structural epi in
-      if structural <> legacy then
-        failwith
-          (Printf.sprintf
-             "%s: structural q4_0 x8 digest emission differs from the legacy \
-              splice (byte-identity required)"
-             label);
-      if structural <> golden_fixture label then
+      let digest = emit_digest epi in
+      if digest <> golden_fixture label then
         failwith
           (Printf.sprintf
              "%s: structural q4_0 x8 digest emission drifted from the golden \
@@ -437,7 +424,7 @@ let run () =
              label))
     [ ("gemma_chain", gemma_chain); ("f32_expr", f32_expr); ("silu", Epilogue.silu) ];
   Printf.printf
-    "  [PASS] Structural Q4_0 x8 epilogue-tail emission is byte-identical to the golden digest kernels\n%!";
+    "  [PASS] Structural Q4_0 x8 digest emission is byte-identical to the golden kernels (legacy splice retired)\n%!";
   let x8_source = emit_digest gemma_chain in
   expect_contains "q4_0 x8 digest kernel renamed to digest name"
     x8_source
