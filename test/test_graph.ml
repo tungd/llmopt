@@ -379,7 +379,7 @@ let run () =
        (fun assignment ->
          match uoc03_assignment_operation assignment,
                Constructive_lowering.Assignment.primitive assignment with
-         | Ir.Op.Linear _, Kernel_ir.Primitive.Linear { storage = Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K; _ } ->
+         | Ir.Op.Linear _, Kernel_region.Primitive.Linear { storage = Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K; _ } ->
              true
          | _ -> false)
        (Constructive_lowering.Analysis.assignments linear_add_analysis))
@@ -671,7 +671,7 @@ let run () =
     (List.exists
        (fun assignment ->
          match Constructive_lowering.Assignment.primitive assignment with
-         | Kernel_ir.Primitive.Movement (Ir.Movement.Index _) -> true
+         | Kernel_region.Primitive.Movement (Ir.Movement.Index _) -> true
          | _ -> false)
        (Constructive_lowering.Analysis.assignments index_analysis)
     && uoc03_has_boundary index_decisions (function
@@ -821,14 +821,14 @@ let run () =
      = 1
     && (match uoc05_quant_regions with
        | [ region ] ->
-           List.length (Kernel_ir.bindings region) = 2
-           && List.map Kernel_ir.binding_primitive
-                (Kernel_ir.bindings region)
+           List.length (Kernel_region.bindings region) = 2
+           && List.map Kernel_region.binding_primitive
+                (Kernel_region.bindings region)
               =
-              [ Kernel_ir.Primitive.linear ~m:1 ~n:128 ~k:64 ~bias:false
+              [ Kernel_region.Primitive.linear ~m:1 ~n:128 ~k:64 ~bias:false
                   ~storage:
                     (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K);
-                Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add ]
+                Kernel_region.Primitive.binary Kernel_region.Primitive.Add ]
        | _ -> false)
     && Passes.Optimization.legacy_fallbacks uoc05_quant_optimization = []
     && not

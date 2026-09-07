@@ -5,7 +5,7 @@ module Co_schedule = Pass_co_schedule
 module Epilogues = Pass_fuse_epilogues
 
 val fuse_linear_bias : Ir.Graph.t -> Ir.Graph.t
-val discover_swiglu_ffn : Ir.Graph.t -> (Kernel_ir.t list, string) result
+val discover_swiglu_ffn : Ir.Graph.t -> (Kernel_region.t list, string) result
 val recover_scans : Ir.Graph.t -> Kernel_ir.Scan.t list
 val fuse_swiglu_ffn : Ir.Graph.t -> (Ir.Graph.t, string) result
 val fuse_short_conv_step : Ir.Graph.t -> Ir.Graph.t
@@ -117,7 +117,7 @@ module Optimization : sig
   val plan : t -> Compute_plan.t
 
   (** Structured fusion candidates; these do not mutate [semantic_graph]. *)
-  val fusion_regions : t -> Kernel_ir.t list
+  val fusion_regions : t -> Kernel_region.t list
 
   (** Immutable dependency facts used to drive covered-region lowering. *)
   val region_analysis : t -> Constructive_lowering.Analysis.t

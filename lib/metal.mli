@@ -31,7 +31,7 @@ end
 
 val lower :
   ?target:Target_hardware.t ->
-  ?fusion_regions:Kernel_ir.t list ->
+  ?fusion_regions:Kernel_region.t list ->
   Ir.Graph.t ->
   (Program.t, string) result
 val add_cache_kernels : Program.t -> Program.t

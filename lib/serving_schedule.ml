@@ -6,7 +6,7 @@ module Command = struct
     op : Ir.Op.t;
     inputs : Ir.Value.t list;
     output : Ir.Value.t option;
-    fusion_region : Kernel_ir.t option;
+    fusion_region : Kernel_region.t option;
   }
 
   let node_id command = command.node_id
@@ -251,12 +251,12 @@ let fresh_outputs seen_values outputs =
 
 let validate_fusion_command command region =
   let region_inputs =
-    Kernel_ir.inputs region
-    |> List.map (fun ({ Kernel_ir.value; _ } : Kernel_ir.input) -> value)
+    Kernel_region.inputs region
+    |> List.map (fun ({ Kernel_region.value; _ } : Kernel_region.input) -> value)
   in
   let region_output =
-    match Kernel_ir.results region with
-    | [ result ] -> Some (Kernel_ir.result_value result)
+    match Kernel_region.results region with
+    | [ result ] -> Some (Kernel_region.result_value result)
     | _ -> None
   in
   let same_values left right =
@@ -1401,15 +1401,15 @@ let create commands =
 
 let attach_fusion_region commands region =
   let region_inputs =
-    Kernel_ir.inputs region
-    |> List.map (fun ({ Kernel_ir.value; _ } : Kernel_ir.input) -> value)
+    Kernel_region.inputs region
+    |> List.map (fun ({ Kernel_region.value; _ } : Kernel_region.input) -> value)
   in
   let region_output =
-    match Kernel_ir.results region with
-    | [ result ] -> Some (Kernel_ir.result_value result)
+    match Kernel_region.results region with
+    | [ result ] -> Some (Kernel_region.result_value result)
     | _ -> None
   in
-  let member_ids = Kernel_ir.member_node_ids region |> Int_set.of_list in
+  let member_ids = Kernel_region.member_node_ids region |> Int_set.of_list in
   let matches =
     commands
     |> List.filter (fun command ->
@@ -1440,13 +1440,13 @@ let attach_fusion_region commands region =
                else Some command))
   | [ _ ], None ->
       Error
-        (Printf.sprintf "fusion region %s has no result" (Kernel_ir.name region))
+        (Printf.sprintf "fusion region %s has no result" (Kernel_region.name region))
   | [], _ ->
       Error
         (Printf.sprintf
            "fusion region %s has no executable schedule command (members=%s result=%s)"
-           (Kernel_ir.name region)
-           (Kernel_ir.member_node_ids region |> List.map string_of_int
+           (Kernel_region.name region)
+           (Kernel_region.member_node_ids region |> List.map string_of_int
           |> String.concat ",")
            (match region_output with
            | None -> "none"
@@ -1454,7 +1454,7 @@ let attach_fusion_region commands region =
   | _, _ ->
       Error
         (Printf.sprintf "fusion region %s maps to multiple schedule commands"
-           (Kernel_ir.name region))
+           (Kernel_region.name region))
 
 let is_gpu_command_in_schedule cmd =
   match cmd.Command.fusion_region with
@@ -2200,7 +2200,7 @@ module Sequence = struct
                 Value_map.add (Ir.Value.id original) result values
               in
               let* fusion_region =
-                Kernel_ir.specialize
+                Kernel_region.specialize
                   ~dimension:(substitute substitutions)
                   ~value:(mapped values) region
               in
@@ -3013,11 +3013,11 @@ let find_value values id =
   | None -> Error (Printf.sprintf "schedule argument references undefined value %d" id)
 
 let write_slot writer slot =
-  Binary.Writer.u32 writer (Kernel_ir.Slot.to_int slot)
+  Binary.Writer.u32 writer (Kernel_region.Slot.to_int slot)
 
 let read_slot reader =
   let* slot = Binary.Reader.u32 reader in
-  Kernel_ir.Slot.of_int slot
+  Kernel_region.Slot.of_int slot
 
 let write_linear_storage writer = function
   | Ir.Linear_storage.Dense dtype ->
@@ -3072,66 +3072,66 @@ let read_kernel_scalar reader =
 let write_kernel_unary writer unary =
   let tag =
     match unary with
-    | Kernel_ir.Primitive.Silu -> 0
-    | Kernel_ir.Primitive.Gelu -> 1
-    | Kernel_ir.Primitive.Sigmoid -> 2
-    | Kernel_ir.Primitive.Neg -> 3
-    | Kernel_ir.Primitive.Rsqrt -> 4
-    | Kernel_ir.Primitive.Cos -> 5
-    | Kernel_ir.Primitive.Sin -> 6
-    | Kernel_ir.Primitive.Tanh -> 7
-    | Kernel_ir.Primitive.Exp -> 8
-    | Kernel_ir.Primitive.Softplus -> 9
-    | Kernel_ir.Primitive.Pow _ -> 10
+    | Kernel_region.Primitive.Silu -> 0
+    | Kernel_region.Primitive.Gelu -> 1
+    | Kernel_region.Primitive.Sigmoid -> 2
+    | Kernel_region.Primitive.Neg -> 3
+    | Kernel_region.Primitive.Rsqrt -> 4
+    | Kernel_region.Primitive.Cos -> 5
+    | Kernel_region.Primitive.Sin -> 6
+    | Kernel_region.Primitive.Tanh -> 7
+    | Kernel_region.Primitive.Exp -> 8
+    | Kernel_region.Primitive.Softplus -> 9
+    | Kernel_region.Primitive.Pow _ -> 10
   in
   Binary.Writer.u8 writer tag;
   match unary with
-  | Kernel_ir.Primitive.Pow scalar -> write_kernel_scalar writer scalar
+  | Kernel_region.Primitive.Pow scalar -> write_kernel_scalar writer scalar
   | _ -> ()
 
 let read_kernel_unary reader =
   let* tag = Binary.Reader.u8 reader in
   match tag with
-  | 0 -> Ok Kernel_ir.Primitive.Silu
-  | 1 -> Ok Kernel_ir.Primitive.Gelu
-  | 2 -> Ok Kernel_ir.Primitive.Sigmoid
-  | 3 -> Ok Kernel_ir.Primitive.Neg
-  | 4 -> Ok Kernel_ir.Primitive.Rsqrt
-  | 5 -> Ok Kernel_ir.Primitive.Cos
-  | 6 -> Ok Kernel_ir.Primitive.Sin
-  | 7 -> Ok Kernel_ir.Primitive.Tanh
-  | 8 -> Ok Kernel_ir.Primitive.Exp
-  | 9 -> Ok Kernel_ir.Primitive.Softplus
+  | 0 -> Ok Kernel_region.Primitive.Silu
+  | 1 -> Ok Kernel_region.Primitive.Gelu
+  | 2 -> Ok Kernel_region.Primitive.Sigmoid
+  | 3 -> Ok Kernel_region.Primitive.Neg
+  | 4 -> Ok Kernel_region.Primitive.Rsqrt
+  | 5 -> Ok Kernel_region.Primitive.Cos
+  | 6 -> Ok Kernel_region.Primitive.Sin
+  | 7 -> Ok Kernel_region.Primitive.Tanh
+  | 8 -> Ok Kernel_region.Primitive.Exp
+  | 9 -> Ok Kernel_region.Primitive.Softplus
   | 10 ->
       read_kernel_scalar reader
-      |> Result.map (fun scalar -> Kernel_ir.Primitive.Pow scalar)
+      |> Result.map (fun scalar -> Kernel_region.Primitive.Pow scalar)
   | _ -> Error (Printf.sprintf "unknown kernel unary tag: %d" tag)
 
 let write_kernel_binary writer binary =
   Binary.Writer.u8 writer
     (match binary with
-    | Kernel_ir.Primitive.Mul -> 0
-    | Kernel_ir.Primitive.Add -> 1
-    | Kernel_ir.Primitive.Sub -> 2
-    | Kernel_ir.Primitive.Div -> 3
-    | Kernel_ir.Primitive.Logical_and -> 4
-    | Kernel_ir.Primitive.Equal -> 5
-    | Kernel_ir.Primitive.Not_equal -> 6
-    | Kernel_ir.Primitive.Less_equal -> 7
-    | Kernel_ir.Primitive.Greater -> 8)
+    | Kernel_region.Primitive.Mul -> 0
+    | Kernel_region.Primitive.Add -> 1
+    | Kernel_region.Primitive.Sub -> 2
+    | Kernel_region.Primitive.Div -> 3
+    | Kernel_region.Primitive.Logical_and -> 4
+    | Kernel_region.Primitive.Equal -> 5
+    | Kernel_region.Primitive.Not_equal -> 6
+    | Kernel_region.Primitive.Less_equal -> 7
+    | Kernel_region.Primitive.Greater -> 8)
 
 let read_kernel_binary reader =
   let* tag = Binary.Reader.u8 reader in
   match tag with
-  | 0 -> Ok Kernel_ir.Primitive.Mul
-  | 1 -> Ok Kernel_ir.Primitive.Add
-  | 2 -> Ok Kernel_ir.Primitive.Sub
-  | 3 -> Ok Kernel_ir.Primitive.Div
-  | 4 -> Ok Kernel_ir.Primitive.Logical_and
-  | 5 -> Ok Kernel_ir.Primitive.Equal
-  | 6 -> Ok Kernel_ir.Primitive.Not_equal
-  | 7 -> Ok Kernel_ir.Primitive.Less_equal
-  | 8 -> Ok Kernel_ir.Primitive.Greater
+  | 0 -> Ok Kernel_region.Primitive.Mul
+  | 1 -> Ok Kernel_region.Primitive.Add
+  | 2 -> Ok Kernel_region.Primitive.Sub
+  | 3 -> Ok Kernel_region.Primitive.Div
+  | 4 -> Ok Kernel_region.Primitive.Logical_and
+  | 5 -> Ok Kernel_region.Primitive.Equal
+  | 6 -> Ok Kernel_region.Primitive.Not_equal
+  | 7 -> Ok Kernel_region.Primitive.Less_equal
+  | 8 -> Ok Kernel_region.Primitive.Greater
   | _ -> Error (Printf.sprintf "unknown kernel binary tag: %d" tag)
 
 let write_kernel_index writer index =
@@ -3262,28 +3262,28 @@ let read_kernel_index reader =
   selectors [] count
 
 let write_kernel_primitive writer = function
-  | Kernel_ir.Primitive.Rms_norm { epsilon } ->
+  | Kernel_region.Primitive.Rms_norm { epsilon } ->
       Binary.Writer.u8 writer 0;
       Binary.Writer.float64 writer epsilon
-  | Kernel_ir.Primitive.Linear { m; n; k; bias; storage } ->
+  | Kernel_region.Primitive.Linear { m; n; k; bias; storage } ->
       Binary.Writer.u8 writer 1;
       Binary.Writer.u32 writer m;
       Binary.Writer.u32 writer n;
       Binary.Writer.u32 writer k;
       Binary.Writer.bool writer bias;
       write_linear_storage writer storage
-  | Kernel_ir.Primitive.Unary unary ->
+  | Kernel_region.Primitive.Unary unary ->
       Binary.Writer.u8 writer 2;
       write_kernel_unary writer unary
-  | Kernel_ir.Primitive.Binary binary ->
+  | Kernel_region.Primitive.Binary binary ->
       Binary.Writer.u8 writer 3;
       write_kernel_binary writer binary
-  | Kernel_ir.Primitive.Scalar_binary { operator; scalar; scalar_on_left } ->
+  | Kernel_region.Primitive.Scalar_binary { operator; scalar; scalar_on_left } ->
       Binary.Writer.u8 writer 4;
       write_kernel_binary writer operator;
       write_kernel_scalar writer scalar;
       Binary.Writer.bool writer scalar_on_left
-  | Kernel_ir.Primitive.Reduce reduction ->
+  | Kernel_region.Primitive.Reduce reduction ->
       Binary.Writer.u8 writer 5;
       Binary.Writer.u8 writer
         (match reduction.Ir.Reduction.operator with
@@ -3293,26 +3293,26 @@ let write_kernel_primitive writer = function
       Binary.Writer.u16 writer (List.length reduction.axes);
       List.iter (Binary.Writer.i64 writer) reduction.axes;
       Binary.Writer.bool writer reduction.keepdim
-  | Kernel_ir.Primitive.Cast dtype ->
+  | Kernel_region.Primitive.Cast dtype ->
       Binary.Writer.u8 writer 6;
       Binary.Writer.u8 writer (dtype_tag dtype)
-  | Kernel_ir.Primitive.Movement movement ->
+  | Kernel_region.Primitive.Movement movement ->
       Binary.Writer.u8 writer 7;
       write_kernel_movement writer movement
-  | Kernel_ir.Primitive.Short_conv convolution ->
+  | Kernel_region.Primitive.Short_conv convolution ->
       Binary.Writer.u8 writer 8;
       Binary.Writer.u32 writer (Ir.Short_conv.stride convolution);
       Binary.Writer.u32 writer (Ir.Short_conv.padding convolution);
       Binary.Writer.u32 writer (Ir.Short_conv.dilation convolution);
       Binary.Writer.u32 writer (Ir.Short_conv.groups convolution)
-  | Kernel_ir.Primitive.Batched_matmul -> Binary.Writer.u8 writer 9
-  | Kernel_ir.Primitive.Pad_right_zero { axis } ->
+  | Kernel_region.Primitive.Batched_matmul -> Binary.Writer.u8 writer 9
+  | Kernel_region.Primitive.Pad_right_zero { axis } ->
       Binary.Writer.u8 writer 10;
       Binary.Writer.u16 writer axis
-  | Kernel_ir.Primitive.Update_slice index ->
+  | Kernel_region.Primitive.Update_slice index ->
       Binary.Writer.u8 writer 11;
       write_kernel_index writer index
-  | Kernel_ir.Primitive.Triangular_recurrence config ->
+  | Kernel_region.Primitive.Triangular_recurrence config ->
       Binary.Writer.u8 writer 12;
       Binary.Writer.u16 writer (Ir.Triangular_recurrence.axis config);
       Binary.Writer.u16 writer (Ir.Triangular_recurrence.start config);
@@ -3323,7 +3323,7 @@ let read_kernel_primitive reader =
   match tag with
   | 0 ->
       let* epsilon = Binary.Reader.float64 reader in
-      if Float.is_finite epsilon then Ok (Kernel_ir.Primitive.rms_norm ~epsilon)
+      if Float.is_finite epsilon then Ok (Kernel_region.Primitive.rms_norm ~epsilon)
       else Error "kernel assignment RMSNorm epsilon is not finite"
   | 1 ->
       let* m = Binary.Reader.u32 reader in
@@ -3331,15 +3331,15 @@ let read_kernel_primitive reader =
       let* k = Binary.Reader.u32 reader in
       let* bias = Binary.Reader.bool reader in
       let* storage = read_linear_storage reader in
-      Ok (Kernel_ir.Primitive.linear ~m ~n ~k ~bias ~storage)
-  | 2 -> read_kernel_unary reader |> Result.map Kernel_ir.Primitive.unary
-  | 3 -> read_kernel_binary reader |> Result.map Kernel_ir.Primitive.binary
+      Ok (Kernel_region.Primitive.linear ~m ~n ~k ~bias ~storage)
+  | 2 -> read_kernel_unary reader |> Result.map Kernel_region.Primitive.unary
+  | 3 -> read_kernel_binary reader |> Result.map Kernel_region.Primitive.binary
   | 4 ->
       let* operator = read_kernel_binary reader in
       let* scalar = read_kernel_scalar reader in
       let* scalar_on_left = Binary.Reader.bool reader in
       Ok
-        (Kernel_ir.Primitive.scalar_binary ~operator ~scalar ~scalar_on_left)
+        (Kernel_region.Primitive.scalar_binary ~operator ~scalar ~scalar_on_left)
   | 5 ->
       let* operator_tag = Binary.Reader.u8 reader in
       let* operator =
@@ -3361,14 +3361,14 @@ let read_kernel_primitive reader =
       let* axes = axes [] count in
       let* keepdim = Binary.Reader.bool reader in
       Ok
-        (Kernel_ir.Primitive.reduce
+        (Kernel_region.Primitive.reduce
            { Ir.Reduction.operator; axes; keepdim })
   | 6 ->
       let* dtype_tag = Binary.Reader.u8 reader in
       let* dtype = dtype_of_tag dtype_tag in
-      Ok (Kernel_ir.Primitive.cast dtype)
+      Ok (Kernel_region.Primitive.cast dtype)
   | 7 ->
-      read_kernel_movement reader |> Result.map Kernel_ir.Primitive.movement
+      read_kernel_movement reader |> Result.map Kernel_region.Primitive.movement
   | 8 ->
       let* stride = Binary.Reader.u32 reader in
       let* padding = Binary.Reader.u32 reader in
@@ -3377,19 +3377,19 @@ let read_kernel_primitive reader =
       let* convolution =
         Ir.Short_conv.create ~stride ~padding ~dilation ~groups
       in
-      Ok (Kernel_ir.Primitive.short_conv convolution)
-  | 9 -> Ok Kernel_ir.Primitive.batched_matmul
+      Ok (Kernel_region.Primitive.short_conv convolution)
+  | 9 -> Ok Kernel_region.Primitive.batched_matmul
   | 10 ->
       Binary.Reader.u16 reader
-      |> Result.map (fun axis -> Kernel_ir.Primitive.pad_right_zero ~axis)
+      |> Result.map (fun axis -> Kernel_region.Primitive.pad_right_zero ~axis)
   | 11 ->
-      read_kernel_index reader |> Result.map Kernel_ir.Primitive.update_slice
+      read_kernel_index reader |> Result.map Kernel_region.Primitive.update_slice
   | 12 ->
       let* axis = Binary.Reader.u16 reader in
       let* start = Binary.Reader.u16 reader in
       let* stop = Binary.Reader.u16 reader in
       Ir.Triangular_recurrence.create ~axis ~start ~stop
-      |> Result.map Kernel_ir.Primitive.triangular_recurrence
+      |> Result.map Kernel_region.Primitive.triangular_recurrence
   | _ -> Error (Printf.sprintf "unknown kernel assignment primitive tag: %d" tag)
 
 let write_slots writer slots =
@@ -3407,69 +3407,69 @@ let read_slots reader =
   loop [] count
 
 let write_fusion_region writer region =
-  Binary.Writer.string writer (Kernel_ir.name region);
-  Binary.Writer.u32 writer (List.length (Kernel_ir.member_node_ids region));
-  List.iter (Binary.Writer.u32 writer) (Kernel_ir.member_node_ids region);
-  Binary.Writer.u32 writer (List.length (Kernel_ir.inputs region));
-  Kernel_ir.inputs region
-  |> List.iter (fun ({ Kernel_ir.slot; value } : Kernel_ir.input) ->
+  Binary.Writer.string writer (Kernel_region.name region);
+  Binary.Writer.u32 writer (List.length (Kernel_region.member_node_ids region));
+  List.iter (Binary.Writer.u32 writer) (Kernel_region.member_node_ids region);
+  Binary.Writer.u32 writer (List.length (Kernel_region.inputs region));
+  Kernel_region.inputs region
+  |> List.iter (fun ({ Kernel_region.slot; value } : Kernel_region.input) ->
          write_slot writer slot;
          Binary.Writer.u32 writer (value_id value));
-  Binary.Writer.u32 writer (List.length (Kernel_ir.bindings region));
-  Kernel_ir.bindings region
+  Binary.Writer.u32 writer (List.length (Kernel_region.bindings region));
+  Kernel_region.bindings region
   |> List.iter (fun binding ->
-         let outputs = Kernel_ir.binding_outputs binding in
+         let outputs = Kernel_region.binding_outputs binding in
          Binary.Writer.u32 writer (List.length outputs);
          outputs
          |> List.iter (fun output ->
-                write_slot writer (Kernel_ir.output_slot output);
+                write_slot writer (Kernel_region.output_slot output);
                 Binary.Writer.u8 writer
-                  (dtype_tag (Kernel_ir.output_dtype output));
-                write_shape writer (Kernel_ir.output_shape output));
-         write_kernel_primitive writer (Kernel_ir.binding_primitive binding);
-         write_slots writer (Kernel_ir.binding_inputs binding));
-  Binary.Writer.u32 writer (List.length (Kernel_ir.results region));
-  Kernel_ir.results region
+                  (dtype_tag (Kernel_region.output_dtype output));
+                write_shape writer (Kernel_region.output_shape output));
+         write_kernel_primitive writer (Kernel_region.binding_primitive binding);
+         write_slots writer (Kernel_region.binding_inputs binding));
+  Binary.Writer.u32 writer (List.length (Kernel_region.results region));
+  Kernel_region.results region
   |> List.iter (fun result ->
-         write_slot writer (Kernel_ir.result_slot result);
+         write_slot writer (Kernel_region.result_slot result);
          Binary.Writer.u32 writer
-           (value_id (Kernel_ir.result_value result));
-         match Kernel_ir.result_storage result with
-         | Kernel_ir.Fresh -> Binary.Writer.u8 writer 0
-         | Kernel_ir.Alias_input slot ->
+           (value_id (Kernel_region.result_value result));
+         match Kernel_region.result_storage result with
+         | Kernel_region.Fresh -> Binary.Writer.u8 writer 0
+         | Kernel_region.Alias_input slot ->
              Binary.Writer.u8 writer 1;
              write_slot writer slot
-         | Kernel_ir.In_place_input slot ->
+         | Kernel_region.In_place_input slot ->
              Binary.Writer.u8 writer 2;
              write_slot writer slot);
-  let effects = Kernel_ir.effects region in
-  let accesses = Kernel_ir.Effect.accesses effects in
+  let effects = Kernel_region.effects region in
+  let accesses = Kernel_region.Effect.accesses effects in
   Binary.Writer.u32 writer (List.length accesses);
   accesses
-  |> List.iter (fun (access : Kernel_ir.Effect.access) ->
+  |> List.iter (fun (access : Kernel_region.Effect.access) ->
          write_slot writer access.slot;
          Binary.Writer.u8 writer
            (match access.mode with
-           | Kernel_ir.Effect.Read -> 0
-           | Kernel_ir.Effect.Write -> 1
-           | Kernel_ir.Effect.Read_write -> 2);
+           | Kernel_region.Effect.Read -> 0
+           | Kernel_region.Effect.Write -> 1
+           | Kernel_region.Effect.Read_write -> 2);
          match access.alias with
-         | Kernel_ir.Effect.Distinct -> Binary.Writer.u8 writer 0
-         | Kernel_ir.Effect.May_alias -> Binary.Writer.u8 writer 1
-         | Kernel_ir.Effect.Alias_of slot ->
+         | Kernel_region.Effect.Distinct -> Binary.Writer.u8 writer 0
+         | Kernel_region.Effect.May_alias -> Binary.Writer.u8 writer 1
+         | Kernel_region.Effect.Alias_of slot ->
              Binary.Writer.u8 writer 2;
              write_slot writer slot);
-  write_slots writer (Kernel_ir.Effect.state_inputs effects);
-  write_slots writer (Kernel_ir.Effect.state_outputs effects);
-  Binary.Writer.u32 writer (List.length (Kernel_ir.Effect.barriers effects));
-  List.iter (Binary.Writer.u32 writer) (Kernel_ir.Effect.barriers effects);
-  let resource = Kernel_ir.resource region in
-  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.scalar_ops resource);
-  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.bytes_read resource);
-  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.bytes_written resource);
-  Binary.Writer.u64_int64 writer (Kernel_ir.Resource.temporary_bytes resource);
+  write_slots writer (Kernel_region.Effect.state_inputs effects);
+  write_slots writer (Kernel_region.Effect.state_outputs effects);
+  Binary.Writer.u32 writer (List.length (Kernel_region.Effect.barriers effects));
+  List.iter (Binary.Writer.u32 writer) (Kernel_region.Effect.barriers effects);
+  let resource = Kernel_region.resource region in
+  Binary.Writer.u64_int64 writer (Kernel_region.Resource.scalar_ops resource);
+  Binary.Writer.u64_int64 writer (Kernel_region.Resource.bytes_read resource);
+  Binary.Writer.u64_int64 writer (Kernel_region.Resource.bytes_written resource);
+  Binary.Writer.u64_int64 writer (Kernel_region.Resource.temporary_bytes resource);
   Binary.Writer.u32 writer
-    (Kernel_ir.Resource.synchronization_points resource)
+    (Kernel_region.Resource.synchronization_points resource)
 
 let read_fusion_region values reader =
   let* name = Binary.Reader.string reader in
@@ -3488,7 +3488,7 @@ let read_fusion_region values reader =
       let* slot = read_slot reader in
       let* value_id = Binary.Reader.u32 reader in
       let* value = find_value values value_id in
-      inputs (({ Kernel_ir.slot; value } : Kernel_ir.input) :: reversed)
+      inputs (({ Kernel_region.slot; value } : Kernel_region.input) :: reversed)
         (remaining - 1)
   in
   let* inputs = inputs [] input_count in
@@ -3505,7 +3505,7 @@ let read_fusion_region values reader =
           let* dtype = dtype_of_tag dtype_tag in
           let* shape = read_shape reader in
           outputs
-            (({ Kernel_ir.slot; shape; dtype; value = None } : Kernel_ir.output_spec)
+            (({ Kernel_region.slot; shape; dtype; value = None } : Kernel_region.output_spec)
             :: reversed)
             (remaining - 1)
       in
@@ -3513,7 +3513,7 @@ let read_fusion_region values reader =
       let* primitive = read_kernel_primitive reader in
       let* input_slots = read_slots reader in
       let* binding =
-        Kernel_ir.make_binding ~outputs ~primitive ~inputs:input_slots
+        Kernel_region.make_binding ~outputs ~primitive ~inputs:input_slots
       in
       bindings (binding :: reversed) (remaining - 1)
   in
@@ -3528,14 +3528,14 @@ let read_fusion_region values reader =
       let* storage_tag = Binary.Reader.u8 reader in
       let* storage =
         match storage_tag with
-        | 0 -> Ok Kernel_ir.Fresh
-        | 1 -> read_slot reader |> Result.map (fun slot -> Kernel_ir.Alias_input slot)
+        | 0 -> Ok Kernel_region.Fresh
+        | 1 -> read_slot reader |> Result.map (fun slot -> Kernel_region.Alias_input slot)
         | 2 ->
             read_slot reader
-            |> Result.map (fun slot -> Kernel_ir.In_place_input slot)
+            |> Result.map (fun slot -> Kernel_region.In_place_input slot)
         | _ -> Error (Printf.sprintf "unknown kernel result storage tag: %d" storage_tag)
       in
-      results (({ Kernel_ir.slot; value; storage } : Kernel_ir.result) :: reversed)
+      results (({ Kernel_region.slot; value; storage } : Kernel_region.result) :: reversed)
         (remaining - 1)
   in
   let* results = results [] result_count in
@@ -3547,21 +3547,21 @@ let read_fusion_region values reader =
       let* mode_tag = Binary.Reader.u8 reader in
       let* mode =
         match mode_tag with
-        | 0 -> Ok Kernel_ir.Effect.Read
-        | 1 -> Ok Kernel_ir.Effect.Write
-        | 2 -> Ok Kernel_ir.Effect.Read_write
+        | 0 -> Ok Kernel_region.Effect.Read
+        | 1 -> Ok Kernel_region.Effect.Write
+        | 2 -> Ok Kernel_region.Effect.Read_write
         | _ -> Error (Printf.sprintf "unknown kernel effect mode tag: %d" mode_tag)
       in
       let* alias_tag = Binary.Reader.u8 reader in
       let* alias =
         match alias_tag with
-        | 0 -> Ok Kernel_ir.Effect.Distinct
-        | 1 -> Ok Kernel_ir.Effect.May_alias
-        | 2 -> read_slot reader |> Result.map (fun slot -> Kernel_ir.Effect.Alias_of slot)
+        | 0 -> Ok Kernel_region.Effect.Distinct
+        | 1 -> Ok Kernel_region.Effect.May_alias
+        | 2 -> read_slot reader |> Result.map (fun slot -> Kernel_region.Effect.Alias_of slot)
         | _ -> Error (Printf.sprintf "unknown kernel effect alias tag: %d" alias_tag)
       in
       accesses
-        (({ Kernel_ir.Effect.slot; mode; alias } : Kernel_ir.Effect.access)
+        (({ Kernel_region.Effect.slot; mode; alias } : Kernel_region.Effect.access)
         :: reversed)
         (remaining - 1)
   in
@@ -3577,7 +3577,7 @@ let read_fusion_region values reader =
   in
   let* barriers = barriers [] barrier_count in
   let* effects =
-    Kernel_ir.Effect.create ~accesses ~state_inputs ~state_outputs ~barriers ()
+    Kernel_region.Effect.create ~accesses ~state_inputs ~state_outputs ~barriers ()
   in
   let* scalar_ops = Binary.Reader.u64_int64 reader in
   let* bytes_read = Binary.Reader.u64_int64 reader in
@@ -3585,12 +3585,12 @@ let read_fusion_region values reader =
   let* temporary_bytes = Binary.Reader.u64_int64 reader in
   let* synchronization_points = Binary.Reader.u32 reader in
   let* resource =
-    Kernel_ir.Resource.create ~scalar_ops ~bytes_read ~bytes_written
+    Kernel_region.Resource.create ~scalar_ops ~bytes_read ~bytes_written
       ~temporary_bytes ~synchronization_points
   in
-  Kernel_ir.create ~name ~member_node_ids ~inputs ~bindings ~results ~effects
+  Kernel_region.create ~name ~member_node_ids ~inputs ~bindings ~results ~effects
     ~resource
-  |> Result.map_error Kernel_ir.error_to_string
+  |> Result.map_error Kernel_region.error_to_string
 
 let rec read_argument ~depth values reader =
   if depth > 64 then Error "schedule argument nesting is too deep"

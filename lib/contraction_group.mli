@@ -3,7 +3,7 @@
 
     A group is a typed environment of contraction bindings together with the
     scalar SSA steps that consume them, produced by generic elaboration over
-    a [Kernel_ir.region]:
+    a [Kernel_region.region]:
 
     - every region binding is classified exactly once: contraction
       ([Linear] without bias), scalar ([Unary]/[Binary]/[Cast] expressible in
@@ -44,7 +44,7 @@
     and Cast/Sigmoid cuts keep failing. *)
 
 type expr =
-  | Slot of Kernel_ir.Slot.t
+  | Slot of Kernel_region.Slot.t
   (** Reference to an earlier contraction or scalar-step slot. *)
   | Const of float
   | Read of Ir.Value.t
@@ -53,7 +53,7 @@ type expr =
   | Binop of Applicative_expr.binop * expr * expr
 
 type contraction = {
-  slot : Kernel_ir.Slot.t;
+  slot : Kernel_region.Slot.t;
   m : int;
   n : int;
   k : int;
@@ -68,7 +68,7 @@ type contraction = {
     [slot] over the tensor domain [shape]. *)
 
 type step = {
-  slot : Kernel_ir.Slot.t;
+  slot : Kernel_region.Slot.t;
   expr : expr;
   value : Ir.Value.t;
   shape : Tensor_shape.t;
@@ -78,7 +78,7 @@ type step = {
     slots and external reads, so shared producers are explicit. *)
 
 type export = {
-  slot : Kernel_ir.Slot.t;
+  slot : Kernel_region.Slot.t;
   value : Ir.Value.t;
 }
 
@@ -94,7 +94,7 @@ type t = {
   (** Region results, in region result order. *)
 }
 
-val of_region : Kernel_ir.region -> t option
+val of_region : Kernel_region.region -> t option
 (** Generic elaboration of a whole region into a typed group: [Some] only
     when every region binding feeds a region result, no opaque binding is on
     a result path, there is at least one bias-free [Linear] contraction, and
@@ -108,22 +108,22 @@ val single_acc_epilogue : t -> Epilogue.t option
     every other chain yields the pure monoid [Expr].  Returns [None] for
     multi-contraction / multi-export groups. *)
 
-val use_count : t -> Kernel_ir.Slot.t -> int
+val use_count : t -> Kernel_region.Slot.t -> int
 (** Number of consumer references to the slot across the group's steps (the
     slot's use obligation).  Exports themselves do not count. *)
 
-val is_exported : t -> Kernel_ir.Slot.t -> bool
+val is_exported : t -> Kernel_region.Slot.t -> bool
 (** Whether the slot escapes the group as a region result. *)
 
-val slot_expr : t -> Kernel_ir.Slot.t -> expr option
+val slot_expr : t -> Kernel_region.Slot.t -> expr option
 (** The scalar-step expression bound at the slot ([None] for contraction
     slots and unknown slots). *)
 
-val referenced_slots : expr -> Kernel_ir.Slot.t list
+val referenced_slots : expr -> Kernel_region.Slot.t list
 (** All slot leaves of an expression, with repetition (multiplicity records
     fan-in from one producer). *)
 
-val select : Kernel_ir.region -> Kernel_ir.Fused_tactic.t option
+val select : Kernel_region.region -> Kernel_ir.Fused_tactic.t option
 (** G4P12-02 consumer-facing select: the legacy
     [Kernel_ir.Fused_tactic.select] recognizer wins first (byte-identical
     on every region it already admits); when it admits nothing the whole
@@ -134,11 +134,11 @@ val select : Kernel_ir.region -> Kernel_ir.Fused_tactic.t option
     writes the final step slot.  Bare identity regions remain unclaimed
     (legacy select depth >= 1), and Cast/Sigmoid cuts keep failing. *)
 
-val select_linear_epilogue : Kernel_ir.region -> Kernel_ir.Fused_tactic.t option
+val select_linear_epilogue : Kernel_region.region -> Kernel_ir.Fused_tactic.t option
 (** The widening alone (no legacy-first fallback): [Some] exactly for the
     single-accumulator chains described under [select]. *)
 
-val fold_linear_epilogue : Kernel_ir.region -> Epilogue.t option
+val fold_linear_epilogue : Kernel_region.region -> Epilogue.t option
 (** G4P12-02 widened fold over the same admission, including the bare
     identity region (steps = [] -> [Epilogue.none]), mirroring the legacy
     [Kernel_ir.Fused_tactic.fold_linear_epilogue] coverage. *)

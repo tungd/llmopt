@@ -30,7 +30,7 @@ let expect_ok = function
 
 let expect_ok_kernel = function
   | Ok value -> value
-  | Error error -> fail (Kernel_ir.error_to_string error)
+  | Error error -> fail (Kernel_region.error_to_string error)
 
 module Fixture = struct
   let shape_1_64 = Tensor_shape.of_ints_exn [ 1; 64 ]
@@ -40,7 +40,7 @@ module Fixture = struct
     Ir.Value.make_tensor ~id ~shape ~dtype
 
   let linear_primitive =
-    Kernel_ir.Primitive.linear ~m:1 ~n:64 ~k:64 ~bias:false
+    Kernel_region.Primitive.linear ~m:1 ~n:64 ~k:64 ~bias:false
       ~storage:(Ir.Linear_storage.Dense Ir.Dtype.Float16)
 
   (* steps: (primitive, operand slot ints, output value).  Region inputs take
@@ -49,8 +49,8 @@ module Fixture = struct
     let inputs =
       List.mapi
         (fun index value ->
-          ({ Kernel_ir.slot = Kernel_ir.Slot.of_int_exn index; value }
-            : Kernel_ir.input))
+          ({ Kernel_region.slot = Kernel_region.Slot.of_int_exn index; value }
+            : Kernel_region.input))
         inputs
     in
     let base = List.length inputs in
@@ -58,20 +58,20 @@ module Fixture = struct
       fst
         (List.fold_left
            (fun (bindings, count) (primitive, operand_slots, output_value) ->
-             let slot = Kernel_ir.Slot.of_int_exn (base + count) in
+             let slot = Kernel_region.Slot.of_int_exn (base + count) in
              let binding =
-               Kernel_ir.make_binding
+               Kernel_region.make_binding
                  ~outputs:
                    [
                      {
-                       Kernel_ir.slot;
+                       Kernel_region.slot;
                        shape = Ir.Value.logical_shape output_value;
                        dtype = Ir.Value.dtype output_value;
                        value = Some output_value;
                      };
                    ]
                  ~primitive
-                 ~inputs:(List.map Kernel_ir.Slot.of_int_exn operand_slots)
+                 ~inputs:(List.map Kernel_region.Slot.of_int_exn operand_slots)
                |> expect_ok
              in
              (binding :: bindings, count + 1))
@@ -82,39 +82,39 @@ module Fixture = struct
       List.map
         (fun (slot_index, result_value) ->
           {
-            Kernel_ir.slot = Kernel_ir.Slot.of_int_exn slot_index;
+            Kernel_region.slot = Kernel_region.Slot.of_int_exn slot_index;
             value = result_value;
-            storage = Kernel_ir.Fresh;
+            storage = Kernel_region.Fresh;
           })
         results
     in
     let input_accesses =
       List.map
-        (fun ({ Kernel_ir.slot; _ } : Kernel_ir.input) ->
+        (fun ({ Kernel_region.slot; _ } : Kernel_region.input) ->
           {
-            Kernel_ir.Effect.slot;
-            mode = Kernel_ir.Effect.Read;
-            alias = Kernel_ir.Effect.Distinct;
+            Kernel_region.Effect.slot;
+            mode = Kernel_region.Effect.Read;
+            alias = Kernel_region.Effect.Distinct;
           })
         inputs
     in
     let result_accesses =
       List.map
-        (fun ({ Kernel_ir.slot; _ } : Kernel_ir.result) ->
+        (fun ({ Kernel_region.slot; _ } : Kernel_region.result) ->
           {
-            Kernel_ir.Effect.slot;
-            mode = Kernel_ir.Effect.Write;
-            alias = Kernel_ir.Effect.Distinct;
+            Kernel_region.Effect.slot;
+            mode = Kernel_region.Effect.Write;
+            alias = Kernel_region.Effect.Distinct;
           })
         results
     in
     let effects =
-      Kernel_ir.Effect.create ~accesses:(input_accesses @ result_accesses) ()
+      Kernel_region.Effect.create ~accesses:(input_accesses @ result_accesses) ()
       |> expect_ok
     in
-    Kernel_ir.create ~name
+    Kernel_region.create ~name
       ~member_node_ids:[ 1; 2; 3; 4; 5; 6; 7; 8 ]
-      ~inputs ~bindings ~results ~effects ~resource:Kernel_ir.Resource.zero
+      ~inputs ~bindings ~results ~effects ~resource:Kernel_region.Resource.zero
     |> expect_ok_kernel
 
   let single_result_region ~name ~inputs ~steps ~result_index result_value =
@@ -160,16 +160,16 @@ let run () =
   let o_add = value 9 shape_1_64 f16 in
   let linear_step = (linear_primitive, [ 0; 1 ], o_linear) in
   let silu_step operand output =
-    (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ operand ], output)
+    (Kernel_region.Primitive.unary Kernel_region.Primitive.Silu, [ operand ], output)
   in
   let gelu_step operand output =
-    (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Gelu, [ operand ], output)
+    (Kernel_region.Primitive.unary Kernel_region.Primitive.Gelu, [ operand ], output)
   in
   let add_step left right output =
-    (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add, [ left; right ], output)
+    (Kernel_region.Primitive.binary Kernel_region.Primitive.Add, [ left; right ], output)
   in
   let mul_step left right output =
-    (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul, [ left; right ], output)
+    (Kernel_region.Primitive.binary Kernel_region.Primitive.Mul, [ left; right ], output)
   in
   let inputs_2 = [ x; w ] in
   let inputs_4 = [ x; w; residual; up ] in
@@ -269,7 +269,7 @@ let run () =
         (List.length group.contractions = 1 && List.length group.exports = 1)
         "y*y group holds one contraction and one export";
       expect
-        (Contraction_group.use_count group (Kernel_ir.Slot.of_int_exn 2) = 2)
+        (Contraction_group.use_count group (Kernel_region.Slot.of_int_exn 2) = 2)
         "y*y fan-in: the contraction slot is consumed twice";
       match Contraction_group.single_acc_epilogue group with
       | None -> fail "y*y must reconstruct a single-accumulator epilogue"
@@ -377,12 +377,12 @@ let run () =
         group.contractions;
       (* The arbitrary pointwise step combines both slots. *)
       (match
-         Contraction_group.slot_expr group (Kernel_ir.Slot.of_int_exn 6)
+         Contraction_group.slot_expr group (Kernel_region.Slot.of_int_exn 6)
        with
       | Some
           (Binop (Applicative_expr.Add, Slot left, Slot right)) ->
           expect
-            (Kernel_ir.Slot.to_int left = 5 && Kernel_ir.Slot.to_int right = 4)
+            (Kernel_region.Slot.to_int left = 5 && Kernel_region.Slot.to_int right = 4)
             "pointwise add references both internal slots"
       | _ -> fail "two-slot pointwise step is not Add over both projection slots");
       (* Multi-contraction groups never collapse to a single accumulator. *)
@@ -414,8 +414,8 @@ let run () =
       expect
         (List.length group.exports = 2)
         "exported-intermediate group holds both region results";
-      let slot5 = Kernel_ir.Slot.of_int_exn 5 in
-      let slot7 = Kernel_ir.Slot.of_int_exn 7 in
+      let slot5 = Kernel_region.Slot.of_int_exn 5 in
+      let slot7 = Kernel_region.Slot.of_int_exn 7 in
       expect
         (Contraction_group.is_exported group slot5)
         "the intermediate S escapes as a region result";
@@ -446,7 +446,7 @@ let run () =
   | None -> fail "fan-out region must elaborate into a group"
   | Some group ->
       expect
-        (Contraction_group.use_count group (Kernel_ir.Slot.of_int_exn 5) = 2)
+        (Contraction_group.use_count group (Kernel_region.Slot.of_int_exn 5) = 2)
         "fan-out records the two-fold use obligation");
   Printf.printf "  [PASS] fan-out group\n%!";
   (* Sigmoid leaves the scalar grammar: the region stays outside groups. *)
@@ -456,7 +456,7 @@ let run () =
       ~steps:
         [
           linear_step;
-          ( Kernel_ir.Primitive.unary Kernel_ir.Primitive.Sigmoid,
+          ( Kernel_region.Primitive.unary Kernel_region.Primitive.Sigmoid,
             [ 4 ],
             o_sigmoid );
         ]
@@ -487,7 +487,7 @@ let run () =
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.cast Ir.Dtype.Float32, [ 4 ], o_cast);
+          (Kernel_region.Primitive.cast Ir.Dtype.Float32, [ 4 ], o_cast);
         ]
       ~result_index:5 o_cast
   in

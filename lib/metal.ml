@@ -9774,7 +9774,7 @@ module Region_node_set = Set.Make (Int)
 
 let region_node_ids regions =
   regions
-  |> List.concat_map Kernel_ir.member_node_ids
+  |> List.concat_map Kernel_region.member_node_ids
   |> Region_node_set.of_list
 
 let without_region_nodes graph regions =

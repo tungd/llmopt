@@ -2712,7 +2712,7 @@ type assignment_execution =
   | Assignment_gated_product of {
       gate : Kernel_ir.Fused_tactic.linear;
       up : Kernel_ir.Fused_tactic.linear;
-      activation : Kernel_ir.Primitive.unary;
+      activation : Kernel_region.Primitive.unary;
       output : Ir.Value.t;
     }
   | Assignment_rms_normalize of {
@@ -3231,13 +3231,13 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
               let* buffers = find_values state [ gate.input; gate.weight; up.weight ] in
               let* activation_tag =
                 match activation with
-                | Kernel_ir.Primitive.Silu -> Ok 0
-                | Kernel_ir.Primitive.Gelu -> Ok 1
-                | Kernel_ir.Primitive.Sigmoid -> Ok 2
-                | Kernel_ir.Primitive.Neg | Kernel_ir.Primitive.Rsqrt
-                | Kernel_ir.Primitive.Cos | Kernel_ir.Primitive.Sin
-                | Kernel_ir.Primitive.Tanh | Kernel_ir.Primitive.Exp
-                | Kernel_ir.Primitive.Softplus | Kernel_ir.Primitive.Pow _ ->
+                | Kernel_region.Primitive.Silu -> Ok 0
+                | Kernel_region.Primitive.Gelu -> Ok 1
+                | Kernel_region.Primitive.Sigmoid -> Ok 2
+                | Kernel_region.Primitive.Neg | Kernel_region.Primitive.Rsqrt
+                | Kernel_region.Primitive.Cos | Kernel_region.Primitive.Sin
+                | Kernel_region.Primitive.Tanh | Kernel_region.Primitive.Exp
+                | Kernel_region.Primitive.Softplus | Kernel_region.Primitive.Pow _ ->
                     Error "assignment gated product has unsupported activation"
               in
               let* parameters = Parameters.u32s [ gate.m; gate.n; gate.k; activation_tag ] in

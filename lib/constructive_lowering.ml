@@ -17,7 +17,7 @@ module Assignment = struct
   type t = {
     node_id : Node_id.t;
     source_node : Ir.node;
-    primitive : Kernel_ir.Primitive.t;
+    primitive : Kernel_region.Primitive.t;
     inputs : Ir.Value.t list;
     outputs : Ir.Value.t list;
   }
@@ -329,28 +329,28 @@ let assignment node primitive output =
       outputs = [ output ] }
 
 let kernel_unary = function
-  | Ir.Pointwise.Neg -> Kernel_ir.Primitive.Neg
-  | Ir.Pointwise.Rsqrt -> Kernel_ir.Primitive.Rsqrt
-  | Ir.Pointwise.Silu -> Kernel_ir.Primitive.Silu
-  | Ir.Pointwise.Cos -> Kernel_ir.Primitive.Cos
-  | Ir.Pointwise.Sin -> Kernel_ir.Primitive.Sin
-  | Ir.Pointwise.Tanh -> Kernel_ir.Primitive.Tanh
-  | Ir.Pointwise.Exp -> Kernel_ir.Primitive.Exp
-  | Ir.Pointwise.Sigmoid -> Kernel_ir.Primitive.Sigmoid
-  | Ir.Pointwise.Softplus -> Kernel_ir.Primitive.Softplus
-  | Ir.Pointwise.Pow scalar -> Kernel_ir.Primitive.Pow scalar
+  | Ir.Pointwise.Neg -> Kernel_region.Primitive.Neg
+  | Ir.Pointwise.Rsqrt -> Kernel_region.Primitive.Rsqrt
+  | Ir.Pointwise.Silu -> Kernel_region.Primitive.Silu
+  | Ir.Pointwise.Cos -> Kernel_region.Primitive.Cos
+  | Ir.Pointwise.Sin -> Kernel_region.Primitive.Sin
+  | Ir.Pointwise.Tanh -> Kernel_region.Primitive.Tanh
+  | Ir.Pointwise.Exp -> Kernel_region.Primitive.Exp
+  | Ir.Pointwise.Sigmoid -> Kernel_region.Primitive.Sigmoid
+  | Ir.Pointwise.Softplus -> Kernel_region.Primitive.Softplus
+  | Ir.Pointwise.Pow scalar -> Kernel_region.Primitive.Pow scalar
 
 let kernel_binary = function
   | Ir.Pointwise.Mul | Ir.Pointwise.Silu_mul | Ir.Pointwise.Gelu_mul
-  | Ir.Pointwise.Sigmoid_mul -> Kernel_ir.Primitive.Mul
-  | Ir.Pointwise.Add -> Kernel_ir.Primitive.Add
-  | Ir.Pointwise.Sub -> Kernel_ir.Primitive.Sub
-  | Ir.Pointwise.Div -> Kernel_ir.Primitive.Div
-  | Ir.Pointwise.Logical_and -> Kernel_ir.Primitive.Logical_and
-  | Ir.Pointwise.Equal -> Kernel_ir.Primitive.Equal
-  | Ir.Pointwise.Not_equal -> Kernel_ir.Primitive.Not_equal
-  | Ir.Pointwise.Less_equal -> Kernel_ir.Primitive.Less_equal
-  | Ir.Pointwise.Greater -> Kernel_ir.Primitive.Greater
+  | Ir.Pointwise.Sigmoid_mul -> Kernel_region.Primitive.Mul
+  | Ir.Pointwise.Add -> Kernel_region.Primitive.Add
+  | Ir.Pointwise.Sub -> Kernel_region.Primitive.Sub
+  | Ir.Pointwise.Div -> Kernel_region.Primitive.Div
+  | Ir.Pointwise.Logical_and -> Kernel_region.Primitive.Logical_and
+  | Ir.Pointwise.Equal -> Kernel_region.Primitive.Equal
+  | Ir.Pointwise.Not_equal -> Kernel_region.Primitive.Not_equal
+  | Ir.Pointwise.Less_equal -> Kernel_region.Primitive.Less_equal
+  | Ir.Pointwise.Greater -> Kernel_region.Primitive.Greater
 
 let pointwise_tensor_values = function
   | Ir.Pointwise.Unary (_, value) -> [ value ]
@@ -381,7 +381,7 @@ let normalize node =
                    with
                   | Ok () ->
                       assignment node
-                        (Kernel_ir.Primitive.linear ~m ~n ~k ~bias
+                        (Kernel_region.Primitive.linear ~m ~n ~k ~bias
                            ~storage)
                         output
                   | Error boundary -> Ineligible boundary))
@@ -398,25 +398,25 @@ let normalize node =
            with
           | Ok () ->
               assignment node
-                (Kernel_ir.Primitive.linear ~m ~n ~k ~bias ~storage)
+                (Kernel_region.Primitive.linear ~m ~n ~k ~bias ~storage)
                 output
           | Error boundary -> Ineligible boundary)
       | Ir.Op.Rms_norm { epsilon }, inputs ->
           (match rms_metadata_compatible (node_id node) inputs output with
-          | Ok () -> assignment node (Kernel_ir.Primitive.rms_norm ~epsilon) output
+          | Ok () -> assignment node (Kernel_region.Primitive.rms_norm ~epsilon) output
           | Error boundary -> Ineligible boundary)
       | Ir.Op.Gelu, inputs ->
           (match unary_metadata_compatible (node_id node) inputs output with
           | Ok () ->
               assignment node
-                (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Gelu)
+                (Kernel_region.Primitive.unary Kernel_region.Primitive.Gelu)
                 output
           | Error boundary -> Ineligible boundary)
       | Ir.Op.Add _, inputs ->
           (match binary_metadata_compatible (node_id node) inputs output with
           | Ok () ->
               assignment node
-                (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add)
+                (Kernel_region.Primitive.binary Kernel_region.Primitive.Add)
                 output
           | Error boundary -> Ineligible boundary)
       | Ir.Op.Primitive (Ir.Primitive.Pointwise operation), inputs
@@ -426,7 +426,7 @@ let normalize node =
               (match unary_metadata_compatible (node_id node) inputs output with
               | Ok () ->
                   assignment node
-                    (Kernel_ir.Primitive.unary (kernel_unary operator)) output
+                    (Kernel_region.Primitive.unary (kernel_unary operator)) output
               | Error boundary -> Ineligible boundary)
           | Ir.Pointwise.Binary (operator, left, right) -> (
               match left, right with
@@ -434,7 +434,7 @@ let normalize node =
                   (match binary_metadata_compatible (node_id node) inputs output with
                   | Ok () ->
                       assignment node
-                        (Kernel_ir.Primitive.binary (kernel_binary operator))
+                        (Kernel_region.Primitive.binary (kernel_binary operator))
                         output
                   | Error boundary -> Ineligible boundary)
               | Ir.Pointwise.Scalar scalar, Ir.Pointwise.Tensor _
@@ -442,7 +442,7 @@ let normalize node =
                   (match unary_metadata_compatible (node_id node) inputs output with
                   | Ok () ->
                       assignment node
-                        (Kernel_ir.Primitive.scalar_binary
+                        (Kernel_region.Primitive.scalar_binary
                            ~operator:(kernel_binary operator) ~scalar
                            ~scalar_on_left:
                              (match left with
@@ -453,21 +453,21 @@ let normalize node =
               | Ir.Pointwise.Scalar _, Ir.Pointwise.Scalar _ ->
                   Ineligible (unsupported_boundary node)))
       | Ir.Op.Primitive (Ir.Primitive.Reduce reduction), [ _ ] ->
-          assignment node (Kernel_ir.Primitive.reduce reduction) output
+          assignment node (Kernel_region.Primitive.reduce reduction) output
       | Ir.Op.Primitive (Ir.Primitive.Cast dtype), [ _ ] ->
-          assignment node (Kernel_ir.Primitive.cast dtype) output
+          assignment node (Kernel_region.Primitive.cast dtype) output
       | Ir.Op.Primitive (Ir.Primitive.Movement movement), _ ->
-          assignment node (Kernel_ir.Primitive.movement movement) output
+          assignment node (Kernel_region.Primitive.movement movement) output
       | Ir.Op.Primitive (Ir.Primitive.Short_conv convolution), [ _; _ ] ->
-          assignment node (Kernel_ir.Primitive.short_conv convolution) output
+          assignment node (Kernel_region.Primitive.short_conv convolution) output
       | Ir.Op.Primitive Ir.Primitive.Batched_matmul, [ _; _ ] ->
-          assignment node Kernel_ir.Primitive.batched_matmul output
+          assignment node Kernel_region.Primitive.batched_matmul output
       | Ir.Op.Primitive (Ir.Primitive.Pad_right_zero { axis }), [ _ ] ->
-          assignment node (Kernel_ir.Primitive.pad_right_zero ~axis) output
+          assignment node (Kernel_region.Primitive.pad_right_zero ~axis) output
       | Ir.Op.Primitive (Ir.Primitive.Update_slice index), [ _; _ ] ->
-          assignment node (Kernel_ir.Primitive.update_slice index) output
+          assignment node (Kernel_region.Primitive.update_slice index) output
       | Ir.Op.Primitive (Ir.Primitive.Triangular_recurrence config), [ _ ] ->
-          assignment node (Kernel_ir.Primitive.triangular_recurrence config)
+          assignment node (Kernel_region.Primitive.triangular_recurrence config)
             output
       | _ -> Ineligible (unsupported_boundary node))
 
@@ -577,10 +577,10 @@ let candidate_boundaries plan normalized candidate =
     match source_assignment with
     | Some assignment ->
         (match Assignment.primitive assignment with
-        | Kernel_ir.Primitive.Batched_matmul
-        | Kernel_ir.Primitive.Pad_right_zero _
-        | Kernel_ir.Primitive.Update_slice _
-        | Kernel_ir.Primitive.Triangular_recurrence _ -> []
+        | Kernel_region.Primitive.Batched_matmul
+        | Kernel_region.Primitive.Pad_right_zero _
+        | Kernel_region.Primitive.Update_slice _
+        | Kernel_region.Primitive.Triangular_recurrence _ -> []
         | _ -> external_use_boundaries plan normalized destination assignment)
     | None -> []
   in
@@ -590,22 +590,22 @@ let candidate_boundaries plan normalized candidate =
     | Some source_assignment, Some destination_assignment ->
         (match Assignment.primitive source_assignment,
               Assignment.primitive destination_assignment with
-        | Kernel_ir.Primitive.Movement (Ir.Movement.Unsqueeze _),
-          Kernel_ir.Primitive.Batched_matmul -> []
-        | Kernel_ir.Primitive.Movement (Ir.Movement.Unsqueeze _), _ ->
+        | Kernel_region.Primitive.Movement (Ir.Movement.Unsqueeze _),
+          Kernel_region.Primitive.Batched_matmul -> []
+        | Kernel_region.Primitive.Movement (Ir.Movement.Unsqueeze _), _ ->
             [ Boundary.Layout_boundary source ]
         | _, destination_primitive ->
         (match destination_primitive with
-        | Kernel_ir.Primitive.Unary _ | Kernel_ir.Primitive.Binary _
-        | Kernel_ir.Primitive.Scalar_binary _
-        | Kernel_ir.Primitive.Reduce _ | Kernel_ir.Primitive.Cast _
-        | Kernel_ir.Primitive.Movement _
-        | Kernel_ir.Primitive.Short_conv _
-        | Kernel_ir.Primitive.Batched_matmul
-        | Kernel_ir.Primitive.Pad_right_zero _
-        | Kernel_ir.Primitive.Update_slice _
-        | Kernel_ir.Primitive.Triangular_recurrence _ -> []
-        | Kernel_ir.Primitive.Rms_norm _ | Kernel_ir.Primitive.Linear _ ->
+        | Kernel_region.Primitive.Unary _ | Kernel_region.Primitive.Binary _
+        | Kernel_region.Primitive.Scalar_binary _
+        | Kernel_region.Primitive.Reduce _ | Kernel_region.Primitive.Cast _
+        | Kernel_region.Primitive.Movement _
+        | Kernel_region.Primitive.Short_conv _
+        | Kernel_region.Primitive.Batched_matmul
+        | Kernel_region.Primitive.Pad_right_zero _
+        | Kernel_region.Primitive.Update_slice _
+        | Kernel_region.Primitive.Triangular_recurrence _ -> []
+        | Kernel_region.Primitive.Rms_norm _ | Kernel_region.Primitive.Linear _ ->
             [ Boundary.Unsupported_index_map destination ]))
     | _ -> []
   in
@@ -849,7 +849,7 @@ let linear_info assignment =
   | ( Ir.Op.Linear { m; n; k; bias = false },
       [ input; weight ],
       [ output ],
-      Kernel_ir.Primitive.Linear
+      Kernel_region.Primitive.Linear
         { storage = Ir.Linear_storage.Block_quantized quant; _ } )
     when (match Ir.Value.dtype weight with
       | Ir.Dtype.Quant actual -> actual = quant && supported_quant actual
@@ -860,7 +860,7 @@ let linear_info assignment =
   | ( Ir.Op.W4a16_linear { m; n; k; bias = false },
       [ input; weight; scale ],
       [ output ],
-      Kernel_ir.Primitive.Linear
+      Kernel_region.Primitive.Linear
         { storage = Ir.Linear_storage.Groupwise_packed
             { bits = 4; group_elements = 64 }; _ } )
     when Ir.Value.dtype weight = Ir.Dtype.UInt8
@@ -1207,7 +1207,7 @@ let kernel_region_of_assignments ~name ~inputs ~outputs assignments =
   let ( let* ) = Result.bind in
   let next_slot = ref 0 in
   let fresh_slot () =
-    let slot = Kernel_ir.Slot.of_int_exn !next_slot in
+    let slot = Kernel_region.Slot.of_int_exn !next_slot in
     incr next_slot;
     slot
   in
@@ -1224,7 +1224,7 @@ let kernel_region_of_assignments ~name ~inputs ~outputs assignments =
     |> List.fold_left
          (fun (slots, inputs) value ->
            let slots, slot = add_value slots value in
-           slots, ({ Kernel_ir.slot; value } : Kernel_ir.input) :: inputs)
+           slots, ({ Kernel_region.slot; value } : Kernel_region.input) :: inputs)
          (Value_id_map.empty, [])
   in
   let rec bindings slots reversed = function
@@ -1252,15 +1252,15 @@ let kernel_region_of_assignments ~name ~inputs ~outputs assignments =
                (fun (slots, outputs) value ->
                  let slots, slot = add_value slots value in
                  ( slots,
-                   ({ Kernel_ir.slot;
+                   ({ Kernel_region.slot;
                       shape = Ir.Value.logical_shape value;
                       dtype = Ir.Value.dtype value;
-                      value = Some value } : Kernel_ir.output_spec)
+                      value = Some value } : Kernel_region.output_spec)
                    :: outputs ))
                (slots, [])
         in
         let* binding =
-          Kernel_ir.make_binding ~outputs:(List.rev outputs_rev)
+          Kernel_region.make_binding ~outputs:(List.rev outputs_rev)
             ~primitive:(Assignment.primitive assignment) ~inputs:assignment_inputs
         in
         bindings slots (binding :: reversed) rest
@@ -1279,36 +1279,36 @@ let kernel_region_of_assignments ~name ~inputs ~outputs assignments =
                     (value_id value |> Ir.Value_id.to_int))
            | Some slot ->
                Ok
-                 (({ Kernel_ir.slot; value; storage = Kernel_ir.Fresh }
-                    : Kernel_ir.result)
+                 (({ Kernel_region.slot; value; storage = Kernel_region.Fresh }
+                    : Kernel_region.result)
                  :: results))
          (Ok [])
     |> Result.map List.rev
   in
   let input_accesses =
     List.rev inputs_rev
-    |> List.map (fun ({ Kernel_ir.slot; _ } : Kernel_ir.input) ->
-           ({ Kernel_ir.Effect.slot;
-              mode = Kernel_ir.Effect.Read;
-              alias = Kernel_ir.Effect.Distinct }
-             : Kernel_ir.Effect.access))
+    |> List.map (fun ({ Kernel_region.slot; _ } : Kernel_region.input) ->
+           ({ Kernel_region.Effect.slot;
+              mode = Kernel_region.Effect.Read;
+              alias = Kernel_region.Effect.Distinct }
+             : Kernel_region.Effect.access))
   in
   let result_accesses =
     results
     |> List.map (fun result ->
-           ({ Kernel_ir.Effect.slot = Kernel_ir.result_slot result;
-              mode = Kernel_ir.Effect.Write;
-              alias = Kernel_ir.Effect.Distinct }
-             : Kernel_ir.Effect.access))
+           ({ Kernel_region.Effect.slot = Kernel_region.result_slot result;
+              mode = Kernel_region.Effect.Write;
+              alias = Kernel_region.Effect.Distinct }
+             : Kernel_region.Effect.access))
   in
   let* effects =
-    Kernel_ir.Effect.create ~accesses:(input_accesses @ result_accesses) ()
+    Kernel_region.Effect.create ~accesses:(input_accesses @ result_accesses) ()
   in
-  Kernel_ir.create ~name
+  Kernel_region.create ~name
     ~member_node_ids:(List.map (fun assignment -> assignment_id assignment) assignments)
     ~inputs:(List.rev inputs_rev) ~bindings ~results ~effects
-    ~resource:Kernel_ir.Resource.zero
-  |> Result.map_error Kernel_ir.error_to_string
+    ~resource:Kernel_region.Resource.zero
+  |> Result.map_error Kernel_region.error_to_string
 
 let lower analysis =
   let graph = Analysis.graph analysis in
@@ -1699,7 +1699,7 @@ let executable_region event =
   let ( let* ) = Result.bind in
   let next_slot = ref 0 in
   let fresh_slot () =
-    let slot = Kernel_ir.Slot.of_int_exn !next_slot in
+    let slot = Kernel_region.Slot.of_int_exn !next_slot in
     incr next_slot;
     slot
   in
@@ -1716,7 +1716,7 @@ let executable_region event =
     |> List.fold_left
          (fun (slots, inputs) value ->
            let slots, slot = add_value slots value in
-           slots, ({ Kernel_ir.slot; value } : Kernel_ir.input) :: inputs)
+           slots, ({ Kernel_region.slot; value } : Kernel_region.input) :: inputs)
          (Value_id_map.empty, [])
   in
   let rec bindings slots reversed = function
@@ -1744,15 +1744,15 @@ let executable_region event =
                (fun (slots, outputs) value ->
                  let slots, slot = add_value slots value in
                  ( slots,
-                   ({ Kernel_ir.slot;
+                   ({ Kernel_region.slot;
                       shape = Ir.Value.logical_shape value;
                       dtype = Ir.Value.dtype value;
-                      value = Some value } : Kernel_ir.output_spec)
+                      value = Some value } : Kernel_region.output_spec)
                    :: outputs ))
                (slots, [])
         in
         let* binding =
-          Kernel_ir.make_binding ~outputs:(List.rev outputs_rev)
+          Kernel_region.make_binding ~outputs:(List.rev outputs_rev)
             ~primitive:(Assignment.primitive assignment) ~inputs:input_slots
         in
         bindings slots (binding :: reversed) rest
@@ -1773,30 +1773,30 @@ let executable_region event =
                     (value_id value |> Ir.Value_id.to_int))
            | Some slot ->
                Ok
-                 (({ Kernel_ir.slot; value; storage = Kernel_ir.Fresh }
-                    : Kernel_ir.result)
+                 (({ Kernel_region.slot; value; storage = Kernel_region.Fresh }
+                    : Kernel_region.result)
                  :: results))
          (Ok [])
     |> Result.map List.rev
   in
   let input_accesses =
     List.rev inputs_rev
-    |> List.map (fun ({ Kernel_ir.slot; _ } : Kernel_ir.input) ->
-           ({ Kernel_ir.Effect.slot;
-              mode = Kernel_ir.Effect.Read;
-              alias = Kernel_ir.Effect.Distinct }
-             : Kernel_ir.Effect.access))
+    |> List.map (fun ({ Kernel_region.slot; _ } : Kernel_region.input) ->
+           ({ Kernel_region.Effect.slot;
+              mode = Kernel_region.Effect.Read;
+              alias = Kernel_region.Effect.Distinct }
+             : Kernel_region.Effect.access))
   in
   let result_accesses =
     results
     |> List.map (fun result ->
-           ({ Kernel_ir.Effect.slot = Kernel_ir.result_slot result;
-              mode = Kernel_ir.Effect.Write;
-              alias = Kernel_ir.Effect.Distinct }
-             : Kernel_ir.Effect.access))
+           ({ Kernel_region.Effect.slot = Kernel_region.result_slot result;
+              mode = Kernel_region.Effect.Write;
+              alias = Kernel_region.Effect.Distinct }
+             : Kernel_region.Effect.access))
   in
   let* effects =
-    Kernel_ir.Effect.create ~accesses:(input_accesses @ result_accesses) ()
+    Kernel_region.Effect.create ~accesses:(input_accesses @ result_accesses) ()
   in
   let name =
     match Lowering.Event.kind event with
@@ -1808,13 +1808,13 @@ let executable_region event =
     | Lowering.Kind.Short_conv_silu -> "short-conv-silu"
     | Lowering.Kind.Gated_delta -> "gated-delta"
   in
-  Kernel_ir.create ~name
+  Kernel_region.create ~name
     ~member_node_ids:
       (Lowering.Event.source_member_node_ids event
       |> List.map Node_id.to_int)
     ~inputs:(List.rev inputs_rev) ~bindings ~results ~effects
-    ~resource:Kernel_ir.Resource.zero
-  |> Result.map_error Kernel_ir.error_to_string
+    ~resource:Kernel_region.Resource.zero
+  |> Result.map_error Kernel_region.error_to_string
 
 let executable_regions lowering =
   let ( let* ) = Result.bind in

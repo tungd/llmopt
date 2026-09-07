@@ -19,21 +19,21 @@ open Test_support
     Ir.Value.make_tensor ~id ~shape:shape_1_64 ~dtype
 
   let linear_primitive =
-    Kernel_ir.Primitive.linear ~m:1 ~n:64 ~k:64 ~bias:false
+    Kernel_region.Primitive.linear ~m:1 ~n:64 ~k:64 ~bias:false
       ~storage:(Ir.Linear_storage.Dense Ir.Dtype.Float16)
 
   (* steps: (primitive, operand slot ints, output value).  Region inputs take
      slots 0..n-1 in order; step i binds slot (n + i). *)
   let expect_ok_kernel = function
     | Ok value -> value
-    | Error error -> fail (Kernel_ir.error_to_string error)
+    | Error error -> fail (Kernel_region.error_to_string error)
 
   let make_region ~name ~inputs ~steps ~results =
     let inputs =
       List.mapi
         (fun index value ->
-          ({ Kernel_ir.slot = Kernel_ir.Slot.of_int_exn index; value }
-            : Kernel_ir.input))
+          ({ Kernel_region.slot = Kernel_region.Slot.of_int_exn index; value }
+            : Kernel_region.input))
         inputs
     in
     let base = List.length inputs in
@@ -41,20 +41,20 @@ open Test_support
       fst
         (List.fold_left
            (fun (bindings, count) (primitive, operand_slots, output_value) ->
-             let slot = Kernel_ir.Slot.of_int_exn (base + count) in
+             let slot = Kernel_region.Slot.of_int_exn (base + count) in
              let binding =
-               Kernel_ir.make_binding
+               Kernel_region.make_binding
                  ~outputs:
                    [
                      {
-                       Kernel_ir.slot;
+                       Kernel_region.slot;
                        shape = Ir.Value.logical_shape output_value;
                        dtype = Ir.Value.dtype output_value;
                        value = Some output_value;
                      };
                    ]
                  ~primitive
-                 ~inputs:(List.map Kernel_ir.Slot.of_int_exn operand_slots)
+                 ~inputs:(List.map Kernel_region.Slot.of_int_exn operand_slots)
                |> expect_ok
              in
              (binding :: bindings, count + 1))
@@ -65,39 +65,39 @@ open Test_support
       List.map
         (fun (slot_index, result_value) ->
           {
-            Kernel_ir.slot = Kernel_ir.Slot.of_int_exn slot_index;
+            Kernel_region.slot = Kernel_region.Slot.of_int_exn slot_index;
             value = result_value;
-            storage = Kernel_ir.Fresh;
+            storage = Kernel_region.Fresh;
           })
         results
     in
     let input_accesses =
       List.map
-        (fun ({ Kernel_ir.slot; _ } : Kernel_ir.input) ->
+        (fun ({ Kernel_region.slot; _ } : Kernel_region.input) ->
           {
-            Kernel_ir.Effect.slot;
-            mode = Kernel_ir.Effect.Read;
-            alias = Kernel_ir.Effect.Distinct;
+            Kernel_region.Effect.slot;
+            mode = Kernel_region.Effect.Read;
+            alias = Kernel_region.Effect.Distinct;
           })
         inputs
     in
     let result_accesses =
       List.map
-        (fun ({ Kernel_ir.slot; _ } : Kernel_ir.result) ->
+        (fun ({ Kernel_region.slot; _ } : Kernel_region.result) ->
           {
-            Kernel_ir.Effect.slot;
-            mode = Kernel_ir.Effect.Write;
-            alias = Kernel_ir.Effect.Distinct;
+            Kernel_region.Effect.slot;
+            mode = Kernel_region.Effect.Write;
+            alias = Kernel_region.Effect.Distinct;
           })
         results
     in
     let effects =
-      Kernel_ir.Effect.create ~accesses:(input_accesses @ result_accesses) ()
+      Kernel_region.Effect.create ~accesses:(input_accesses @ result_accesses) ()
       |> expect_ok
     in
-    Kernel_ir.create ~name
+    Kernel_region.create ~name
       ~member_node_ids:[ 1; 2; 3; 4; 5; 6; 7; 8 ]
-      ~inputs ~bindings ~results ~effects ~resource:Kernel_ir.Resource.zero
+      ~inputs ~bindings ~results ~effects ~resource:Kernel_region.Resource.zero
     |> expect_ok_kernel
 
   let single_result_region ~name ~inputs ~steps ~result_index result_value =
@@ -166,10 +166,10 @@ open Test_support
     let o_cast = value 11 Ir.Dtype.Float16 in
     let linear_step = (linear_primitive, [ 0; 1 ], o_linear) in
     let add_step left right output =
-      (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add, [ left; right ], output)
+      (Kernel_region.Primitive.binary Kernel_region.Primitive.Add, [ left; right ], output)
     in
     let mul_step left right output =
-      (Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul, [ left; right ], output)
+      (Kernel_region.Primitive.binary Kernel_region.Primitive.Mul, [ left; right ], output)
     in
     (* Region input layout for the chain fixtures: x=0, w=1, residual=2,
        up=3, so the linear binds slot 4 and step outputs follow at 5, 6, 7. *)
@@ -225,7 +225,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
+          (Kernel_region.Primitive.unary Kernel_region.Primitive.Silu, [ 4 ], o_silu);
           add_step 5 2 o_add;
         ]
       ~result_index:6 o_add silu_residual;
@@ -234,7 +234,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
+          (Kernel_region.Primitive.unary Kernel_region.Primitive.Silu, [ 4 ], o_silu);
           add_step 5 2 o_add;
         ]
       ~result_index:6 o_add silu_residual;
@@ -265,7 +265,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
+          (Kernel_region.Primitive.unary Kernel_region.Primitive.Silu, [ 4 ], o_silu);
           mul_step 5 3 o_mul;
           add_step 6 2 o_add;
         ]
@@ -275,7 +275,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
+          (Kernel_region.Primitive.unary Kernel_region.Primitive.Silu, [ 4 ], o_silu);
           mul_step 5 3 o_mul;
           add_step 6 2 o_add;
         ]
@@ -306,7 +306,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Sigmoid, [ 4 ], o_sigmoid);
+          (Kernel_region.Primitive.unary Kernel_region.Primitive.Sigmoid, [ 4 ], o_sigmoid);
         ]
       ~result_index:5 o_sigmoid;
     select_is_none ~name:"select keeps the Sigmoid chain out of dispatch"
@@ -314,7 +314,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Sigmoid, [ 4 ], o_sigmoid);
+          (Kernel_region.Primitive.unary Kernel_region.Primitive.Sigmoid, [ 4 ], o_sigmoid);
         ]
       ~result_index:5 o_sigmoid;
 
@@ -357,7 +357,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.cast Ir.Dtype.Float16, [ 4 ], o_cast);
+          (Kernel_region.Primitive.cast Ir.Dtype.Float16, [ 4 ], o_cast);
           add_step 5 2 o_add;
         ]
       ~result_index:6 o_add;
@@ -366,7 +366,7 @@ open Test_support
       ~steps:
         [
           linear_step;
-          (Kernel_ir.Primitive.cast Ir.Dtype.Float16, [ 4 ], o_cast);
+          (Kernel_region.Primitive.cast Ir.Dtype.Float16, [ 4 ], o_cast);
           add_step 5 2 o_add;
         ]
       ~result_index:6 o_add;
@@ -378,7 +378,7 @@ open Test_support
         ~steps:
           [
             linear_step;
-            (Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu, [ 4 ], o_silu);
+            (Kernel_region.Primitive.unary Kernel_region.Primitive.Silu, [ 4 ], o_silu);
             add_step 5 2 o_add;
             mul_step 5 3 o_mul;
           ]

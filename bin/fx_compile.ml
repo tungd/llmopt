@@ -157,7 +157,7 @@ let () =
               | [] -> ""
               | regions ->
                   "\nstructured-regions:\n"
-                  ^ (regions |> List.map Kernel_ir.to_string
+                  ^ (regions |> List.map Kernel_region.to_string
                     |> String.concat "\n")
                   ^ "\n")
             ^ (match scan_regions with

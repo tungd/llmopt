@@ -17,17 +17,17 @@
       the step list (identity, bare Silu/Gelu, flat external Add) and returns
       the pure monoid [Expr] for every longer chain. *)
 
-module Slot_map = Map.Make (Kernel_ir.Slot)
+module Slot_map = Map.Make (Kernel_region.Slot)
 
 type expr =
-  | Slot of Kernel_ir.Slot.t
+  | Slot of Kernel_region.Slot.t
   | Const of float
   | Read of Ir.Value.t
   | Unop of Applicative_expr.unop * expr
   | Binop of Applicative_expr.binop * expr * expr
 
 type contraction = {
-  slot : Kernel_ir.Slot.t;
+  slot : Kernel_region.Slot.t;
   m : int;
   n : int;
   k : int;
@@ -40,7 +40,7 @@ type contraction = {
 }
 
 type step = {
-  slot : Kernel_ir.Slot.t;
+  slot : Kernel_region.Slot.t;
   expr : expr;
   value : Ir.Value.t;
   shape : Tensor_shape.t;
@@ -48,7 +48,7 @@ type step = {
 }
 
 type export = {
-  slot : Kernel_ir.Slot.t;
+  slot : Kernel_region.Slot.t;
   value : Ir.Value.t;
 }
 
@@ -70,24 +70,24 @@ type classified =
   | Opaque
 
 let unary_of = function
-  | Kernel_ir.Primitive.Silu -> Some Applicative_expr.Silu
-  | Kernel_ir.Primitive.Gelu -> Some Applicative_expr.Gelu
-  | Kernel_ir.Primitive.Neg -> Some Applicative_expr.Neg
-  | Kernel_ir.Primitive.Rsqrt -> Some Applicative_expr.Rsqrt
-  | Kernel_ir.Primitive.Exp -> Some Applicative_expr.Exp
-  | (Kernel_ir.Primitive.Cos | Kernel_ir.Primitive.Sin
-    | Kernel_ir.Primitive.Tanh | Kernel_ir.Primitive.Sigmoid
-    | Kernel_ir.Primitive.Softplus | Kernel_ir.Primitive.Pow _) ->
+  | Kernel_region.Primitive.Silu -> Some Applicative_expr.Silu
+  | Kernel_region.Primitive.Gelu -> Some Applicative_expr.Gelu
+  | Kernel_region.Primitive.Neg -> Some Applicative_expr.Neg
+  | Kernel_region.Primitive.Rsqrt -> Some Applicative_expr.Rsqrt
+  | Kernel_region.Primitive.Exp -> Some Applicative_expr.Exp
+  | (Kernel_region.Primitive.Cos | Kernel_region.Primitive.Sin
+    | Kernel_region.Primitive.Tanh | Kernel_region.Primitive.Sigmoid
+    | Kernel_region.Primitive.Softplus | Kernel_region.Primitive.Pow _) ->
       None
 
 let binary_of = function
-  | Kernel_ir.Primitive.Mul -> Some Applicative_expr.Mul
-  | Kernel_ir.Primitive.Add -> Some Applicative_expr.Add
-  | Kernel_ir.Primitive.Sub -> Some Applicative_expr.Sub
-  | Kernel_ir.Primitive.Div -> Some Applicative_expr.Div
-  | (Kernel_ir.Primitive.Logical_and | Kernel_ir.Primitive.Equal
-    | Kernel_ir.Primitive.Not_equal | Kernel_ir.Primitive.Less_equal
-    | Kernel_ir.Primitive.Greater) ->
+  | Kernel_region.Primitive.Mul -> Some Applicative_expr.Mul
+  | Kernel_region.Primitive.Add -> Some Applicative_expr.Add
+  | Kernel_region.Primitive.Sub -> Some Applicative_expr.Sub
+  | Kernel_region.Primitive.Div -> Some Applicative_expr.Div
+  | (Kernel_region.Primitive.Logical_and | Kernel_region.Primitive.Equal
+    | Kernel_region.Primitive.Not_equal | Kernel_region.Primitive.Less_equal
+    | Kernel_region.Primitive.Greater) ->
       None
 
 let operand_expr input_values producers slot =
@@ -96,7 +96,7 @@ let operand_expr input_values producers slot =
   | None -> if Slot_map.mem slot producers then Some (Slot slot) else None
 
 let single_output binding =
-  match Kernel_ir.binding_outputs binding with
+  match Kernel_region.binding_outputs binding with
   | [ output ] -> Some output
   | _ -> None
 
@@ -125,16 +125,16 @@ let scalar_unary input_values producers output operands wrap =
   | Some output, [ operand ] -> (
       match
         ( operand_expr input_values producers operand,
-          Kernel_ir.output_value output )
+          Kernel_region.output_value output )
       with
       | Some operand_expr, Some value ->
           Scalar
             {
-              slot = Kernel_ir.output_slot output;
+              slot = Kernel_region.output_slot output;
               expr = wrap operand_expr;
               value;
-              shape = Kernel_ir.output_shape output;
-              dtype = Kernel_ir.output_dtype output;
+              shape = Kernel_region.output_shape output;
+              dtype = Kernel_region.output_dtype output;
             }
       | _ -> Opaque)
   | _ -> Opaque
@@ -147,32 +147,32 @@ let scalar_binary input_values producers output operands op =
           operand_expr input_values producers right )
       with
       | Some left_expr, Some right_expr -> (
-          match Kernel_ir.output_value output with
+          match Kernel_region.output_value output with
           | Some value ->
               Scalar
                 {
-                  slot = Kernel_ir.output_slot output;
+                  slot = Kernel_region.output_slot output;
                   expr = canonical_binary op left_expr right_expr;
                   value;
-                  shape = Kernel_ir.output_shape output;
-                  dtype = Kernel_ir.output_dtype output;
+                  shape = Kernel_region.output_shape output;
+                  dtype = Kernel_region.output_dtype output;
                 }
           | None -> Opaque)
       | _ -> Opaque)
   | _ -> Opaque
 
 let classify input_values producers binding =
-  match (Kernel_ir.binding_primitive binding, single_output binding) with
-  | Kernel_ir.Primitive.Linear { m; n; k; bias = false; storage }, output -> (
-      match externals input_values (Kernel_ir.binding_inputs binding) with
+  match (Kernel_region.binding_primitive binding, single_output binding) with
+  | Kernel_region.Primitive.Linear { m; n; k; bias = false; storage }, output -> (
+      match externals input_values (Kernel_region.binding_inputs binding) with
       | Some (input :: weight :: parameters) -> (
           match output with
           | Some output -> (
-              match Kernel_ir.output_value output with
+              match Kernel_region.output_value output with
               | Some value ->
                   Contraction
                     {
-                      slot = Kernel_ir.output_slot output;
+                      slot = Kernel_region.output_slot output;
                       m;
                       n;
                       k;
@@ -181,28 +181,28 @@ let classify input_values producers binding =
                       weight;
                       parameters;
                       value;
-                      shape = Kernel_ir.output_shape output;
+                      shape = Kernel_region.output_shape output;
                     }
               | None -> Opaque)
           | None -> Opaque)
       | _ -> Opaque)
-  | Kernel_ir.Primitive.Linear _, _ -> Opaque
-  | Kernel_ir.Primitive.Unary op, output -> (
+  | Kernel_region.Primitive.Linear _, _ -> Opaque
+  | Kernel_region.Primitive.Unary op, output -> (
       match unary_of op with
       | Some unop ->
           scalar_unary input_values producers output
-            (Kernel_ir.binding_inputs binding)
+            (Kernel_region.binding_inputs binding)
             (fun operand -> Unop (unop, operand))
       | None -> Opaque)
-  | Kernel_ir.Primitive.Cast dtype, output ->
+  | Kernel_region.Primitive.Cast dtype, output ->
       scalar_unary input_values producers output
-        (Kernel_ir.binding_inputs binding)
+        (Kernel_region.binding_inputs binding)
         (fun operand -> Unop (Applicative_expr.Cast dtype, operand))
-  | Kernel_ir.Primitive.Binary op, output -> (
+  | Kernel_region.Primitive.Binary op, output -> (
       match binary_of op with
       | Some binop ->
           scalar_binary input_values producers output
-            (Kernel_ir.binding_inputs binding)
+            (Kernel_region.binding_inputs binding)
             binop
       | None -> Opaque)
   | _ -> Opaque
@@ -220,8 +220,8 @@ let dependency_closure bindings result_slots =
       (fun map binding ->
         List.fold_left
           (fun map output ->
-            Slot_map.add (Kernel_ir.output_slot output) binding map)
-          map (Kernel_ir.binding_outputs binding))
+            Slot_map.add (Kernel_region.output_slot output) binding map)
+          map (Kernel_region.binding_outputs binding))
       Slot_map.empty bindings
   in
   let visited = ref Slot_map.empty in
@@ -240,9 +240,9 @@ let dependency_closure bindings result_slots =
               List.iter
                 (fun output ->
                   visited :=
-                    Slot_map.add (Kernel_ir.output_slot output) () !visited)
-                (Kernel_ir.binding_outputs binding);
-              pending := Kernel_ir.binding_inputs binding @ !pending
+                    Slot_map.add (Kernel_region.output_slot output) () !visited)
+                (Kernel_region.binding_outputs binding);
+              pending := Kernel_region.binding_inputs binding @ !pending
   done;
   !visited
 
@@ -264,15 +264,15 @@ let step_in_domain domain (step : step) =
 
 let binding_in_slots slots binding =
   List.exists
-    (fun output -> Slot_map.mem (Kernel_ir.output_slot output) slots)
-    (Kernel_ir.binding_outputs binding)
+    (fun output -> Slot_map.mem (Kernel_region.output_slot output) slots)
+    (Kernel_region.binding_outputs binding)
 
-let of_region (region : Kernel_ir.region) =
-  let inputs = Kernel_ir.inputs region in
-  let bindings = Kernel_ir.bindings region in
+let of_region (region : Kernel_region.region) =
+  let inputs = Kernel_region.inputs region in
+  let bindings = Kernel_region.bindings region in
   let input_values =
     List.fold_left
-      (fun map ({ Kernel_ir.slot; value } : Kernel_ir.input) ->
+      (fun map ({ Kernel_region.slot; value } : Kernel_region.input) ->
         Slot_map.add slot value map)
       Slot_map.empty inputs
   in
@@ -281,14 +281,14 @@ let of_region (region : Kernel_ir.region) =
       (fun map binding ->
         List.fold_left
           (fun map output ->
-            Slot_map.add (Kernel_ir.output_slot output) binding map)
-          map (Kernel_ir.binding_outputs binding))
+            Slot_map.add (Kernel_region.output_slot output) binding map)
+          map (Kernel_region.binding_outputs binding))
       Slot_map.empty bindings
   in
   let result_slots =
     List.map
-      (fun ({ Kernel_ir.slot; _ } : Kernel_ir.result) -> slot)
-      (Kernel_ir.results region)
+      (fun ({ Kernel_region.slot; _ } : Kernel_region.result) -> slot)
+      (Kernel_region.results region)
   in
   let closure = dependency_closure bindings result_slots in
   (* Every binding must feed a region result (one component per region). *)
@@ -332,17 +332,17 @@ let of_region (region : Kernel_ir.region) =
                member binding output. *)
             let exports =
               List.filter_map
-                (fun ({ Kernel_ir.slot; value } : Kernel_ir.result) ->
+                (fun ({ Kernel_region.slot; value } : Kernel_region.result) ->
                   if Slot_map.mem slot closure then Some { slot; value }
                   else None)
-                (Kernel_ir.results region)
+                (Kernel_region.results region)
             in
-            if List.length exports <> List.length (Kernel_ir.results region)
+            if List.length exports <> List.length (Kernel_region.results region)
             then None
             else
               Some
                 {
-                  name = Kernel_ir.name region;
+                  name = Kernel_region.name region;
                   domain;
                   contractions;
                   steps;
@@ -365,17 +365,17 @@ let use_count group slot =
     (fun count step ->
       count
       + List.length
-          (List.filter (Kernel_ir.Slot.equal slot) (referenced_slots step.expr)))
+          (List.filter (Kernel_region.Slot.equal slot) (referenced_slots step.expr)))
     0 group.steps
 
 let is_exported group slot =
-  List.exists (fun export -> Kernel_ir.Slot.equal export.slot slot) group.exports
+  List.exists (fun export -> Kernel_region.Slot.equal export.slot slot) group.exports
 
 let slot_expr group slot =
   let rec go = function
     | [] -> None
     | (step : step) :: rest ->
-        if Kernel_ir.Slot.equal step.slot slot then Some step.expr else go rest
+        if Kernel_region.Slot.equal step.slot slot then Some step.expr else go rest
   in
   go group.steps
 
@@ -408,16 +408,16 @@ let reconstruct group expr =
     | [ contraction ], [ step ] -> (
         match step.expr with
         | Unop (Applicative_expr.Silu, Slot slot)
-          when Kernel_ir.Slot.equal slot contraction.slot ->
+          when Kernel_region.Slot.equal slot contraction.slot ->
             Epilogue.silu
         | Unop (Applicative_expr.Gelu, Slot slot)
-          when Kernel_ir.Slot.equal slot contraction.slot ->
+          when Kernel_region.Slot.equal slot contraction.slot ->
             Epilogue.gelu
         | Binop (Applicative_expr.Add, Slot slot, Read residual)
-          when Kernel_ir.Slot.equal slot contraction.slot ->
+          when Kernel_region.Slot.equal slot contraction.slot ->
             Epilogue.residual_add ~residual
         | Binop (Applicative_expr.Add, Read residual, Slot slot)
-          when Kernel_ir.Slot.equal slot contraction.slot ->
+          when Kernel_region.Slot.equal slot contraction.slot ->
             Epilogue.residual_add ~residual
         | _ -> Epilogue.of_expr expr)
     | _ -> Epilogue.of_expr expr
@@ -473,7 +473,7 @@ let grammar_step expr =
 let single_acc_chain_epilogue (group : t) =
   match (group.contractions, group.exports) with
   | [ contraction ], [ export ] ->
-      let rec chain_ok (expected : Kernel_ir.Slot.t) (steps : step list) =
+      let rec chain_ok (expected : Kernel_region.Slot.t) (steps : step list) =
         match steps with
         | [] -> true
         | (step : step) :: rest ->
@@ -481,15 +481,15 @@ let single_acc_chain_epilogue (group : t) =
             grammar_step step.expr
             && (match leaves with
                | [ _ ] -> true
-               | [ left; right ] -> Kernel_ir.Slot.equal left right
+               | [ left; right ] -> Kernel_region.Slot.equal left right
                | _ -> false)
-            && List.for_all (Kernel_ir.Slot.equal expected) leaves
+            && List.for_all (Kernel_region.Slot.equal expected) leaves
             && chain_ok step.slot rest
       in
       let covers_export (steps : step list) =
         match List.rev steps with
-        | step :: _ -> Kernel_ir.Slot.equal export.slot step.slot
-        | [] -> Kernel_ir.Slot.equal export.slot contraction.slot
+        | step :: _ -> Kernel_region.Slot.equal export.slot step.slot
+        | [] -> Kernel_region.Slot.equal export.slot contraction.slot
       in
       if covers_export group.steps && chain_ok contraction.slot group.steps
       then single_acc_epilogue group

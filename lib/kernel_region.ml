@@ -1,0 +1,1010 @@
+(** Kernel region representation: slot/primitive/effect/resource values,
+    validated region construction, specialization, and printing.
+    Split out of the Kernel_ir facade; see LOOP-large-file-refactor.md. *)
+
+module Slot = struct
+  type t = int
+
+  let of_int n =
+    if n < 0 then Error "kernel IR slots must be non-negative" else Ok n
+
+  let of_int_exn n =
+    match of_int n with Ok n -> n | Error message -> invalid_arg message
+
+  let to_int n = n
+  let compare (left : t) right = Int.compare left right
+  let equal left right = left = right
+end
+
+module Primitive = struct
+  type unary =
+    | Neg
+    | Rsqrt
+    | Silu
+    | Gelu
+    | Cos
+    | Sin
+    | Tanh
+    | Exp
+    | Sigmoid
+    | Softplus
+    | Pow of Ir.Scalar.t
+
+  type binary =
+    | Mul
+    | Add
+    | Sub
+    | Div
+    | Logical_and
+    | Equal
+    | Not_equal
+    | Less_equal
+    | Greater
+
+  type scalar_binary = {
+    operator : binary;
+    scalar : Ir.Scalar.t;
+    scalar_on_left : bool;
+  }
+  type linear = {
+    m : int;
+    n : int;
+    k : int;
+    bias : bool;
+    storage : Ir.Linear_storage.layout;
+  }
+
+  type t =
+    | Rms_norm of { epsilon : float }
+    | Linear of linear
+    | Unary of unary
+    | Binary of binary
+    | Scalar_binary of scalar_binary
+    | Reduce of Ir.Reduction.t
+    | Cast of Ir.Dtype.t
+    | Movement of Ir.Movement.t
+    | Short_conv of Ir.Short_conv.t
+    | Batched_matmul
+    | Pad_right_zero of { axis : int }
+    | Update_slice of Tensor_shape.Index.t
+    | Triangular_recurrence of Ir.Triangular_recurrence.t
+
+  let rms_norm ~epsilon = Rms_norm { epsilon }
+  let linear ~m ~n ~k ~bias ~storage = Linear { m; n; k; bias; storage }
+  let unary operation = Unary operation
+  let binary operation = Binary operation
+  let scalar_binary ~operator ~scalar ~scalar_on_left =
+    Scalar_binary { operator; scalar; scalar_on_left }
+  let reduce reduction = Reduce reduction
+  let cast dtype = Cast dtype
+  let movement movement = Movement movement
+  let short_conv convolution = Short_conv convolution
+  let batched_matmul = Batched_matmul
+  let pad_right_zero ~axis = Pad_right_zero { axis }
+  let update_slice index = Update_slice index
+  let triangular_recurrence config = Triangular_recurrence config
+
+  let unary_name = function
+    | Neg -> "neg"
+    | Rsqrt -> "rsqrt"
+    | Silu -> "silu"
+    | Gelu -> "gelu"
+    | Cos -> "cos"
+    | Sin -> "sin"
+    | Tanh -> "tanh"
+    | Exp -> "exp"
+    | Sigmoid -> "sigmoid"
+    | Softplus -> "softplus"
+    | Pow scalar -> Printf.sprintf "pow(%s)" (Ir.Scalar.to_string scalar)
+
+  let binary_name = function
+    | Mul -> "mul"
+    | Add -> "add"
+    | Sub -> "sub"
+    | Div -> "div"
+    | Logical_and -> "logical-and"
+    | Equal -> "equal"
+    | Not_equal -> "not-equal"
+    | Less_equal -> "less-equal"
+    | Greater -> "greater"
+
+  let to_string = function
+    | Rms_norm { epsilon } -> Printf.sprintf "rms-norm(eps=%.9g)" epsilon
+    | Linear { m; n; k; bias = false; _ } ->
+        Printf.sprintf "linear[%dx%dx%d]" m n k
+    | Linear { m; n; k; bias = true; _ } ->
+        Printf.sprintf "linear+bias[%dx%dx%d]" m n k
+    | Unary unary -> unary_name unary
+    | Binary binary -> binary_name binary
+    | Scalar_binary { operator; scalar; scalar_on_left } ->
+        Printf.sprintf "%s(%s,%s)" (binary_name operator)
+          (if scalar_on_left then Ir.Scalar.to_string scalar else "tensor")
+          (if scalar_on_left then "tensor" else Ir.Scalar.to_string scalar)
+    | Reduce reduction -> Ir.Reduction.to_string reduction
+    | Cast dtype -> Printf.sprintf "cast(%s)" (Ir.Dtype.to_string dtype)
+    | Movement movement -> Ir.Movement.to_string movement
+    | Short_conv convolution -> Ir.Short_conv.to_string convolution
+    | Batched_matmul -> "batched-matmul"
+    | Pad_right_zero { axis } -> Printf.sprintf "pad-right-zero(axis=%d)" axis
+    | Update_slice index ->
+        Printf.sprintf "update-slice%s" (Tensor_shape.Index.to_string index)
+    | Triangular_recurrence config ->
+        Ir.Triangular_recurrence.to_string config
+end
+
+module Effect = struct
+  type mode = Read | Write | Read_write
+  type alias = Distinct | May_alias | Alias_of of Slot.t
+  type access = { slot : Slot.t; mode : mode; alias : alias }
+
+  type t = {
+    accesses : access list;
+    state_inputs : Slot.t list;
+    state_outputs : Slot.t list;
+    barriers : int list;
+  }
+
+  let empty =
+    { accesses = []; state_inputs = []; state_outputs = []; barriers = [] }
+
+  let duplicate xs =
+    let rec loop seen = function
+      | [] -> None
+      | x :: rest ->
+          if List.mem x seen then Some x else loop (x :: seen) rest
+    in
+    loop [] xs
+
+  let create ~accesses ?(state_inputs = []) ?(state_outputs = [])
+      ?(barriers = []) () =
+    let negative_access =
+      List.find_opt (fun access -> Slot.to_int access.slot < 0) accesses
+    in
+    match negative_access with
+    | Some access ->
+        Error
+          (Printf.sprintf "negative effect slot %d"
+             (Slot.to_int access.slot))
+    | None -> (
+        match duplicate state_inputs with
+        | Some slot ->
+            Error
+              (Printf.sprintf "duplicate effect state input slot %d"
+                 (Slot.to_int slot))
+        | None -> (
+            match duplicate state_outputs with
+            | Some slot ->
+                Error
+                  (Printf.sprintf "duplicate effect state output slot %d"
+                     (Slot.to_int slot))
+            | None when List.exists (fun id -> id < 0) barriers ->
+                Error "effect barrier IDs must be non-negative"
+            | None -> Ok { accesses; state_inputs; state_outputs; barriers }))
+
+  let accesses effects = effects.accesses
+  let state_inputs effects = effects.state_inputs
+  let state_outputs effects = effects.state_outputs
+  let barriers effects = effects.barriers
+end
+
+module Resource = struct
+  type t = {
+    scalar_ops : int64;
+    bytes_read : int64;
+    bytes_written : int64;
+    temporary_bytes : int64;
+    synchronization_points : int;
+  }
+
+  let zero =
+    {
+      scalar_ops = 0L;
+      bytes_read = 0L;
+      bytes_written = 0L;
+      temporary_bytes = 0L;
+      synchronization_points = 0;
+    }
+
+  let create ~scalar_ops ~bytes_read ~bytes_written ~temporary_bytes
+      ~synchronization_points =
+    if scalar_ops < 0L then Error "resource scalar_ops must be non-negative"
+    else if bytes_read < 0L then Error "resource bytes_read must be non-negative"
+    else if bytes_written < 0L then
+      Error "resource bytes_written must be non-negative"
+    else if temporary_bytes < 0L then
+      Error "resource temporary_bytes must be non-negative"
+    else if synchronization_points < 0 then
+      Error "resource synchronization points must be non-negative"
+    else
+      Ok
+        {
+          scalar_ops;
+          bytes_read;
+          bytes_written;
+          temporary_bytes;
+          synchronization_points;
+        }
+
+  let scalar_ops resource = resource.scalar_ops
+  let bytes_read resource = resource.bytes_read
+  let bytes_written resource = resource.bytes_written
+  let temporary_bytes resource = resource.temporary_bytes
+  let synchronization_points resource = resource.synchronization_points
+end
+
+type input = { slot : Slot.t; value : Ir.Value.t }
+
+type output_spec = {
+  slot : Slot.t;
+  shape : Tensor_shape.t;
+  dtype : Ir.Dtype.t;
+  value : Ir.Value.t option;
+}
+
+type binding = {
+  outputs : output_spec list;
+  primitive : Primitive.t;
+  inputs : Slot.t list;
+}
+
+let make_binding ~outputs ~primitive ~inputs =
+  let output_slots = List.map (fun output -> output.slot) outputs in
+  let duplicate slots =
+    let rec loop seen = function
+      | [] -> None
+      | slot :: rest ->
+          if List.exists (Slot.equal slot) seen then Some slot
+          else loop (slot :: seen) rest
+    in
+    loop [] slots
+  in
+  if outputs = [] then Error "binding must have at least one output"
+  else if List.exists (fun slot -> Slot.to_int slot < 0) inputs then
+    Error "binding input slots must be non-negative"
+  else if List.exists (fun output -> Slot.to_int output.slot < 0) outputs then
+    Error "binding output slots must be non-negative"
+  else
+    match duplicate output_slots with
+    | Some slot ->
+        Error
+          (Printf.sprintf "binding output slot %d is duplicated"
+             (Slot.to_int slot))
+    | None when List.exists (fun slot -> List.mem slot inputs) output_slots ->
+        Error "binding output cannot be an input"
+    | None -> Ok { outputs; primitive; inputs }
+
+let binding_outputs binding = binding.outputs
+let binding_inputs binding = binding.inputs
+let binding_primitive binding = binding.primitive
+let output_slot output = output.slot
+let output_shape output = output.shape
+let output_dtype output = output.dtype
+let output_value output = output.value
+
+type storage = Fresh | Alias_input of Slot.t | In_place_input of Slot.t
+type result = { slot : Slot.t; value : Ir.Value.t; storage : storage }
+
+type t = {
+  name : string;
+  member_node_ids : int list;
+  inputs : input list;
+  bindings : binding list;
+  results : result list;
+  effects : Effect.t;
+  resource : Resource.t;
+}
+
+type region = t
+
+type error =
+  | Empty_name
+  | Invalid_member_node_id of int
+  | Duplicate_member_node_id of int
+  | Duplicate_slot of Slot.t
+  | Unknown_slot of Slot.t
+  | Forward_reference of Slot.t
+  | Invalid_binding of string
+  | Invalid_result of string
+  | Invalid_effect of string
+
+module Slot_map = Map.Make (Int)
+type metadata = Tensor_shape.t * Ir.Dtype.t
+
+let is_float = function
+  | Ir.Dtype.Float32 | Ir.Dtype.Float16 | Ir.Dtype.Bfloat16 -> true
+  | Ir.Dtype.Int64 | Ir.Dtype.Int32 | Ir.Dtype.Int8 | Ir.Dtype.UInt8
+  | Ir.Dtype.Bool | Ir.Dtype.Quant _ -> false
+
+let dims shape = Tensor_shape.dimensions shape
+let numel shape = Tensor_shape.numel shape
+let same_shape left right = Tensor_shape.equal left right
+
+let output_metadata ({ shape; dtype; _ } : output_spec) = (shape, dtype)
+
+let metadata inputs bindings =
+  let map =
+    List.fold_left
+      (fun map ({ slot; value } : input) ->
+        Slot_map.add slot (Ir.Value.logical_shape value, Ir.Value.dtype value) map)
+      Slot_map.empty inputs
+  in
+  List.fold_left
+    (fun map (binding : binding) ->
+      List.fold_left
+        (fun map (output : output_spec) ->
+          Slot_map.add output.slot (output_metadata output) map)
+        map binding.outputs)
+    map bindings
+
+let one_output binding =
+  match binding.outputs with
+  | [ output ] -> Ok output
+  | _ -> Error (Invalid_binding "primitive requires exactly one output")
+
+let input_metadata map slot =
+  match Slot_map.find_opt slot map with
+  | Some metadata -> Ok metadata
+  | None -> Error (Unknown_slot slot)
+
+let expected_matrix_shape shape ~rows ~columns = dims shape = [ rows; columns ]
+
+let validate_primitive map binding =
+  let invalid message = Error (Invalid_binding message) in
+  let one = function [ x ] -> Ok x | _ -> invalid "expected one input slot" in
+  let two = function [ x; y ] -> Ok (x, y) | _ -> invalid "expected two input slots" in
+  match binding.primitive with
+  | Primitive.Rms_norm { epsilon } -> (
+      if not (Float.is_finite epsilon) || epsilon <= 0.0 then
+        invalid "RMSNorm epsilon must be finite and positive"
+      else
+        match one_output binding, two binding.inputs with
+        | Error error, _ | _, Error error -> Error error
+        | Ok output, Ok (input, weight) -> (
+            match input_metadata map input, input_metadata map weight with
+            | Error error, _ | _, Error error -> Error error
+            | Ok (input_shape, input_dtype), Ok (weight_shape, weight_dtype) ->
+                let last =
+                  match List.rev (dims input_shape) with
+                  | last :: _ -> Some last
+                  | [] -> None
+                in
+                if
+                  is_float input_dtype && is_float weight_dtype
+                  && Option.exists
+                       (fun last -> dims weight_shape = [ last ]) last
+                  && same_shape input_shape output.shape
+                  && is_float output.dtype
+                then Ok ()
+                else invalid "RMSNorm metadata is inconsistent"))
+  | Primitive.Linear { m; n; k; bias; storage } -> (
+      if m <= 0 || n <= 0 || k <= 0 then
+        invalid "linear dimensions must be positive"
+      else
+        match one_output binding, binding.inputs with
+        | Error error, _ -> Error error
+        | Ok output, activation :: weight :: parameters -> (
+            match input_metadata map activation, input_metadata map weight with
+            | Error error, _ | _, Error error -> Error error
+            | Ok (activation_shape, activation_dtype),
+              Ok (weight_shape, weight_dtype) ->
+                let activation_ok =
+                  is_float activation_dtype
+                  && numel activation_shape = m * k
+                  && (match List.rev (dims activation_shape) with
+                     | last :: _ -> last = k
+                     | [] -> false)
+                in
+                let weight_ok, bias_slots =
+                  match storage, parameters with
+                  | Ir.Linear_storage.Groupwise_packed
+                      { bits = 4; group_elements },
+                    scale :: bias_slots -> (
+                      match input_metadata map scale with
+                      | Ok (scale_shape, scale_dtype) ->
+                          ( group_elements > 0 && k mod group_elements = 0
+                            && expected_matrix_shape weight_shape ~rows:n
+                                 ~columns:((k + 1) / 2)
+                            && weight_dtype = Ir.Dtype.UInt8
+                            && scale_dtype = Ir.Dtype.Float16
+                            && dims scale_shape = [ n; k / group_elements ],
+                            bias_slots )
+                      | Error _ -> false, bias_slots)
+                  | Ir.Linear_storage.Block_quantized expected, bias_slots ->
+                      ( weight_dtype = Ir.Dtype.Quant expected
+                        && expected_matrix_shape weight_shape ~rows:n ~columns:k,
+                        bias_slots )
+                  | Ir.Linear_storage.Dense expected, bias_slots ->
+                      ( weight_dtype = expected && is_float expected
+                        && expected_matrix_shape weight_shape ~rows:n ~columns:k,
+                        bias_slots )
+                  | _ -> false, parameters
+                in
+                let bias_ok =
+                  match bias_slots with
+                  | [] -> not bias
+                  | [ bias_slot ] when bias -> (
+                      match input_metadata map bias_slot with
+                      | Ok (bias_shape, bias_dtype) ->
+                          is_float bias_dtype
+                          && (dims bias_shape = [ n ]
+                             || dims bias_shape = [ 1; n ])
+                      | Error _ -> false)
+                  | _ -> false
+                in
+                if
+                  activation_ok && weight_ok && bias_ok
+                  && numel output.shape = m * n
+                  && (match List.rev (dims output.shape) with
+                     | last :: _ -> last = n
+                     | [] -> false)
+                  && is_float output.dtype
+                then Ok ()
+                else invalid "linear metadata is inconsistent")
+        | Ok _, _ -> invalid "linear expects activation and weight inputs")
+  | Primitive.Unary _ -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Error error -> Error error
+          | Ok (shape, dtype)
+            when is_float dtype && same_shape shape output.shape
+                 && dtype = output.dtype ->
+              Ok ()
+          | Ok _ -> invalid "unary metadata is inconsistent"))
+  | Primitive.Binary _ -> (
+      match one_output binding, two binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok (left, right) -> (
+          match input_metadata map left, input_metadata map right with
+          | Error error, _ | _, Error error -> Error error
+          | Ok (left_shape, left_dtype), Ok (right_shape, right_dtype) -> (
+              match Tensor_shape.broadcast left_shape right_shape with
+              | Ok shape
+                when left_dtype = right_dtype && is_float left_dtype
+                     && same_shape shape output.shape
+                     && output.dtype = left_dtype ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "binary metadata is inconsistent")))
+  | Primitive.Scalar_binary _ -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Ok (shape, dtype)
+            when is_float dtype && same_shape shape output.shape
+                 && output.dtype = dtype ->
+              Ok ()
+          | Ok _ -> invalid "scalar-binary metadata is inconsistent"
+          | Error error -> Error error))
+  | Primitive.Reduce reduction -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Error error -> Error error
+          | Ok (shape, dtype) -> (
+              match
+                Tensor_shape.reduce shape ~axes:reduction.Ir.Reduction.axes
+                  ~keepdim:reduction.keepdim
+              with
+              | Ok expected
+                when same_shape expected output.shape
+                     && (match reduction.operator with
+                        | Ir.Reduction.Argmax -> output.dtype = Ir.Dtype.Int32
+                        | Ir.Reduction.Mean | Ir.Reduction.Sum ->
+                            is_float dtype && output.dtype = dtype) ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "reduction metadata is inconsistent")))
+  | Primitive.Cast dtype -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Ok (shape, _) when same_shape shape output.shape && output.dtype = dtype ->
+              Ok ()
+          | Ok _ -> invalid "cast metadata is inconsistent"
+          | Error error -> Error error))
+  | Primitive.Movement movement -> (
+      match one_output binding with
+      | Error error -> Error error
+      | Ok output ->
+          let input_shapes =
+            binding.inputs
+            |> List.fold_left
+                 (fun result slot ->
+                   match result, input_metadata map slot with
+                   | Error _ as error, _ -> error
+                   | Ok _, Error error -> Error error
+                   | Ok shapes, Ok (shape, dtype) -> Ok ((shape, dtype) :: shapes))
+                 (Ok [])
+            |> Result.map List.rev
+          in
+          (match input_shapes with
+          | Error error -> Error error
+          | Ok shapes ->
+              let shape_result =
+                Result.map_error (fun error -> Tensor_shape.error_to_string error)
+              in
+              let inferred =
+                match movement, shapes with
+                | (Ir.Movement.View | Ir.Movement.Reshape | Ir.Movement.Expand),
+                  [ (_, dtype) ] ->
+                    if dtype = output.dtype then Ok output.shape
+                    else Error "movement dtype changed"
+                | Ir.Movement.Transpose { axis0; axis1 }, [ (shape, dtype) ] ->
+                    if dtype <> output.dtype then Error "movement dtype changed"
+                    else
+                      Tensor_shape.transpose shape ~axis0 ~axis1 |> shape_result
+                | Ir.Movement.Unsqueeze axis, [ (shape, dtype) ] ->
+                    if dtype <> output.dtype then Error "movement dtype changed"
+                    else Tensor_shape.unsqueeze shape ~axis |> shape_result
+                | (Ir.Movement.Contiguous | Ir.Movement.Roll _),
+                  [ (shape, dtype) ] ->
+                    if dtype = output.dtype then Ok shape
+                    else Error "movement dtype changed"
+                | Ir.Movement.Index index, [ (shape, dtype) ] ->
+                    if dtype <> output.dtype then Error "movement dtype changed"
+                    else Tensor_shape.apply_index shape index |> shape_result
+                | Ir.Movement.Concat { axis }, shapes ->
+                    if
+                      shapes = []
+                      || List.exists (fun (_, dtype) -> dtype <> output.dtype) shapes
+                    then Error "movement inputs are inconsistent"
+                    else
+                      Tensor_shape.concat (List.map fst shapes) ~axis
+                      |> shape_result
+                | _ -> Error "movement arity is inconsistent"
+              in
+              (match inferred with
+              | Ok shape when same_shape shape output.shape -> Ok ()
+              | Ok _ | Error _ -> invalid "movement metadata is inconsistent")))
+  | Primitive.Short_conv convolution -> (
+      match one_output binding, two binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok (input, weight) -> (
+          match input_metadata map input, input_metadata map weight with
+          | Error error, _ | _, Error error -> Error error
+          | Ok (input_shape, input_dtype), Ok (weight_shape, weight_dtype) -> (
+              match
+                Tensor_shape.depthwise_conv1d input_shape weight_shape
+                  ~stride:(Ir.Short_conv.stride convolution)
+                  ~padding:(Ir.Short_conv.padding convolution)
+                  ~dilation:(Ir.Short_conv.dilation convolution)
+                  ~groups:(Ir.Short_conv.groups convolution)
+              with
+              | Ok shape
+                when same_shape shape output.shape && is_float input_dtype
+                     && is_float weight_dtype && output.dtype = input_dtype ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "short-conv metadata is inconsistent")))
+  | Primitive.Batched_matmul -> (
+      match one_output binding, two binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok (left, right) -> (
+          match input_metadata map left, input_metadata map right with
+          | Error error, _ | _, Error error -> Error error
+          | Ok (_, left_dtype), Ok (_, right_dtype)
+            when left_dtype = right_dtype && is_float left_dtype
+                 && output.dtype = left_dtype ->
+              Ok ()
+          | Ok _, Ok _ -> invalid "batched-matmul metadata is inconsistent"))
+  | Primitive.Pad_right_zero { axis } -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Error error -> Error error
+          | Ok (input_shape, dtype) ->
+              let input_dimensions = dims input_shape in
+              let output_dimensions = dims output.shape in
+              let dimensions_match =
+                List.length input_dimensions = List.length output_dimensions
+                && axis >= 0 && axis < List.length input_dimensions
+              in
+              let dimensions_match =
+                dimensions_match
+                && List.mapi
+                     (fun current input_dimension ->
+                       let output_dimension = List.nth output_dimensions current in
+                       if current = axis then output_dimension >= input_dimension
+                       else output_dimension = input_dimension)
+                     input_dimensions
+                   |> List.for_all Fun.id
+              in
+              if dimensions_match && dtype = output.dtype then Ok ()
+              else invalid "pad-right-zero metadata is inconsistent"))
+  | Primitive.Update_slice index -> (
+      match one_output binding, two binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok (destination, source) -> (
+          match input_metadata map destination, input_metadata map source with
+          | Error error, _ | _, Error error -> Error error
+          | Ok (destination_shape, destination_dtype),
+            Ok (source_shape, source_dtype) -> (
+              match Tensor_shape.apply_index destination_shape index with
+              | Ok selected
+                when same_shape selected source_shape
+                     && same_shape destination_shape output.shape
+                     && destination_dtype = source_dtype
+                     && output.dtype = destination_dtype ->
+                  Ok ()
+              | Ok _ | Error _ -> invalid "update-slice metadata is inconsistent")))
+  | Primitive.Triangular_recurrence config -> (
+      match one_output binding, one binding.inputs with
+      | Error error, _ | _, Error error -> Error error
+      | Ok output, Ok input -> (
+          match input_metadata map input with
+          | Error error -> Error error
+          | Ok (shape, dtype) ->
+              let dimensions = dims shape in
+              let rank = List.length dimensions in
+              let axis = Ir.Triangular_recurrence.axis config in
+              if axis >= 0 && axis < rank && dtype = Ir.Dtype.Float32
+                 && output.dtype = dtype && same_shape shape output.shape
+              then Ok ()
+              else invalid "triangular-recurrence metadata is inconsistent"))
+
+let check_unique slots =
+  let rec loop seen = function
+    | [] -> Ok ()
+    | slot :: rest ->
+        if Slot_map.mem slot seen then Error (Duplicate_slot slot)
+        else loop (Slot_map.add slot () seen) rest
+  in
+  loop Slot_map.empty slots
+
+let validate_members ids =
+  let rec loop seen = function
+    | [] -> Ok ()
+    | id :: rest ->
+        if id < 0 then Error (Invalid_member_node_id id)
+        else if List.mem id seen then Error (Duplicate_member_node_id id)
+        else loop (id :: seen) rest
+  in
+  loop [] ids
+
+let validate_effect available effects =
+  let known slot = Slot_map.mem slot available in
+  let check slots kind =
+    match List.find_opt (fun slot -> not (known slot)) slots with
+    | None -> Ok ()
+    | Some slot ->
+        Error
+          (Invalid_effect
+             (Printf.sprintf "%s references unknown slot %d" kind
+                (Slot.to_int slot)))
+  in
+  let check_alias access =
+    match access.Effect.alias with
+    | Effect.Distinct | Effect.May_alias -> Ok ()
+    | Effect.Alias_of target when known target -> Ok ()
+    | Effect.Alias_of target ->
+        Error
+          (Invalid_effect
+             (Printf.sprintf "effect alias references unknown slot %d"
+                (Slot.to_int target)))
+  in
+  match
+    List.find_map
+      (fun access ->
+        match
+          check [ access.Effect.slot ] "effect access",
+          check_alias access
+        with
+        | Ok (), Ok () -> None
+        | Error error, _ | _, Error error -> Some error)
+      (Effect.accesses effects)
+  with
+  | Some error -> Error error
+  | None -> (
+      match check (Effect.state_inputs effects) "state input" with
+      | Error _ as error -> error
+      | Ok () -> check (Effect.state_outputs effects) "state output")
+
+let create ~name ~member_node_ids ~inputs ~bindings ~results ~effects ~resource =
+  if String.trim name = "" then Error Empty_name
+  else
+    match validate_members member_node_ids with
+    | Error _ as error -> error
+    | Ok () ->
+        let input_slots = List.map (fun ({ slot; _ } : input) -> slot) inputs in
+        if List.exists (fun slot -> Slot.to_int slot < 0) input_slots then
+          Error (Invalid_effect "input slots must be non-negative")
+        else
+          match check_unique input_slots with
+          | Error _ as error -> error
+          | Ok () ->
+              let initial =
+                List.fold_left
+                  (fun map slot -> Slot_map.add slot () map)
+                  Slot_map.empty input_slots
+              in
+              let rec validate_bindings defined = function
+                | [] -> Ok defined
+                | (binding : binding) :: rest ->
+                    let output_slots =
+                      List.map
+                        (fun (output : output_spec) -> output.slot)
+                        binding.outputs
+                    in
+                    (match
+                       List.find_opt
+                         (fun slot -> Slot_map.mem slot defined)
+                         output_slots
+                     with
+                    | Some slot -> Error (Duplicate_slot slot)
+                    | None -> (
+                        match
+                          List.find_opt
+                            (fun slot -> not (Slot_map.mem slot defined))
+                            binding.inputs
+                        with
+                        | Some slot -> Error (Forward_reference slot)
+                        | None -> (
+                            match
+                              validate_primitive (metadata inputs bindings)
+                                binding
+                            with
+                            | Error _ as error -> error
+                            | Ok () ->
+                                let defined =
+                                  List.fold_left
+                                    (fun defined slot ->
+                                      Slot_map.add slot () defined)
+                                    defined output_slots
+                                in
+                                validate_bindings defined rest)))
+              in
+              (match validate_bindings initial bindings with
+              | Error _ as error -> error
+              | Ok defined ->
+                  let result_slots = List.map (fun result -> result.slot) results in
+                  (match check_unique result_slots with
+                  | Error _ as error -> error
+                  | Ok () ->
+                      let all_metadata = metadata inputs bindings in
+                      let check_result ({ slot; value; storage } : result) =
+                        if not (Slot_map.mem slot defined) then Error (Unknown_slot slot)
+                        else
+                          match Slot_map.find_opt slot all_metadata with
+                          | Some (shape, dtype)
+                            when same_shape shape (Ir.Value.logical_shape value)
+                                 && dtype = Ir.Value.dtype value -> (
+                              match storage with
+                              | Fresh -> Ok ()
+                              | Alias_input source | In_place_input source ->
+                                  if not (List.mem source input_slots) then
+                                    Error
+                                      (Invalid_result
+                                         "result storage must name an input slot")
+                                  else
+                                    (match Slot_map.find_opt source all_metadata with
+                                    | Some (source_shape, source_dtype)
+                                      when same_shape source_shape shape
+                                           && source_dtype = dtype -> Ok ()
+                                    | Some _ ->
+                                        Error
+                                          (Invalid_result
+                                             "aliased result metadata differs from its input")
+                                    | None -> Error (Unknown_slot source)))
+                          | Some _ -> Error (Invalid_result "result metadata is inconsistent")
+                          | None -> Error (Unknown_slot slot)
+                      in
+                      (match
+                         List.find_map
+                           (fun result ->
+                             match check_result result with
+                             | Ok () -> None
+                             | Error error -> Some error)
+                           results
+                       with
+                      | Some error -> Error error
+                      | None -> (
+                          match validate_effect defined effects with
+                          | Error _ as error -> error
+                          | Ok () ->
+                              Ok
+                                {
+                                  name;
+                                  member_node_ids;
+                                  inputs;
+                                  bindings;
+                                  results;
+                                  effects;
+                                  resource;
+                                }))))
+
+let name region = region.name
+let member_node_ids region = region.member_node_ids
+let inputs region = region.inputs
+let bindings region = region.bindings
+let results region = region.results
+let effects region = region.effects
+let resource region = region.resource
+
+let render_error = function
+  | Empty_name -> "kernel IR region name cannot be empty"
+  | Invalid_member_node_id id ->
+      Printf.sprintf "kernel IR member node ID %d is negative" id
+  | Duplicate_member_node_id id ->
+      Printf.sprintf "kernel IR member node ID %d is duplicated" id
+  | Duplicate_slot slot ->
+      Printf.sprintf "kernel IR slot %d is duplicated" (Slot.to_int slot)
+  | Unknown_slot slot ->
+      Printf.sprintf "kernel IR slot %d is unknown" (Slot.to_int slot)
+  | Forward_reference slot ->
+      Printf.sprintf "kernel IR slot %d is a forward reference" (Slot.to_int slot)
+  | Invalid_binding message -> "invalid kernel IR binding: " ^ message
+  | Invalid_result message -> "invalid kernel IR result: " ^ message
+  | Invalid_effect message -> "invalid kernel IR effect: " ^ message
+
+let specialize ~dimension ~value region =
+  let ( let* ) = Result.bind in
+  let map_shape shape =
+    shape |> Tensor_shape.dimensions |> List.map dimension
+    |> Tensor_shape.create |> Result.map_error Tensor_shape.error_to_string
+  in
+  let specialize_local_value ~shape ~dtype original =
+    try
+      Ok
+        (Ir.Value.make_tensor
+           ~id:(Ir.Value.id original |> Ir.Value_id.to_int)
+           ~shape ~dtype)
+    with Invalid_argument message -> Error message
+  in
+  let map_primitive = function
+    | Primitive.Linear linear ->
+        Primitive.Linear
+          { linear with
+            m = dimension linear.m;
+            n = dimension linear.n;
+            k = dimension linear.k }
+    | Primitive.Movement (Ir.Movement.Index index) ->
+        let selectors =
+          Tensor_shape.Index.selectors index
+          |> List.map (function
+               | Tensor_shape.Index.Slice { start; step; length } ->
+                   Tensor_shape.Index.Slice
+                     { start; step; length = dimension length }
+               | (Tensor_shape.Index.At _ | Tensor_shape.Index.New_axis) as selector ->
+                   selector)
+        in
+        (match Tensor_shape.Index.of_selectors selectors with
+        | Ok index -> Primitive.Movement (Ir.Movement.Index index)
+        | Error _ -> Primitive.Movement (Ir.Movement.Index index))
+    | Primitive.Update_slice index ->
+        let selectors =
+          Tensor_shape.Index.selectors index
+          |> List.map (function
+               | Tensor_shape.Index.Slice { start; step; length } ->
+                   Tensor_shape.Index.Slice
+                     { start; step; length = dimension length }
+               | (Tensor_shape.Index.At _ | Tensor_shape.Index.New_axis) as selector ->
+                   selector)
+        in
+        (match Tensor_shape.Index.of_selectors selectors with
+        | Ok index -> Primitive.Update_slice index
+        | Error _ -> Primitive.Update_slice index)
+    | primitive -> primitive
+  in
+  let* inputs =
+    region.inputs
+    |> List.fold_left
+         (fun result ({ slot; value = original } : input) ->
+           let* inputs = result in
+           let* value = value original in
+           Ok ({ slot; value } :: inputs))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  let* bindings =
+    region.bindings
+    |> List.fold_left
+         (fun result binding ->
+           let* bindings = result in
+           let* outputs =
+             binding.outputs
+             |> List.fold_left
+                  (fun result ({ slot; shape; dtype; value = original } : output_spec) ->
+                    let* outputs = result in
+                    let* shape = map_shape shape in
+                    let* value =
+                      match original with
+                      | None -> Ok None
+                      | Some original ->
+                          specialize_local_value ~shape ~dtype original
+                          |> Result.map Option.some
+                    in
+                    Ok ({ slot; shape; dtype; value } :: outputs))
+                  (Ok [])
+             |> Result.map List.rev
+           in
+           let* binding =
+             make_binding ~outputs ~primitive:(map_primitive binding.primitive)
+               ~inputs:binding.inputs
+           in
+           Ok (binding :: bindings))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  let* results =
+    region.results
+    |> List.fold_left
+         (fun result ({ slot; value = original; storage } : result) ->
+           let* results = result in
+           let* value = value original in
+           Ok ({ slot; value; storage } :: results))
+         (Ok [])
+    |> Result.map List.rev
+  in
+  create ~name:region.name ~member_node_ids:region.member_node_ids ~inputs
+    ~bindings ~results ~effects:region.effects ~resource:region.resource
+  |> Result.map_error render_error
+
+let result_slot result = result.slot
+let result_value result = result.value
+let result_storage result = result.storage
+
+let error_to_string = render_error
+
+let pp_slot formatter slot = Format.fprintf formatter "s%d" (Slot.to_int slot)
+
+let pp_slots formatter slots =
+  Format.fprintf formatter "[";
+  List.iteri
+    (fun index slot ->
+      if index > 0 then Format.fprintf formatter ",";
+      pp_slot formatter slot)
+    slots;
+  Format.fprintf formatter "]"
+
+let pp_binding formatter (binding : binding) =
+  Format.fprintf formatter "[";
+  List.iteri
+    (fun index (output : output_spec) ->
+      if index > 0 then Format.fprintf formatter ",";
+      pp_slot formatter output.slot)
+    binding.outputs;
+  Format.fprintf formatter "]=%s%a" (Primitive.to_string binding.primitive)
+    pp_slots binding.inputs
+
+let pp_result formatter ({ slot; value; storage } : result) =
+  let storage =
+    match storage with
+    | Fresh -> "fresh"
+    | Alias_input source -> Printf.sprintf "alias(s%d)" (Slot.to_int source)
+    | In_place_input source -> Printf.sprintf "in-place(s%d)" (Slot.to_int source)
+  in
+  Format.fprintf formatter "%a=v%d/%s" pp_slot slot
+    (Ir.Value.id value |> Ir.Value_id.to_int) storage
+
+let pp formatter region =
+  Format.fprintf formatter "region %S members=[" region.name;
+  List.iteri
+    (fun index id ->
+      if index > 0 then Format.fprintf formatter ",";
+      Format.fprintf formatter "%d" id)
+    region.member_node_ids;
+  Format.fprintf formatter "] inputs=[";
+  List.iteri
+    (fun index ({ slot; value } : input) ->
+      if index > 0 then Format.fprintf formatter ";";
+      Format.fprintf formatter "s%d:v%d" (Slot.to_int slot)
+        (Ir.Value.id value |> Ir.Value_id.to_int))
+    region.inputs;
+  Format.fprintf formatter "] bindings=[";
+  List.iteri
+    (fun index binding ->
+      if index > 0 then Format.fprintf formatter ";";
+      pp_binding formatter binding)
+    region.bindings;
+  Format.fprintf formatter "] results=[";
+  List.iteri
+    (fun index result ->
+      if index > 0 then Format.fprintf formatter ";";
+      pp_result formatter result)
+    region.results;
+  Format.fprintf formatter "]"
+
+let to_string region = Format.asprintf "%a" pp region

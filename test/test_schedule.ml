@@ -2744,7 +2744,7 @@ let run () =
     (Printf.sprintf
        "constructive assignments recover RMSNorm-RoPE from dependency dataflow: %s"
        (Printf.sprintf "events=%d regions=%s" constructive_rope_event_count
-          (constructive_rope_regions |> List.map Kernel_ir.to_string
+          (constructive_rope_regions |> List.map Kernel_region.to_string
           |> String.concat " || ")));
   let layout =
     Kv_cache.Layout.create ~format:Kv_cache.Format.default

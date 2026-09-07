@@ -829,7 +829,7 @@ module Optimization = struct
     target : Target_hardware.t;
     semantic_graph : Ir.Graph.t;
     plan : Compute_plan.t;
-    fusion_regions : Kernel_ir.t list;
+    fusion_regions : Kernel_region.t list;
     region_analysis : Constructive_lowering.Analysis.t;
     lowering : Constructive_lowering.Lowering.t;
     legacy_fallbacks : Legacy_fallback.t list;

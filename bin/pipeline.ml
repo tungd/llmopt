@@ -100,7 +100,7 @@ let compile_single_graph ~target ~weights_path ~graph_path ~output_dir ~greedy =
     | [] -> graph_plan
     | regions ->
         graph_plan ^ "\nstructured-regions:\n"
-        ^ (regions |> List.map Kernel_ir.to_string |> String.concat "\n")
+        ^ (regions |> List.map Kernel_region.to_string |> String.concat "\n")
         ^ "\n"
   in
   let* schedule = Serving_schedule.of_graph ~fusion_regions planned in

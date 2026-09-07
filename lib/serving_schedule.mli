@@ -5,7 +5,7 @@ module Command : sig
   val op : t -> Ir.Op.t
   val inputs : t -> Ir.Value.t list
   val output : t -> Ir.Value.t option
-  val fusion_region : t -> Kernel_ir.t option
+  val fusion_region : t -> Kernel_region.t option
 end
 
 module Stage : sig
@@ -27,7 +27,7 @@ end
 
 type t
 
-val of_graph : ?fusion_regions:Kernel_ir.t list -> Ir.Graph.t -> (t, string) result
+val of_graph : ?fusion_regions:Kernel_region.t list -> Ir.Graph.t -> (t, string) result
 val commands : t -> Command.t list
 val stages : t -> Stage.t list
 val tensor_inputs : t -> Tensor_input.t list

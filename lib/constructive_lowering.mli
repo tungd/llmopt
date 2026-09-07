@@ -1,7 +1,7 @@
 (** Pure fusion-region analysis over the shared [Compute_plan] authority.
 
     This module does not define a second assignment language.  An assignment
-    is a provenance-bearing view of an existing [Kernel_ir.Primitive.t], and a
+    is a provenance-bearing view of an existing [Kernel_region.Primitive.t], and a
     region is only the immutable component of assignments connected by legal
     dependency edges. *)
 
@@ -10,7 +10,7 @@ module Assignment : sig
 
   val node_id : t -> Compute_plan.Node_id.t
   val source_node : t -> Ir.node
-  val primitive : t -> Kernel_ir.Primitive.t
+  val primitive : t -> Kernel_region.Primitive.t
   val inputs : t -> Ir.Value.t list
   val outputs : t -> Ir.Value.t list
 end
@@ -155,4 +155,4 @@ val lower : Analysis.t -> Lowering.t
     assignments. These regions are the backend input for covered operations;
     the replacement graph remains only the compatibility view used by
     backends that have not migrated yet. *)
-val executable_regions : Lowering.t -> (Kernel_ir.t list, string) result
+val executable_regions : Lowering.t -> (Kernel_region.t list, string) result

@@ -262,11 +262,11 @@ let run () =
   expect
     ((match m16_yy_regions with
      | [ region ] ->
-         List.map Kernel_ir.binding_primitive (Kernel_ir.bindings region)
-         = [ Kernel_ir.Primitive.linear ~m:16 ~n:4096 ~k:3840 ~bias:false
+         List.map Kernel_region.binding_primitive (Kernel_region.bindings region)
+         = [ Kernel_region.Primitive.linear ~m:16 ~n:4096 ~k:3840 ~bias:false
                ~storage:
                  (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0);
-             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul ]
+             Kernel_region.Primitive.binary Kernel_region.Primitive.Mul ]
      | _ -> false))
     "G4P12-04c-2 folds an m16 y*y square into a two-binding Linear_epilogue region";
   let m16_yy_program =
@@ -407,11 +407,11 @@ let run () =
   expect
     ((match m32_yy_regions with
      | [ region ] ->
-         List.map Kernel_ir.binding_primitive (Kernel_ir.bindings region)
-         = [ Kernel_ir.Primitive.linear ~m:32 ~n:4096 ~k:3840 ~bias:false
+         List.map Kernel_region.binding_primitive (Kernel_region.bindings region)
+         = [ Kernel_region.Primitive.linear ~m:32 ~n:4096 ~k:3840 ~bias:false
                ~storage:
                  (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0);
-             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul ]
+             Kernel_region.Primitive.binary Kernel_region.Primitive.Mul ]
      | _ -> false))
     "G4P12-04c-3 folds an m32 y*y square into a two-binding Linear_epilogue region";
   let m32_yy_program =
@@ -592,13 +592,13 @@ let run () =
   expect
     ((match Passes.Optimization.fusion_regions chain_optimization with
      | [ region ] ->
-         List.map Kernel_ir.binding_primitive (Kernel_ir.bindings region)
-         = [ Kernel_ir.Primitive.linear ~m:1 ~n:4096 ~k:3840 ~bias:false
+         List.map Kernel_region.binding_primitive (Kernel_region.bindings region)
+         = [ Kernel_region.Primitive.linear ~m:1 ~n:4096 ~k:3840 ~bias:false
                ~storage:
                  (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0);
-             Kernel_ir.Primitive.unary Kernel_ir.Primitive.Silu;
-             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul;
-             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Add ]
+             Kernel_region.Primitive.unary Kernel_region.Primitive.Silu;
+             Kernel_region.Primitive.binary Kernel_region.Primitive.Mul;
+             Kernel_region.Primitive.binary Kernel_region.Primitive.Add ]
      | _ -> false))
     "G4P10-04d folds the chain into a four-binding Linear_epilogue region";
   let chain_program =
@@ -700,11 +700,11 @@ let run () =
   expect
     ((match Passes.Optimization.fusion_regions yy_optimization with
      | [ region ] ->
-         List.map Kernel_ir.binding_primitive (Kernel_ir.bindings region)
-         = [ Kernel_ir.Primitive.linear ~m:1 ~n:4096 ~k:3840 ~bias:false
+         List.map Kernel_region.binding_primitive (Kernel_region.bindings region)
+         = [ Kernel_region.Primitive.linear ~m:1 ~n:4096 ~k:3840 ~bias:false
                ~storage:
                  (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0);
-             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul ]
+             Kernel_region.Primitive.binary Kernel_region.Primitive.Mul ]
      | _ -> false))
     "G4P12-02 folds the y*y square into a two-binding Linear_epilogue region";
   let yy_program =
