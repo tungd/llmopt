@@ -119,7 +119,25 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   tests that merely check the new filenames. This first slice makes later
   verification easier without changing product code.
 
-- [ ] 2. Separate Kernel IR regions, scan recovery, and tactic recognition.
+- [x] 2. Separate Kernel IR regions, scan recovery, and tactic recognition.
+  Done (commit efab419, full `ninja all` green; llmopt-test stdout
+  byte-identical to baseline).  kernel_ir.ml (2543) split into:
+  kernel_region.ml/.mli (Slot/Primitive/Effect/Resource + region records,
+  create, metadata validation, specialize, printing), kernel_scan.ml/.mli
+  (recovery + fuse_triangular_recurrences), kernel_fused_tactic.ml/.mli
+  (tactic select/select_all/fold_linear_epilogue, `open Kernel_region`, no
+  Kernel_ir reference).  kernel_ir.ml/.mli is a facade: `include
+  Kernel_region` + `module Scan = Kernel_scan` + `module Fused_tactic =
+  Kernel_fused_tactic`.  Canonical records stay in Kernel_region; record
+  labels therefore live under Kernel_region (and Kernel_region.Effect etc.),
+  so consumers that used qualified labels / paths now spell Kernel_region.*
+  (mechanical rewrite, 497 sites; types identical through facade aliases).
+  Manifest-widened only where the family shares representation (Slot.t = int,
+  binding/t/result records) so sibling units can construct/match regions.
+  All executables were relinked; latent ninja link-order drift (some binaries
+  stale since modules grew new deps) surfaced and was fixed by topologically
+  sorting every link line deps-first and adding the missing sampling.cmx to
+  llmopt-lfm-serving-check.
   Change: extract `Kernel_ir.Scan` (including recurrence discovery/recovery) to
   `kernel_scan.ml`. Move region ownership—`Slot`, `Primitive`, `Effect`,
   `Resource`, bindings/results, `create`, metadata validation, `specialize`, and
