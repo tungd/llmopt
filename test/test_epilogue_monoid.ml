@@ -211,6 +211,68 @@ let run () =
   assert (String.length msl > 10);
   Printf.printf "  [PASS] Full Gemma composite epilogue chain emitted MSL: %s\n%!" msl;
 
+  (* G4P12-03: composition is the graph-level monoid substitution; tags are
+     recognised normal forms reconstructed afterwards from the operand roles.
+     The four legacy composite pairings keep their typed templates with the
+     same roles in both orientations, while every other composition stays a
+     pure [Expr] whose tree is exactly the substitution result. *)
+  let v_up = Ir.Graph.fresh_tensor_value g ~shape:shape_1d ~dtype:Ir.Dtype.Float16 in
+  let epi_silu_mul = Epilogue.silu_mul ~up:v_up in
+  let epi_gelu_mul = Epilogue.gelu_mul ~up:v_up in
+  (match Epilogue.compose ~producer:epi_silu_mul ~consumer:epi_res with
+  | Epilogue.Silu_mul_residual_add { up; residual } ->
+      assert (Ir.Value.equal up v_up);
+      assert (Ir.Value.equal residual v_res)
+  | _ -> failwith "compose(silu_mul, residual_add) must reconstruct the Silu_mul_residual_add tag");
+  (match Epilogue.compose ~producer:epi_gelu_mul ~consumer:epi_res with
+  | Epilogue.Gelu_mul_residual_add { up; residual } ->
+      assert (Ir.Value.equal up v_up);
+      assert (Ir.Value.equal residual v_res)
+  | _ -> failwith "compose(gelu_mul, residual_add) must reconstruct the Gelu_mul_residual_add tag");
+  let epi_bias_res =
+    Epilogue.compose ~producer:epi_res ~consumer:(Epilogue.bias v_bias)
+  in
+  (match epi_bias_res with
+  | Epilogue.Bias_residual_add { bias; residual } ->
+      assert (Ir.Value.equal bias v_bias);
+      assert (Ir.Value.equal residual v_res)
+  | _ -> failwith "compose(residual_add, bias) must reconstruct the Bias_residual_add tag");
+  (match
+     Epilogue.compose ~producer:(Epilogue.bias v_bias) ~consumer:epi_res
+   with
+  | Epilogue.Bias_residual_add { bias; residual } ->
+      assert (Ir.Value.equal bias v_bias);
+      assert (Ir.Value.equal residual v_res)
+  | _ -> failwith "compose(bias, residual_add) must reconstruct the Bias_residual_add tag");
+  assert (
+    Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"i" epi_bias_res
+    = "((acc + (float)bias[i]) + (float)residual[i])");
+  (* A non-template pairing never gains a composite tag: two stacked residual
+     adds stay the pure double-add [Expr] of the substitution tree. *)
+  let double_res =
+    Epilogue.compose ~producer:epi_res
+      ~consumer:(Epilogue.residual_add ~residual:v_scale)
+  in
+  (match double_res with
+  | Epilogue.Expr expr ->
+      let expected =
+        Applicative_expr.Binop
+          ( Applicative_expr.Add,
+            Applicative_expr.Binop
+              ( Applicative_expr.Add,
+                Applicative_expr.Slot Epilogue.Acc,
+                Applicative_expr.Read
+                  { value = v_res; coord = Coordinate_map.identity } ),
+            Applicative_expr.Read
+              { value = v_scale; coord = Coordinate_map.identity } )
+      in
+      assert (Applicative_expr.equal (fun _ _ -> true) expr expected)
+  | _ -> failwith "compose(residual_add, residual_add) must stay a pure Expr tree");
+  Printf.printf
+    "  [PASS] compose reduces to substitution: non-template composites stay pure Expr\n%!";
+  Printf.printf
+    "  [PASS] compose reconstructs legacy composite tags with explicit roles\n%!";
+
   (* ========================================================================= *)
   (* 5. Dynamic Expr-epilogue buffer binding in parametric Metal emitters       *)
   (* ========================================================================= *)

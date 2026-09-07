@@ -49,7 +49,13 @@ val compose : producer:t -> consumer:t -> t
 (** Combines a producer epilogue with a consumer elementwise operation via
     associative substitution (producer ⋄ consumer).  Composition is total and
     cannot fail: [compose ~producer:ε ~consumer] and
-    [compose ~producer ~consumer:ε] return the non-empty operand. *)
+    [compose ~producer ~consumer:ε] return the non-empty operand.  The
+    composition step itself is the graph-level monoid substitution over the
+    scalar trees ([Monoid.append]); the legacy composite tags are recognised
+    normal forms reconstructed afterwards from the operand tags (which carry
+    the roles explicitly), so only the four legacy composite pairings
+    ([Bias]/[Silu_mul]/[Gelu_mul] × [Residual_add]) return a composite tag
+    and every other composition is a pure [Expr]. *)
 
 val to_string : t -> string
 

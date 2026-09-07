@@ -84,23 +84,66 @@ let to_string = function
   | Gelu_mul_residual_add _ -> "gelu_mul_residual_add"
   | Expr e -> Applicative_expr.to_string (fun Acc -> "acc") e
 
+module Monoid = struct
+  (* The scalar sublanguage of [Epilogue.t]: composition over scalar trees is
+     this monoid's append (pure substitution), which [compose] below reduces
+     to before it reconstructs the legacy composite tags. *)
+  type t = slot Applicative_expr.t
+
+  let empty = Applicative_expr.Slot Acc
+
+  let append producer consumer =
+    Applicative_expr.simplify
+      (Applicative_expr.subst (function Acc -> producer) consumer)
+
+  let is_empty = function
+    | Applicative_expr.Slot Acc -> true
+    | _ -> false
+
+  let equal a b =
+    Applicative_expr.equal (fun Acc Acc -> true) a b
+
+  let to_string e =
+    Applicative_expr.to_string (fun Acc -> "acc") e
+
+  let emit_msl e ~acc ~idx =
+    Applicative_expr.emit_msl_expr ~slot_emitter:(fun Acc -> acc) ~index_expr:idx (Applicative_expr.simplify e)
+end
+
+(* Composition over the scalar sublanguage is the monoid append (pure
+   substitution); tags never participate in the composition step.  Composite
+   tags are recognised normal forms of the composed operand pair and are
+   reconstructed afterwards, with their roles read from the operand tags
+   (roles are explicit only on the constructors, never recoverable from a
+   scalar tree).  The four legacy composite templates below are the only
+   pairings that carry a tag today: each owns its FP association order, so
+   the reconstruction returns the template (not the raw substitution tree) to
+   keep byte-identical emission; every other composition is a pure [Expr]. *)
+let tag_of_composition producer consumer =
+  match producer, consumer with
+  | Bias { bias }, Residual_add { residual }
+  | Residual_add { residual }, Bias { bias } ->
+      Some (Bias_residual_add { bias; residual })
+  | Silu_mul { up }, Residual_add { residual } ->
+      Some (Silu_mul_residual_add { up; residual })
+  | Gelu_mul { up }, Residual_add { residual } ->
+      Some (Gelu_mul_residual_add { up; residual })
+  | _ -> None
+
 let compose ~producer ~consumer =
   match producer, consumer with
   | None, consumer -> consumer
   | producer, None -> producer
-  | Bias { bias }, Residual_add { residual } ->
-      Bias_residual_add { bias; residual }
-  | Residual_add { residual }, Bias { bias } ->
-      Bias_residual_add { bias; residual }
-  | Silu_mul { up }, Residual_add { residual } ->
-      Silu_mul_residual_add { up; residual }
-  | Gelu_mul { up }, Residual_add { residual } ->
-      Gelu_mul_residual_add { up; residual }
-  | p, c ->
-      let ep = to_expr p in
-      let ec = to_expr c in
-      let composed = Applicative_expr.subst (function Acc -> ep) ec in
-      Expr (Applicative_expr.simplify composed)
+  | _ ->
+      (* Graph-level composition: producer ⋄ consumer substitutes the
+         producer's scalar tree at the accumulator slot of the consumer's
+         scalar tree -- exactly [Monoid.append] -- with no typed compatibility
+         branch.  The final reconstruction re-tags the legacy composite
+         pairings above; all other results are the pure [Expr] normal form. *)
+      let composed = Monoid.append (to_expr producer) (to_expr consumer) in
+      (match tag_of_composition producer consumer with
+      | Some tag -> tag
+      | None -> Expr composed)
 
 let emit_msl_writeback ~acc ~idx = function
   | None -> acc
@@ -129,29 +172,6 @@ let emit_msl_writeback ~acc ~idx = function
         acc acc acc acc acc idx idx
   | Expr expr ->
       Applicative_expr.emit_msl_expr ~slot_emitter:(fun Acc -> acc) ~index_expr:idx expr
-
-module Monoid = struct
-  type t = slot Applicative_expr.t
-
-  let empty = Applicative_expr.Slot Acc
-
-  let append producer consumer =
-    Applicative_expr.simplify
-      (Applicative_expr.subst (function Acc -> producer) consumer)
-
-  let is_empty = function
-    | Applicative_expr.Slot Acc -> true
-    | _ -> false
-
-  let equal a b =
-    Applicative_expr.equal (fun Acc Acc -> true) a b
-
-  let to_string e =
-    Applicative_expr.to_string (fun Acc -> "acc") e
-
-  let emit_msl e ~acc ~idx =
-    Applicative_expr.emit_msl_expr ~slot_emitter:(fun Acc -> acc) ~index_expr:idx (Applicative_expr.simplify e)
-end
 
 let map_reads ~rename expr =
   let rec go expr =
