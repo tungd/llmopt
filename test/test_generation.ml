@@ -411,4 +411,90 @@ let run () =
 
     expect_ok (Lfm25.Config.validate Lfm25.Config.probe_350m);
     expect (Lfm25.Config.probe_350m.dtype = Ir.Dtype.Float16)
-      "canonical model uses float16 activations"
+      "canonical model uses float16 activations";
+
+  (* Sampling and OpenAI protocol sampling parameter tests *)
+  let greedy_params = Sampling.Params.greedy in
+  expect (greedy_params.temperature = 0.0) "greedy params has temperature 0";
+  expect (greedy_params.top_k = 1) "greedy params has top_k 1";
+  expect (Sampling.Params.is_greedy greedy_params)
+    "greedy params select the direct argmax path";
+
+  let custom_params =
+    Sampling.Params.create ~temperature:0.7 ~top_k:40 ~top_p:0.9 ~min_p:0.05
+      ~seed:42 ()
+  in
+  expect (custom_params.temperature = 0.7) "custom params has temperature 0.7";
+  expect (custom_params.top_k = 40) "custom params has top_k 40";
+  expect (custom_params.top_p = 0.9) "custom params has top_p 0.9";
+  expect (custom_params.min_p = 0.05) "custom params has min_p 0.05";
+  expect (custom_params.seed = 42) "custom params has seed 42";
+  expect (not (Sampling.Params.is_greedy custom_params))
+    "stochastic params retain the sampling path";
+
+  let sample_req_json =
+    `Assoc
+      [
+        ("model", `String "test-model");
+        ( "messages",
+          `List
+            [
+              `Assoc
+                [ ("role", `String "user"); ("content", `String "hello") ];
+            ] );
+        ("stream", `Bool true);
+        ("max_tokens", `Int 32);
+        ("temperature", `Float 0.8);
+        ("top_p", `Float 0.95);
+        ("top_k", `Int 50);
+        ("min_p", `Float 0.02);
+        ("seed", `Int 12345);
+      ]
+  in
+  let parsed_req =
+    expect_ok (Openai_protocol.Request.of_string (Yojson.Safe.to_string sample_req_json))
+  in
+  let req_sampling = Openai_protocol.Request.sampling_params parsed_req in
+  expect (req_sampling.temperature = 0.8) "parsed request has temperature 0.8";
+  expect (req_sampling.top_p = 0.95) "parsed request has top_p 0.95";
+  expect (req_sampling.top_k = 50) "parsed request has top_k 50";
+  expect (req_sampling.min_p = 0.02) "parsed request has min_p 0.02";
+  expect (req_sampling.seed = 12345) "parsed request has seed 12345";
+
+  (* Test synthetic FP16 logits sampling *)
+  let vocab_test = 64 in
+  let synthetic_logits = Bytes.create (2 * vocab_test) in
+  (* Populate logits: token 10 has highest score (10.0), token 20 has second highest (9.0) *)
+  for i = 0 to vocab_test - 1 do
+    let f16_val = if i = 10 then 0x4900 (* ~10.0 in FP16 *) else if i = 20 then 0x4880 (* ~9.0 in FP16 *) else 0x3c00 (* 1.0 in FP16 *) in
+    Bytes.set_uint16_le synthetic_logits (2 * i) f16_val
+  done;
+
+  (* Greedy sampling must choose token 10 *)
+  let greedy_choice = expect_ok (Sampling.sample ~params:Sampling.Params.greedy ~vocabulary:vocab_test synthetic_logits) in
+  expect (greedy_choice = 10) "greedy sampling selects highest logit token 10";
+  let suppressed_greedy_choice =
+    expect_ok
+      (Sampling.sample ~params:Sampling.Params.greedy ~vocabulary:vocab_test
+         ~suppress_token_ids:[ 10 ] synthetic_logits)
+  in
+  expect (suppressed_greedy_choice = 20)
+    "greedy sampling skips model-suppressed tokens";
+  let suppressed_rows =
+    expect_ok
+      (Sampling.Greedy.f16_all_rows ~vocabulary:vocab_test
+         ~suppress_token_ids:[ 10 ] synthetic_logits)
+  in
+  expect_int_array suppressed_rows [| 20 |]
+    "multi-row greedy verification skips model-suppressed tokens";
+  expect
+    (Sampling.Float16_logits.top ~count:1 ~vocabulary:vocab_test
+       ~suppress_token_ids:[ 10 ] synthetic_logits
+    |> expect_ok = [ 20, 9.0 ])
+    "float16 top logits are ranked after generation-policy suppression";
+
+  (* Seeded stochastic sampling should deterministically select among top candidates (10 or 20) *)
+  let stoch_choice1 = expect_ok (Sampling.sample ~params:custom_params ~vocabulary:vocab_test synthetic_logits) in
+  let stoch_choice2 = expect_ok (Sampling.sample ~params:custom_params ~vocabulary:vocab_test synthetic_logits) in
+  expect (stoch_choice1 = stoch_choice2) "seeded stochastic sampling is deterministic";
+  expect (stoch_choice1 = 10 || stoch_choice1 = 20) "stochastic sampling chooses from top candidates"
