@@ -35,3 +35,15 @@ val q4_0_m32_epilogue_kernel :
   target:Target_hardware.t ->
   Block_schema.t ->
   (string, string) result
+
+val q4_0_linear_add_kernel :
+  name:string ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val q4_0_m2_add_kernel :
+  name:string ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result

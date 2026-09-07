@@ -751,19 +751,22 @@ let run () =
     failwith "q4_0 m32 digest emission is not deterministic";
   Printf.printf "  [PASS] Q4_0 m32 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
 
-  (* G4P12-04d-A1: the Q4_0 generic (llmopt_q4_0_linear_f16, arbitrary rows)
-     and paired-row (_m2) tiles still serve graph-level Linear-add through
-     legacy _add twins whose text today is produced by Metal's
-     quant_linear_add_source patcher over the llama-style legacy generic/m2
-     bodies (the parametric m4/m16/m32 twins already live in the codegen
-     zoo).  Freeze that today-emitted twin text under test/golden/ as the
-     byte-identity oracle for 04d-A2's emitter re-homing.  The twins keep
-     their double-rounding store [half(half(acc) + bias[idx])] -- numerically
-     distinct from the single-rounding digest Residual_add tail
-     [half(acc + (float)residual[idx])] -- so 04d-A2 must preserve this tail,
-     not route Residual_add through the digest writer. *)
+  (* G4P12-04d-A1/A2: Q4_0 graph-level Linear-add on the generic
+     (llmopt_q4_0_linear_f16, arbitrary rows) and paired-row (_m2) tiles is
+     served by legacy _add twins.  04d-A2 re-homed those two twins from
+     Metal's quant_linear_add_source text-patcher (llama-style bodies) to
+     Metal_block_codegen parametric-style emission (04d-A1 froze the
+     pre-change llama-style text under test/golden as the transition oracle;
+     the fixtures now hold the parametric-style emission, byte-identical to
+     what Metal.lower emits).  The twins keep the legacy numerics contract:
+     the additive tensor (the residual, bound to the flat [bias] buffer(2)
+     slot) is applied element-wise with the double-rounding store
+     [half(half(acc) + bias[idx])] -- numerically distinct from the
+     single-rounding digest Residual_add tail.  Same ABI as the flat
+     kernels; decode order matches the parametric flat bodies already
+     serving plain decode. *)
   let golden_twin_fixture name = read_file ("test/golden/" ^ name ^ ".msl") in
-  let lower_linear_add ~m ~n ~k ~tag =
+  let lower_linear_add_result ~m ~n ~k ~tag =
     let graph = Ir.Graph.create () in
     let input =
       Ir.Graph.tensor_input graph ~name:(tag ^ "-input")
@@ -791,7 +794,10 @@ let run () =
     Ir.Graph.append graph ~op:(Ir.Op.Linear_add { m; n; k })
       ~inputs:[ input; weight; residual ] ~output:(Some output);
     Ir.Graph.add_output graph ~name:(tag ^ "-output") output;
-    match Metal.lower graph with
+    Metal.lower graph
+  in
+  let lower_linear_add ~m ~n ~k ~tag =
+    match lower_linear_add_result ~m ~n ~k ~tag with
     | Ok program -> program
     | Error message ->
         failwith ("q4_0 Linear-add lowering failed: " ^ message)
@@ -818,7 +824,8 @@ let run () =
   let pin_twin_fixture ~m ~n ~k ~kernel ~fixture =
     (* m=1 with n not a multiple of 4 selects the generic tile (x8/x4 need
        m=1 widths that are multiples of 4/8); m=2 selects the paired _m2
-       tile.  Both are patcher-served today and must freeze unchanged. *)
+       tile.  Both twins are emitted by Metal_block_codegen since 04d-A2 and
+       must stay byte-identical to the fixtures. *)
     let program = lower_linear_add ~m ~n ~k ~tag:fixture in
     match kernel_text (Metal.Program.source program) kernel with
     | None ->
@@ -828,30 +835,55 @@ let run () =
         if text <> golden_twin_fixture fixture then
           failwith
             (Printf.sprintf
-               "q4_0 %s twin drifted from the test/golden/%s.msl oracle captured before 04d-A2"
+               "q4_0 %s twin drifted from the test/golden/%s.msl emission oracle"
                kernel fixture)
   in
   pin_twin_fixture ~m:1 ~n:62 ~k:32 ~kernel:"llmopt_q4_0_linear_f16_add"
     ~fixture:"q4_0_linear_f16_add";
   pin_twin_fixture ~m:2 ~n:64 ~k:32 ~kernel:"llmopt_q4_0_linear_f16_m2_add"
     ~fixture:"q4_0_linear_f16_m2_add";
-  (* Structural sanity of the frozen twins: the double-rounding store is the
-     contract 04d-A2 must preserve. *)
+  (* Structural sanity of the parametric-style twins: the double-rounding
+     store is the contract 04d-A2 preserves, the kernel keeps the flat [bias]
+     buffer(2) slot, and the has_bias/bias_value store block is gone. *)
   let generic_add =
     golden_twin_fixture "q4_0_linear_f16_add"
   in
   expect_contains "q4_0 generic _add twin reads the additive tensor element-wise"
     generic_add
-    "output[output_index] = half(half(acc) + bias[output_index]);";
+    "output[output_index] = half(half(accumulator) + bias[output_index]);";
+  if contains generic_add "params.has_bias" then
+    failwith "q4_0 generic _add twin must not keep the flat has_bias store block";
+  if contains generic_add "bias_value" then
+    failwith "q4_0 generic _add twin must not keep the flat bias_value store block";
+  expect_contains "q4_0 generic _add twin decodes through the schema helper"
+    generic_add "llmopt_schema_q4_0_value(blk, lane);";
   let m2_add = golden_twin_fixture "q4_0_linear_f16_m2_add" in
   expect_contains "q4_0 m2 _add twin stores row 0 through the double-rounding tail"
     m2_add
-    "output[col] = half(half(acc0) + bias[col]);";
+    "output[column] = half(half(accumulator0) + bias[column]);";
   expect_contains "q4_0 m2 _add twin stores row 1 through the double-rounding tail"
     m2_add
-    "output[params.n + col] = half(half(acc1) + bias[params.n + col]);";
+    "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
+  if contains m2_add "params.has_bias" then
+    failwith "q4_0 m2 _add twin must not keep the flat has_bias store block";
+  if contains m2_add "bias_value" then
+    failwith "q4_0 m2 _add twin must not keep the flat bias_value store block";
   Printf.printf
-    "  [PASS] Q4_0 generic/m2 legacy _add twins frozen under test/golden (04d-A1 oracle)\n%!";
+    "  [PASS] Q4_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (04d-A2 emission oracle)\n%!";
+
+  (* x8/x4 Q4_0 bases never had a legacy twin.  Graph-level Linear-add on
+     them (m=1 with n a multiple of 4/8 selects the x8/x4 tile) used to
+     crash Metal.lower with an Invalid_argument raised by the retired text-
+     patcher's extract_kernel; since 04d-A2 it is a clean loud Error telling
+     the user the node must be served by the Linear_epilogue digest route. *)
+  (match lower_linear_add_result ~m:1 ~n:32 ~k:32 ~tag:"q4_0_linear_add_x8" with
+  | Ok _ ->
+      failwith "Q4_0 x8 graph-level Linear-add must fail loudly (no _add twin)"
+  | Error message ->
+      if not (contains message "has no legacy _add twin") then
+        failwith ("Q4_0 x8 graph-level Linear-add error changed: " ^ message));
+  Printf.printf
+    "  [PASS] Q4_0 x8/x4 graph-level Linear-add fails loudly with the digest-route hint (04d-A2)\n%!";
 
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)

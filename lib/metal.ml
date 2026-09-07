@@ -6973,10 +6973,19 @@ let quant_source ~target = function
                (Printf.sprintf "llmopt_%s_linear_f16_m2"
                   (Ir.Dtype.quant_to_string quant |> String.lowercase_ascii))))
 
+(* G4P12-04d-A2: this text-patcher is now the non-Q4_0 shim.  Q4_0 _add twins
+   (generic, _m2, and the zoo m4/m16/m32 statics) are all produced by
+   Metal_block_codegen; this legacy llama-style extract + store rewrite
+   survives only for the six non-Q4_0 families until G4P12-05 makes them
+   parametric (the all-quants Linear-add test at test.ml:1828-1858 keeps
+   every family's _add entry). *)
 let quant_linear_add_source ~target (quant, tactic) =
   ignore target;
   let name = Tactic.name tactic in
-  if quant = Ir.Dtype.Q4_0 && (String.ends_with ~suffix:"_m4" name || String.ends_with ~suffix:"_m16" name || String.ends_with ~suffix:"_m32" name) then ""
+  if quant = Ir.Dtype.Q4_0 then
+    invalid_arg
+      "quant_linear_add_source is the non-Q4_0 shim; Q4_0 _add twins come \
+       from Metal_block_codegen (G4P12-04d-A2)"
   else
     let source = extract_kernel (legacy_quant_source quant) name in
     let replacements =
@@ -10832,10 +10841,6 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     quant_linear_add_tactics ~target graph @ region_quant_add_tactics
     |> List.sort_uniq Stdlib.compare
   in
-  let quant_add_source =
-    quant_add_tactics |> List.map (quant_linear_add_source ~target)
-    |> String.concat "\n"
-  in
   let quant_add_entries = List.map quant_linear_add_entry quant_add_tactics in
   let q4_0_digest_schema =
     match
@@ -10843,6 +10848,50 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     with
     | Ok schema -> schema
     | Error err -> failwith (Block_schema.Error.to_string err)
+  in
+  (* G4P12-04d-A2: Q4_0 _add twins are emitted by Metal_block_codegen -- the
+     generic and _m2 twins structurally here (parametric-style, double-
+     rounding store), the m4/m16/m32 twins by the unconditional q4_0_linear
+     zoo statics.  x8/x4 Q4_0 bases never had twins and have no digest route
+     for graph-level Linear_add nodes, so they fail loudly with a clear Error
+     (the retired text-patcher raised Invalid_argument inside extract_kernel
+     instead).  Every non-Q4_0 family keeps the legacy shim. *)
+  let quant_add_source_result =
+    quant_add_tactics
+    |> List.fold_left
+         (fun result (quant, tactic) ->
+           let* source = result in
+           match quant, Tactic.name tactic with
+           | Ir.Dtype.Q4_0, "llmopt_q4_0_linear_f16" ->
+               let* kernel =
+                 Metal_block_codegen.q4_0_linear_add_kernel
+                   ~name:"llmopt_q4_0_linear_f16_add" ~target q4_0_digest_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q4_0, "llmopt_q4_0_linear_f16_m2" ->
+               let* kernel =
+                 Metal_block_codegen.q4_0_m2_add_kernel
+                   ~name:"llmopt_q4_0_linear_f16_m2_add" ~target
+                   q4_0_digest_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q4_0, base
+             when String.ends_with ~suffix:"_m4" base
+                  || String.ends_with ~suffix:"_m16" base
+                  || String.ends_with ~suffix:"_m32" base ->
+               (* the q4_0_linear zoo text already carries these twins
+                  unconditionally for every Q4_0 program *)
+               Ok source
+           | Ir.Dtype.Q4_0, base ->
+               Error
+                 (Printf.sprintf
+                    "Metal lower: Q4_0 graph-level Linear-add on the %s tile \
+                     has no legacy _add twin (x8/x4 twins never existed); \
+                     lower it as a fused Linear_epilogue region so the digest \
+                     route serves it"
+                    base)
+           | _ -> Ok (source ^ quant_linear_add_source ~target (quant, tactic)))
+         (Ok "")
   in
   let region_quant_digest_source_result =
     region_quant_digest_tactics
@@ -10913,6 +10962,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
   let* region_quant_digest_source =
     region_quant_digest_source_result
   in
+  let* quant_add_source = quant_add_source_result in
   let components =
     [ ( has_w4a16_linear graph || regions_have_w4,
         w4a16_source,

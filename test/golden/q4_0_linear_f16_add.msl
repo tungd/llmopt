@@ -1,32 +1,44 @@
 kernel void llmopt_q4_0_linear_f16_add(
     device const half* input [[buffer(0)]],
-    device const block_q4_0* weight [[buffer(1)]],
+    device const uchar* weight [[buffer(1)]],
     device const half* bias [[buffer(2)]],
     device half* output [[buffer(3)]],
     constant QuantLinearParams& params [[buffer(4)]],
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
-  const uint simd_idx = gid >> 5;
-  const uint total_elements = params.m * params.n;
-  if (simd_idx >= total_elements) return;
-  const uint row = simd_idx / params.n;
-  const uint col = simd_idx - row * params.n;
-  const uint num_blocks = params.k >> 5;
-  device const block_q4_0* row_blocks = weight + col * num_blocks;
-  device const half* in_ptr = input + row * params.k;
-  float acc = 0.0f;
-  for (uint b = 0; b < num_blocks; ++b) {
-    device const block_q4_0& blk = row_blocks[b];
-    const half d = blk.d;
-    const uint8_t byte_val = (lane < 16u) ? blk.qs[lane] : blk.qs[lane - 16u];
-    const uint8_t nib = (lane < 16u) ? (byte_val & 0x0Fu) : (byte_val >> 4);
-    const int q = int(nib) - 8;
-    const half in_val = in_ptr[b * 32 + lane];
-    acc += float(in_val) * (float(d) * float(q));
+  const uint output_index = gid >> 5u;
+  const uint output_elements = params.m * params.n;
+  if (output_index >= output_elements) return;
+  const uint row = output_index / params.n;
+  const uint column = output_index - row * params.n;
+  const uint blocks = params.k / 32u;
+  device const uchar* row_blocks = weight + column * blocks * 18u;
+  device const half* activation = input + row * params.k;
+  float accumulator = 0.0f;
+  const uint half_blocks = blocks >> 1u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+  for (uint b = 0u; b < half_blocks; ++b) {
+    const uint block_idx = (b << 1u) + b_offset;
+    device const uchar* blk = row_blocks + block_idx * 18u;
+    const half scale = *reinterpret_cast<device const half*>(blk + 0u);
+    const uchar packed = blk[2u + l];
+    const uint k = block_idx * 32u + l;
+    const float a_low = float(activation[k]);
+    const float a_high = float(activation[k + 16u]);
+    const float q_low = float(int(packed & 15u) - 8);
+    const float q_high = float(int(packed >> 4u) - 8);
+    accumulator += float(scale) * (a_low * q_low + a_high * q_high);
   }
-  acc = simd_sum(acc);
-  if (lane == 0) {
-    const uint output_index = row * params.n + col;
-    output[output_index] = half(half(acc) + bias[output_index]);
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    device const uchar* blk = row_blocks + block_idx * 18u;
+    const uint k = block_idx * 32u + lane;
+    accumulator += float(activation[k])
+        * llmopt_schema_q4_0_value(blk, lane);
+  }
+  accumulator = simd_sum(accumulator);
+  if (lane == 0u) {
+    output[output_index] = half(half(accumulator) + bias[output_index]);
   }
 }
