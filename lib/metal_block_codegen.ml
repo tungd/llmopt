@@ -161,6 +161,89 @@ kernel void %s(
 |}
     name block_elements block_bytes block_elements value_function block_bytes
 
+(* G4P12-05-1b: the same twins for the superblock families (Q4_K/Q5_K/Q6_K/
+   IQ4_XS).  The decode bodies mirror emit_superblock_linear_pair's generic
+   and paired-row bodies (one schema-value call per 32-element subblock over
+   256-element superblocks) with the twin writeback tails above; the schema
+   value function is in scope because quant_source emits it before the twin
+   text.  On-demand through the schema-level q{...}_linear_add_kernel /
+   q{...}_m2_add_kernel admissions below. *)
+let emit_superblock_linear_add ~name ~value_function ~block_elements
+    ~block_bytes ~subblock_elements =
+  let subblocks = block_elements / subblock_elements in
+  Printf.sprintf {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint output_index = gid >> 5u;
+  const uint output_elements = params.m * params.n;
+  if (output_index >= output_elements) return;
+  const uint row = output_index / params.n;
+  const uint column = output_index - row * params.n;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+  device const half* activation = input + row * params.k;
+  float accumulator = 0.0f;
+  for (uint block = 0; block < blocks; ++block) {
+    device const uchar* packed = row_blocks + block * %du;
+    for (uint subblock = 0; subblock < %du; ++subblock) {
+      const uint k = block * %du + subblock * %du + lane;
+      accumulator += float(activation[k])
+          * %s(packed, lane, subblock);
+    }
+  }
+  accumulator = simd_sum(accumulator);
+  if (lane == 0u) {
+    output[output_index] = half(half(accumulator) + bias[output_index]);
+  }
+}
+|}
+    name block_elements block_bytes block_bytes subblocks block_elements
+    subblock_elements value_function
+
+let emit_superblock_m2_add ~name ~value_function ~block_elements ~block_bytes
+    ~subblock_elements =
+  let subblocks = block_elements / subblock_elements in
+  Printf.sprintf {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column = gid >> 5u;
+  if (column >= params.n) return;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  for (uint block = 0; block < blocks; ++block) {
+    device const uchar* packed = row_blocks + block * %du;
+    for (uint subblock = 0; subblock < %du; ++subblock) {
+      const uint k = block * %du + subblock * %du + lane;
+      const float decoded = %s(packed, lane, subblock);
+      accumulator0 += float(input[k]) * decoded;
+      accumulator1 += float(input[params.k + k]) * decoded;
+    }
+  }
+  accumulator0 = simd_sum(accumulator0);
+  accumulator1 = simd_sum(accumulator1);
+  if (lane == 0u) {
+    output[column] = half(half(accumulator0) + bias[column]);
+    output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);
+  }
+}
+|}
+    name block_elements block_bytes block_bytes subblocks block_elements
+    subblock_elements value_function
+
 let emit_superblock_linear_pair ~name ~value_function ~block_elements
     ~block_bytes ~subblock_elements =
   let subblocks = block_elements / subblock_elements in
@@ -2727,6 +2810,123 @@ let q5_0_m2_add_kernel ~name ~target schema =
   Ok
     (emit_block32_m2_add ~name ~value_function:"llmopt_schema_q5_0_value"
        ~block_elements ~block_bytes)
+
+(* G4P12-05-1b: superblock twin schema admissions for Q4_K/Q5_K/Q6_K/IQ4_XS.
+   The family value function reads the block (scale/min/table offsets resolved
+   inside the value function from the schema that built it), so the geometry
+   checks the superblock shape, the quant type and the code width, plus
+   presence of the distinguishing physical fields. *)
+let superblock_twin_geometry ~label ~target ~expected_quant ~code_bits schema =
+  let physical = Block_schema.physical_layout schema in
+  let logical = Block_schema.logical_decode schema in
+  let equation = Block_schema.Logical_decode.equation logical in
+  let* () = require_superblock ~target physical logical "twin" in
+  if Block_schema.quant_type schema <> Some expected_quant then
+    Error
+      (Printf.sprintf
+         "constructive superblock %s twin emitter received another storage schema"
+         label)
+  else if Block_schema.Logical_decode.code_bits equation <> code_bits then
+    Error
+      (Printf.sprintf
+         "constructive %s twin emitter requires %d-bit codes" label code_bits)
+  else
+    let block_elements = Block_schema.Physical_layout.block_elements physical in
+    let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+    let subblock_elements =
+      Block_schema.Logical_decode.subblock_elements logical
+    in
+    Ok (block_elements, block_bytes, subblock_elements)
+
+let q4_k_twin_schema_geometry ~label ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let* _quant_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized
+  in
+  let* _table_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Scale_minimum_table
+  in
+  superblock_twin_geometry ~label ~target ~expected_quant:Ir.Dtype.Q4_K
+    ~code_bits:4 schema
+
+let q5_k_twin_schema_geometry ~label ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let* _high_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized_high
+  in
+  let* _low_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized_low
+  in
+  superblock_twin_geometry ~label ~target ~expected_quant:Ir.Dtype.Q5_K
+    ~code_bits:5 schema
+
+let q6_k_twin_schema_geometry ~label ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let* _high_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized_high
+  in
+  let* _low_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized_low
+  in
+  let* _scale_table =
+    field_offset physical Block_schema.Physical_layout.Field.Scale_table
+  in
+  superblock_twin_geometry ~label ~target ~expected_quant:Ir.Dtype.Q6_K
+    ~code_bits:6 schema
+
+let iq4_xs_twin_schema_geometry ~label ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let* _high_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Codebook_scale_high
+  in
+  let* _low_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Codebook_scale_low
+  in
+  superblock_twin_geometry ~label ~target ~expected_quant:Ir.Dtype.IQ4_XS
+    ~code_bits:4 schema
+
+let superblock_linear_add ~name ~value_function ~geometry schema =
+  let* block_elements, block_bytes, subblock_elements = geometry schema in
+  Ok
+    (emit_superblock_linear_add ~name ~value_function ~block_elements
+       ~block_bytes ~subblock_elements)
+
+let q4_k_linear_add_kernel ~name ~target schema =
+  let* body =
+    superblock_linear_add ~name ~value_function:"llmopt_schema_q4_k_value"
+      ~geometry:(q4_k_twin_schema_geometry ~label:"linear-add" ~target) schema
+  in
+  Ok body
+
+let q5_k_linear_add_kernel ~name ~target schema =
+  let* body =
+    superblock_linear_add ~name ~value_function:"llmopt_schema_q5_k_value"
+      ~geometry:(q5_k_twin_schema_geometry ~label:"linear-add" ~target) schema
+  in
+  Ok body
+
+let q6_k_linear_add_kernel ~name ~target schema =
+  let* body =
+    superblock_linear_add ~name ~value_function:"llmopt_schema_q6_k_value"
+      ~geometry:(q6_k_twin_schema_geometry ~label:"linear-add" ~target) schema
+  in
+  Ok body
+
+let iq4_xs_linear_add_kernel ~name ~target schema =
+  let* body =
+    superblock_linear_add ~name ~value_function:"llmopt_schema_iq4_xs_value"
+      ~geometry:(iq4_xs_twin_schema_geometry ~label:"linear-add" ~target)
+      schema
+  in
+  Ok body
+
+let iq4_xs_m2_add_kernel ~name ~target schema =
+  let* block_elements, block_bytes, subblock_elements =
+    iq4_xs_twin_schema_geometry ~label:"m2-add" ~target schema
+  in
+  Ok
+    (emit_superblock_m2_add ~name ~value_function:"llmopt_schema_iq4_xs_value"
+       ~block_elements ~block_bytes ~subblock_elements)
 
 let linear_kernels ~target schema =
   match Block_schema.quant_type schema with

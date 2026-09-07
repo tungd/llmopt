@@ -973,6 +973,94 @@ let run () =
   Printf.printf
     "  [PASS] Q5_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (G4P12-05-1 block32 pair complete)\n%!";
 
+  (* G4P12-05-1b: the superblock families' generic _add twins are re-homed
+     through the emit_superblock twin templates (subblock schema-value decode
+     over 256-element superblocks, same double-rounding tails).  Probed
+     serving surface: every m <> 2 Linear-add shape selects the generic tile
+     for all four families; Q4_K/Q5_K/Q6_K additionally serve the llama
+     m2_x4 four-column tile at m = 2 (still text-patched until 05-2 ports
+     that tile), while IQ4_XS (whose llama zoo has no m2_x4) serves the
+     plain _m2 twin at m = 2 and is fully structural here.  The generic
+     twin re-homing makes the _add decode consistent with the parametric
+     flat decode that already serves plain decode (the llama generic body is
+     removed from program text; only the patched twins kept llama semantics
+     before). *)
+  let superblock_generic = [
+    (Ir.Dtype.Q4_K, "q4_k", "llmopt_q4_k_linear_f16_add",
+     "q4_k_linear_f16_add");
+    (Ir.Dtype.Q5_K, "q5_k", "llmopt_q5_k_linear_f16_add",
+     "q5_k_linear_f16_add");
+    (Ir.Dtype.Q6_K, "q6_k", "llmopt_q6_k_linear_f16_add",
+     "q6_k_linear_f16_add");
+    (Ir.Dtype.IQ4_XS, "iq4_xs", "llmopt_iq4_xs_linear_f16_add",
+     "iq4_xs_linear_f16_add");
+  ] in
+  List.iter
+    (fun (quant, label, kernel, fixture) ->
+      pin_twin_fixture ~quant ~label ~m:1 ~n:62 ~k:256 ~kernel ~fixture;
+      let fixture = golden_twin_fixture fixture in
+      if contains fixture "block_q4_K"
+         || contains fixture "block_q5_K" || contains fixture "block_q6_K" then
+        failwith
+          (Printf.sprintf
+             "%s generic _add twin must be parametric-style (no llama block struct)"
+             label);
+      expect_contains
+        (Printf.sprintf
+           "%s generic _add twin reads the additive tensor element-wise" label)
+        fixture
+        "output[output_index] = half(half(accumulator) + bias[output_index]);";
+      expect_contains
+        (Printf.sprintf
+           "%s generic _add twin decodes through the schema helper" label)
+        fixture ("llmopt_schema_" ^ label ^ "_value(packed, lane, subblock);");
+      if contains fixture "params.has_bias" then
+        failwith
+          (Printf.sprintf "%s generic _add twin keeps the flat has_bias block"
+             label))
+    superblock_generic;
+  (* IQ4_XS is complete: its m=2 Linear-add serves the structural _m2 twin. *)
+  pin_twin_fixture ~quant:Ir.Dtype.IQ4_XS ~label:"iq4_xs" ~m:2 ~n:64 ~k:256
+    ~kernel:"llmopt_iq4_xs_linear_f16_m2_add"
+    ~fixture:"iq4_xs_linear_f16_m2_add";
+  let iq4_m2 = golden_twin_fixture "iq4_xs_linear_f16_m2_add" in
+  expect_contains "iq4_xs m2 _add twin stores row 0 through the double-rounding tail"
+    iq4_m2 "output[column] = half(half(accumulator0) + bias[column]);";
+  expect_contains "iq4_xs m2 _add twin stores row 1 through the double-rounding tail"
+    iq4_m2
+    "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
+  (* The K families' m=2 tile stays llama: m2_x4 _add is still text-patched
+     (05-2 ports that tile), and no parametric _m2 twin may appear for them. *)
+  List.iter
+    (fun (quant, label, base) ->
+      let program =
+        lower_linear_add ~quant ~m:2 ~n:64 ~k:256 ~tag:(label ^ "_la_m2x4")
+      in
+      let source = Metal.Program.source program in
+      (match
+         kernel_text source (base ^ "_m2_x4_add")
+       with
+      | None ->
+          failwith
+            (Printf.sprintf "%s m=2 Linear-add emits no llama m2_x4 _add twin"
+               label)
+      | Some text ->
+          if contains text "llmopt_schema_" then
+            failwith
+              (Printf.sprintf
+                 "%s m2_x4 _add twin must stay llama-style until 05-2 ports it"
+                 label));
+      if contains source (base ^ "_m2_add(") then
+        failwith
+          (Printf.sprintf
+             "%s m=2 Linear-add must not emit a parametric _m2 twin (m2_x4 is the serving tile)"
+             label))
+    [ (Ir.Dtype.Q4_K, "q4_k", "llmopt_q4_k_linear_f16");
+      (Ir.Dtype.Q5_K, "q5_k", "llmopt_q5_k_linear_f16");
+      (Ir.Dtype.Q6_K, "q6_k", "llmopt_q6_k_linear_f16") ];
+  Printf.printf
+    "  [PASS] Superblock Q4_K/Q5_K/Q6_K/IQ4_XS generic and IQ4_XS _m2 _add twins emitted structurally (G4P12-05-1b)\n%!";
+
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)
   (* ========================================================================= *)

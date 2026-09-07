@@ -1,0 +1,30 @@
+kernel void llmopt_iq4_xs_linear_f16_m2_add(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column = gid >> 5u;
+  if (column >= params.n) return;
+  const uint blocks = params.k / 256u;
+  device const uchar* row_blocks = weight + column * blocks * 136u;
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  for (uint block = 0; block < blocks; ++block) {
+    device const uchar* packed = row_blocks + block * 136u;
+    for (uint subblock = 0; subblock < 8u; ++subblock) {
+      const uint k = block * 256u + subblock * 32u + lane;
+      const float decoded = llmopt_schema_iq4_xs_value(packed, lane, subblock);
+      accumulator0 += float(input[k]) * decoded;
+      accumulator1 += float(input[params.k + k]) * decoded;
+    }
+  }
+  accumulator0 = simd_sum(accumulator0);
+  accumulator1 = simd_sum(accumulator1);
+  if (lane == 0u) {
+    output[column] = half(half(accumulator0) + bias[column]);
+    output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);
+  }
+}
