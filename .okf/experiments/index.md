@@ -165,4 +165,5 @@ exp-0163: G4P12-05 seam audit (remaining quant families parametric emission)
 exp-0164: G4P12-05-1a block32 _add twins re-homed (Q8_0 + Q5_0)
 exp-0165: G4P12-05-1b superblock _add twins re-homed (Q4_K/Q5_K/Q6_K/IQ4_XS)
 exp-0166: 04d-A3 + 05-3 llama generic/m2 zoo text deletion (all seven families)
+exp-0167: G4P12-05-2 m2_x4 m=2 tile parametric port + decode-equivalence audit (Q4_K/Q5_K/Q6_K)
 
