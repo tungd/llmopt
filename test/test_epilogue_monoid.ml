@@ -751,6 +751,108 @@ let run () =
     failwith "q4_0 m32 digest emission is not deterministic";
   Printf.printf "  [PASS] Q4_0 m32 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
 
+  (* G4P12-04d-A1: the Q4_0 generic (llmopt_q4_0_linear_f16, arbitrary rows)
+     and paired-row (_m2) tiles still serve graph-level Linear-add through
+     legacy _add twins whose text today is produced by Metal's
+     quant_linear_add_source patcher over the llama-style legacy generic/m2
+     bodies (the parametric m4/m16/m32 twins already live in the codegen
+     zoo).  Freeze that today-emitted twin text under test/golden/ as the
+     byte-identity oracle for 04d-A2's emitter re-homing.  The twins keep
+     their double-rounding store [half(half(acc) + bias[idx])] -- numerically
+     distinct from the single-rounding digest Residual_add tail
+     [half(acc + (float)residual[idx])] -- so 04d-A2 must preserve this tail,
+     not route Residual_add through the digest writer. *)
+  let golden_twin_fixture name = read_file ("test/golden/" ^ name ^ ".msl") in
+  let lower_linear_add ~m ~n ~k ~tag =
+    let graph = Ir.Graph.create () in
+    let input =
+      Ir.Graph.tensor_input graph ~name:(tag ^ "-input")
+        ~source:Ir.Input_source.Runtime
+        ~shape:(Tensor_shape.of_ints_exn [ m; k ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    let weight =
+      Ir.Graph.tensor_input graph ~name:(tag ^ "-weight")
+        ~source:(Ir.Input_source.Tensor_store { key = tag ^ "-weight" })
+        ~shape:(Tensor_shape.of_ints_exn [ n; k ])
+        ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+    in
+    let residual =
+      Ir.Graph.tensor_input graph ~name:(tag ^ "-residual")
+        ~source:Ir.Input_source.Runtime
+        ~shape:(Tensor_shape.of_ints_exn [ m; n ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    let output =
+      Ir.Graph.fresh_tensor_value graph
+        ~shape:(Tensor_shape.of_ints_exn [ m; n ])
+        ~dtype:Ir.Dtype.Float16
+    in
+    Ir.Graph.append graph ~op:(Ir.Op.Linear_add { m; n; k })
+      ~inputs:[ input; weight; residual ] ~output:(Some output);
+    Ir.Graph.add_output graph ~name:(tag ^ "-output") output;
+    match Metal.lower graph with
+    | Ok program -> program
+    | Error message ->
+        failwith ("q4_0 Linear-add lowering failed: " ^ message)
+  in
+  let kernel_text source name =
+    let needle = "kernel void " ^ name ^ "(" in
+    let nlen = String.length needle in
+    let slen = String.length source in
+    let rec find i =
+      if i + nlen > slen then None
+      else if String.sub source i nlen = needle then Some i
+      else find (i + 1)
+    in
+    match find 0 with
+    | None -> None
+    | Some start ->
+        let rec cut i =
+          if i + 3 > slen then slen
+          else if String.sub source i 3 = "\n}\n" then i + 3
+          else cut (i + 1)
+        in
+        Some (String.sub source start (cut (start + 1) - start))
+  in
+  let pin_twin_fixture ~m ~n ~k ~kernel ~fixture =
+    (* m=1 with n not a multiple of 4 selects the generic tile (x8/x4 need
+       m=1 widths that are multiples of 4/8); m=2 selects the paired _m2
+       tile.  Both are patcher-served today and must freeze unchanged. *)
+    let program = lower_linear_add ~m ~n ~k ~tag:fixture in
+    match kernel_text (Metal.Program.source program) kernel with
+    | None ->
+        failwith
+          (Printf.sprintf "q4_0 Linear-add lowering emits no %s twin" kernel)
+    | Some text ->
+        if text <> golden_twin_fixture fixture then
+          failwith
+            (Printf.sprintf
+               "q4_0 %s twin drifted from the test/golden/%s.msl oracle captured before 04d-A2"
+               kernel fixture)
+  in
+  pin_twin_fixture ~m:1 ~n:62 ~k:32 ~kernel:"llmopt_q4_0_linear_f16_add"
+    ~fixture:"q4_0_linear_f16_add";
+  pin_twin_fixture ~m:2 ~n:64 ~k:32 ~kernel:"llmopt_q4_0_linear_f16_m2_add"
+    ~fixture:"q4_0_linear_f16_m2_add";
+  (* Structural sanity of the frozen twins: the double-rounding store is the
+     contract 04d-A2 must preserve. *)
+  let generic_add =
+    golden_twin_fixture "q4_0_linear_f16_add"
+  in
+  expect_contains "q4_0 generic _add twin reads the additive tensor element-wise"
+    generic_add
+    "output[output_index] = half(half(acc) + bias[output_index]);";
+  let m2_add = golden_twin_fixture "q4_0_linear_f16_m2_add" in
+  expect_contains "q4_0 m2 _add twin stores row 0 through the double-rounding tail"
+    m2_add
+    "output[col] = half(half(acc0) + bias[col]);";
+  expect_contains "q4_0 m2 _add twin stores row 1 through the double-rounding tail"
+    m2_add
+    "output[params.n + col] = half(half(acc1) + bias[params.n + col]);";
+  Printf.printf
+    "  [PASS] Q4_0 generic/m2 legacy _add twins frozen under test/golden (04d-A1 oracle)\n%!";
+
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)
   (* ========================================================================= *)
