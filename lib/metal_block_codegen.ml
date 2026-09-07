@@ -331,14 +331,137 @@ let require_superblock ~target physical logical label =
          "constructive %s Metal lowering requires block=256, subblock=32, SIMD=32 (got block=%d subblock=%d SIMD=%d)"
          label block_elements subblock_elements simd_lanes)
 
-let emit_superblock schema ~name ~value_function value_source =
+(* G4P12-05-2: the m2_x4 four-column m=2 tile, parametrically.  The kernel
+   covers four output columns per 32-lane simdgroup (column_in_group = lane
+   >> 3) with eight local lanes per column walking the k dimension four
+   elements at a time; the per-element decode is the family schema value
+   function (decode-identical to the llama tile it replaces -- see exp-0167
+   for the per-element audit), and the writeback tail follows the parametric
+   flat/_add conventions.  Same ABI and lane semantics as the llama m2_x4,
+   so the name-based runtime dispatch (columns = (n + 3) / 4, short-row grid)
+   is unchanged; plain decode at m=2 becomes FP-consistent with the m >= 3
+   parametric generic (option A: decode-consistent scalar switch). *)
+let emit_superblock_m2_x4_flat ~name ~value_function ~block_elements
+    ~block_bytes ~subblock_elements =
+  let subblocks = block_elements / subblock_elements in
+  Printf.sprintf {|
+kernel void llmopt_%s_linear_f16_m2_x4(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column_group = gid >> 5u;
+  const uint column_in_group = lane >> 3u;
+  const uint local_lane = lane & 7u;
+  const uint column = (column_group << 2u) + column_in_group;
+  if (column >= params.n) return;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  for (uint block = 0; block < blocks; ++block) {
+    device const uchar* packed = row_blocks + block * %du;
+    for (uint subblock = 0; subblock < %du; ++subblock) {
+      const uint k = block * %du + subblock * %du + local_lane * 4u;
+      const float w0 = %s(packed, local_lane * 4u + 0u, subblock);
+      const float w1 = %s(packed, local_lane * 4u + 1u, subblock);
+      const float w2 = %s(packed, local_lane * 4u + 2u, subblock);
+      const float w3 = %s(packed, local_lane * 4u + 3u, subblock);
+      accumulator0 += float(input[k]) * w0 + float(input[k + 1u]) * w1
+          + float(input[k + 2u]) * w2 + float(input[k + 3u]) * w3;
+      accumulator1 += float(input[params.k + k]) * w0
+          + float(input[params.k + k + 1u]) * w1
+          + float(input[params.k + k + 2u]) * w2
+          + float(input[params.k + k + 3u]) * w3;
+    }
+  }
+  accumulator0 += simd_shuffle_down(accumulator0, 4);
+  accumulator1 += simd_shuffle_down(accumulator1, 4);
+  accumulator0 += simd_shuffle_down(accumulator0, 2);
+  accumulator1 += simd_shuffle_down(accumulator1, 2);
+  accumulator0 += simd_shuffle_down(accumulator0, 1);
+  accumulator1 += simd_shuffle_down(accumulator1, 1);
+  if (local_lane == 0u) {
+    const float bias_value =
+        params.has_bias == 0u ? 0.0f : float(bias[column]);
+    output[column] = half(accumulator0 + bias_value);
+    output[params.n + column] = half(accumulator1 + bias_value);
+  }
+}
+|}
+    name block_elements block_bytes block_bytes subblocks block_elements
+    subblock_elements value_function value_function value_function value_function
+
+let emit_superblock_m2_x4_add ~name ~value_function ~block_elements
+    ~block_bytes ~subblock_elements =
+  let subblocks = block_elements / subblock_elements in
+  Printf.sprintf {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint column_group = gid >> 5u;
+  const uint column_in_group = lane >> 3u;
+  const uint local_lane = lane & 7u;
+  const uint column = (column_group << 2u) + column_in_group;
+  if (column >= params.n) return;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks = weight + column * blocks * %du;
+  float accumulator0 = 0.0f;
+  float accumulator1 = 0.0f;
+  for (uint block = 0; block < blocks; ++block) {
+    device const uchar* packed = row_blocks + block * %du;
+    for (uint subblock = 0; subblock < %du; ++subblock) {
+      const uint k = block * %du + subblock * %du + local_lane * 4u;
+      const float w0 = %s(packed, local_lane * 4u + 0u, subblock);
+      const float w1 = %s(packed, local_lane * 4u + 1u, subblock);
+      const float w2 = %s(packed, local_lane * 4u + 2u, subblock);
+      const float w3 = %s(packed, local_lane * 4u + 3u, subblock);
+      accumulator0 += float(input[k]) * w0 + float(input[k + 1u]) * w1
+          + float(input[k + 2u]) * w2 + float(input[k + 3u]) * w3;
+      accumulator1 += float(input[params.k + k]) * w0
+          + float(input[params.k + k + 1u]) * w1
+          + float(input[params.k + k + 2u]) * w2
+          + float(input[params.k + k + 3u]) * w3;
+    }
+  }
+  accumulator0 += simd_shuffle_down(accumulator0, 4);
+  accumulator1 += simd_shuffle_down(accumulator1, 4);
+  accumulator0 += simd_shuffle_down(accumulator0, 2);
+  accumulator1 += simd_shuffle_down(accumulator1, 2);
+  accumulator0 += simd_shuffle_down(accumulator0, 1);
+  accumulator1 += simd_shuffle_down(accumulator1, 1);
+  if (local_lane == 0u) {
+    output[column] = half(half(accumulator0) + bias[column]);
+    output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);
+  }
+}
+|}
+    name block_elements block_bytes block_bytes subblocks block_elements
+    subblock_elements value_function value_function value_function value_function
+
+let emit_superblock ~m2_x4 schema ~name ~value_function value_source =
   let physical = Block_schema.physical_layout schema in
   let logical = Block_schema.logical_decode schema in
+  let block_elements = Block_schema.Physical_layout.block_elements physical in
+  let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+  let subblock_elements =
+    Block_schema.Logical_decode.subblock_elements logical
+  in
   value_source
-  ^ emit_superblock_linear_pair ~name ~value_function
-      ~block_elements:(Block_schema.Physical_layout.block_elements physical)
-      ~block_bytes:(Block_schema.Physical_layout.block_bytes physical)
-      ~subblock_elements:(Block_schema.Logical_decode.subblock_elements logical)
+  ^ emit_superblock_linear_pair ~name ~value_function ~block_elements
+      ~block_bytes ~subblock_elements
+  ^ if m2_x4 then
+      emit_superblock_m2_x4_flat ~name ~value_function ~block_elements
+        ~block_bytes ~subblock_elements
+    else ""
 
 let q4_k_linear ~target schema =
   let physical = Block_schema.physical_layout schema in
@@ -354,7 +477,7 @@ let q4_k_linear ~target schema =
   else
     let value_function = "llmopt_schema_q4_k_value" in
     Ok
-      (emit_superblock schema ~name:"q4_k" ~value_function
+      (emit_superblock ~m2_x4:true schema ~name:"q4_k" ~value_function
          (Printf.sprintf {|
 inline float %s(device const uchar* block, uint lane, uint subblock) {
   const float d = float(*reinterpret_cast<device const half*>(block + %du));
@@ -388,7 +511,7 @@ let q5_k_linear ~target schema =
   else
     let value_function = "llmopt_schema_q5_k_value" in
     Ok
-      (emit_superblock schema ~name:"q5_k" ~value_function
+      (emit_superblock ~m2_x4:true schema ~name:"q5_k" ~value_function
          (Printf.sprintf {|
 inline float %s(device const uchar* block, uint lane, uint subblock) {
   const float d = float(*reinterpret_cast<device const half*>(block + %du));
@@ -424,7 +547,7 @@ let q6_k_linear ~target schema =
   else
     let value_function = "llmopt_schema_q6_k_value" in
     Ok
-      (emit_superblock schema ~name:"q6_k" ~value_function
+      (emit_superblock ~m2_x4:true schema ~name:"q6_k" ~value_function
          (Printf.sprintf {|
 inline float %s(device const uchar* block, uint lane, uint subblock) {
   const uint half_block = subblock >> 2u;
@@ -459,7 +582,7 @@ let iq4_xs_linear ~target schema =
       let values = values |> List.map string_of_int |> String.concat ", " in
       let value_function = "llmopt_schema_iq4_xs_value" in
       Ok
-        (emit_superblock schema ~name:"iq4_xs" ~value_function
+        (emit_superblock ~m2_x4:false schema ~name:"iq4_xs" ~value_function
            (Printf.sprintf {|
 constant int llmopt_schema_iq4_xs_values[16] = { %s };
 inline float %s(device const uchar* block, uint lane, uint subblock) {
@@ -2927,6 +3050,28 @@ let iq4_xs_m2_add_kernel ~name ~target schema =
   Ok
     (emit_superblock_m2_add ~name ~value_function:"llmopt_schema_iq4_xs_value"
        ~block_elements ~block_bytes ~subblock_elements)
+
+(* G4P12-05-2: on-demand _add twins for the parametric m2_x4 tile.  The flat
+   m2_x4 kernel ships unconditionally in the K-family emission (emit_superblock
+   ~m2_x4:true); the fold appends the twin here when a Linear-add m=2 base
+   selects the m2_x4 tile, replacing the llama-shim patch. *)
+let k_m2_x4_add_kernel ~name ~target ~value_function schema geometry =
+  let* block_elements, block_bytes, subblock_elements = geometry schema in
+  Ok
+    (emit_superblock_m2_x4_add ~name ~value_function ~block_elements
+       ~block_bytes ~subblock_elements)
+
+let q4_k_m2_x4_add_kernel ~name ~target schema =
+  k_m2_x4_add_kernel ~name ~target ~value_function:"llmopt_schema_q4_k_value"
+    schema (q4_k_twin_schema_geometry ~label:"m2_x4-add" ~target)
+
+let q5_k_m2_x4_add_kernel ~name ~target schema =
+  k_m2_x4_add_kernel ~name ~target ~value_function:"llmopt_schema_q5_k_value"
+    schema (q5_k_twin_schema_geometry ~label:"m2_x4-add" ~target)
+
+let q6_k_m2_x4_add_kernel ~name ~target schema =
+  k_m2_x4_add_kernel ~name ~target ~value_function:"llmopt_schema_q6_k_value"
+    schema (q6_k_twin_schema_geometry ~label:"m2_x4-add" ~target)
 
 let linear_kernels ~target schema =
   match Block_schema.quant_type schema with

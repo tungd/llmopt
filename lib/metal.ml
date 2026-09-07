@@ -4779,86 +4779,6 @@ kernel void llmopt_q4_k_linear_f16_m2_n2_l32(
   }
 }
 
-kernel void llmopt_q4_k_linear_f16_m2_x4(
-    device const half* input [[buffer(0)]],
-    device const block_q4_K* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
-    uint gid [[thread_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint column_group = gid >> 5;
-  const uint column_in_group = lane >> 3;
-  const uint local_lane = lane & 7u;
-  const uint col = (column_group << 2) + column_in_group;
-  if (col >= params.n) return;
-  const uint num_superblocks = params.k >> 8;
-  device const block_q4_K* row_blocks = weight + col * num_superblocks;
-  device const half* in0 = input;
-  device const half* in1 = input + params.k;
-  float acc0 = 0.0f;
-  float acc1 = 0.0f;
-  for (uint sb = 0; sb < num_superblocks; ++sb) {
-    device const block_q4_K& b = row_blocks[sb];
-    const float d = float(b.d);
-    const float dmin = float(b.dmin);
-    const uint superblock_base = sb << 8;
-    for (uint pair = 0; pair < 4; ++pair) {
-      const uint low_group = pair << 1;
-      const uint high_group = low_group + 1;
-      const uint low_scale = low_group < 4
-        ? uint(b.scales[low_group] & 63u)
-        : uint((b.scales[low_group + 4] & 0x0Fu)
-            | ((b.scales[low_group - 4] >> 6) << 4));
-      const uint low_min = low_group < 4
-        ? uint(b.scales[low_group + 4] & 63u)
-        : uint((b.scales[low_group + 4] >> 4)
-            | ((b.scales[low_group] >> 6) << 4));
-      const uint high_scale = high_group < 4
-        ? uint(b.scales[high_group] & 63u)
-        : uint((b.scales[high_group + 4] & 0x0Fu)
-            | ((b.scales[high_group - 4] >> 6) << 4));
-      const uint high_min = high_group < 4
-        ? uint(b.scales[high_group + 4] & 63u)
-        : uint((b.scales[high_group + 4] >> 4)
-            | ((b.scales[high_group] >> 6) << 4));
-      const uint packed_offset = (pair << 5) + (local_lane << 2);
-      const uchar4 packed =
-        *reinterpret_cast<device const uchar4*>(b.qs + packed_offset);
-      const float4 qlow = float4(packed & uchar4(15u));
-      const float4 qhigh = float4(packed >> 4);
-      const uint input_offset = superblock_base + (low_group << 5)
-        + (local_lane << 2);
-      const float4 x0low = float4(
-        *reinterpret_cast<device const half4*>(in0 + input_offset));
-      const float4 x0high = float4(
-        *reinterpret_cast<device const half4*>(in0 + input_offset + 32));
-      const float4 x1low = float4(
-        *reinterpret_cast<device const half4*>(in1 + input_offset));
-      const float4 x1high = float4(
-        *reinterpret_cast<device const half4*>(in1 + input_offset + 32));
-      acc0 += d * float(low_scale) * dot(x0low, qlow)
-        - dmin * float(low_min) * dot(x0low, float4(1.0f));
-      acc0 += d * float(high_scale) * dot(x0high, qhigh)
-        - dmin * float(high_min) * dot(x0high, float4(1.0f));
-      acc1 += d * float(low_scale) * dot(x1low, qlow)
-        - dmin * float(low_min) * dot(x1low, float4(1.0f));
-      acc1 += d * float(high_scale) * dot(x1high, qhigh)
-        - dmin * float(high_min) * dot(x1high, float4(1.0f));
-    }
-  }
-  acc0 += simd_shuffle_down(acc0, 4);
-  acc1 += simd_shuffle_down(acc1, 4);
-  acc0 += simd_shuffle_down(acc0, 2);
-  acc1 += simd_shuffle_down(acc1, 2);
-  acc0 += simd_shuffle_down(acc0, 1);
-  acc1 += simd_shuffle_down(acc1, 1);
-  if (local_lane == 0) {
-    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
-    output[col] = half(acc0 + bias_value);
-    output[params.n + col] = half(acc1 + bias_value);
-  }
-}
 
 kernel void llmopt_q4_k_gated_linear_f16(
     device const half* normalized [[buffer(0)]],
@@ -5788,90 +5708,7 @@ kernel void llmopt_q5_k_gated_linear_f16_m2_x1_l32(
   }
 }
 
-kernel void llmopt_q5_k_linear_f16_m2_x4(
-    device const half* input [[buffer(0)]],
-    device const block_q5_K* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
-    uint gid [[thread_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint column_group = gid >> 5;
-  const uint column_in_group = lane >> 3;
-  const uint local_lane = lane & 7u;
-  const uint col = (column_group << 2) + column_in_group;
-  if (col >= params.n) return;
-  const uint num_superblocks = params.k >> 8;
-  device const block_q5_K* row_blocks = weight + col * num_superblocks;
-  device const half* in0 = input;
-  device const half* in1 = input + params.k;
-  float acc0 = 0.0f;
-  float acc1 = 0.0f;
-  for (uint sb = 0; sb < num_superblocks; ++sb) {
-    device const block_q5_K& b = row_blocks[sb];
-    const float d = float(b.d);
-    const float dmin = float(b.dmin);
-    const uint superblock_base = sb << 8;
-    const uchar4 high_bits =
-      *reinterpret_cast<device const uchar4*>(b.qh + (local_lane << 2));
-    for (uint pair = 0; pair < 4; ++pair) {
-      const uint low_group = pair << 1;
-      const uint high_group = low_group + 1;
-      const uint low_scale = low_group < 4
-        ? uint(b.scales[low_group] & 63u)
-        : uint((b.scales[low_group + 4] & 0x0Fu)
-            | ((b.scales[low_group - 4] >> 6) << 4));
-      const uint low_min = low_group < 4
-        ? uint(b.scales[low_group + 4] & 63u)
-        : uint((b.scales[low_group + 4] >> 4)
-            | ((b.scales[low_group] >> 6) << 4));
-      const uint high_scale = high_group < 4
-        ? uint(b.scales[high_group] & 63u)
-        : uint((b.scales[high_group + 4] & 0x0Fu)
-            | ((b.scales[high_group - 4] >> 6) << 4));
-      const uint high_min = high_group < 4
-        ? uint(b.scales[high_group + 4] & 63u)
-        : uint((b.scales[high_group + 4] >> 4)
-            | ((b.scales[high_group] >> 6) << 4));
-      const uint packed_offset = (pair << 5) + (local_lane << 2);
-      const uchar4 packed =
-        *reinterpret_cast<device const uchar4*>(b.qs + packed_offset);
-      const float4 qlow = float4((packed & uchar4(15u))
-        | (((high_bits >> low_group) & uchar4(1u)) << 4));
-      const float4 qhigh = float4((packed >> 4)
-        | (((high_bits >> high_group) & uchar4(1u)) << 4));
-      const uint input_offset = superblock_base + (low_group << 5)
-        + (local_lane << 2);
-      const float4 x0low = float4(
-        *reinterpret_cast<device const half4*>(in0 + input_offset));
-      const float4 x0high = float4(
-        *reinterpret_cast<device const half4*>(in0 + input_offset + 32));
-      const float4 x1low = float4(
-        *reinterpret_cast<device const half4*>(in1 + input_offset));
-      const float4 x1high = float4(
-        *reinterpret_cast<device const half4*>(in1 + input_offset + 32));
-      acc0 += d * float(low_scale) * dot(x0low, qlow)
-        - dmin * float(low_min) * dot(x0low, float4(1.0f));
-      acc0 += d * float(high_scale) * dot(x0high, qhigh)
-        - dmin * float(high_min) * dot(x0high, float4(1.0f));
-      acc1 += d * float(low_scale) * dot(x1low, qlow)
-        - dmin * float(low_min) * dot(x1low, float4(1.0f));
-      acc1 += d * float(high_scale) * dot(x1high, qhigh)
-        - dmin * float(high_min) * dot(x1high, float4(1.0f));
-    }
-  }
-  acc0 += simd_shuffle_down(acc0, 4);
-  acc1 += simd_shuffle_down(acc1, 4);
-  acc0 += simd_shuffle_down(acc0, 2);
-  acc1 += simd_shuffle_down(acc1, 2);
-  acc0 += simd_shuffle_down(acc0, 1);
-  acc1 += simd_shuffle_down(acc1, 1);
-  if (local_lane == 0) {
-    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
-    output[col] = half(acc0 + bias_value);
-    output[params.n + col] = half(acc1 + bias_value);
-  }
-}
+
 |}
 
 let q6_k_source = {|
@@ -6052,70 +5889,6 @@ kernel void llmopt_q6_k_linear_f16_splitk_m2(
   }
 }
 
-kernel void llmopt_q6_k_linear_f16_m2_x4(
-    device const half* input [[buffer(0)]],
-    device const block_q6_K* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
-    uint gid [[thread_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint column_group = gid >> 5;
-  const uint column_in_group = lane >> 3;
-  const uint local_lane = lane & 7u;
-  const uint col = (column_group << 2) + column_in_group;
-  if (col >= params.n) return;
-  const uint num_superblocks = params.k >> 8;
-  device const block_q6_K* row_blocks = weight + col * num_superblocks;
-  device const half* in0 = input;
-  device const half* in1 = input + params.k;
-  float acc0 = 0.0f;
-  float acc1 = 0.0f;
-  for (uint sb = 0; sb < num_superblocks; ++sb) {
-    device const block_q6_K& b = row_blocks[sb];
-    const float d = float(b.d);
-    const uint superblock_base = sb << 8;
-    for (uint group = 0; group < 8; ++group) {
-      const uint half_index = group >> 2;
-      const uint group_in_half = group & 3u;
-      const uint quant_offset = (half_index << 6)
-        + ((group_in_half & 1u) << 5) + (local_lane << 2);
-      const uint high_offset = (half_index << 5) + (local_lane << 2);
-      const uchar4 packed =
-        *reinterpret_cast<device const uchar4*>(b.ql + quant_offset);
-      const uchar4 high =
-        *reinterpret_cast<device const uchar4*>(b.qh + high_offset);
-      const uchar4 low = group_in_half < 2
-        ? (packed & uchar4(15u)) : (packed >> 4);
-      const uint high_shift = group_in_half << 1;
-      const int4 quantized = int4(low
-        | (((high >> high_shift) & uchar4(3u)) << 4)) - int4(32);
-      const uint scale_index = (half_index << 3)
-        + (group_in_half << 1) + (local_lane >> 2);
-      const float scale = d * float(b.scales[scale_index]);
-      const uint input_offset = superblock_base + (group << 5)
-        + (local_lane << 2);
-      const float4 x0 = float4(
-        *reinterpret_cast<device const half4*>(in0 + input_offset));
-      const float4 x1 = float4(
-        *reinterpret_cast<device const half4*>(in1 + input_offset));
-      const float4 q = float4(quantized);
-      acc0 += scale * dot(x0, q);
-      acc1 += scale * dot(x1, q);
-    }
-  }
-  acc0 += simd_shuffle_down(acc0, 4);
-  acc1 += simd_shuffle_down(acc1, 4);
-  acc0 += simd_shuffle_down(acc0, 2);
-  acc1 += simd_shuffle_down(acc1, 2);
-  acc0 += simd_shuffle_down(acc0, 1);
-  acc1 += simd_shuffle_down(acc1, 1);
-  if (local_lane == 0) {
-    const float bias_value = params.has_bias != 0u ? float(bias[col]) : 0.0f;
-    output[col] = half(acc0 + bias_value);
-    output[params.n + col] = half(acc1 + bias_value);
-  }
-}
 
 kernel void llmopt_q6_k_linear_f16_llama_mv_add(
     device const half* input [[buffer(0)]],
@@ -6331,16 +6104,15 @@ let quant_source ~target = function
                (Printf.sprintf "llmopt_%s_linear_f16_m2"
                   (Ir.Dtype.quant_to_string quant |> String.lowercase_ascii))))
 
-(* G4P12-04d-A2 + G4P12-05-1: this text-patcher now serves the families and
-   tiles that have no structural Metal_block_codegen twin yet.  Q4_0/Q8_0/
-   Q5_0 and the superblock families' generic/_m2 _add twins (Q4_0/Q8_0/Q5_0
-   block32, Q4_K/Q5_K/Q6_K/IQ4_XS superblock generic, IQ4_XS _m2, plus the
-   Q4_0 m4/m16/m32 zoo statics) are all produced structurally (Metal.lower
-   dispatches them before this shim is reached); this legacy llama-style
-   extract + store rewrite survives for the Q4_K/Q5_K/Q6_K m2_x4 four-column
-   twins at m=2 (until G4P12-05-2 ports that tile) and any other exotic
-   llama-zoo base, keeping every family's _add entry served (all-quants
-   Linear-add test at test.ml:1828-1858). *)
+(* G4P12-04d-A2 + G4P12-05: this text-patcher is the defensive fallback of
+   the quant-add fold.  Every served _add base is structural today: the
+   block32 and superblock families' generic/_m2 twins (and IQ4_XS m2), the K
+   families' m2_x4 twins (G4P12-05-2), and the Q4_0 m4/m16/m32 zoo statics
+   all come from Metal_block_codegen / the parametric family emission before
+   this shim is reached; Q4_0 x8/x4 bases fail loudly in the fold.  A future
+   base reaching this fallback still gets the legacy llama-style extract +
+   store rewrite when its zoo text exists, so no served surface can silently
+   lose its twin. *)
 let quant_linear_add_source ~target (quant, tactic) =
   ignore target;
   let name = Tactic.name tactic in
@@ -10254,20 +10026,19 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     | Ok schema -> schema
     | Error err -> failwith (Block_schema.Error.to_string err)
   in
-  (* G4P12-04d-A2 + G4P12-05-1: Q4_0/Q8_0/Q5_0 and (05-1b) the superblock
-     families' _add twins are emitted by Metal_block_codegen -- the generic
-     and _m2 twins structurally here (parametric-style, double-rounding
-     store), the Q4_0 m4/m16/m32 twins by the unconditional q4_0_linear zoo
-     statics.  The superblock families serve the generic tile for every
-     m <> 2 Linear-add shape; Q4_K/Q5_K/Q6_K additionally serve the llama
-     m2_x4 four-column tile at m = 2 (still text-patched by the shim until
-     05-2 ports that tile), while IQ4_XS (whose llama zoo has no m2_x4)
-     serves the plain _m2 twin at m = 2 and is fully structural here.
-     Q4_0 x8/x4 bases never had twins and have no digest route for
-     graph-level Linear_add nodes, so they fail loudly with a clear Error
-     (the retired text-patcher raised Invalid_argument inside extract_kernel
-     instead).  Every family/base not dispatched here keeps the legacy shim
-     unchanged. *)
+  (* G4P12-04d-A2 + G4P12-05: the _add twins are all structural.  Q4_0/
+     Q8_0/Q5_0 and the superblock families' generic/_m2 twins (and IQ4_XS
+     _m2) plus the K families' m2_x4 twins (05-2) are emitted by
+     Metal_block_codegen (parametric-style, double-rounding store); the Q4_0
+     m4/m16/m32 twins ship in the unconditional q4_0_linear family text.
+     The superblock families serve the generic tile for every m <> 2
+     Linear-add shape and the m2_x4 four-column tile at m = 2 (parametric
+     since 05-2; llama m2_x4 bodies deleted); IQ4_XS serves the plain _m2
+     twin at m = 2.  Q4_0 x8/x4 bases never had twins and have no digest
+     route for graph-level Linear_add nodes, so they fail loudly with a
+     clear Error (the retired text-patcher raised Invalid_argument inside
+     extract_kernel instead).  The legacy shim below is the defensive
+     fallback only. *)
   let quant_add_source_result =
     quant_add_tactics
     |> List.fold_left
@@ -10343,6 +10114,27 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                  Metal_block_codegen.iq4_xs_m2_add_kernel
                    ~name:"llmopt_iq4_xs_linear_f16_m2_add" ~target
                    iq4_xs_twin_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_x4" ->
+               let* kernel =
+                 Metal_block_codegen.q4_k_m2_x4_add_kernel
+                   ~name:"llmopt_q4_k_linear_f16_m2_x4_add" ~target
+                   q4_k_twin_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_x4" ->
+               let* kernel =
+                 Metal_block_codegen.q5_k_m2_x4_add_kernel
+                   ~name:"llmopt_q5_k_linear_f16_m2_x4_add" ~target
+                   q5_k_twin_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_m2_x4" ->
+               let* kernel =
+                 Metal_block_codegen.q6_k_m2_x4_add_kernel
+                   ~name:"llmopt_q6_k_linear_f16_m2_x4_add" ~target
+                   q6_k_twin_schema
                in
                Ok (source ^ kernel)
            | Ir.Dtype.Q4_0, base

@@ -977,14 +977,14 @@ let run () =
      through the emit_superblock twin templates (subblock schema-value decode
      over 256-element superblocks, same double-rounding tails).  Probed
      serving surface: every m <> 2 Linear-add shape selects the generic tile
-     for all four families; Q4_K/Q5_K/Q6_K additionally serve the llama
-     m2_x4 four-column tile at m = 2 (still text-patched until 05-2 ports
-     that tile), while IQ4_XS (whose llama zoo has no m2_x4) serves the
-     plain _m2 twin at m = 2 and is fully structural here.  The generic
-     twin re-homing makes the _add decode consistent with the parametric
-     flat decode that already serves plain decode (the llama generic body is
-     removed from program text; only the patched twins kept llama semantics
-     before). *)
+     for all four families; m = 2 selects the parametric m2_x4 four-column
+     tile for Q4_K/Q5_K/Q6_K (G4P12-05-2; the llama m2_x4 bodies are gone
+     from the family zoo strings) and the plain _m2 twin for IQ4_XS (whose
+     llama zoo has no m2_x4), so every family's reachable Linear-add surface
+     is structural.  The twin re-homing makes the _add decode consistent
+     with the parametric flat decode that already serves plain decode (the
+     llama generic/m2/m2_x4 bodies are removed from program text; only the
+     patched twins kept llama semantics before). *)
   let superblock_generic = [
     (Ir.Dtype.Q4_K, "q4_k", "llmopt_q4_k_linear_f16_add",
      "q4_k_linear_f16_add");
@@ -1029,37 +1029,136 @@ let run () =
   expect_contains "iq4_xs m2 _add twin stores row 1 through the double-rounding tail"
     iq4_m2
     "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
-  (* The K families' m=2 tile stays llama: m2_x4 _add is still text-patched
-     (05-2 ports that tile), and no parametric _m2 twin may appear for them. *)
+  (* G4P12-05-2: the K families' m = 2 tile is parametric.  The m2_x4
+     four-column _add twin comes from Metal_block_codegen (the shared
+     emit_superblock_m2_x4_add template through the q{4_k,5_k,6_k}_m2_x4_add
+     kernel admissions; llama m2_x4 bodies deleted from the family zoo
+     strings), and the flat m2_x4 kernel ships unconditionally in the
+     K-family emission (emit_superblock ~m2_x4:true), so plain m = 2 decode
+     and the m = 2 twin both read through the same schema value functions as
+     the m >= 3 generic.  The per-element decode is identical to the llama
+     m2_x4 tile it replaces (exp-0167); the scalar accumulation now matches
+     the parametric family's arithmetic.  m2_x4 stays the serving tile at
+     m = 2 for all three families, and no parametric _m2 twin may appear. *)
+  let k_m2_x4_families =
+    [ (Ir.Dtype.Q4_K, "q4_k", "llmopt_q4_k_linear_f16",
+       "q4_k_linear_f16_m2_x4_add");
+      (Ir.Dtype.Q5_K, "q5_k", "llmopt_q5_k_linear_f16",
+       "q5_k_linear_f16_m2_x4_add");
+      (Ir.Dtype.Q6_K, "q6_k", "llmopt_q6_k_linear_f16",
+       "q6_k_linear_f16_m2_x4_add") ]
+  in
   List.iter
-    (fun (quant, label, base) ->
+    (fun (quant, label, base, fixture) ->
       let program =
-        lower_linear_add ~quant ~m:2 ~n:64 ~k:256 ~tag:(label ^ "_la_m2x4")
+        lower_linear_add ~quant ~m:2 ~n:64 ~k:256
+          ~tag:(label ^ "_m2x4")
       in
       let source = Metal.Program.source program in
-      (match
-         kernel_text source (base ^ "_m2_x4_add")
-       with
+      (match kernel_text source (base ^ "_m2_x4_add") with
       | None ->
           failwith
-            (Printf.sprintf "%s m=2 Linear-add emits no llama m2_x4 _add twin"
-               label)
-      | Some text ->
-          if contains text "llmopt_schema_" then
+            (Printf.sprintf
+               "%s m=2 Linear-add emits no parametric m2_x4 _add twin" label)
+      | Some twin ->
+          if twin <> golden_twin_fixture fixture then
             failwith
               (Printf.sprintf
-                 "%s m2_x4 _add twin must stay llama-style until 05-2 ports it"
+                 "%s m2_x4 _add twin drifted from the test/golden/%s.msl emission oracle"
+                 label fixture);
+          if contains twin "block_q4_K" || contains twin "block_q5_K"
+             || contains twin "block_q6_K" then
+            failwith
+              (Printf.sprintf
+                 "%s m2_x4 _add twin must be parametric-style (no llama block struct)"
+                 label);
+          expect_contains
+            (Printf.sprintf
+               "%s m2_x4 _add twin decodes through the schema helper" label)
+            twin
+            ("llmopt_schema_" ^ label
+             ^ "_value(packed, local_lane * 4u + 0u, subblock);");
+          expect_contains
+            (Printf.sprintf
+               "%s m2_x4 _add twin stores row 0 through the double-rounding tail"
+               label)
+            twin "output[column] = half(half(accumulator0) + bias[column]);";
+          expect_contains
+            (Printf.sprintf
+               "%s m2_x4 _add twin stores row 1 through the double-rounding tail"
+               label)
+            twin
+            "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
+          if contains twin "params.has_bias" || contains twin "bias_value" then
+            failwith
+              (Printf.sprintf
+                 "%s m2_x4 _add twin must not keep the flat has_bias/bias_value store block"
                  label));
+      (match kernel_text source (base ^ "_m2_x4") with
+      | None ->
+          failwith
+            (Printf.sprintf
+               "%s m=2 Linear program emits no parametric m2_x4 flat" label)
+      | Some flat ->
+          if contains flat "block_q4_K" || contains flat "block_q5_K"
+             || contains flat "block_q6_K" then
+            failwith
+              (Printf.sprintf
+                 "%s m2_x4 flat must be parametric-style (no llama block struct)"
+                 label);
+          expect_contains
+            (Printf.sprintf "%s m2_x4 flat decodes through the schema helper"
+               label)
+            flat
+            ("llmopt_schema_" ^ label
+             ^ "_value(packed, local_lane * 4u + 0u, subblock);");
+          expect_contains
+            (Printf.sprintf "%s m2_x4 flat keeps the has_bias store tail" label)
+            flat "params.has_bias == 0u ? 0.0f : float(bias[column]);");
       if contains source (base ^ "_m2_add(") then
         failwith
           (Printf.sprintf
              "%s m=2 Linear-add must not emit a parametric _m2 twin (m2_x4 is the serving tile)"
              label))
-    [ (Ir.Dtype.Q4_K, "q4_k", "llmopt_q4_k_linear_f16");
-      (Ir.Dtype.Q5_K, "q5_k", "llmopt_q5_k_linear_f16");
-      (Ir.Dtype.Q6_K, "q6_k", "llmopt_q6_k_linear_f16") ];
+    k_m2_x4_families;
   Printf.printf
-    "  [PASS] Superblock Q4_K/Q5_K/Q6_K/IQ4_XS generic and IQ4_XS _m2 _add twins emitted structurally (G4P12-05-1b)\n%!";
+    "  [PASS] Superblock Q4_K/Q5_K/Q6_K generic + IQ4_XS _m2 (05-1b) and K-family m2_x4 _add twins emitted structurally (G4P12-05-2)\n%!";
+
+  (* The parametric m2_x4 flat/twin emission is new MSL text (scalar
+     schema-value decode with per-element writeback over two accumulator
+     rows); compile the full K-family m=2 Linear-add program sources so the
+     shader stays valid (the llama m2_x4 bodies that previously carried this
+     tile are gone from the zoo strings, so no emit_dequant_* compile pin
+     covers it anymore). *)
+  let compile_msl_string src =
+    let tmp_src = Filename.temp_file "test_epilogue_m2x4" ".metal" in
+    let tmp_air = Filename.temp_file "test_epilogue_m2x4" ".air" in
+    let oc = open_out tmp_src in
+    output_string oc src;
+    close_out oc;
+    let cmd =
+      Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
+        (Filename.quote tmp_src) (Filename.quote tmp_air)
+    in
+    let ok = Sys.command cmd = 0 in
+    (try Sys.remove tmp_src with _ -> ());
+    (try Sys.remove tmp_air with _ -> ());
+    ok
+  in
+  List.iter
+    (fun (quant, label, _, _) ->
+      let program =
+        lower_linear_add ~quant ~m:2 ~n:64 ~k:256
+          ~tag:(label ^ "_m2x4_msl")
+      in
+      if not (compile_msl_string (Metal.Program.source program)) then
+        failwith
+          (Printf.sprintf
+             "%s m=2 Linear-add program (parametric m2_x4 emission) fails to compile as MSL"
+             label))
+    k_m2_x4_families;
+  Printf.printf
+    "  [PASS] K-family m=2 m2_x4 programs compile cleanly with xcrun metal (G4P12-05-2)\n%!";
 
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)
