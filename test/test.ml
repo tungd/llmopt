@@ -490,6 +490,53 @@ module Fold_catalog = struct
       && Kernel_ir.Fused_tactic.select fanout_region = None)
       "fold and select reject fan-out chains with two results";
 
+    (* K. G4P12-02 widening: a single-slot branch shape ([y*y] -- the
+       pointwise Mul consumes the single accumulator slot twice) stays
+       outside the legacy recognizers, but the elaboration admits it as one
+       [Linear_epilogue] whose epilogue is the pure monoid
+       [Expr (Mul (Acc, Acc))].  This is the shape the digest-keyed emission
+       path serves for block-quantized contractions. *)
+    let y2_region =
+      single_result_region ~name:"y-square" ~inputs:[ x; w ]
+        ~steps:[ linear_step; mul_step 2 2 o_mul ] ~result_index:3 o_mul
+    in
+    expect
+      (Kernel_ir.Fused_tactic.fold_linear_epilogue y2_region = None
+      && Kernel_ir.Fused_tactic.select y2_region = None)
+      "y*y stays outside the legacy recognizers today";
+    (match Contraction_group.select y2_region with
+    | Some
+        (Kernel_ir.Fused_tactic.Linear_epilogue
+          { linear; epilogue; output }) ->
+        expect
+          (linear.Kernel_ir.Fused_tactic.m = 1
+          && linear.Kernel_ir.Fused_tactic.n = 64
+          && linear.Kernel_ir.Fused_tactic.k = 64
+          && Ir.Value.equal linear.Kernel_ir.Fused_tactic.input x
+          && Ir.Value.equal linear.Kernel_ir.Fused_tactic.weight w
+          && linear.Kernel_ir.Fused_tactic.parameters = []
+          && Ir.Value.equal output o_mul
+          && Epilogue.equal epilogue
+               (Epilogue.of_expr
+                  (Applicative_expr.Binop
+                     ( Applicative_expr.Mul,
+                       Applicative_expr.Slot Epilogue.Acc,
+                       Applicative_expr.Slot Epilogue.Acc ))))
+          "elaborated select admits y*y as Expr (Mul (Acc, Acc))"
+    | Some _ -> fail "y*y must select as Linear_epilogue only"
+    | None -> fail "elaborated select rejected the y*y square");
+    (match Contraction_group.fold_linear_epilogue y2_region with
+    | Some epilogue ->
+        expect
+          (Epilogue.equal epilogue
+             (Epilogue.of_expr
+                (Applicative_expr.Binop
+                   ( Applicative_expr.Mul,
+                     Applicative_expr.Slot Epilogue.Acc,
+                     Applicative_expr.Slot Epilogue.Acc ))))
+          "elaborated fold yields the same monoid epilogue for y*y"
+    | None -> fail "elaborated fold rejected the y*y square");
+
     print_endline "llmopt fused Linear_epilogue fold catalog passed"
 end
 
@@ -7558,6 +7605,114 @@ let () =
          "device half* output [[buffer(4)]]")
     "G4P10-04d digest kernel binds the two epilogue tensors after the weights";
   print_endline "llmopt chain-absorption fold catalog passed";
+
+  (* G4P12-02 single-accumulator proof through the stack: a single Q4_0
+     decode contraction whose output is squared against itself ([y*y]: one
+     pointwise Mul consuming the accumulator value twice) is one region and
+     one [Linear_add] event claimed through the elaboration (the legacy
+     recognizers admit nothing here), and Metal lowers it to a zero-buffer
+     digest kernel -- the epilogue has no external tensor inputs, so the
+     output buffer sits directly after the weight pair at buffer 2 with the
+     params at buffer 3. *)
+  let yy_graph = Ir.Graph.create () in
+  let yy_input =
+    tensor_input yy_graph ~name:"yy-input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 3840 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let yy_weight =
+    tensor_input yy_graph ~name:"yy-weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "yy-weight" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let yy_projected =
+    Ir.Graph.fresh_tensor_value yy_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append yy_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ yy_input; yy_weight ] ~output:(Some yy_projected);
+  let yy_output =
+    Ir.Graph.fresh_tensor_value yy_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append yy_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor yy_projected,
+                 Ir.Pointwise.Tensor yy_projected ))))
+    ~inputs:[ yy_projected; yy_projected ] ~output:(Some yy_output);
+  Ir.Graph.add_output yy_graph ~name:"yy-output" yy_output;
+  let yy_optimization = Passes.optimize yy_graph |> expect_ok in
+  let yy_lowering = Passes.Optimization.lowering yy_optimization in
+  let yy_events = Constructive_lowering.Lowering.events yy_lowering in
+  expect
+    ((match yy_events with
+     | [ event ] ->
+         Constructive_lowering.Lowering.Event.kind event
+         = Constructive_lowering.Lowering.Kind.Linear_add
+         && List.length
+              (Constructive_lowering.Lowering.Event.source_member_node_ids event)
+            = 2
+         && (let inputs = Constructive_lowering.Lowering.Event.inputs event in
+             List.length inputs = 2
+             && List.for_all
+                  (fun expected ->
+                    List.exists (Ir.Value.equal expected) inputs)
+                  [ yy_input; yy_weight ])
+     | _ -> false)
+    && (match yy_events with
+       | [ event ] ->
+           List.for_all2 Ir.Value.equal
+             (Constructive_lowering.Lowering.Event.outputs event)
+             [ yy_output ]
+       | _ -> false)
+    && Passes.Optimization.legacy_fallbacks yy_optimization = [])
+    "G4P12-02 claims the y*y square as one two-binding Linear_add event";
+  expect
+    ((match Passes.Optimization.fusion_regions yy_optimization with
+     | [ region ] ->
+         List.map Kernel_ir.binding_primitive (Kernel_ir.bindings region)
+         = [ Kernel_ir.Primitive.linear ~m:1 ~n:4096 ~k:3840 ~bias:false
+               ~storage:
+                 (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0);
+             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul ]
+     | _ -> false))
+    "G4P12-02 folds the y*y square into a two-binding Linear_epilogue region";
+  let yy_program =
+    Metal.lower
+      ~fusion_regions:
+        (Passes.Optimization.fusion_regions yy_optimization)
+      (Passes.Optimization.execution_graph yy_optimization)
+    |> expect_ok
+  in
+  let yy_kernels =
+    Metal.Program.kernels yy_program |> List.map Kernel_abi.Entry.name
+  in
+  let yy_digest =
+    List.find_opt (fun name -> contains_substring name "_x8_") yy_kernels
+  in
+  let yy_source = Metal.Program.source yy_program in
+  expect
+    (List.mem "llmopt_q4_0_linear_f16_x8" yy_kernels
+    && Option.is_some yy_digest
+    && not (List.mem "llmopt_q4_0_linear_f16_x8_add" yy_kernels))
+    "G4P12-02 y*y lowering registers plain and digest Q4_0 x8 kernels";
+  expect
+    (contains_substring yy_source
+       ",\n    device half* output [[buffer(2)]],\n    constant \
+        QuantLinearParams& params [[buffer(3)]],\n    uint gid \
+        [[thread_position_in_grid]],"
+    && not
+         (contains_substring yy_source
+            "device const half* buf_0 [[buffer(2)]]"))
+    "G4P12-02 zero-buffer digest kernel binds output at buffer 2 and params \
+     at buffer 3";
+  print_endline "llmopt single-accumulator y*y digest proof passed";
 
   Fold_catalog.run ();
 

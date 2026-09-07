@@ -2747,8 +2747,11 @@ type assignment_execution =
 
 let assignment_execution command =
   match
+    (* G4P12-02: routed select (legacy first, elaboration widening second) so
+       claimed single-accumulator regions the legacy recognizer rejected are
+       still executable. *)
     Option.bind (Serving_schedule.Command.fusion_region command)
-      Kernel_ir.Fused_tactic.select
+      Contraction_group.select
   with
   | Some
       (Kernel_ir.Fused_tactic.Linear_epilogue { linear; epilogue; output }) ->

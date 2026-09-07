@@ -10794,7 +10794,11 @@ let region_tactics ~target regions =
   |> List.fold_left
        (fun (quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
              has_short_conv_silu, gated_delta) region ->
-         match Kernel_ir.Fused_tactic.select region with
+         (* G4P12-02: route single-accumulator select through the
+            elaboration - the legacy recognizer wins first and the widening
+            only adds single-slot branch shapes ([y*y] -> pure monoid
+            [Expr] epilogues served by the digest emitter). *)
+         match Contraction_group.select region with
          | Some
              (Kernel_ir.Fused_tactic.Linear_epilogue
                { linear; epilogue; output }) ->

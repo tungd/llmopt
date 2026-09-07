@@ -296,6 +296,41 @@ let run () =
                   fail "y*y reconstruction is not structurally Mul (acc, acc)")
           | _ -> fail "y*y must not be a typed tag")));
   Printf.printf "  [PASS] y*y group\n%!";
+  (* G4P12-02: the consumer-facing select/fold route through the elaboration
+     widens admission to this single-slot branch shape: [select] returns one
+     [Linear_epilogue] whose epilogue is the pure monoid
+     [Expr (Mul (Acc, Acc))], and the widened [fold_linear_epilogue] returns
+     the same epilogue. *)
+  (match Contraction_group.select y2_region with
+  | Some
+      (Kernel_ir.Fused_tactic.Linear_epilogue
+        { linear; epilogue; output }) ->
+      expect
+        (linear.Kernel_ir.Fused_tactic.m = 1
+        && linear.Kernel_ir.Fused_tactic.n = 64
+        && linear.Kernel_ir.Fused_tactic.k = 64
+        && Ir.Value.equal output o_mul
+        && Epilogue.equal epilogue
+             (Epilogue.of_expr
+                (Applicative_expr.Binop
+                   ( Applicative_expr.Mul,
+                     Applicative_expr.Slot Epilogue.Acc,
+                     Applicative_expr.Slot Epilogue.Acc ))))
+        "widened select admits y*y as Expr (Mul (Acc, Acc))"
+  | Some _ -> fail "y*y widened select must be Linear_epilogue"
+  | None -> fail "widened select rejected the y*y square");
+  (match Contraction_group.fold_linear_epilogue y2_region with
+  | Some epilogue ->
+      expect
+        (Epilogue.equal epilogue
+           (Epilogue.of_expr
+              (Applicative_expr.Binop
+                 ( Applicative_expr.Mul,
+                   Applicative_expr.Slot Epilogue.Acc,
+                   Applicative_expr.Slot Epilogue.Acc ))))
+        "widened fold yields the same monoid epilogue for y*y"
+  | None -> fail "widened fold rejected the y*y square");
+  Printf.printf "  [PASS] widened y*y select/fold\n%!";
 
   Printf.printf "C. Exercise (b): two projections + arbitrary pointwise\n%!";
   (* g = x*wg, u = x*wu over a shared input x, then a = silu(g), and

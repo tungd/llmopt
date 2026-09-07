@@ -446,3 +446,91 @@ let single_acc_epilogue group =
         | None -> None
         | Some expr -> Some (reconstruct group expr))
   | _ -> None
+
+(* ------------------------------------------------------------------------ *)
+(* G4P12-02 widening: select/fold routed through the elaboration            *)
+(* ------------------------------------------------------------------------ *)
+
+(* The legacy [Kernel_ir.Fused_tactic] recognizers stay the pinned oracle;
+   [Kernel_ir] cannot consume this module (OCaml self-type compile cycle), so
+   the elaboration lives here and consumers cascade to it only when the
+   legacy recognizer admits nothing.  The widening claims a whole region as
+   one [Linear_epilogue] exactly when its elaborated group is a single-
+   accumulator chain following the legacy foldable op set -- Silu/Gelu
+   unaries and Add/Mul binaries whose internal leaves all sit on the single
+   accumulator link, including same-slot self branches ([y*y] consumes the
+   link twice) -- with the single export writing the final step slot.  Bare
+   identity regions stay unclaimed (legacy select depth requirement), and
+   Cast/Sigmoid cuts keep failing exactly as they do under the legacy
+   recognizer. *)
+
+let grammar_step expr =
+  match expr with
+  | Unop ((Applicative_expr.Silu | Applicative_expr.Gelu), _) -> true
+  | Binop ((Applicative_expr.Add | Applicative_expr.Mul), _, _) -> true
+  | _ -> false
+
+let single_acc_chain_epilogue (group : t) =
+  match (group.contractions, group.exports) with
+  | [ contraction ], [ export ] ->
+      let rec chain_ok (expected : Kernel_ir.Slot.t) (steps : step list) =
+        match steps with
+        | [] -> true
+        | (step : step) :: rest ->
+            let leaves = referenced_slots step.expr in
+            grammar_step step.expr
+            && (match leaves with
+               | [ _ ] -> true
+               | [ left; right ] -> Kernel_ir.Slot.equal left right
+               | _ -> false)
+            && List.for_all (Kernel_ir.Slot.equal expected) leaves
+            && chain_ok step.slot rest
+      in
+      let covers_export (steps : step list) =
+        match List.rev steps with
+        | step :: _ -> Kernel_ir.Slot.equal export.slot step.slot
+        | [] -> Kernel_ir.Slot.equal export.slot contraction.slot
+      in
+      if covers_export group.steps && chain_ok contraction.slot group.steps
+      then single_acc_epilogue group
+      else None
+  | _ -> None
+
+let linear_of_contraction contraction =
+  {
+    Kernel_ir.Fused_tactic.m = contraction.m;
+    n = contraction.n;
+    k = contraction.k;
+    storage = contraction.storage;
+    input = contraction.input;
+    weight = contraction.weight;
+    parameters = contraction.parameters;
+  }
+
+let select_linear_epilogue region =
+  match of_region region with
+  | None -> None
+  | Some group -> (
+      match group.steps, single_acc_chain_epilogue group with
+      | _ :: _, Some epilogue -> (
+          match (group.contractions, group.exports) with
+          | [ contraction ], [ export ] ->
+              Some
+                (Kernel_ir.Fused_tactic.Linear_epilogue
+                   {
+                     linear = linear_of_contraction contraction;
+                     epilogue;
+                     output = export.value;
+                   })
+          | _ -> None)
+      | _ -> None)
+
+let fold_linear_epilogue region =
+  match of_region region with
+  | Some group -> single_acc_chain_epilogue group
+  | None -> None
+
+let select region =
+  match Kernel_ir.Fused_tactic.select region with
+  | Some tactic -> Some tactic
+  | None -> select_linear_epilogue region

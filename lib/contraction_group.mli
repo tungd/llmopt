@@ -28,11 +28,20 @@
     elaborated group's [single_acc_epilogue] is [Epilogue.equal] to the
     legacy fold result.
 
-    G4P12-01: this module is strictly additive.  Nothing in [Kernel_ir] /
-    metal routing consumes groups yet, so group formation is a permissive
-    superset of the legacy fold (e.g. it also forms for [y*y] single-slot
-    squares, two-slot projections with shared input, and fan-out regions that
-    the legacy recognizers reject). *)
+    G4P12-01: group formation is a permissive superset of the legacy fold
+    (e.g. it also forms for [y*y] single-slot squares, two-slot projections
+    with shared input, and fan-out regions that the legacy recognizers
+    reject).
+    G4P12-02: [select] / [fold_linear_epilogue] route single-accumulator
+    select/fold through the elaboration.  The legacy
+    [Kernel_ir.Fused_tactic] recognizers stay the pinned oracle inside
+    [Kernel_ir] ([Kernel_ir] cannot consume this module -- OCaml self-type
+    compile cycle), so routing consumers cascade to [select] here only when
+    the legacy recognizer admits nothing.  The widening claims regions whose
+    elaborated group is a single-accumulator chain in the legacy foldable op
+    set, admitting single-slot branch shapes ([y*y] -> the pure monoid
+    [Expr (Mul (Acc, Acc))]) while every legacy tag shape stays byte-identical
+    and Cast/Sigmoid cuts keep failing. *)
 
 type expr =
   | Slot of Kernel_ir.Slot.t
@@ -113,3 +122,23 @@ val slot_expr : t -> Kernel_ir.Slot.t -> expr option
 val referenced_slots : expr -> Kernel_ir.Slot.t list
 (** All slot leaves of an expression, with repetition (multiplicity records
     fan-in from one producer). *)
+
+val select : Kernel_ir.region -> Kernel_ir.Fused_tactic.t option
+(** G4P12-02 consumer-facing select: the legacy
+    [Kernel_ir.Fused_tactic.select] recognizer wins first (byte-identical
+    on every region it already admits); when it admits nothing the whole
+    region is re-claimed through the elaboration as a single [Linear_epilogue]
+    provided its group is a single-accumulator chain in the legacy foldable
+    op set (Silu/Gelu unaries, Add/Mul binaries over the single accumulator
+    link, including same-slot self branches like [y*y]) whose one export
+    writes the final step slot.  Bare identity regions remain unclaimed
+    (legacy select depth >= 1), and Cast/Sigmoid cuts keep failing. *)
+
+val select_linear_epilogue : Kernel_ir.region -> Kernel_ir.Fused_tactic.t option
+(** The widening alone (no legacy-first fallback): [Some] exactly for the
+    single-accumulator chains described under [select]. *)
+
+val fold_linear_epilogue : Kernel_ir.region -> Epilogue.t option
+(** G4P12-02 widened fold over the same admission, including the bare
+    identity region (steps = [] -> [Epilogue.none]), mirroring the legacy
+    [Kernel_ir.Fused_tactic.fold_linear_epilogue] coverage. *)

@@ -1473,46 +1473,66 @@ let lower analysis =
            with
            | Error _ -> []
            | Ok kernel_region ->
-               Kernel_ir.Fused_tactic.select_all kernel_region
-               |> List.filter_map (fun tactic ->
-                      match tactic with
-                      | (Kernel_ir.Fused_tactic.Rms_normalize _
-                        | Kernel_ir.Fused_tactic.Rms_rope _
-                        | Kernel_ir.Fused_tactic.Short_conv_silu _
-                        | Kernel_ir.Fused_tactic.Gated_delta _) as tactic ->
-                          let selected = assignment_slice assignments tactic in
-                          if selected = [] then None else Some (tactic, selected)
-                      | Kernel_ir.Fused_tactic.Linear_epilogue
-                          { linear; epilogue; output; _ } as tactic
-                        when (match Region.outputs region with
-                              | [ region_output ] ->
-                                  Ir.Value.equal region_output output
-                              | _ -> false) -> (
-                          (* A downstream silu/mul/add chain over a single
-                             block-quantized contraction forms one folded
-                             epilogue writeback.  Claiming it here absorbs the
-                             whole chain; the backends serve block-quantized
-                             regions through the epilogue digest machinery (the
-                             Q4_0 x8 decode emitter) or fail loudly.  Gated
-                             two-contraction regions never reach this case: the
-                             gate claim already won them, and any remaining
-                             single-output region with more than one linear has
-                             no [Linear_epilogue] tactic from [select_all]. *)
-                          match linear.Kernel_ir.Fused_tactic.storage with
-                          | Ir.Linear_storage.Block_quantized _ ->
-                              let selected =
-                                assignment_slice assignments tactic
-                              in
-                              if selected = [] then None
-                              else Some (tactic, selected)
-                          | Ir.Linear_storage.Dense _
-                          | Ir.Linear_storage.Groupwise_packed _ ->
-                              (* Groupwise-packed (W4A16) and dense chains keep
-                                 their pre-existing per-node servicing: no
-                                 emission route exists yet for a folded
-                                 writeback of those storages. *)
-                              None)
-                      | _ -> None))
+               let select_linear_epilogue tactic =
+                 match tactic with
+                 | Kernel_ir.Fused_tactic.Linear_epilogue
+                     { linear; epilogue; output; _ } as tactic
+                   when (match Region.outputs region with
+                         | [ region_output ] ->
+                             Ir.Value.equal region_output output
+                         | _ -> false) -> (
+                     (* A downstream silu/mul/add chain over a single
+                        block-quantized contraction forms one folded
+                        epilogue writeback.  Claiming it here absorbs the
+                        whole chain; the backends serve block-quantized
+                        regions through the epilogue digest machinery (the
+                        Q4_0 x8 decode emitter) or fail loudly.  Gated
+                        two-contraction regions never reach this case: the
+                        gate claim already won them, and any remaining
+                        single-output region with more than one linear has
+                        no [Linear_epilogue] tactic from [select_all]. *)
+                     match linear.Kernel_ir.Fused_tactic.storage with
+                     | Ir.Linear_storage.Block_quantized _ ->
+                         let selected = assignment_slice assignments tactic in
+                         if selected = [] then None else Some (tactic, selected)
+                     | Ir.Linear_storage.Dense _
+                     | Ir.Linear_storage.Groupwise_packed _ ->
+                         (* Groupwise-packed (W4A16) and dense chains keep
+                            their pre-existing per-node servicing: no
+                            emission route exists yet for a folded
+                            writeback of those storages. *)
+                         None)
+                 | _ -> None
+               in
+               let legacy_candidates =
+                 Kernel_ir.Fused_tactic.select_all kernel_region
+                 |> List.filter_map (fun tactic ->
+                        match tactic with
+                        | (Kernel_ir.Fused_tactic.Rms_normalize _
+                          | Kernel_ir.Fused_tactic.Rms_rope _
+                          | Kernel_ir.Fused_tactic.Short_conv_silu _
+                          | Kernel_ir.Fused_tactic.Gated_delta _) as tactic ->
+                            let selected =
+                              assignment_slice assignments tactic
+                            in
+                            if selected = [] then None
+                            else Some (tactic, selected)
+                        | Kernel_ir.Fused_tactic.Linear_epilogue _ ->
+                            select_linear_epilogue tactic
+                        | _ -> None)
+               in
+               if legacy_candidates <> [] then legacy_candidates
+               else
+                 (* G4P12-02: the legacy recognizers admitted nothing for
+                    this region (single-slot branch shapes like [y*y] over a
+                    block-quantized contraction).  Route the claim through the
+                    elaboration: its single-accumulator select admits exactly
+                    those chains and builds the [Linear_epilogue] the digest
+                    machinery serves. *)
+                 (match Contraction_group.select kernel_region with
+                 | Some (Kernel_ir.Fused_tactic.Linear_epilogue _ as tactic) ->
+                     Option.to_list (select_linear_epilogue tactic)
+                 | _ -> []))
   in
   let all_assignment_producers =
     Analysis.assignments analysis

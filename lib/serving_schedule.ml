@@ -263,7 +263,10 @@ let validate_fusion_command command region =
     List.length left = List.length right
     && List.for_all2 Ir.Value.equal left right
   in
-  if Option.is_none (Kernel_ir.Fused_tactic.select region) then
+  (* G4P12-02: validate through the routed select (legacy first, then the
+     elaboration widening) so claimed single-accumulator regions whose legacy
+     recognizer admitted nothing ([y*y]) still carry an executable tactic. *)
+  if Option.is_none (Contraction_group.select region) then
     Error "fusion command has no executable assignment tactic"
   else if not (same_values command.Command.inputs region_inputs) then
     Error "fusion command inputs differ from its assignment-region boundary"
