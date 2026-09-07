@@ -481,9 +481,110 @@ kernel void llmopt_q4_0_linear_f16_x4(
     quant_offset block_elements zero zero zero zero zero zero zero zero
     block_bytes block_elements
 
-let emit_q4_0_linear_f16_x8 ?(split_k = 1) ~scale_offset ~quant_offset ~zero ~block_elements
+(* Digest-keyed epilogue variants of the real Q4_0 decode kernels.          *)
+(*                                                                          *)
+(* [llmopt_q4_0_linear_f16_x8] is the costed decode kernel for the real     *)
+(* Gemma-4 decode shape (m = 1, k < 4096, n a multiple of 8): a 256-thread  *)
+(* kernel in which each SIMDgroup reduces a whole column group and the      *)
+(* eight [accumulator0..7] registers own one output column each.  An        *)
+(* epilogue-tail variant of that kernel rewrites the column-guarded store   *)
+(* tail into eight stores that apply an arbitrary [Epilogue.t] readback and *)
+(* renames the kernel to the deterministic digest name derived from the     *)
+(* canonicalized epilogue (see [Epilogue.algebraic_kernel_name]).           *)
+(*                                                                          *)
+(* The rewritten kernel header drops the legacy [bias] slot (buffer(2);     *)
+(* the store tail that read it is replaced wholesale) and instead declares  *)
+(* the canonicalized epilogue's input buffers immediately after the weight  *)
+(* parameter, before the output workspace:                                 *)
+(*                                                                          *)
+(*   kernel void <digest>(                                                  *)
+(*       device const half* input [[buffer(0)]],                            *)
+(*       device const uchar* weight [[buffer(1)]],                          *)
+(*       device const half* buf_0 [[buffer(2)]],   (p canonical buffers)    *)
+(*       ...                                                                 *)
+(*       device half* output [[buffer(2 + p)]],                             *)
+(*       constant QuantLinearParams& params [[buffer(3 + p)]],              *)
+(*       uint gid ..., uint tid ..., uint lane ...)                         *)
+(*                                                                          *)
+(* The epilogue is canonicalized first so the emitted buffer names          *)
+(* ([buf_0], [buf_1], ...) and the digest name agree with the stable        *)
+(* first-occurrence order of [Epilogue.inputs].  The flat kernel text is    *)
+(* left untouched, so the legacy flat decode path stays byte-identical. *)
+let find_substring_from haystack needle start =
+  let hlen = String.length haystack in
+  let nlen = String.length needle in
+  let rec go i =
+    if i + nlen > hlen then None
+    else if String.sub haystack i nlen = needle then Some i
+    else go (i + 1)
+  in
+  if nlen = 0 then None else go (max start 0)
+
+let q4_0_x8_epilogue_store epilogue =
+  List.init 8 (fun j ->
+      let acc = Printf.sprintf "accumulator%d" j in
+      let idx =
+        if j = 0 then "base_col" else Printf.sprintf "(base_col + %du)" j
+      in
+      let expr = Epilogue.emit_msl_writeback ~acc ~idx epilogue in
+      if j = 0 then Printf.sprintf "    output[base_col] = half(%s);" expr
+      else
+        Printf.sprintf
+          "    if (base_col + %du < params.n) output[base_col + %du] = half(%s);"
+          j j expr)
+  |> String.concat "\n"
+
+let q4_0_x8_digest_of_flat ~name epilogue kernel =
+  (* The tail of the plain kernel's argument list (the thread-position
+     attributes through the closing ") {") is shared verbatim by its digest
+     variant; everything before it is re-emitted with the canonicalized
+     epilogue buffers inserted between the weight and the output workspace. *)
+  let attr_marker = "    uint gid [[thread_position_in_grid]]," in
+  match find_substring_from kernel attr_marker 0 with
+  | None ->
+      Error
+        "Q4_0 x8 digest emission: decode kernel thread attributes are absent"
+  | Some attr_start -> (
+      match find_substring_from kernel ") {" attr_start with
+      | None ->
+          Error "Q4_0 x8 digest emission: decode kernel header is unterminated"
+      | Some close ->
+          let header_stop = close + 3 in
+          let attributes =
+            String.sub kernel attr_start (header_stop - attr_start)
+          in
+          let body =
+            String.sub kernel header_stop (String.length kernel - header_stop)
+          in
+          let buffer_count = List.length (Epilogue.inputs epilogue) in
+          let header =
+            "kernel void " ^ name ^ "(\n"
+            ^ "    device const half* input [[buffer(0)]],\n"
+            ^ "    device const uchar* weight [[buffer(1)]]"
+            ^ Epilogue.msl_buffer_decls ~start_index:2 epilogue
+            ^ Printf.sprintf
+                ",\n    device half* output [[buffer(%d)]],\n    constant \
+                 QuantLinearParams& params [[buffer(%d)]],\n"
+                (2 + buffer_count) (3 + buffer_count)
+            ^ attributes
+          in
+          let tail_marker = "  if (lane == 0u && base_col < params.n) {" in
+          let full = header ^ body in
+          match find_substring_from full tail_marker 0 with
+          | None ->
+              Error
+                "Q4_0 x8 digest emission: writeback tail is absent from the \
+                 decode kernel"
+          | Some tail_start ->
+              let head = String.sub full 0 tail_start in
+              Ok
+                (head ^ tail_marker ^ "\n" ^ q4_0_x8_epilogue_store epilogue
+                ^ "\n  }\n}\n"))
+
+let emit_q4_0_linear_f16_x8 ?(split_k = 1) ?(name = "llmopt_q4_0_linear_f16_x8")
+    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes () =
-  if split_k = 1 then
+  let flat_split1 =
     Printf.sprintf {|
 kernel void llmopt_q4_0_linear_f16_x8(
     device const half* input [[buffer(0)]],
@@ -631,8 +732,11 @@ kernel void llmopt_q4_0_linear_f16_x8(
     zero zero zero zero zero zero zero zero
     zero zero zero zero zero zero zero zero
     block_bytes block_elements
-  else
-    Printf.sprintf {|
+  in
+  if Epilogue.equal epilogue Epilogue.none then
+    if split_k = 1 then flat_split1
+    else
+      Printf.sprintf {|
 kernel void llmopt_q4_0_linear_f16_x8(
     device const half* input [[buffer(0)]],
     device const uchar* weight [[buffer(1)]],
@@ -821,6 +925,17 @@ kernel void llmopt_q4_0_linear_f16_x8(
     zero zero zero zero zero zero zero zero
     zero zero zero zero zero zero zero zero
     block_bytes block_elements
+  else if split_k = 1 then
+    match q4_0_x8_digest_of_flat ~name epilogue flat_split1 with
+    | Ok text -> text
+    | Error message ->
+        invalid_arg
+          (Printf.sprintf
+             "Metal_block_codegen q4_0_linear_f16_x8: %s" message)
+  else
+    invalid_arg
+      "Metal_block_codegen q4_0_linear_f16_x8: epilogue emission requires \
+       split_k = 1"
 
 let emit_q4_0_gated_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =
@@ -2065,6 +2180,39 @@ kernel void llmopt_q4_0_linear_f16_m4_add(
           ~block_bytes
       ^ emit_q4_0_gated_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes)
+
+let q4_0_x8_epilogue_kernel ~name ~epilogue ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let logical = Block_schema.logical_decode schema in
+  let equation = Block_schema.Logical_decode.equation logical in
+  let* zero = offset_zero (Block_schema.Logical_decode.code_signedness equation) in
+  let* scale_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Block_scale
+  in
+  let* quant_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized
+  in
+  let block_elements = Block_schema.Physical_layout.block_elements physical in
+  let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+  let simd_lanes = target.Target_hardware.memory.simd_lanes in
+  if Block_schema.quant_type schema <> Some Ir.Dtype.Q4_0 then
+    Error "constructive Q4_0 x8 digest emitter received another storage schema"
+  else if Block_schema.Logical_decode.code_bits equation <> 4 then
+    Error "constructive Q4_0 x8 digest emitter requires four-bit codes"
+  else if block_elements <> 32 || simd_lanes <> 32 then
+    Error
+      (Printf.sprintf
+         "constructive Q4_0 x8 digest emission requires block=32 and SIMD=32 \
+          (got block=%d SIMD=%d)"
+         block_elements simd_lanes)
+  else
+    let flat =
+      emit_q4_0_linear_f16_x8 ~split_k:1 ~scale_offset ~quant_offset ~zero
+        ~block_elements ~block_bytes ()
+    in
+    match q4_0_x8_digest_of_flat ~name epilogue flat with
+    | Ok text -> Ok text
+    | Error message -> Error ("constructive Q4_0 x8 digest emission: " ^ message)
 
 let linear_kernels ~target schema =
   match Block_schema.quant_type schema with

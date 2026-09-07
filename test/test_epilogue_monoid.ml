@@ -286,6 +286,13 @@ let run () =
     if not (contains haystack needle) then
       failwith (Printf.sprintf "%s: expected generated MSL to contain %S" label needle)
   in
+  let read_file path =
+    let ic = open_in_bin path in
+    let n = in_channel_length ic in
+    let contents = really_input_string ic n in
+    close_in ic;
+    contents
+  in
 
   (* [gemma_chain] is an [Epilogue.Expr] reading three distinct f16 tensors;
      the parametric emitters must now declare one buffer per required value
@@ -379,6 +386,58 @@ let run () =
     | Error message -> failwith ("q4_0 x8 digest emission failed: " ^ message)
     | Ok source -> source
   in
+  (* G4P12-04a: the structural epilogue-tail emitter in Metal_block_codegen
+     must reproduce the legacy digest splice byte-for-byte.  The golden
+     kernels were captured from the legacy splice before its retirement and
+     are frozen as fixtures under test/golden/; byte-equality of the
+     structural output against both the still-present legacy splice and the
+     frozen fixtures is what lets 04b delete the splice. *)
+  let q4_0_schema =
+    match
+      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0)
+    with
+    | Ok s -> s
+    | Error err -> failwith (Block_schema.Error.to_string err)
+  in
+  let emit_structural epi =
+    (* The schema-level emitter, like the other parametric emitters, expects an
+       already-canonicalized epilogue; canonicalize here to mirror the legacy
+       splice, which canonicalized internally. *)
+    let canonical = Epilogue.canonicalize epi in
+    match
+      Metal_block_codegen.q4_0_x8_epilogue_kernel ~name:(digest_name canonical)
+        ~epilogue:canonical ~target:Target_hardware.default q4_0_schema
+    with
+    | Ok source -> source
+    | Error message ->
+        failwith ("structural q4_0 x8 digest emission failed: " ^ message)
+  in
+  let golden_fixture name =
+    (* Fixtures were captured by printing the digest source followed by one
+       newline; strip exactly that single capture newline for byte equality. *)
+    let raw = read_file ("test/golden/q4_0_x8_digest_" ^ name ^ ".msl") in
+    let len = String.length raw in
+    if len > 0 && raw.[len - 1] = '\n' then String.sub raw 0 (len - 1) else raw
+  in
+  List.iter
+    (fun (label, epi) ->
+      let legacy = emit_digest epi in
+      let structural = emit_structural epi in
+      if structural <> legacy then
+        failwith
+          (Printf.sprintf
+             "%s: structural q4_0 x8 digest emission differs from the legacy \
+              splice (byte-identity required)"
+             label);
+      if structural <> golden_fixture label then
+        failwith
+          (Printf.sprintf
+             "%s: structural q4_0 x8 digest emission drifted from the golden \
+              fixture captured before the splice was retired"
+             label))
+    [ ("gemma_chain", gemma_chain); ("f32_expr", f32_expr); ("silu", Epilogue.silu) ];
+  Printf.printf
+    "  [PASS] Structural Q4_0 x8 epilogue-tail emission is byte-identical to the golden digest kernels\n%!";
   let x8_source = emit_digest gemma_chain in
   expect_contains "q4_0 x8 digest kernel renamed to digest name"
     x8_source

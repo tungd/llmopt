@@ -204,8 +204,8 @@ build _build/ocaml/ir.cmx: ocaml_module_sexp lib/ir.ml | _build/ocaml/ir.cmi _bu
 
 build _build/ocaml/block_schema.cmi: ocaml_interface lib/block_schema.mli | _build/ocaml/ir.cmi
 build _build/ocaml/block_schema.cmx: ocaml_module lib/block_schema.ml | _build/ocaml/block_schema.cmi _build/ocaml/ir.cmx
-build _build/ocaml/metal_block_codegen.cmi: ocaml_interface lib/metal_block_codegen.mli | _build/ocaml/ir.cmi _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi
-build _build/ocaml/metal_block_codegen.cmx: ocaml_module lib/metal_block_codegen.ml | _build/ocaml/metal_block_codegen.cmi _build/ocaml/ir.cmx _build/ocaml/block_schema.cmx _build/ocaml/target_hardware.cmx
+build _build/ocaml/metal_block_codegen.cmi: ocaml_interface lib/metal_block_codegen.mli | _build/ocaml/ir.cmi _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi _build/ocaml/epilogue.cmi
+build _build/ocaml/metal_block_codegen.cmx: ocaml_module lib/metal_block_codegen.ml | _build/ocaml/metal_block_codegen.cmi _build/ocaml/ir.cmx _build/ocaml/block_schema.cmx _build/ocaml/target_hardware.cmx _build/ocaml/epilogue.cmx
 
 build _build/ocaml/coordinate_map.cmi: ocaml_interface lib/coordinate_map.mli
 build _build/ocaml/coordinate_map.cmx: ocaml_module lib/coordinate_map.ml | _build/ocaml/coordinate_map.cmi
@@ -216,7 +216,7 @@ build _build/ocaml/applicative_expr.cmx: ocaml_module lib/applicative_expr.ml | 
 build _build/ocaml/epilogue.cmi: ocaml_interface lib/epilogue.mli | _build/ocaml/ir.cmi _build/ocaml/coordinate_map.cmi _build/ocaml/applicative_expr.cmi
 build _build/ocaml/epilogue.cmx: ocaml_module lib/epilogue.ml | _build/ocaml/epilogue.cmi _build/ocaml/ir.cmx _build/ocaml/coordinate_map.cmx _build/ocaml/applicative_expr.cmx
 
-build _build/ocaml/test_epilogue_monoid.cmx: ocaml_module test/test_epilogue_monoid.ml | _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/coordinate_map.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/epilogue.cmx _build/ocaml/metal.cmx
+build _build/ocaml/test_epilogue_monoid.cmx: ocaml_module test/test_epilogue_monoid.ml | _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/coordinate_map.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/epilogue.cmx _build/ocaml/metal.cmx _build/ocaml/target_hardware.cmx _build/ocaml/block_schema.cmx _build/ocaml/metal_block_codegen.cmx
 build _build/ocaml/test_algebraic_canonicalization.cmx: ocaml_module test/test_algebraic_canonicalization.ml | _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/compute_plan.cmx _build/ocaml/pass_algebraic_canonicalization.cmx
 build _build/ocaml/test_contraction_group.cmx: ocaml_module test/test_contraction_group.ml | _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx _build/ocaml/kernel_ir.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/epilogue.cmx _build/ocaml/contraction_group.cmx
 
