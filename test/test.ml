@@ -5446,6 +5446,15 @@ let () =
   expect (compile_msl_string q5_0_src) "q5_0 MSL compiles cleanly with xcrun metal";
   let q4_0_src = Metal.emit_dequant_q4_0 () in
   expect (compile_msl_string q4_0_src) "q4_0 MSL compiles cleanly with xcrun metal";
+  expect
+    (not (contains_substring q4_0_src "kernel void llmopt_q4_0_linear_f16("))
+    "q4_0 MSL drops the retired llama generic linear body (04d-A2/A3)";
+  expect
+    (not (contains_substring q4_0_src "kernel void llmopt_q4_0_linear_f16_m2("))
+    "q4_0 MSL drops the retired llama m2 linear body (04d-A2/A3)";
+  expect
+    (contains_substring q4_0_src "kernel void llmopt_q4_0_gated_linear_f16_m4")
+    "q4_0 MSL keeps the live llama gated m4 static";
 
   (* Superblock-256 K-Quant Metal Dequantization & Shader Tests *)
   let q4_k_src = Metal.emit_dequant_q4_k () in
