@@ -402,6 +402,36 @@ Next action: `/loop-execute LOOP-large-file-refactor.md`.
 
 ---
 
+## Item 3 prep notes (session 3) -- serving_schedule split map
+
+lib/serving_schedule.ml = 4,517 lines, three contiguous regions:
+- Core 1..1536: `let*`, module Command (3-17), module Stage (19-33), module
+  Tensor_input (35-43), type t, commands/stages, Int_set (74), validation
+  helpers (78..1381 incl validate_fusion_command 252, validate_command 278),
+  create (1382), attach_fusion_region (1402), prune_redundant_barriers (1474),
+  of_graph (1492), tensor_inputs/runtime_inputs/opaque_count (1514-1536).
+- module Sequence 1537..2854 (module `end` at 2854) -> STAYS in the facade
+  until item 4.  Codec region (2856+) does NOT reference Sequence (verified).
+- Codec 2856..4517: dtype_tag (2856) .. write/read helpers .. to_bytes (4451),
+  of_bytes (4469) .. 4517.  Codec core deps: Command. (7), create (24),
+  value_id (13), commands (4), Int_set (2), validate_command (1) -- so
+  serving_schedule_core.mli must expose those internal-but-shared items plus
+  modules Command/Stage/Tensor_input, type t, of_graph.
+- Note the duplicate write_kernel_index/read_kernel_index definitions at 3137
+  and 3225 -- move verbatim, do NOT merge (LOOP item 3 requirement).
+
+Plan: serving_schedule_core.ml/.mli (1..1536), serving_schedule_codec.ml/.mli
+(2856..4517, `open Serving_schedule_core`), serving_schedule.ml facade:
+`include Serving_schedule_core` + Sequence body (1537..2854) + delegate
+to_bytes/of_bytes to the codec.  serving_schedule.mli (110 lines) stays the
+public contract (Command/Stage/Tensor_input/t/of_graph/Sequence/to_bytes/of_bytes).
+
+Native fixture check: bin/native_schedule_fixture.ml writes
+`<dir>/package.llmopt` (line 709).  Before the move: run
+`_build/bin/llmopt-native-schedule-fixture <outdir>` (see usage line 687 for
+inputs), save bytes; after the move regenerate and cmp.  _artifacts already
+holds gemma4 package.llmopt artifacts that round-trip through of_bytes.
+
 ## Execution log
 
 Item 1 completed (session 2, commits 0c88715..e29b49a).  Final state:
