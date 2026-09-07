@@ -3019,7 +3019,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                   (* Shared digest dispatch: the package has no servable legacy
                      writeback for [epilogue] (no _add twin for a flat region,
                      or a richer folded epilogue).  When a digest-keyed kernel
-                     exists - today the Q4_0 x8/x4 decode tiles - it is
+                     exists - today the Q4_0 x8/x4/m16 decode tiles - it is
                      dispatched with the contraction buffers followed by the
                      epilogue tensor inputs in [Epilogue.inputs] order, the
                      same order the emitter used to declare and read them. *)
@@ -3035,13 +3035,15 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                         Some ((linear.n + 7) / 8)
                       else if String.ends_with ~suffix:"_x4" base_name then
                         Some ((linear.n + 3) / 4)
+                      else if String.ends_with ~suffix:"_m16" base_name then
+                        Some (((linear.m + 15) / 16) * linear.n)
                       else None
                     in
                     match digest_columns with
                     | None ->
                         Error
                           (Printf.sprintf
-                             "assignment Linear-epilogue %s is not servable: digest emission is defined only for Q4_0 x8/x4 decode regions (plain tactic %s)"
+                             "assignment Linear-epilogue %s is not servable: digest emission is defined only for Q4_0 x8/x4/m16 decode regions (plain tactic %s)"
                              (Epilogue.to_string epilogue) base_name)
                     | Some columns ->
                         let digest_name =
@@ -3095,7 +3097,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                       (* Richer epilogues (silu/mul chains and beyond) have no
                          legacy _add twin.  They are served by the digest-keyed
                          kernel family when one exists for the plain tactic -
-                         today the Q4_0 x8/x4 decode kernels - and otherwise fail
+                         today the Q4_0 x8/x4/m16 decode kernels - and otherwise fail
                          loudly: a folded epilogue must never decay into a
                          partial writeback. *)
                       let* () =

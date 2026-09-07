@@ -7482,6 +7482,153 @@ let () =
     [ ("x8", 4096); ("x4", 4092) ];
   print_endline "llmopt Q4_0 x4 digest emission and lower admission passed";
 
+  (* G4P12-04c-2: the m16 tile widens digest admission to batched rows.  The
+     registry serves any Q4_0 Linear with 16 <= m < 32 by the m16 tile, whose
+     kernel runs one simdgroup per (row-tile x column) and keeps a
+     [float acc[16]] register array.  A folded single-accumulator square
+     (zero-buffer monoid epilogue, no residual semantics, no legacy _add
+     twin) must therefore follow the plain m16 tile into the digest route:
+     the plain m16 kernel stays registered, a digest-keyed m16 kernel is
+     emitted with the zero-buffer layout (output at buffer(2), params at
+     buffer(3)) and the digest tail keeps one guarded store per accumulator
+     row indexed through out_idx<N>. *)
+  let m16_yy_graph = Ir.Graph.create () in
+  let m16_yy_input =
+    tensor_input m16_yy_graph ~name:"m16-yy-input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 16; 3840 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let m16_yy_weight =
+    tensor_input m16_yy_graph ~name:"m16-yy-weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "m16-yy-weight" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let m16_yy_projected =
+    Ir.Graph.fresh_tensor_value m16_yy_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 16; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append m16_yy_graph
+    ~op:(Ir.Op.Linear { m = 16; n = 4096; k = 3840; bias = false })
+    ~inputs:[ m16_yy_input; m16_yy_weight ]
+    ~output:(Some m16_yy_projected);
+  let m16_yy_output =
+    Ir.Graph.fresh_tensor_value m16_yy_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 16; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append m16_yy_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Mul, Ir.Pointwise.Tensor m16_yy_projected,
+                 Ir.Pointwise.Tensor m16_yy_projected ))))
+    ~inputs:[ m16_yy_projected; m16_yy_projected ]
+    ~output:(Some m16_yy_output);
+  Ir.Graph.add_output m16_yy_graph ~name:"m16-yy-output" m16_yy_output;
+  let m16_yy_optimization = Passes.optimize m16_yy_graph |> expect_ok in
+  let m16_yy_regions =
+    Passes.Optimization.fusion_regions m16_yy_optimization
+  in
+  expect
+    ((match m16_yy_regions with
+     | [ region ] ->
+         List.map Kernel_ir.binding_primitive (Kernel_ir.bindings region)
+         = [ Kernel_ir.Primitive.linear ~m:16 ~n:4096 ~k:3840 ~bias:false
+               ~storage:
+                 (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0);
+             Kernel_ir.Primitive.binary Kernel_ir.Primitive.Mul ]
+     | _ -> false))
+    "G4P12-04c-2 folds an m16 y*y square into a two-binding Linear_epilogue region";
+  let m16_yy_program =
+    Metal.lower ~fusion_regions:m16_yy_regions
+      (Passes.Optimization.execution_graph m16_yy_optimization)
+    |> expect_ok
+  in
+  let m16_yy_kernels =
+    Metal.Program.kernels m16_yy_program |> List.map Kernel_abi.Entry.name
+  in
+  let m16_digest =
+    List.find_opt
+      (fun name ->
+        contains_substring name "_m16_" && not (contains_substring name "_add"))
+      m16_yy_kernels
+  in
+  let m16_yy_source = Metal.Program.source m16_yy_program in
+  expect
+    (List.mem "llmopt_q4_0_linear_f16_m16" m16_yy_kernels
+    && Option.is_some m16_digest)
+    "G4P12-04c-2 m16 lowering registers plain and digest Q4_0 kernels";
+  let m16_digest_name =
+    match m16_digest with
+    | Some name -> name
+    | None -> failwith "m16 digest kernel name is absent"
+  in
+  (* The program source also embeds the legacy Q4_0 static zoo (gated, m4,
+     add twins...), which legitimately keeps its bias slots and has_bias
+     reads.  The digest assertions below therefore scope to the digest
+     kernel text alone, starting at its own kernel header. *)
+  let find_marker haystack marker =
+    let len = String.length haystack in
+    let mlen = String.length marker in
+    let rec go i =
+      if i + mlen > len then None
+      else if String.sub haystack i mlen = marker then Some i
+      else go (i + 1)
+    in
+    go 0
+  in
+  let m16_digest_text =
+    match
+      find_marker m16_yy_source ("kernel void " ^ m16_digest_name ^ "(")
+    with
+    | Some start ->
+        (* Keep only the digest kernel itself (header through its column-0
+           closing brace): the program source continues with further
+           material that legitimately references bias layouts. *)
+        let len = String.length m16_yy_source in
+        let rec cut i =
+          if i + 3 > len then len
+          else if String.sub m16_yy_source i 3 = "\n}\n" then i + 3
+          else cut (i + 1)
+        in
+        String.sub m16_yy_source start (cut (start + 1) - start)
+    | None -> failwith "m16 digest kernel text is absent from the program source"
+  in
+  let dbg1 =
+    contains_substring m16_digest_text
+      ",\n    device half* output [[buffer(2)]],\n    constant \
+       QuantLinearParams& params [[buffer(3)]],"
+  in
+  let dbg2 = contains_substring m16_digest_text "if (row_base + 15u < params.m) {" in
+  let dbg3 =
+    contains_substring m16_digest_text
+      "const uint out_idx15 = (row_base + 15u) * params.n + column;"
+  in
+  let dbg4 = not (contains_substring m16_digest_text "params.has_bias") in
+  let dbg5 =
+    not
+      (contains_substring m16_digest_text
+         "device const half* bias [[buffer")
+  in
+  expect
+    (dbg1 && dbg2 && dbg3 && dbg4 && dbg5)
+    "G4P12-04c-2 m16 digest kernel binds output at buffer 2 and emits 16 \
+     row-guarded stores";
+  expect
+    (Metal.Program.kernels m16_yy_program
+    |> List.exists (fun entry ->
+           Kernel_abi.Entry.name entry = m16_digest_name
+           && Kernel_abi.Entry.operation entry
+              = Kernel_abi.Operation.Linear
+           && Kernel_abi.Entry.input_dtype entry
+              = Ir.Dtype.Quant Ir.Dtype.Q4_0
+           && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16
+           && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
+    "G4P12-04c-2 Metal lowering registers the m16 digest kernel ABI entry";
+  print_endline "llmopt Q4_0 m16 digest emission and lower admission passed";
+
   (* G4P10-04d chain absorption: a single Q4_0 decode contraction whose output
      flows through Silu/Mul/Add pointwise hops is one region / one event / one
      folded Linear_epilogue writeback.  The constructive claim consumes all

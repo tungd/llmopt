@@ -564,6 +564,100 @@ let run () =
     failwith "q4_0 x4 digest emission is not deterministic";
   Printf.printf "  [PASS] Q4_0 x4 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
 
+  (* G4P12-04c-2: the m16 tile (one simdgroup per 16-row tile x column)
+     widens the digest family to batched rows.  Its flat kernel keeps a
+     [float acc[16]] array and guards one store per row with
+     [row_base + r < params.m], so the digest rewrite replaces the whole
+     store loop with sixteen row-guarded stores applying an arbitrary
+     Epilogue.t -- one per accumulator slot -- while the shared header
+     re-emission still places canonicalized epilogue buffers at
+     buffer(2..2+p), output at buffer(2+p) and params at buffer(3+p). *)
+  let m16_base = "llmopt_q4_0_linear_f16_m16" in
+  let m16_digest_name epi =
+    Epilogue.algebraic_kernel_name ~base:m16_base epi
+  in
+  let emit_m16_digest epi =
+    let canonical = Epilogue.canonicalize epi in
+    match
+      Metal_block_codegen.q4_0_m16_epilogue_kernel
+        ~name:(m16_digest_name canonical)
+        ~epilogue:canonical ~target:Target_hardware.default q4_0_schema
+    with
+    | Ok source -> source
+    | Error message ->
+        failwith ("q4_0 m16 digest emission failed: " ^ message)
+  in
+  let m16_flat =
+    match
+      Metal_block_codegen.q4_0_m16_epilogue_kernel
+        ~name:m16_base ~epilogue:Epilogue.none
+        ~target:Target_hardware.default q4_0_schema
+    with
+    | Ok source -> source
+    | Error message ->
+        failwith ("q4_0 m16 flat emission failed: " ^ message)
+  in
+  if not (contains m16_flat ("kernel void " ^ m16_base ^ "(")) then
+    failwith "q4_0 m16 no-buffer default must keep the plain kernel name";
+  if contains m16_flat "device const half* buf_" then
+    failwith "q4_0 m16 no-buffer default must not declare epilogue buffers";
+  expect_contains "q4_0 m16 no-buffer default shifts output and params indices"
+    m16_flat
+    ",\n    device half* output [[buffer(2)]],\n    constant QuantLinearParams& \
+     params [[buffer(3)]],";
+  let m16_digest_source = emit_m16_digest gemma_chain in
+  expect_contains "q4_0 m16 digest kernel renamed to digest name"
+    m16_digest_source
+    ("kernel void " ^ m16_digest_name gemma_chain ^ "(");
+  expect_contains "q4_0 m16 digest kernel declares the first canonicalized buffer"
+    m16_digest_source
+    ",\n    device const half* buf_0 [[buffer(2)]]";
+  expect_contains "q4_0 m16 digest kernel declares second canonicalized buffer"
+    m16_digest_source
+    "device const half* buf_1 [[buffer(3)]]";
+  expect_contains "q4_0 m16 digest kernel declares third canonicalized buffer"
+    m16_digest_source
+    "device const half* buf_2 [[buffer(4)]]";
+  expect_contains "q4_0 m16 digest kernel places the output after the epilogue buffers"
+    m16_digest_source
+    ",\n    device half* output [[buffer(5)]],\n    constant QuantLinearParams& \
+     params [[buffer(6)]],";
+  expect_contains "q4_0 m16 digest write-back guards the last row"
+    m16_digest_source
+    "if (row_base + 15u < params.m) {";
+  expect_contains "q4_0 m16 digest write-back indexes the last row store"
+    m16_digest_source
+    "const uint out_idx15 = (row_base + 15u) * params.n + column;";
+  expect_contains "q4_0 m16 digest write-back stores the last row through the slot"
+    m16_digest_source
+    "output[out_idx15] = half(";
+  expect_contains "q4_0 m16 digest write-back uses the accumulator array register"
+    m16_digest_source
+    "acc[15]";
+  if contains m16_digest_source "params.has_bias" then
+    failwith "q4_0 m16 digest kernel must not read the legacy has_bias store block";
+  if contains m16_digest_source "device const half* bias [[buffer" then
+    failwith "q4_0 m16 digest kernel must not declare the unused legacy bias slot";
+  let m16_output_store_count =
+    let len = String.length m16_digest_source in
+    let rec count i acc =
+      if i + 7 > len then acc
+      else if String.sub m16_digest_source i 7 = "output[" then
+        count (i + 1) (acc + 1)
+      else count (i + 1) acc
+    in
+    count 0 0
+  in
+  if m16_output_store_count <> 16 then
+    failwith
+      (Printf.sprintf
+         "q4_0 m16 digest kernel must contain exactly 16 output stores (got %d)"
+         m16_output_store_count);
+  let m16_digest_source_again = emit_m16_digest gemma_chain in
+  if m16_digest_source <> m16_digest_source_again then
+    failwith "q4_0 m16 digest emission is not deterministic";
+  Printf.printf "  [PASS] Q4_0 m16 decode base emits digest-keyed epilogue kernels (arbitrary Epilogue.t)\n%!";
+
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)
   (* ========================================================================= *)

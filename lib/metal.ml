@@ -10856,6 +10856,8 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                Some Metal_block_codegen.q4_0_x8_epilogue_kernel
              else if String.ends_with ~suffix:"_x4" base then
                Some Metal_block_codegen.q4_0_x4_epilogue_kernel
+             else if String.ends_with ~suffix:"_m16" base then
+               Some Metal_block_codegen.q4_0_m16_epilogue_kernel
              else None
            in
            match quant, q4_0_digest_emitter base with
@@ -10876,7 +10878,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                Error
                  (Printf.sprintf
                     "Metal lower: digest epilogue emission is defined only for \
-                     Q4_0 x8/x4 decode regions (got %s serving %s)"
+                     Q4_0 x8/x4/m16 decode regions (got %s serving %s)"
                     (Ir.Dtype.quant_to_string quant) base))
          (Ok "")
   in
