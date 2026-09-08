@@ -1,0 +1,668 @@
+(** Metal RMS/L2/RoPE normalization shader catalog: rms_norm, l2_norm,
+   l2_norm_slice, rms_rope(+qk), and rotary_qk sources, weight-source
+   builders, and ABI entries.  Split out of metal.ml (LOOP item 5). *)
+
+open Metal_source_common
+
+let replace_first = Metal_tensor_source.replace_first
+let replace_all = Metal_tensor_source.replace_all
+
+let rms_norm_source =
+  "\nconstant uint RMS_NORM_SIMD_WIDTH = 32;\n"
+  ^ "constant uint RMS_NORM_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct RmsNormParams { uint rows; uint width; float epsilon; };\n\n"
+  ^ "kernel void llmopt_rms_norm_f32_f16(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint row [[thread_position_in_grid]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = 0; col < params.width; ++col) {\n"
+  ^ "    const float value = input[base + col];\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = 0; col < params.width; ++col)\n"
+  ^ "    output[base + col] = half(input[base + col] * inverse * float(weight[col]));\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f16(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint row [[thread_position_in_grid]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = 0; col < params.width; ++col) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = 0; col < params.width; ++col)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse * float(weight[col]));\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f32_f16_simd(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = input[base + col];\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(input[base + col] * inverse * float(weight[col]));\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f16_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse * float(weight[col]));\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f32_f16_wf32_simd(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = input[base + col];\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(input[base + col] * inverse * weight[col]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f16_wf32_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse * weight[col]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_add_f16_wf32_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device const half* residual [[buffer(2)]],\n"
+  ^ "    device half* output [[buffer(3)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(4)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const half normalized = half(float(input[base + col]) * inverse * weight[col]);\n"
+  ^ "    output[base + col] = half(normalized + residual[base + col]);\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_f16_wf32_wide(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint row [[threadgroup_position_in_grid]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  threadgroup float inverse;\n"
+  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint group = 0; group < 8; ++group) total += partial_sums[group];\n"
+  ^ "    inverse = rsqrt(total / float(params.width) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse * weight[col]);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_add_f16_wf32_wide(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device const half* residual [[buffer(2)]],\n"
+  ^ "    device half* output [[buffer(3)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(4)]],\n"
+  ^ "    uint row [[threadgroup_position_in_grid]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  threadgroup float inverse;\n"
+  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint group = 0; group < 8; ++group) total += partial_sums[group];\n"
+  ^ "    inverse = rsqrt(total / float(params.width) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256) {\n"
+  ^ "    const half normalized = half(float(input[base + col]) * inverse * weight[col]);\n"
+  ^ "    output[base + col] = half(normalized + residual[base + col]);\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_unweighted_f16_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device half* output [[buffer(1)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(2)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_unweighted_f16_wide(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device half* output [[buffer(1)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(2)]],\n"
+  ^ "    uint row [[threadgroup_position_in_grid]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  threadgroup float inverse;\n"
+  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint group = 0; group < 8; ++group) total += partial_sums[group];\n"
+  ^ "    inverse = rsqrt(total / float(params.width) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse);\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_unweighted_add_f16_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* residual [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_NORM_SIMD_WIDTH) {\n"
+  ^ "    const half normalized = half(float(input[base + col]) * inverse);\n"
+  ^ "    output[base + col] = half(normalized + residual[base + col]);\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+  ^ "kernel void llmopt_rms_norm_unweighted_add_f16_wide(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* residual [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant RmsNormParams& params [[buffer(3)]],\n"
+  ^ "    uint row [[threadgroup_position_in_grid]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  threadgroup float partial_sums[8];\n"
+  ^ "  threadgroup float inverse;\n"
+  ^ "  if (lane == 0) partial_sums[simdgroup] = square_sum;\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  if (tid == 0) {\n"
+  ^ "    float total = 0.0f;\n"
+  ^ "    for (uint group = 0; group < 8; ++group) total += partial_sums[group];\n"
+  ^ "    inverse = rsqrt(total / float(params.width) + params.epsilon);\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint col = tid; col < params.width; col += 256) {\n"
+  ^ "    const half normalized = half(float(input[base + col]) * inverse);\n"
+  ^ "    output[base + col] = half(normalized + residual[base + col]);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let rms_norm_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_f32_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_unweighted_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_unweighted_f16_wide"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_unweighted_add_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_unweighted_add_f16_wide"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_f32_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_add_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_f16_wf32_wide"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_norm_add_f16_wf32_wide"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let l2_norm_source =
+  "\nconstant uint L2_NORM_SIMD_WIDTH = 32;\n"
+  ^ "constant uint L2_NORM_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct L2NormParams { uint rows; uint width; float epsilon; };\n\n"
+  ^ "kernel void llmopt_l2_norm_f16_simd(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device half* output [[buffer(1)]],\n"
+  ^ "    constant L2NormParams& params [[buffer(2)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * L2_NORM_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  if (row >= params.rows) return;\n"
+  ^ "  const uint base = row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += L2_NORM_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum + params.epsilon);\n"
+  ^ "  for (uint col = lane; col < params.width; col += L2_NORM_SIMD_WIDTH)\n"
+  ^ "    output[base + col] = half(float(input[base + col]) * inverse);\n"
+  ^ "}\n"
+
+let l2_norm_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_l2_norm_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let l2_norm_slice_source =
+  {|
+constant uint L2_NORM_SLICE_SIMD_WIDTH = 32;
+constant uint L2_NORM_SLICE_ROWS_PER_THREADGROUP = 8;
+
+struct L2NormSliceParams {
+  uint input_rows; uint groups; uint width; uint input_width; uint offset;
+  float epsilon;
+};
+
+kernel void llmopt_l2_norm_slice_f16_simd(
+    device const half* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant L2NormSliceParams& params [[buffer(2)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x * L2_NORM_SLICE_ROWS_PER_THREADGROUP
+      + simdgroup;
+  const uint rows = params.input_rows * params.groups;
+  if (row >= rows) return;
+  const uint source_row = row / params.groups;
+  const uint group = row % params.groups;
+  const uint input_base = source_row * params.input_width + params.offset
+      + group * params.width;
+  const uint output_base = row * params.width;
+  float square_sum = 0.0f;
+  for (uint col = lane; col < params.width; col += L2_NORM_SLICE_SIMD_WIDTH) {
+    const float value = float(input[input_base + col]);
+    square_sum += value * value;
+  }
+  square_sum = simd_sum(square_sum);
+  const float inverse = rsqrt(square_sum + params.epsilon);
+  for (uint col = lane; col < params.width; col += L2_NORM_SLICE_SIMD_WIDTH)
+    output[output_base + col] = half(float(input[input_base + col]) * inverse);
+}
+|}
+
+let l2_norm_slice_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_l2_norm_slice_f16_simd"
+      ~operation:Kernel_abi.Operation.Rms_norm
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let rms_rope_f16_weight_source =
+  "\nconstant uint RMS_ROPE_SIMD_WIDTH = 32;\n"
+  ^ "constant uint RMS_ROPE_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct RmsRopeParams {\n"
+  ^ "  uint batches; uint tokens; uint heads; uint width;\n"
+  ^ "  uint half_dimension; uint trig_batches; float epsilon;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_rms_rope_f16_simd_h64(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const half* weight [[buffer(1)]],\n"
+  ^ "    device const half* cosine [[buffer(2)]],\n"
+  ^ "    device const half* sine [[buffer(3)]],\n"
+  ^ "    device half* output [[buffer(4)]],\n"
+  ^ "    constant RmsRopeParams& params [[buffer(5)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_ROPE_ROWS_PER_THREADGROUP\n"
+  ^ "      + simdgroup;\n"
+  ^ "  const uint rows = params.batches * params.heads * params.tokens;\n"
+  ^ "  if (row >= rows) return;\n"
+  ^ "  const uint batch = row / (params.heads * params.tokens);\n"
+  ^ "  const uint head_token = row % (params.heads * params.tokens);\n"
+  ^ "  const uint head = head_token / params.tokens;\n"
+  ^ "  const uint token = head_token % params.tokens;\n"
+  ^ "  const uint input_row = (batch * params.tokens + token) * params.heads + head;\n"
+  ^ "  const uint input_base = input_row * params.width;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[input_base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  const uint trig_batch = params.trig_batches == 1 ? 0 : batch;\n"
+  ^ "  const uint trig_base = (trig_batch * params.tokens + token) * params.width;\n"
+  ^ "  const uint output_base = row * params.width;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_SIMD_WIDTH) {\n"
+  ^ "    const half normalized = half(float(input[input_base + col]) * inverse\n"
+  ^ "        * float(weight[col]));\n"
+  ^ "    const uint rotated_col = col < params.half_dimension\n"
+  ^ "        ? col + params.half_dimension : col - params.half_dimension;\n"
+  ^ "    half rotated = half(float(input[input_base + rotated_col]) * inverse\n"
+  ^ "        * float(weight[rotated_col]));\n"
+  ^ "    if (col < params.half_dimension) rotated = -rotated;\n"
+  ^ "    const half direct = half(normalized * cosine[trig_base + col]);\n"
+  ^ "    const half turned = half(rotated * sine[trig_base + col]);\n"
+  ^ "    output[output_base + col] = half(direct + turned);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let rms_rope_f32_weight_source =
+  rms_rope_f16_weight_source
+  |> replace_all ~needle:"RMS_ROPE_SIMD_WIDTH"
+       ~replacement:"RMS_ROPE_WF32_SIMD_WIDTH"
+  |> replace_all ~needle:"RMS_ROPE_ROWS_PER_THREADGROUP"
+       ~replacement:"RMS_ROPE_WF32_ROWS_PER_THREADGROUP"
+  |> replace_all ~needle:"RmsRopeParams"
+       ~replacement:"RmsRopeF32WeightParams"
+  |> replace_first ~needle:"llmopt_rms_rope_f16_simd_h64"
+       ~replacement:"llmopt_rms_rope_f16_wf32_simd"
+  |> replace_first ~needle:"device const half* weight [[buffer(1)]]"
+       ~replacement:"device const float* weight [[buffer(1)]]"
+
+let rms_rope_source =
+  rms_rope_f16_weight_source ^ rms_rope_f32_weight_source
+
+let rms_rope_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Rms_rope
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_rope
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let rms_rope_qk_f16_weight_source =
+  "\nconstant uint RMS_ROPE_QK_SIMD_WIDTH = 32;\n"
+  ^ "constant uint RMS_ROPE_QK_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct RmsRopeQKParams {\n"
+  ^ "  uint batches; uint tokens; uint q_heads; uint k_heads;\n"
+  ^ "  uint width; uint half_dimension; uint trig_batches;\n"
+  ^ "  float epsilon;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_rms_rope_qk_f16_simd_h64(\n"
+  ^ "    device const half* q_input [[buffer(0)]],\n"
+  ^ "    device const half* q_weight [[buffer(1)]],\n"
+  ^ "    device const half* k_input [[buffer(2)]],\n"
+  ^ "    device const half* k_weight [[buffer(3)]],\n"
+  ^ "    device const half* cosine [[buffer(4)]],\n"
+  ^ "    device const half* sine [[buffer(5)]],\n"
+  ^ "    device half* q_output [[buffer(6)]],\n"
+  ^ "    device half* k_output [[buffer(7)]],\n"
+  ^ "    constant RmsRopeQKParams& params [[buffer(8)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * RMS_ROPE_QK_ROWS_PER_THREADGROUP + simdgroup;\n"
+  ^ "  const uint total_rows = params.batches * (params.q_heads + params.k_heads) * params.tokens;\n"
+  ^ "  if (row >= total_rows) return;\n"
+  ^ "  const uint q_rows = params.batches * params.q_heads * params.tokens;\n"
+  ^ "  const bool is_q = (row < q_rows);\n"
+  ^ "  const uint local_row = is_q ? row : (row - q_rows);\n"
+  ^ "  const uint heads = is_q ? params.q_heads : params.k_heads;\n"
+  ^ "  const uint batch = local_row / (heads * params.tokens);\n"
+  ^ "  const uint head_token = local_row % (heads * params.tokens);\n"
+  ^ "  const uint head = head_token / params.tokens;\n"
+  ^ "  const uint token = head_token % params.tokens;\n"
+  ^ "  const uint input_row = (batch * params.tokens + token) * heads + head;\n"
+  ^ "  const uint input_base = input_row * params.width;\n"
+  ^ "  device const half* input = is_q ? q_input : k_input;\n"
+  ^ "  device const half* weight = is_q ? q_weight : k_weight;\n"
+  ^ "  device half* output = is_q ? q_output : k_output;\n"
+  ^ "  float square_sum = 0.0f;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_QK_SIMD_WIDTH) {\n"
+  ^ "    const float value = float(input[input_base + col]);\n"
+  ^ "    square_sum += value * value;\n"
+  ^ "  }\n"
+  ^ "  square_sum = simd_sum(square_sum);\n"
+  ^ "  const float inverse = rsqrt(square_sum / float(params.width) + params.epsilon);\n"
+  ^ "  const uint trig_batch = params.trig_batches == 1 ? 0 : batch;\n"
+  ^ "  const uint trig_base = (trig_batch * params.tokens + token) * params.width;\n"
+  ^ "  const uint output_base = local_row * params.width;\n"
+  ^ "  for (uint col = lane; col < params.width; col += RMS_ROPE_QK_SIMD_WIDTH) {\n"
+  ^ "    const half normalized = half(float(input[input_base + col]) * inverse * float(weight[col]));\n"
+  ^ "    const uint rotated_col = col < params.half_dimension ? col + params.half_dimension : col - params.half_dimension;\n"
+  ^ "    half rotated = half(float(input[input_base + rotated_col]) * inverse * float(weight[rotated_col]));\n"
+  ^ "    if (col < params.half_dimension) rotated = -rotated;\n"
+  ^ "    const half direct = half(normalized * cosine[trig_base + col]);\n"
+  ^ "    const half turned = half(rotated * sine[trig_base + col]);\n"
+  ^ "    output[output_base + col] = half(direct + turned);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let rms_rope_qk_f32_weight_source =
+  rms_rope_qk_f16_weight_source
+  |> replace_all ~needle:"RMS_ROPE_QK_SIMD_WIDTH"
+       ~replacement:"RMS_ROPE_QK_WF32_SIMD_WIDTH"
+  |> replace_all ~needle:"RMS_ROPE_QK_ROWS_PER_THREADGROUP"
+       ~replacement:"RMS_ROPE_QK_WF32_ROWS_PER_THREADGROUP"
+  |> replace_all ~needle:"RmsRopeQKParams"
+       ~replacement:"RmsRopeQKF32WeightParams"
+  |> replace_first ~needle:"llmopt_rms_rope_qk_f16_simd_h64"
+       ~replacement:"llmopt_rms_rope_qk_f16_wf32_simd"
+  |> replace_first ~needle:"device const half* q_weight [[buffer(1)]]"
+       ~replacement:"device const float* q_weight [[buffer(1)]]"
+  |> replace_first ~needle:"device const half* k_weight [[buffer(3)]]"
+       ~replacement:"device const float* k_weight [[buffer(3)]]"
+  |> replace_first ~needle:"device const half* weight ="
+       ~replacement:"device const float* weight ="
+
+let rms_rope_qk_source =
+  rms_rope_qk_f16_weight_source ^ rms_rope_qk_f32_weight_source
+
+let rms_rope_qk_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_qk_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Rms_rope_qk
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rms_rope_qk_f16_wf32_simd"
+      ~operation:Kernel_abi.Operation.Rms_rope_qk
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let rotary_qk_source =
+  "\nconstant uint ROTARY_QK_SIMD_WIDTH = 32;\n"
+  ^ "constant uint ROTARY_QK_ROWS_PER_THREADGROUP = 8;\n\n"
+  ^ "struct RotaryQKParams {\n"
+  ^ "  uint batches; uint tokens; uint q_heads; uint k_heads;\n"
+  ^ "  uint width; uint half_dimension; uint trig_batches;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_rotary_qk_f16_simd_h64(\n"
+  ^ "    device const half* q_input [[buffer(0)]],\n"
+  ^ "    device const half* k_input [[buffer(1)]],\n"
+  ^ "    device const half* cosine [[buffer(2)]],\n"
+  ^ "    device const half* sine [[buffer(3)]],\n"
+  ^ "    device half* q_output [[buffer(4)]],\n"
+  ^ "    device half* k_output [[buffer(5)]],\n"
+  ^ "    constant RotaryQKParams& params [[buffer(6)]],\n"
+  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
+  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint row = threadgroup_position.x * ROTARY_QK_ROWS_PER_THREADGROUP + simdgroup;\n"
+  ^ "  const uint total_rows = params.batches * (params.q_heads + params.k_heads) * params.tokens;\n"
+  ^ "  if (row >= total_rows) return;\n"
+  ^ "  const uint q_rows = params.batches * params.q_heads * params.tokens;\n"
+  ^ "  const bool is_q = (row < q_rows);\n"
+  ^ "  const uint local_row = is_q ? row : (row - q_rows);\n"
+  ^ "  const uint heads = is_q ? params.q_heads : params.k_heads;\n"
+  ^ "  const uint batch = local_row / (heads * params.tokens);\n"
+  ^ "  const uint head_token = local_row % (heads * params.tokens);\n"
+  ^ "  const uint head = head_token / params.tokens;\n"
+  ^ "  const uint token = head_token % params.tokens;\n"
+  ^ "  const uint input_row = (batch * params.tokens + token) * heads + head;\n"
+  ^ "  const uint input_base = input_row * params.width;\n"
+  ^ "  device const half* input = is_q ? q_input : k_input;\n"
+  ^ "  device half* output = is_q ? q_output : k_output;\n"
+  ^ "  const uint trig_batch = params.trig_batches == 1 ? 0 : batch;\n"
+  ^ "  const uint trig_base = (trig_batch * params.tokens + token) * params.width;\n"
+  ^ "  const uint output_base = local_row * params.width;\n"
+  ^ "  for (uint col = lane; col < params.width; col += ROTARY_QK_SIMD_WIDTH) {\n"
+  ^ "    const uint rotated_col = col < params.half_dimension ? col + params.half_dimension : col - params.half_dimension;\n"
+  ^ "    half rotated = input[input_base + rotated_col];\n"
+  ^ "    if (col < params.half_dimension) rotated = -rotated;\n"
+  ^ "    const half direct = half(input[input_base + col] * cosine[trig_base + col]);\n"
+  ^ "    const half turned = half(rotated * sine[trig_base + col]);\n"
+  ^ "    output[output_base + col] = half(direct + turned);\n"
+  ^ "  }\n"
+  ^ "}\n"
+
+let rotary_qk_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_rotary_qk_f16_simd_h64"
+      ~operation:Kernel_abi.Operation.Rotary_qk
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
