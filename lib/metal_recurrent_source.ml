@@ -267,3 +267,144 @@ let short_conv_prefill_init_entries =
       ~name:"llmopt_short_conv_prefill_init_f16"
       ~operation:Kernel_abi.Operation.Short_conv_prefill
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
+
+let triangular_recurrence_source =
+  "\nstruct TriangularRecurrenceParams {\n"
+  ^ "  uint outer; uint width; uint start; uint stop;\n"
+  ^ "};\n\n"
+  ^ "kernel void llmopt_triangular_recurrence_f32(\n"
+  ^ "    device const float* input [[buffer(0)]],\n"
+  ^ "    device float* output [[buffer(1)]],\n"
+  ^ "    constant TriangularRecurrenceParams& params [[buffer(2)]],\n"
+  ^ "    uint tid [[thread_index_in_threadgroup]],\n"
+  ^ "    uint group [[threadgroup_position_in_grid]]) {\n"
+  ^ "  if (group >= params.outer || params.width > 64) return;\n"
+  ^ "  threadgroup float state[64 * 64];\n"
+  ^ "  threadgroup float row_values[64];\n"
+  ^ "  const uint elements = params.width * params.width;\n"
+  ^ "  const uint base = group * elements;\n"
+  ^ "  for (uint offset = tid; offset < elements; offset += 64) {\n"
+  ^ "    state[offset] = input[base + offset];\n"
+  ^ "  }\n"
+  ^ "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  for (uint row = params.start; row < params.stop; ++row) {\n"
+  ^ "    if (tid < row) row_values[tid] = state[row * params.width + tid];\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "    if (tid < row) {\n"
+  ^ "      float accumulator = 0.0f;\n"
+  ^ "      for (uint inner = 0; inner < row; ++inner) {\n"
+  ^ "        volatile float product = row_values[inner]\n"
+  ^ "            * state[inner * params.width + tid];\n"
+  ^ "        accumulator = accumulator + product;\n"
+  ^ "      }\n"
+  ^ "      state[row * params.width + tid] = row_values[tid] + accumulator;\n"
+  ^ "    }\n"
+  ^ "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+  ^ "  }\n"
+  ^ "  for (uint offset = tid; offset < elements; offset += 64) {\n"
+  ^ "    output[base + offset] = state[offset];\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
+let triangular_recurrence_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_triangular_recurrence_f32"
+      ~operation:Kernel_abi.Operation.Triangular_recurrence
+      ~input_dtype:Ir.Dtype.Float32 ~output_dtype:Ir.Dtype.Float32 ]
+
+type gated_delta_tactic =
+  | Gated_delta_head_major_f32 of int
+  | Gated_delta_token_major_f16 of int
+
+let gated_delta_width = function
+  | Gated_delta_head_major_f32 width
+  | Gated_delta_token_major_f16 width ->
+      width
+
+let gated_delta_kernel_name = function
+  | Gated_delta_head_major_f32 width ->
+      Printf.sprintf "llmopt_gated_delta_f32_d%d" width
+  | Gated_delta_token_major_f16 width ->
+      Printf.sprintf "llmopt_gated_delta_tm_f16_d%d" width
+
+let gated_delta_source tactic =
+  let width = gated_delta_width tactic in
+  let segments = width / 32 in
+  let vector_type, beta_type, vector_base, scalar_index =
+    match tactic with
+    | Gated_delta_head_major_f32 _ ->
+        ( "float", "float",
+          "((batch * params.heads + head) * params.tokens + token) * params.width",
+          "(batch * params.heads + head) * params.tokens + token" )
+    | Gated_delta_token_major_f16 _ ->
+        ( "half", "half",
+          "((batch * params.tokens + token) * params.heads + head) * params.width",
+          "(batch * params.tokens + token) * params.heads + head" )
+  in
+  Printf.sprintf
+    {|
+struct GatedDeltaParams {
+  uint batch; uint heads; uint tokens; uint width;
+};
+
+kernel void %s(
+    device const %s* query [[buffer(0)]],
+    device const %s* key [[buffer(1)]],
+    device const %s* value [[buffer(2)]],
+    device const float* gate [[buffer(3)]],
+    device const %s* beta [[buffer(4)]],
+    device half* output [[buffer(5)]],
+    constant GatedDeltaParams& params [[buffer(6)]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
+  const uint state_row = group * 4 + simdgroup;
+  const uint state_rows = params.batch * params.heads * params.width;
+  if (state_row >= state_rows || params.width != %d) return;
+  const uint row = state_row %% params.width;
+  const uint head_batch = state_row / params.width;
+  const uint head = head_batch %% params.heads;
+  const uint batch = head_batch / params.heads;
+  float state[%d];
+  for (uint segment = 0; segment < %d; ++segment) state[segment] = 0.0f;
+  const float scale = rsqrt(float(params.width));
+  for (uint token = 0; token < params.tokens; ++token) {
+    const uint vector_base = %s;
+    const uint scalar_index = %s;
+    const float decay = exp(float(gate[scalar_index]));
+    float state_dot_key = 0.0f;
+    for (uint segment = 0; segment < %d; ++segment) {
+      const uint column = segment * 32 + lane;
+      state[segment] *= decay;
+      state_dot_key += state[segment] * float(key[vector_base + column]);
+    }
+    state_dot_key = simd_sum(state_dot_key);
+    const float delta = (float(value[vector_base + row]) - state_dot_key)
+        * float(beta[scalar_index]);
+    float state_dot_query = 0.0f;
+    for (uint segment = 0; segment < %d; ++segment) {
+      const uint column = segment * 32 + lane;
+      state[segment] += float(key[vector_base + column]) * delta;
+      state_dot_query += state[segment] * float(query[vector_base + column]);
+    }
+    state_dot_query = simd_sum(state_dot_query);
+    if (lane == 0) {
+      const uint output_index = ((batch * params.tokens + token) * params.heads + head)
+          * params.width + row;
+      output[output_index] = half(state_dot_query * scale);
+    }
+  }
+}
+|}
+    (gated_delta_kernel_name tactic) vector_type vector_type vector_type beta_type
+    width segments segments vector_base scalar_index segments segments
+
+let gated_delta_entry tactic =
+  kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
+    ~name:(gated_delta_kernel_name tactic)
+    ~operation:Kernel_abi.Operation.Gated_delta
+    ~input_dtype:
+      (match tactic with
+      | Gated_delta_head_major_f32 _ -> Ir.Dtype.Float32
+      | Gated_delta_token_major_f16 _ -> Ir.Dtype.Float16)
+    ~output_dtype:Ir.Dtype.Float16
