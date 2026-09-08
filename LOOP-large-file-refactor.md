@@ -217,7 +217,27 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   prompt-lookup tests pass through `Serving_schedule.Sequence`; the schedule
   core no longer contains codec or sequence-transform implementations.
 
-- [ ] 5. Extract Metal shader catalogs with their ABI entries.
+  Progress (session 4 cont., commits 23664b5/9f3381d/25ed376/feb5d98):
+  metal.ml 8062 -> 4708.  Additional extractions: metal_selection (module
+  Tactic, prerequisite for quant/selection helpers and item 6);
+  metal_q8_0_source/metal_q5_0_source/metal_q4_0_source (dequant texts);
+  metal_quant_qkv_source (params + Q4_0/Q5_0 QKV base/assembled sources and
+  entries); metal_q4_k_source/metal_q5_k_source/metal_q6_k_source/
+  metal_iq4_xs_source (dequant texts).  Every step: ninja all green,
+  llmopt-test byte-identical, native fixture package.llmopt/kernel.metal
+  SHA-256 identical (6ec95edc.../8ad477ac...).  metal.ml now keeps: type
+  kernel (private, item 6), Program, kernel_entry aliases, quant_common_source
+  + quant selection/entry-assembly helpers (find_substring_from .. kquant_
+  entries .. emit_dequant_q4_k/q5_k/q6_k) which move to metal_quant_source.ml
+  next (emit_dequant_* and quant_common_source are public; format sources now
+  live in per-format modules; add_kquant_kernels + add_block32_kernels touch
+  Program so they stay in metal.ml), block32_entries (item 7 dispatch),
+  dense Linear sources, RMS/L2/RoPE + rotary_qk sources, short_conv sources,
+  attention sources (attention_source/simd/tree), tensor primitive sources
+  (embedding..update_slice, pointwise, movement, reduction), recurrent
+  (triangular_recurrence, gated_delta), graph capability has_* + selection +
+  quant_linear_add_tactics, region helpers, lower/lower_primary, parametric
+  emitters.  Use content-anchored one-pass edits.
   Progress (session 4, commits 82a0cf4/7efbbc2/1ddb96f): metal.ml 10484 ->
   8062.  Done: metal_source_common (kernel_entry* + metal_header);
   metal_cache_source (cache_source + cache_entry + cache_entries, keep
