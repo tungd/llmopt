@@ -217,7 +217,9 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   prompt-lookup tests pass through `Serving_schedule.Sequence`; the schedule
   core no longer contains codec or sequence-transform implementations.
 
-  Progress (session 4 cont., commits 23664b5/9f3381d/25ed376/feb5d98):
+  Progress (session 4 cont., commits 23664b5/9f3381d/25ed376/feb5d98/e50ada3):
+  metal.ml 8062 -> 4404 (58% of item 5 moved; every step verified green:
+  ninja all, llmopt-test byte-identical, fixture SHA-256 identical).
   metal.ml 8062 -> 4708.  Additional extractions: metal_selection (module
   Tactic, prerequisite for quant/selection helpers and item 6);
   metal_q8_0_source/metal_q5_0_source/metal_q4_0_source (dequant texts);
