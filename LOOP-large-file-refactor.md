@@ -217,70 +217,31 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   prompt-lookup tests pass through `Serving_schedule.Sequence`; the schedule
   core no longer contains codec or sequence-transform implementations.
 
-  Progress (session 4 cont., commits 23664b5/9f3381d/25ed376/feb5d98/e50ada3):
-  metal.ml 8062 -> 4404 (58% of item 5 moved; every step verified green:
-  ninja all, llmopt-test byte-identical, fixture SHA-256 identical).
-  metal.ml 8062 -> 4708.  Additional extractions: metal_selection (module
-  Tactic, prerequisite for quant/selection helpers and item 6);
-  metal_q8_0_source/metal_q5_0_source/metal_q4_0_source (dequant texts);
-  metal_quant_qkv_source (params + Q4_0/Q5_0 QKV base/assembled sources and
-  entries); metal_q4_k_source/metal_q5_k_source/metal_q6_k_source/
-  metal_iq4_xs_source (dequant texts).  Every step: ninja all green,
-  llmopt-test byte-identical, native fixture package.llmopt/kernel.metal
-  SHA-256 identical (6ec95edc.../8ad477ac...).  metal.ml now keeps: type
-  kernel (private, item 6), Program, kernel_entry aliases, quant_common_source
-  + quant selection/entry-assembly helpers (find_substring_from .. kquant_
-  entries .. emit_dequant_q4_k/q5_k/q6_k) which move to metal_quant_source.ml
-  next (emit_dequant_* and quant_common_source are public; format sources now
-  live in per-format modules; add_kquant_kernels + add_block32_kernels touch
-  Program so they stay in metal.ml), block32_entries (item 7 dispatch),
-  dense Linear sources, RMS/L2/RoPE + rotary_qk sources, short_conv sources,
-  attention sources (attention_source/simd/tree), tensor primitive sources
-  (embedding..update_slice, pointwise, movement, reduction), recurrent
-  (triangular_recurrence, gated_delta), graph capability has_* + selection +
-  quant_linear_add_tactics, region helpers, lower/lower_primary, parametric
-  emitters.  Use content-anchored one-pass edits.
-  Progress (session 4, commits 82a0cf4/7efbbc2/1ddb96f): metal.ml 10484 ->
-  8062.  Done: metal_source_common (kernel_entry* + metal_header);
-  metal_cache_source (cache_source + cache_entry + cache_entries, keep
-  add_cache_kernels in metal.ml); metal_w4a16_source (linear/QKV/SwiGLU-FFN/
-  lm-head argmax; 5 internal kernel builders stay in the catalog, 8 sources/
-  entries aliased in metal.ml for lower).  Each step: ninja all green,
-  llmopt-test byte-identical, native fixture package.llmopt/kernel.metal
-  SHA-256 identical.  Next regions (post-5c anchors in metal.ml, content
-  anchors not line numbers): quant_common+q8_0/q5_0/q4_0+qkv params/base/
-  entries 2539..4191 -> metal_quant_source/metal_q8_0_source/metal_q5_0_
-  source/metal_q4_0_source/metal_quant_qkv_source (note quant_qkv_source =
-  params ^ q4_0_qkv ^ q5_0_qkv and q4_0_qkv_base may consume q4_0_source);
-  block32_entries 4192..4327 stays (item 7 dispatch); emit_dequant_q8_0/q5_0/
-  q4_0 then q4_k/q5_k/q6_k/iq4_xs literals then find_substring_from/
-  replace_all#1/extract_kernel/remove_kernel/legacy_quant_source/quant_source/
-  quant_linear_add_source/kquant_entries/add_kquant_kernels/emit_dequant_q4_k/
-  q5_k/q6_k -> per-format literal files + metal_quant_source selection/entry
-  assembly; dense Linear 6313+ etc.  Remember rule: catalogs must not depend
-  on the Metal facade (keep Program-touching add_*_kernels and emit_dequant
-  helpers that only concatenate header^common^format in the assembly owner;
-  header+common move to metal_quant_source if shared).
-  owns the four kernel_entry* constructors (metal.ml 83..108) and
-  metal_header (metal.ml 4328); metal.ml aliases them; metal.mli untouched;
-  tests + native fixture bytes identical.  metal.ml outline anchors recorded
-  for remaining owners: w4a16 123..1496, cache 1497..2538, quant_common 2539,
-  q8_0 2575, q5_0 2848, q4_0 3059, quant_qkv 3489..4191, block32 4192..4327,
-  emit_dequant_q8_0/q5_0/q4_0 4331, q4_k 4335, q5_k 5132, q6_k 5714, iq4_xs
-  5964, quant selection helpers 6029..6312 (two lexically distinct replace_all
-  at 6039 and 6474 -- keep callers bound correctly), dense Linear 6313..6458,
-  RMS/L2/RoPE 6479..7138, short_conv 7139..7400, attention 7401..7819,
-  tensor primitives 7820..9120 (embedding, arange, diff, cumsum, fill,
-  gather2, cast, pointwise, movement, reduction, update_slice),
-  recurrent 9121..9255, graph capability has_* + selection 9256..9603 (item
-  6), lower_primary 9604..9772, region helpers 9773..9911, lower 9912..10337,
-  parametric emitters 10338..end (item 6).  Rule: catalogs must not depend on
-  the Metal facade; keep Program-touching assembly (add_*_kernels) in metal.ml
-  and move only *_source/_*_entries + their small kernel builders into the
-  catalog units.  Edit metal.ml by computing ALL segment replacements in one
-  pass from the unmodified source (content-anchored); do not mutate the list
-  in place and then use stale indices (caused one transient corruption that
-  was caught by the xcrun-metal q4_k compile check).
+- [x] 5. Extract Metal shader catalogs with their ABI entries.
+
+  DONE (metal.ml 10484 -> 1581).  Owners created: metal_source_common
+  (kernel_entry* + metal_header); metal_cache_source; metal_w4a16_source;
+  metal_selection (module Tactic, starts item 6); metal_q8_0_source /
+  metal_q5_0_source / metal_q4_0_source; metal_quant_qkv_source;
+  metal_q4_k_source / metal_q5_k_source / metal_q6_k_source /
+  metal_iq4_xs_source; metal_quant_source (quant_common_source, text patchers
+  incl the first lexical replace_all, source selection, kquant_entries, all
+  six public emit_dequant_*); metal_tensor_source (dense Linear + shared
+  replace_first / second-lexical replace_all, then the tensor-primitive
+  catalog: embedding/arange/diff/cumsum/tensor-primitive/fill/gather2/cast/
+  pointwise/movement/reduction/update_slice); metal_normalization_source
+  (RMS/L2/RoPE); metal_recurrent_source (ShortConv family,
+  triangular_recurrence, gated_delta_tactic type + width/kernel_name/source/
+  entry); metal_attention_source (attention_source/simd/tree + entries).
+  Kept in metal.ml on purpose: block32_entries + add_block32_kernels (item 7
+  dispatch), add_cache_kernels / add_kquant_kernels (Program-touching), the
+  type-gated_delta re-export, and the item-6 body (has_* / *_tactics,
+  quant_linear_* selectors, region helpers, private kernel type,
+  lower_primary, lower, parametric emitters).  Every micro-commit: ninja all
+  green, llmopt-test byte-identical, native fixture
+  package.llmopt/kernel.metal SHA-256 identical (6ec95edc.../8ad477ac...).
+  Source relocation alone retires nothing; no golden expectation changed.
+
   Change: put the four `kernel_entry*` constructors and `metal_header` into
   `metal_source_common.ml`. Move complete source/entry groups from `metal.ml`
   to these owners: `metal_w4a16_source.ml` (plain/QKV/SwiGLU/argmax),
