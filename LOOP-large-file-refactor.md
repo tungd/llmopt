@@ -268,7 +268,29 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   expectations retain their contents. Source relocation alone does not retire
   a legacy kernel or authorize updating a golden expectation.
 
-- [ ] 6. Separate Metal selection and assembly from emission bodies.
+- [x] 6. Separate Metal selection and assembly from emission bodies.
+
+  DONE (metal.ml 1581 -> 806).  metal_selection.ml now owns module Tactic
+  plus gated_delta_tactics, every has_* capability query, attention/quant
+  tactic selection (attention_tactics, attention_simd_head_dimensions,
+  quant_linear_tactics, quant_linear_add_tactics, graph_quant_types), and
+  the fusion-region helpers (region_node_ids, without_region_nodes,
+  quant_add_twin_servable, is_residual_add_epilogue, region_tactics).
+  metal_primary_codegen.ml owns the private kernel representation, its
+  find_input_name/input_name helpers, and lower_primary.  The three
+  parametric emitters (w4a16_linear/q4_k_linear/simdgroup_matrix_gemm)
+  live in metal_parametric_codegen.ml.  DEVIATION: module Program moved
+  to lib/metal_program.ml (a lower codegen unit cannot depend on the
+  Metal facade, and lower_primary/lower both assemble Programs);
+  metal.ml aliases it and the metal.mli contract is unchanged.  metal.ml
+  keeps Program/Tactic aliases, entry-construction helpers
+  (attention_tactic_entries, quant_tactic_entries, quant_linear_add_entry),
+  block32_entries + add_block32_kernels (item 7), add_cache_kernels /
+  add_kquant_kernels, type-gated_delta re-export, and the assembly body
+  lower + emit (incl quant-digest residual emission).  Every micro-commit:
+  ninja all green, llmopt-test byte-identical, native fixture
+  package.llmopt/kernel.metal SHA-256 identical (6ec95edc.../8ad477ac...).
+
   Change: move `Tactic`, graph capability queries (`has_*`),
   `gated_delta_tactics`, attention/quant tactic selection, `region_node_ids`,
   `without_region_nodes`, and `region_tactics` to `metal_selection.ml`.
