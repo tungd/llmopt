@@ -155,7 +155,18 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   API. Their expected member IDs, bindings, materialization boundaries, and
   tactic choices remain the semantic evidence for this extraction.
 
-- [ ] 3. Establish a schedule core and extract binary serialization.
+- [x] 3. Establish a schedule core and extract binary serialization.
+  Done (commit 68d886c; full `ninja all` green; llmopt-test output
+  byte-identical).  serving_schedule.ml 4517 -> facade (1327): core
+  1..1536 -> lib/serving_schedule_core.ml/.mli (representation, validation,
+  create, of_graph, pruning, input queries); codec 2856..4517 ->
+  lib/serving_schedule_codec.ml/.mli (`open Serving_schedule_core`; duplicate
+  write/read_kernel_index at 3137/3225 preserved verbatim); module Sequence
+  1537..2854 stays in the facade until item 4.  serving_schedule.mli
+  unchanged.  New-unit .mli files were generated from inferred interfaces.
+  Verification: native fixture package.llmopt regenerated at commit efab419
+  (pre-move worktree) and post-move are byte-identical (SHA-256
+  6ec95edc313aec79fbbd692516a6905059d3f83a59cc20993d9c9d19c5ebcbeb).
   Change: move `Command`, `Stage`, `Tensor_input`, the schedule representation,
   stage grouping, validation helpers through `validate_command`, `create`, graph
   construction/fusion attachment/barrier pruning, and input queries into
