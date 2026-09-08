@@ -80,31 +80,10 @@ module Tactic = struct
            else None)
 end
 
-let kernel_entry_with_threadgroup ~threadgroup ~name ~operation ~input_dtype
-    ~output_dtype =
-  match
-    Kernel_abi.Entry.create ~name ~operation ~input_dtype ~output_dtype
-      ~threadgroup
-  with
-  | Ok entry -> entry
-  | Error message -> invalid_arg ("invalid built-in Metal kernel: " ^ message)
-
-let kernel_entry ~name ~operation ~input_dtype ~output_dtype =
-  kernel_entry_with_threadgroup ~threadgroup:(16, 16, 1) ~name ~operation
-    ~input_dtype ~output_dtype
-
-let kernel_entry_with_threadgroup_and_tile ~tile ~threadgroup ~name ~operation
-    ~input_dtype ~output_dtype =
-  match
-    Kernel_abi.Entry.create_with_tile ~tile ~name ~operation ~input_dtype
-      ~output_dtype ~threadgroup
-  with
-  | Ok entry -> entry
-  | Error message -> invalid_arg ("invalid parameterized Metal kernel: " ^ message)
-
-let kernel_entry_with_tile ~tile ~name ~operation ~input_dtype ~output_dtype =
-  kernel_entry_with_threadgroup_and_tile ~tile ~threadgroup:(16, 16, 1) ~name
-    ~operation ~input_dtype ~output_dtype
+let kernel_entry_with_threadgroup = Metal_source_common.kernel_entry_with_threadgroup
+let kernel_entry = Metal_source_common.kernel_entry
+let kernel_entry_with_threadgroup_and_tile = Metal_source_common.kernel_entry_with_threadgroup_and_tile
+let kernel_entry_with_tile = Metal_source_common.kernel_entry_with_tile
 
 let find_input_name graph value =
   Ir.Graph.nodes graph
@@ -4325,8 +4304,7 @@ let add_block32_kernels program =
       (Program.source program ^ quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source)
     ~kernels:(Program.kernels program @ block32_entries)
 
-let metal_header =
-  "#include <metal_stdlib>\n#include <metal_matrix>\nusing namespace metal;\n"
+let metal_header = Metal_source_common.metal_header
 
 let emit_dequant_q8_0 () = metal_header ^ quant_common_source ^ q8_0_source
 let emit_dequant_q5_0 () = metal_header ^ quant_common_source ^ q5_0_source
