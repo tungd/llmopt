@@ -218,7 +218,27 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   core no longer contains codec or sequence-transform implementations.
 
 - [ ] 5. Extract Metal shader catalogs with their ABI entries.
-  Progress (session 3, commit 82a0cf4): lib/metal_source_common.ml/.mli now
+  Progress (session 4, commits 82a0cf4/7efbbc2/1ddb96f): metal.ml 10484 ->
+  8062.  Done: metal_source_common (kernel_entry* + metal_header);
+  metal_cache_source (cache_source + cache_entry + cache_entries, keep
+  add_cache_kernels in metal.ml); metal_w4a16_source (linear/QKV/SwiGLU-FFN/
+  lm-head argmax; 5 internal kernel builders stay in the catalog, 8 sources/
+  entries aliased in metal.ml for lower).  Each step: ninja all green,
+  llmopt-test byte-identical, native fixture package.llmopt/kernel.metal
+  SHA-256 identical.  Next regions (post-5c anchors in metal.ml, content
+  anchors not line numbers): quant_common+q8_0/q5_0/q4_0+qkv params/base/
+  entries 2539..4191 -> metal_quant_source/metal_q8_0_source/metal_q5_0_
+  source/metal_q4_0_source/metal_quant_qkv_source (note quant_qkv_source =
+  params ^ q4_0_qkv ^ q5_0_qkv and q4_0_qkv_base may consume q4_0_source);
+  block32_entries 4192..4327 stays (item 7 dispatch); emit_dequant_q8_0/q5_0/
+  q4_0 then q4_k/q5_k/q6_k/iq4_xs literals then find_substring_from/
+  replace_all#1/extract_kernel/remove_kernel/legacy_quant_source/quant_source/
+  quant_linear_add_source/kquant_entries/add_kquant_kernels/emit_dequant_q4_k/
+  q5_k/q6_k -> per-format literal files + metal_quant_source selection/entry
+  assembly; dense Linear 6313+ etc.  Remember rule: catalogs must not depend
+  on the Metal facade (keep Program-touching add_*_kernels and emit_dequant
+  helpers that only concatenate header^common^format in the assembly owner;
+  header+common move to metal_quant_source if shared).
   owns the four kernel_entry* constructors (metal.ml 83..108) and
   metal_header (metal.ml 4328); metal.ml aliases them; metal.mli untouched;
   tests + native fixture bytes identical.  metal.ml outline anchors recorded
