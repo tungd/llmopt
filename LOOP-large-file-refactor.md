@@ -183,7 +183,23 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   bytes before this move and compare after regeneration; changing the OCaml
   compilation-unit layout does not justify changing format tags or field order.
 
-- [ ] 4. Separate schedule validation and sequence transformation from the core.
+- [x] 4. Separate schedule validation and sequence transformation from the core.
+  Done (commit a84e2d1; full `ninja all` green; llmopt-test output
+  byte-identical to baseline; llmopt-package-check decodes a real v12 package
+  through the refactored codec/validation stack).
+  serving_schedule_types.ml/.mli (47) = Command/Stage/Tensor_input + shared
+  Int_set/value_id substrate; serving_schedule_validation.ml/.mli (1311) =
+  metadata predicates + validate_command/validate_fusion_command (verbatim);
+  serving_schedule_core.ml (195) = schedule t/commands/stages, create,
+  attach/prune/of_graph, input queries, and re-exports types+validation so the
+  codec and sequence depend on the core alone; serving_schedule_sequence.ml
+  (1321) = the entire module-Sequence body with `open Serving_schedule_core`;
+  facade serving_schedule.ml is now 10 lines (include core + module Sequence
+  alias + to_bytes/of_bytes delegates).  Direction types -> validation -> core
+  -> sequence/codec -> facade is acyclic (ocamldep).  serving_schedule.mli is
+  unchanged.  Core contains no codec (dtype_tag/write_*) or sequence
+  (specialize) implementations.  Ninja edges deps derived with ocamldep to
+  avoid comment false-positives.
   Change: move command-related representations into
   `serving_schedule_types.ml`; the core re-exports them. Put the current
   metadata predicates and `validate_fusion_command`/`validate_command` into
