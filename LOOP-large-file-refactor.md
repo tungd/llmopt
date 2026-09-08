@@ -218,6 +218,27 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   core no longer contains codec or sequence-transform implementations.
 
 - [ ] 5. Extract Metal shader catalogs with their ABI entries.
+  Progress (session 3, commit 82a0cf4): lib/metal_source_common.ml/.mli now
+  owns the four kernel_entry* constructors (metal.ml 83..108) and
+  metal_header (metal.ml 4328); metal.ml aliases them; metal.mli untouched;
+  tests + native fixture bytes identical.  metal.ml outline anchors recorded
+  for remaining owners: w4a16 123..1496, cache 1497..2538, quant_common 2539,
+  q8_0 2575, q5_0 2848, q4_0 3059, quant_qkv 3489..4191, block32 4192..4327,
+  emit_dequant_q8_0/q5_0/q4_0 4331, q4_k 4335, q5_k 5132, q6_k 5714, iq4_xs
+  5964, quant selection helpers 6029..6312 (two lexically distinct replace_all
+  at 6039 and 6474 -- keep callers bound correctly), dense Linear 6313..6458,
+  RMS/L2/RoPE 6479..7138, short_conv 7139..7400, attention 7401..7819,
+  tensor primitives 7820..9120 (embedding, arange, diff, cumsum, fill,
+  gather2, cast, pointwise, movement, reduction, update_slice),
+  recurrent 9121..9255, graph capability has_* + selection 9256..9603 (item
+  6), lower_primary 9604..9772, region helpers 9773..9911, lower 9912..10337,
+  parametric emitters 10338..end (item 6).  Rule: catalogs must not depend on
+  the Metal facade; keep Program-touching assembly (add_*_kernels) in metal.ml
+  and move only *_source/_*_entries + their small kernel builders into the
+  catalog units.  Edit metal.ml by computing ALL segment replacements in one
+  pass from the unmodified source (content-anchored); do not mutate the list
+  in place and then use stale indices (caused one transient corruption that
+  was caught by the xcrun-metal q4_k compile check).
   Change: put the four `kernel_entry*` constructors and `metal_header` into
   `metal_source_common.ml`. Move complete source/entry groups from `metal.ml`
   to these owners: `metal_w4a16_source.ml` (plain/QKV/SwiGLU/argmax),
