@@ -443,6 +443,32 @@ Native fixture check: bin/native_schedule_fixture.ml writes
 inputs), save bytes; after the move regenerate and cmp.  _artifacts already
 holds gemma4 package.llmopt artifacts that round-trip through of_bytes.
 
+## Item 4 prep notes (session 3) -- schedule types/validation/sequence split
+
+Current serving_schedule_core.ml line anchors (doc header shifts originals +4):
+- types chunk: module Command 8-22, Stage 24-38, Tensor_input 40-48 (must stay
+  one unit so variants/labels share), plus module Int_set 79 and
+  `let value_id` 81 (shared substrate needed by BOTH validation (before core)
+  and core/codec -> keep in types to avoid a validation<->core cycle).
+- validation chunk: scalar_matches_dtype 83 .. end of validate_command ~1385
+  (includes fresh_outputs 252, validate_fusion_command 257, validate_command
+  283).  Deps: Ir, Tensor_shape, Kernel_region, Contraction_group + types
+  (Int_set/value_id).  validate_command is called by create (1395 in core) and
+  by the codec's of_bytes, so core re-exports it for the facade/codec path.
+- core keeps: let (let*), type t {commands}, commands, stages (54-77), create
+  1387, attach_fusion_region 1407, is_gpu_command_in_schedule 1464,
+  prune_redundant_barriers 1479, of_graph 1497, tensor_inputs 1519,
+  runtime_inputs 1528, opaque_count 1536.  Core = module aliases for the types
+  unit + open/include the validation unit's re-exported val, then the above.
+- Sequence (module body 1537..2854 in the ORIGINAL serving_schedule.ml) ->
+  serving_schedule_sequence.ml with `open Serving_schedule_core`; facade then
+  `module Sequence = Serving_schedule_sequence` and the facade shrinks to:
+  include core + alias Sequence + to_bytes/of_bytes delegates (codec).
+- New .mli files from inferred interfaces (ocamlfind ocamlopt -i), doc header.
+- Direction stays acyclic: types -> validation -> core -> sequence/codec -> facade.
+- Check: prefill/suffix/direct-paged/shared-cache/prompt-lookup tests via
+  Serving_schedule.Sequence stay green; core no longer holds codec/sequence.
+
 ## Execution log
 
 Item 1 completed (session 2, commits 0c88715..e29b49a).  Final state:
