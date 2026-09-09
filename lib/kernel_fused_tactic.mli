@@ -31,6 +31,11 @@ type t =
       epilogue : int Applicative_expr.t;
       output : Ir.Value.t;
     }
+  | Multi_export_contraction_group of {
+      contractions : linear list;
+      epilogues : int Applicative_expr.t list;
+      outputs : Ir.Value.t list;
+    }
   | Rms_normalize of {
       input : Ir.Value.t;
       weight : Ir.Value.t option;

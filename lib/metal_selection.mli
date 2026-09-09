@@ -130,4 +130,5 @@ val region_tactics :
   (Ir.Dtype.quant_type * Tactic.t) list *
   (Ir.Dtype.quant_type * Tactic.t * Epilogue.t) list *
   (Ir.Dtype.quant_type * Tactic.t * int * int Applicative_expr.t) list *
+  (Ir.Dtype.quant_type * Tactic.t * int * int Applicative_expr.t list * Ir.Value.t list) list *
   bool * bool * bool * bool * gated_delta_tactic list

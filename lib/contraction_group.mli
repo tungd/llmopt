@@ -114,6 +114,14 @@ val multi_acc_epilogue : t -> int Applicative_expr.t option
     variable [Slot i] ([0..N-1]), and all scalar steps are inlined.
     Returns [None] if inlining fails or if there is not exactly one export. *)
 
+val multi_export_epilogues : t -> int Applicative_expr.t list option
+(** Reconstructs a multi-accumulator scalar expression tree for each export
+    of a group with 2 or more contractions.  The contraction-slot environment
+    is the same as [multi_acc_epilogue]; each export slot is looked up in
+    the inlined environment independently.  Returns [None] if inlining fails,
+    if there are fewer than 2 contractions, or if there are fewer than 2
+    exports. *)
+
 val use_count : t -> Kernel_region.Slot.t -> int
 (** Number of consumer references to the slot across the group's steps (the
     slot's use obligation).  Exports themselves do not count. *)

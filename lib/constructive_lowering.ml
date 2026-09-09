@@ -1368,6 +1368,17 @@ let lower analysis =
              linear.input :: linear.weight :: linear.parameters)
            contractions)
         @ Applicative_expr.required_values epilogue, output
+    | Kernel_ir.Fused_tactic.Multi_export_contraction_group
+        { contractions; epilogues; outputs } ->
+        let aux =
+          List.concat_map Applicative_expr.required_values epilogues
+          |> List.sort_uniq Stdlib.compare
+        in
+        (List.concat_map
+           (fun (linear : Kernel_ir.Fused_tactic.linear) ->
+             linear.input :: linear.weight :: linear.parameters)
+           contractions)
+        @ aux, List.hd outputs
   in
   let assignment_slice assignments tactic =
     let boundaries, output = tactic_boundary_values tactic in
@@ -1459,6 +1470,19 @@ let lower analysis =
                      | Ir.Linear_storage.Dense _
                      | Ir.Linear_storage.Groupwise_packed _ ->
                          None)
+                 | Kernel_ir.Fused_tactic.Multi_export_contraction_group
+                     { contractions = first :: _; outputs; _ } as tactic
+                   when (let region_outputs = Region.outputs region in
+                         List.length region_outputs = List.length outputs
+                         && List.for_all2 Ir.Value.equal
+                              region_outputs outputs) -> (
+                     match first.Kernel_ir.Fused_tactic.storage with
+                     | Ir.Linear_storage.Block_quantized _ ->
+                         let selected = assignment_slice assignments tactic in
+                         if selected = [] then None else Some (tactic, selected)
+                     | Ir.Linear_storage.Dense _
+                     | Ir.Linear_storage.Groupwise_packed _ ->
+                         None)
                  | _ -> None
                in
                let legacy_candidates =
@@ -1490,6 +1514,8 @@ let lower analysis =
                  | Some (Kernel_ir.Fused_tactic.Linear_epilogue _ as tactic) ->
                      Option.to_list (select_linear_epilogue tactic)
                  | Some (Kernel_ir.Fused_tactic.Contraction_group _ as tactic) ->
+                     Option.to_list (select_contraction_group tactic)
+                 | Some (Kernel_ir.Fused_tactic.Multi_export_contraction_group _ as tactic) ->
                      Option.to_list (select_contraction_group tactic)
                  | _ -> []))
   in
@@ -1541,6 +1567,8 @@ let lower analysis =
                      | Ir.Linear_storage.Dense _
                      | Ir.Linear_storage.Groupwise_packed _ -> assert false)
                  | Kernel_ir.Fused_tactic.Contraction_group _ ->
+                     Lowering.Kind.Gated_linear
+                 | Kernel_ir.Fused_tactic.Multi_export_contraction_group _ ->
                      Lowering.Kind.Gated_linear
                  | _ -> assert false
                in

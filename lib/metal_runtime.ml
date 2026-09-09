@@ -2720,6 +2720,11 @@ type assignment_execution =
       epilogue : int Applicative_expr.t;
       output : Ir.Value.t;
     }
+  | Assignment_multi_export_contraction_group of {
+      contractions : Kernel_ir.Fused_tactic.linear list;
+      epilogues : int Applicative_expr.t list;
+      outputs : Ir.Value.t list;
+    }
   | Assignment_rms_normalize of {
       input : Ir.Value.t;
       weight : Ir.Value.t option;
@@ -2770,6 +2775,12 @@ let assignment_execution command =
       (Kernel_ir.Fused_tactic.Contraction_group
         { contractions; epilogue; output }) ->
       Some (Assignment_contraction_group { contractions; epilogue; output })
+  | Some
+      (Kernel_ir.Fused_tactic.Multi_export_contraction_group
+        { contractions; epilogues; outputs }) ->
+      Some
+        (Assignment_multi_export_contraction_group
+           { contractions; epilogues; outputs })
   | Some
       (Kernel_ir.Fused_tactic.Rms_normalize
         { input; weight; residual; layer_scalar; output; epsilon }) ->
@@ -3526,6 +3537,135 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                           dispatched (Error "assignment contraction group epilogue is not yet servable"))
                   | _ ->
                       dispatched (Error "assignment contraction group with arity <> 2 is not yet servable")))
+        | Assignment_multi_export_contraction_group
+            { contractions; epilogues; outputs } -> (
+            match contractions with
+            | first :: _ -> (
+                match first.storage with
+                | Ir.Linear_storage.Block_quantized quant -> (
+                    match
+                      select_quant_linear_kernel runtime ~m:first.m
+                        ~n:first.n ~k:first.k
+                        ~output_dtype:(Ir.Value.dtype (List.hd outputs)) quant
+                    with
+                    | Ok tactic_entry ->
+                        let base_name = Kernel_abi.Entry.name tactic_entry in
+                        let digest_name =
+                          Contraction_group.algebraic_kernel_name
+                            ~base:base_name (List.hd epilogues)
+                        in
+                        (match
+                           kernel_entry ~name:digest_name runtime
+                             ~operation:Kernel_abi.Operation.Gated_linear
+                             ~input_dtype:(Ir.Dtype.Quant quant)
+                             ~output_dtype:(Ir.Value.dtype (List.hd outputs))
+                         with
+                        | Ok _ ->
+                            let* () =
+                              List.fold_left
+                                (fun res (c : Kernel_ir.Fused_tactic.linear) ->
+                                  let* () = res in
+                                  validate_linear_shapes ~m:c.m ~n:c.n ~k:c.k
+                                    c.input c.weight (List.hd outputs))
+                                (Ok ()) contractions
+                            in
+                            let* grid_x =
+                              if quant = Ir.Dtype.Q4_0
+                                 && String.ends_with ~suffix:"_x8" base_name
+                              then
+                                let groups = (first.n + 7) / 8 in
+                                linear_f16_grid (first.m * groups)
+                              else
+                                Error
+                                  (Printf.sprintf
+                                     "assignment multi-export contraction group \
+                                      digest dispatch is defined only for Q4_0 \
+                                      x8 (got %s %s)"
+                                     (Ir.Dtype.quant_to_string quant) base_name)
+                            in
+                            let canonical_epilogues =
+                              List.map Applicative_expr.canonicalize epilogues
+                            in
+                            let all_aux_values =
+                              List.concat_map
+                                Applicative_expr.required_values
+                                canonical_epilogues
+                              |> List.fold_left
+                                   (fun acc v ->
+                                     if List.exists
+                                          (fun v' -> Ir.Value.equal v v')
+                                          acc
+                                     then acc
+                                     else acc @ [ v ])
+                                   []
+                            in
+                            let* input_buffer = find_value state first.input in
+                            let* weight_buffers =
+                              find_values state
+                                (List.map
+                                   (fun (c : Kernel_ir.Fused_tactic.linear) ->
+                                     c.weight)
+                                   contractions)
+                            in
+                            let* aux_buffers =
+                              find_values state all_aux_values
+                            in
+                            let* output_buffers =
+                              List.fold_left
+                                (fun acc output ->
+                                  let* bufs = acc in
+                                  let* buf = workspace_buffer state output in
+                                  Ok (bufs @ [ buf ]))
+                                (Ok []) outputs
+                            in
+                            let buffers =
+                              input_buffer
+                              :: (weight_buffers
+                                 @ aux_buffers @ output_buffers)
+                            in
+                            let* parameters =
+                              Parameters.u32s
+                                [ first.m; first.n; first.k; 0 ]
+                            in
+                            let* entry =
+                              kernel_entry ~name:digest_name runtime
+                                ~operation:Kernel_abi.Operation.Gated_linear
+                                ~input_dtype:(Ir.Dtype.Quant quant)
+                                ~output_dtype:(Ir.Value.dtype (List.hd outputs))
+                            in
+                            let* kernel =
+                              dispatch runtime entry ~buffers ~parameters
+                                ~grid:(grid_x, 1, 1)
+                            in
+                            let state =
+                              List.fold_left2
+                                (fun s output buf ->
+                                  bind_value s output buf)
+                                state outputs output_buffers
+                            in
+                            dispatched (Ok (state, kernel))
+                        | Error _ ->
+                            dispatched
+                              (Error
+                                 (Printf.sprintf
+                                    "assignment multi-export contraction \
+                                     group digest kernel %s not registered"
+                                    digest_name)))
+                    | Error _ ->
+                        dispatched
+                          (Error
+                             "assignment multi-export contraction group: \
+                              no Metal tactic found"))
+                | _ ->
+                    dispatched
+                      (Error
+                         "assignment multi-export contraction group: \
+                          unsupported storage"))
+            | [] ->
+                dispatched
+                  (Error
+                     "assignment multi-export contraction group: \
+                      no contractions"))
         in
         (match assignment with
         | Some assignment -> dispatch_assignment assignment

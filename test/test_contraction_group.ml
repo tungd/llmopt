@@ -476,7 +476,8 @@ let run () =
         "S is consumed exactly once inside the group";
       expect
         (Contraction_group.single_acc_epilogue group = None)
-        "two-export group has no single-accumulator epilogue");
+        "two-export group has no single-accumulator epilogue";
+      );
       Printf.printf "  [PASS] exported-intermediate group\n%!");
 
   Printf.printf "E. Fan-out and conservative cuts\n%!";
@@ -755,5 +756,124 @@ let run () =
     (compile_msl_kernel three_src)
     "three-slot multi-slot kernel compiles cleanly with xcrun metal";
   Printf.printf "  [PASS] three-slot parametric emission\n%!";
+
+  Printf.printf "G. G4P12-07: multi-export contraction group selection\n%!";
+  (* Two-contraction, two-export region:
+     g = x*wg, u = x*wu, a = silu(g), z = a + u.
+     Export both a (the intermediate) and z (the final result).
+     This requires 2 contractions sharing input x and 2 exports. *)
+  let multi_export_g = value 20 shape_1_64 f16 in
+  let multi_export_u = value 21 shape_1_64 f16 in
+  let multi_export_a = value 22 shape_1_64 f16 in
+  let multi_export_z = value 23 shape_1_64 f16 in
+  let multi_export_region =
+    make_region ~name:"multi-export-fanout" ~inputs:inputs_gated
+      ~steps:
+        [ (linear_primitive, [ 0; 1 ], multi_export_g);
+          (linear_primitive, [ 0; 2 ], multi_export_u);
+          silu_step 3 multi_export_a;
+          add_step 5 4 multi_export_z ]
+      ~results:[ (5, multi_export_a); (6, multi_export_z) ]
+  in
+  (match Contraction_group.of_region multi_export_region with
+  | None -> fail "multi-export region must elaborate into a group"
+  | Some group ->
+      expect
+        (List.length group.contractions = 2)
+        "multi-export group has 2 contractions";
+      expect
+        (List.length group.exports = 2)
+        "multi-export group has 2 exports";
+      (match Contraction_group.multi_export_epilogues group with
+      | Some epilogues ->
+          expect
+            (List.length epilogues = 2)
+            "multi_export_epilogues returns 2 epilogues";
+          (* First export is a = silu(g) = Silu(Slot 0) *)
+          (match List.hd epilogues with
+          | Applicative_expr.Unop
+              (Applicative_expr.Silu, Applicative_expr.Slot 0) -> ()
+          | _ -> fail "first epilogue must be Silu(Slot 0)");
+          (* Second export is z = silu(g) + u = Add(Silu(Slot 0), Slot 1) *)
+          (match List.nth epilogues 1 with
+          | Applicative_expr.Binop
+              ( Applicative_expr.Add,
+                Applicative_expr.Unop
+                  (Applicative_expr.Silu, Applicative_expr.Slot 0),
+                Applicative_expr.Slot 1 ) -> ()
+          | _ -> fail "second epilogue must be Add(Silu(Slot 0), Slot 1)")
+      | None -> fail "multi_export_epilogues must return Some for 2-contraction 2-export group"));
+  (* select_contraction_group must now return Multi_export_contraction_group *)
+  (match Contraction_group.select_contraction_group multi_export_region with
+  | Some (Kernel_ir.Fused_tactic.Multi_export_contraction_group
+             { contractions; epilogues; outputs }) ->
+      expect (List.length contractions = 2) "multi-export tactic has 2 contractions";
+      expect (List.length epilogues = 2) "multi-export tactic has 2 epilogues";
+      expect (List.length outputs = 2) "multi-export tactic has 2 outputs";
+      expect
+        (Ir.Value.equal (List.hd outputs) multi_export_a)
+        "first output is the intermediate a";
+      expect
+        (Ir.Value.equal (List.nth outputs 1) multi_export_z)
+        "second output is the final z"
+  | Some _ -> fail "select_contraction_group must return Multi_export_contraction_group"
+  | None -> fail "select_contraction_group must select multi-export region");
+  (* Widened select must also return Multi_export_contraction_group *)
+  (match Contraction_group.select multi_export_region with
+  | Some (Kernel_ir.Fused_tactic.Multi_export_contraction_group _) -> ()
+  | Some _ -> fail "widened select must return Multi_export_contraction_group for multi-export region"
+  | None -> fail "widened select must admit multi-export region");
+  Printf.printf "  [PASS] multi-export contraction group selection\n%!";
+
+  Printf.printf "H. G4P12-07: multi-export kernel emission\n%!";
+  (* Multi-export kernel: two epilogues (Silu(0) and Add(Silu(0), 1)),
+     two output buffers.  The kernel must compile cleanly. *)
+  let me_epilogue_0 =
+    Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0)
+  in
+  let me_epilogue_1 =
+    Applicative_expr.Binop
+      ( Applicative_expr.Add,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let me_kernel_name =
+    Contraction_group.algebraic_kernel_name
+      ~base:"llmopt_q4_0_multi_export_f16_x8" me_epilogue_1
+  in
+  let me_src =
+    expect_ok
+      (Metal_block_codegen.q4_0_multi_export_linear_f16_x8_kernel
+         ~name:me_kernel_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
+         ~target:Target_hardware.default q4_0_schema)
+  in
+  expect
+    (contains_substr me_src ("kernel void " ^ me_kernel_name))
+    "multi-export kernel name matches digest";
+  expect
+    (contains_substr me_src "device const uchar* weight_0 [[buffer(1)]]")
+    "multi-export buffer 1 is weight_0";
+  expect
+    (contains_substr me_src "device const uchar* weight_1 [[buffer(2)]]")
+    "multi-export buffer 2 is weight_1";
+  expect
+    (contains_substr me_src "device half* output_0 [[buffer(3)]]")
+    "multi-export buffer 3 is output_0";
+  expect
+    (contains_substr me_src "device half* output_1 [[buffer(4)]]")
+    "multi-export buffer 4 is output_1";
+  expect
+    (contains_substr me_src "constant QuantLinearParams& params [[buffer(5)]]")
+    "multi-export buffer 5 is params";
+  expect
+    (contains_substr me_src "out_row_0[base_col]")
+    "multi-export has writeback for output_0";
+  expect
+    (contains_substr me_src "out_row_1[base_col]")
+    "multi-export has writeback for output_1";
+  expect
+    (compile_msl_kernel me_src)
+    "multi-export kernel compiles cleanly with xcrun metal";
+  Printf.printf "  [PASS] multi-export kernel emission\n%!";
 
   Printf.printf "All typed contraction-group algebra tests passed!\n%!"

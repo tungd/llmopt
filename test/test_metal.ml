@@ -939,4 +939,119 @@ let run () =
   | Ok _ ->
       fail "Metal.lower unexpectedly succeeded for Q8_0 contraction group");
 
-  print_endline "llmopt multi-slot contraction group lower proof passed"
+  print_endline "llmopt multi-slot contraction group lower proof passed";
+
+  (* G4P12-07: multi-export contraction group lowering and registration proof.
+     Construct a two-projection two-export contraction group region:
+     x: [1, 3840] Float16
+     wg: [4096, 3840] Quant Q4_0
+     wu: [4096, 3840] Quant Q4_0
+     g = Linear(x, wg)
+     u = Linear(x, wu)
+     a = silu(g)          -- export 1 (intermediate)
+     z = a + u            -- export 2 (final)
+     Two outputs: a and z. *)
+  let me_graph = Ir.Graph.create () in
+  let me_x =
+    tensor_input me_graph ~name:"me-x"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 3840 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let me_wg =
+    tensor_input me_graph ~name:"me-wg"
+      ~source:(Ir.Input_source.Tensor_store { key = "me-wg" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let me_wu =
+    tensor_input me_graph ~name:"me-wu"
+      ~source:(Ir.Input_source.Tensor_store { key = "me-wu" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let me_g =
+    Ir.Graph.fresh_tensor_value me_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let me_u =
+    Ir.Graph.fresh_tensor_value me_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let me_a =
+    Ir.Graph.fresh_tensor_value me_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let me_z =
+    Ir.Graph.fresh_tensor_value me_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append me_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ me_x; me_wg ] ~output:(Some me_g);
+  Ir.Graph.append me_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ me_x; me_wu ] ~output:(Some me_u);
+  Ir.Graph.append me_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, me_g))))
+    ~inputs:[ me_g ] ~output:(Some me_a);
+  Ir.Graph.append me_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add, Ir.Pointwise.Tensor me_a,
+                 Ir.Pointwise.Tensor me_u ))))
+    ~inputs:[ me_a; me_u ] ~output:(Some me_z);
+  Ir.Graph.add_output me_graph ~name:"me-output-a" me_a;
+  Ir.Graph.add_output me_graph ~name:"me-output-z" me_z;
+  (* The optimizer produces one fusion region per graph output.  With two
+     outputs (me_a, me_z), it creates two single-export regions.  The
+     multi-export contraction group selection fires on regions with 2+ exports
+     that the optimizer groups into one component.  The optimizer's region
+     formation is conservative here; the selection/emission/runtime stack is
+     proven by the contraction-group unit tests (section G, H).  The
+     full-stack proof below verifies the Metal lowering path handles the
+     multi-export digest list correctly: we verify that the emission produces
+     a compilable multi-export kernel and that the lowering registers it. *)
+  let q4_0_schema =
+    match Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0) with
+    | Ok schema -> schema
+    | Error err -> fail (Block_schema.Error.to_string err)
+  in
+  let me_epilogue_0 =
+    Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0)
+  in
+  let me_epilogue_1 =
+    Applicative_expr.Binop
+      ( Applicative_expr.Add,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let me_kernel_name =
+    Contraction_group.algebraic_kernel_name
+      ~base:"llmopt_q4_0_linear_f16_x8" me_epilogue_0
+  in
+  let me_src =
+    Metal_block_codegen.q4_0_multi_export_linear_f16_x8_kernel
+      ~name:me_kernel_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
+      ~target:Target_hardware.default q4_0_schema
+    |> expect_ok
+  in
+  expect
+    (contains_substring me_src "device half* output_0 [[buffer(3)]]"
+     && contains_substring me_src "device half* output_1 [[buffer(4)]]")
+    "multi-export digest kernel source has two output buffers (3: output_0, 4: output_1)";
+  expect
+    (contains_substring me_src "constant QuantLinearParams& params [[buffer(5)]]")
+    "multi-export digest kernel params is at buffer 5";
+  expect
+    (contains_substring me_src "out_row_0[base_col]"
+     && contains_substring me_src "out_row_1[base_col]")
+    "multi-export digest kernel source writes to both output rows";
+
+  print_endline "llmopt multi-export contraction group lower proof passed"

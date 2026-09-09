@@ -472,6 +472,45 @@ let multi_acc_epilogue (group : t) =
       else Slot_map.find_opt export.slot !env
   | _ -> None
 
+let multi_export_epilogues (group : t) =
+  match group.contractions with
+  | [] | [ _ ] -> None
+  | _ ->
+      if List.length group.exports < 2 then None
+      else
+        let env = ref Slot_map.empty in
+        let ok =
+          try
+            List.iteri
+              (fun index (contraction : contraction) ->
+                env :=
+                  Slot_map.add contraction.slot
+                    (Applicative_expr.Slot index)
+                    !env)
+              group.contractions;
+            List.iter
+              (fun (step : step) ->
+                let value = inline !env step.expr in
+                env := Slot_map.add step.slot value !env)
+              group.steps;
+            true
+          with Not_found -> false
+        in
+        if not ok then None
+        else
+          let result =
+            List.fold_left
+              (fun acc (export : export) ->
+                match acc with
+                | None -> None
+                | Some exprs -> (
+                    match Slot_map.find_opt export.slot !env with
+                    | Some expr -> Some (exprs @ [ expr ])
+                    | None -> None))
+              (Some []) group.exports
+          in
+          result
+
 (* ------------------------------------------------------------------------ *)
 (* G4P12-02 widening: select/fold routed through the elaboration            *)
 (* ------------------------------------------------------------------------ *)
@@ -563,20 +602,27 @@ let select_contraction_group region =
             && c.parameters = []
           in
           if List.for_all compatible group.contractions then
-            match multi_acc_epilogue group with
-            | Some epilogue -> (
-                match group.exports with
-                | [ export ] ->
+            let linears =
+              List.map linear_of_contraction group.contractions
+            in
+            match group.exports with
+            | [ export ] -> (
+                match multi_acc_epilogue group with
+                | Some epilogue ->
                     Some
                       (Kernel_ir.Fused_tactic.Contraction_group
-                         {
-                           contractions =
-                             List.map linear_of_contraction group.contractions;
-                           epilogue;
-                           output = export.value;
-                         })
-                | _ -> None)
-            | None -> None
+                         { contractions = linears; epilogue;
+                           output = export.value })
+                | None -> None)
+            | _ :: _ :: _ -> (
+                match multi_export_epilogues group with
+                | Some epilogues ->
+                    Some
+                      (Kernel_ir.Fused_tactic.Multi_export_contraction_group
+                         { contractions = linears; epilogues;
+                           outputs = List.map (fun e -> e.value) group.exports })
+                | None -> None)
+            | _ -> None
           else None
       | _ -> None)
 

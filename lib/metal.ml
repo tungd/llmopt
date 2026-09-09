@@ -379,6 +379,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
   let graph = without_region_nodes graph fusion_regions in
   let ( region_quant_tactics, region_quant_add_tactics,
         region_quant_digest_tactics, region_quant_multi_digest_tactics,
+        region_quant_multi_export_digest_tactics,
         regions_have_w4, regions_have_rms,
         regions_have_rms_rope, regions_have_short_conv_silu,
         region_gated_delta_tactics ) =
@@ -411,6 +412,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     @ List.map fst region_quant_tactics
     @ List.map fst region_quant_add_tactics
     @ List.map (fun (q, _, _, _) -> q) region_quant_multi_digest_tactics
+    @ List.map (fun (q, _, _, _, _) -> q) region_quant_multi_export_digest_tactics
     |> List.sort_uniq Stdlib.compare
   in
   let selected_quant_entries =
@@ -706,6 +708,41 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
              ~input_dtype:(Ir.Dtype.Quant quant)
              ~output_dtype:Ir.Dtype.Float16)
   in
+  let region_quant_multi_export_digest_source_result =
+    region_quant_multi_export_digest_tactics
+    |> List.fold_left
+         (fun result (quant, tactic, num_slots, epilogues, _outputs) ->
+           let* source = result in
+           let base = Tactic.name tactic in
+           let kernel_name =
+             Contraction_group.algebraic_kernel_name ~base (List.hd epilogues)
+             (* TODO G4P12-07: use a proper multi-export digest name *)
+           in
+           match quant with
+           | Ir.Dtype.Q4_0 ->
+               let* kernel =
+                 Metal_block_codegen.q4_0_multi_export_linear_f16_x8_kernel
+                   ~name:kernel_name ~num_slots
+                   ~epilogues:(List.map Applicative_expr.canonicalize epilogues)
+                   ~target q4_0_digest_schema
+               in
+               Ok (source ^ kernel)
+           | _ ->
+               Error
+                 (Printf.sprintf
+                    "Metal lower: multi-export contraction group digest emission is defined only for Q4_0 x8 decode regions (got %s serving %s)"
+                    (Ir.Dtype.quant_to_string quant) base))
+         (Ok "")
+  in
+  let region_quant_multi_export_digest_entries =
+    region_quant_multi_export_digest_tactics
+    |> List.map (fun (quant, tactic, _num_slots, epilogues, _outputs) ->
+           kernel_entry_with_threadgroup ~threadgroup:(Tactic.threadgroup tactic)
+             ~name:(Contraction_group.algebraic_kernel_name ~base:(Tactic.name tactic) (List.hd epilogues))
+             ~operation:Kernel_abi.Operation.Gated_linear
+             ~input_dtype:(Ir.Dtype.Quant quant)
+             ~output_dtype:Ir.Dtype.Float16)
+  in
   let gated_delta_tactics =
     gated_delta_tactics graph @ region_gated_delta_tactics
     |> List.sort_uniq Stdlib.compare
@@ -729,6 +766,9 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
   let* region_quant_multi_digest_source =
     region_quant_multi_digest_source_result
   in
+  let* region_quant_multi_export_digest_source =
+    region_quant_multi_export_digest_source_result
+  in
   let* quant_add_source = quant_add_source_result in
   let components =
     [ ( has_w4a16_linear graph || regions_have_w4,
@@ -744,12 +784,15 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
       ( has_quant_linear graph || region_quant_tactics <> []
-        || region_quant_multi_digest_tactics <> [] || quant_qkv,
+        || region_quant_multi_digest_tactics <> []
+        || region_quant_multi_export_digest_tactics <> [] || quant_qkv,
         quant_common_source ^ quant_format_source ^ quant_qkv_source
         ^ quant_add_source ^ region_quant_digest_source
-        ^ region_quant_multi_digest_source,
+        ^ region_quant_multi_digest_source
+        ^ region_quant_multi_export_digest_source,
         selected_quant_entries @ quant_qkv_entries @ quant_add_entries
-        @ region_quant_digest_entries @ region_quant_multi_digest_entries );
+        @ region_quant_digest_entries @ region_quant_multi_digest_entries
+        @ region_quant_multi_export_digest_entries );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       ( has_f16_bf16_linear graph,
         linear_f16_bf16_source,

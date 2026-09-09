@@ -44,6 +44,14 @@ val q4_0_multi_linear_f16_x8_kernel :
   Block_schema.t ->
   (string, string) result
 
+val q4_0_multi_export_linear_f16_x8_kernel :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
 val q4_0_linear_add_kernel :
   name:string ->
   target:Target_hardware.t ->
