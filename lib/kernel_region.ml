@@ -461,9 +461,16 @@ let validate_primitive map binding =
           | Ok (left_shape, left_dtype), Ok (right_shape, right_dtype) -> (
               match Tensor_shape.broadcast left_shape right_shape with
               | Ok shape
-                when left_dtype = right_dtype && is_float left_dtype
+                when is_float left_dtype && is_float right_dtype
                      && same_shape shape output.shape
-                     && output.dtype = left_dtype ->
+                     && ((left_dtype = right_dtype && output.dtype = left_dtype)
+                         || (output.dtype = Ir.Dtype.Float16
+                             && ((left_dtype = Ir.Dtype.Float16
+                                  && right_dtype = Ir.Dtype.Float32
+                                  && Tensor_shape.numel right_shape = 1)
+                                 || (left_dtype = Ir.Dtype.Float32
+                                     && right_dtype = Ir.Dtype.Float16
+                                     && Tensor_shape.numel left_shape = 1)))) ->
                   Ok ()
               | Ok _ | Error _ -> invalid "binary metadata is inconsistent")))
   | Primitive.Scalar_binary _ -> (

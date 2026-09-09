@@ -255,19 +255,32 @@ let binary_operands_match inputs operation =
 let binary_metadata_compatible node inputs output =
   match inputs with
   | [ left; right ]
-    when Ir.Value.dtype left = Ir.Value.dtype right
-         && is_float (Ir.Value.dtype left)
+    when is_float (Ir.Value.dtype left)
+         && is_float (Ir.Value.dtype right)
+         && is_float (Ir.Value.dtype output)
          && (match
                Tensor_shape.broadcast (Ir.Value.logical_shape left)
                  (Ir.Value.logical_shape right)
              with
             | Ok shape -> Tensor_shape.equal shape (Ir.Value.logical_shape output)
             | Error _ -> false)
-         && Ir.Value.dtype output = Ir.Value.dtype left -> Ok ()
+         && ((Ir.Value.dtype left = Ir.Value.dtype right
+              && Ir.Value.dtype output = Ir.Value.dtype left)
+             || (Ir.Value.dtype output = Ir.Dtype.Float16
+                 && ((Ir.Value.dtype left = Ir.Dtype.Float16
+                      && Ir.Value.dtype right = Ir.Dtype.Float32
+                      && Tensor_shape.numel (Ir.Value.logical_shape right) = 1)
+                     || (Ir.Value.dtype left = Ir.Dtype.Float32
+                         && Ir.Value.dtype right = Ir.Dtype.Float16
+                         && Tensor_shape.numel (Ir.Value.logical_shape left) = 1)))) ->
+      Ok ()
   | [ left; right ]
-    when Ir.Value.dtype left <> Ir.Value.dtype right
-         || Ir.Value.dtype left <> Ir.Dtype.Float16
-         || Ir.Value.dtype output <> Ir.Dtype.Float16 ->
+    when (match
+            Tensor_shape.broadcast (Ir.Value.logical_shape left)
+              (Ir.Value.logical_shape right)
+          with
+         | Ok shape -> Tensor_shape.equal shape (Ir.Value.logical_shape output)
+         | Error _ -> false) ->
       Error (Boundary.Numerical_incompatibility
                (Boundary.Numerical.Dtype_mismatch node))
   | _ ->
