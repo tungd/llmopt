@@ -3338,130 +3338,194 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                      ~input_dtype:(Ir.Dtype.Quant quant) ~buffers ~parameters
                      ~grid:(grid_x, 1, 1))
           | Assignment_contraction_group { contractions; epilogue; output } -> (
-              match contractions with
-              | [ first; second ] -> (
-                  let gated_match =
-                    match epilogue with
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 0),
-                          Applicative_expr.Slot 1 )
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Slot 1,
-                          Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 0) ) ->
-                        Some (first, second, Kernel_region.Primitive.Gelu)
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 1),
-                          Applicative_expr.Slot 0 )
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Slot 0,
-                          Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 1) ) ->
-                        Some (second, first, Kernel_region.Primitive.Gelu)
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
-                          Applicative_expr.Slot 1 )
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Slot 1,
-                          Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0) ) ->
-                        Some (first, second, Kernel_region.Primitive.Silu)
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 1),
-                          Applicative_expr.Slot 0 )
-                    | Applicative_expr.Binop
-                        ( Applicative_expr.Mul,
-                          Applicative_expr.Slot 0,
-                          Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 1) ) ->
-                        Some (second, first, Kernel_region.Primitive.Silu)
-                    | _ -> None
+              let digest_dispatch_opt =
+                match contractions with
+                | first :: _ -> (
+                    match first.storage with
+                    | Ir.Linear_storage.Block_quantized quant -> (
+                        match
+                          select_quant_linear_kernel runtime ~m:first.m
+                            ~n:first.n ~k:first.k
+                            ~output_dtype:(Ir.Value.dtype output) quant
+                        with
+                        | Ok tactic_entry ->
+                            let base_name = Kernel_abi.Entry.name tactic_entry in
+                            let digest_name =
+                              Contraction_group.algebraic_kernel_name
+                                ~base:base_name epilogue
+                            in
+                            (match
+                               kernel_entry ~name:digest_name runtime
+                                 ~operation:Kernel_abi.Operation.Gated_linear
+                                 ~input_dtype:(Ir.Dtype.Quant quant)
+                                 ~output_dtype:(Ir.Value.dtype output)
+                             with
+                            | Ok _ -> Some (quant, base_name, digest_name)
+                            | Error _ -> None)
+                        | Error _ -> None)
+                    | _ -> None)
+                | [] -> None
+              in
+              match digest_dispatch_opt with
+              | Some (quant, base_name, digest_name) ->
+                  let first = List.hd contractions in
+                  let* () =
+                    List.fold_left
+                      (fun res (c : Kernel_ir.Fused_tactic.linear) ->
+                        let* () = res in
+                        validate_linear_shapes ~m:c.m ~n:c.n ~k:c.k c.input c.weight output)
+                      (Ok ()) contractions
                   in
-                  match gated_match with
-                  | Some (gate, up, activation) ->
-                      let* () =
-                        validate_linear_shapes ~m:gate.m ~n:gate.n ~k:gate.k
-                          gate.input gate.weight output
+                  let* grid_x =
+                    if quant = Ir.Dtype.Q4_0 && String.ends_with ~suffix:"_x8" base_name then
+                      let groups = (first.n + 7) / 8 in
+                      linear_f16_grid (first.m * groups)
+                    else
+                      Error
+                        (Printf.sprintf
+                           "assignment contraction group digest dispatch is defined only for Q4_0 x8 (got %s %s)"
+                           (Ir.Dtype.quant_to_string quant) base_name)
+                  in
+                  let canonical_epilogue = Applicative_expr.canonicalize epilogue in
+                  let aux_values = Applicative_expr.required_values canonical_epilogue in
+                  let* input_buffer = find_value state first.input in
+                  let* weight_buffers =
+                    find_values state
+                      (List.map (fun (c : Kernel_ir.Fused_tactic.linear) -> c.weight) contractions)
+                  in
+                  let* aux_buffers = find_values state aux_values in
+                  let buffers = input_buffer :: (weight_buffers @ aux_buffers) in
+                  let* parameters = Parameters.u32s [ first.m; first.n; first.k; 0 ] in
+                  dispatched
+                    (dispatch_output ~name:digest_name runtime state output
+                       ~operation:Kernel_abi.Operation.Gated_linear
+                       ~input_dtype:(Ir.Dtype.Quant quant) ~buffers ~parameters
+                       ~grid:(grid_x, 1, 1))
+              | None -> (
+                  match contractions with
+                  | [ first; second ] -> (
+                      let gated_match =
+                        match epilogue with
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 0),
+                              Applicative_expr.Slot 1 )
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Slot 1,
+                              Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 0) ) ->
+                            Some (first, second, Kernel_region.Primitive.Gelu)
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 1),
+                              Applicative_expr.Slot 0 )
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Slot 0,
+                              Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 1) ) ->
+                            Some (second, first, Kernel_region.Primitive.Gelu)
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+                              Applicative_expr.Slot 1 )
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Slot 1,
+                              Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0) ) ->
+                            Some (first, second, Kernel_region.Primitive.Silu)
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 1),
+                              Applicative_expr.Slot 0 )
+                        | Applicative_expr.Binop
+                            ( Applicative_expr.Mul,
+                              Applicative_expr.Slot 0,
+                              Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 1) ) ->
+                            Some (second, first, Kernel_region.Primitive.Silu)
+                        | _ -> None
                       in
-                      let* () =
-                        validate_linear_shapes ~m:up.m ~n:up.n ~k:up.k up.input
-                          up.weight output
-                      in
-                      let* quant =
-                        match gate.storage, up.storage with
-                        | ( Ir.Linear_storage.Block_quantized gate_quant,
-                            Ir.Linear_storage.Block_quantized up_quant )
-                          when gate_quant = up_quant -> Ok gate_quant
-                        | _ -> Error "assignment contraction group requires matching block quantization"
-                      in
-                      let* buffers = find_values state [ gate.input; gate.weight; up.weight ] in
-                      let activation_tag =
-                        match activation with
-                        | Kernel_region.Primitive.Silu -> 0
-                        | Kernel_region.Primitive.Gelu -> 1
-                        | _ -> 0
-                      in
-                      let* parameters = Parameters.u32s [ gate.m; gate.n; gate.k; activation_tag ] in
-                      let name =
-                        match quant, gate.m with
-                        | Ir.Dtype.Q4_K, 2 -> "llmopt_q4_k_gated_linear_f16_m2_x1_l32"
-                        | Ir.Dtype.Q4_K, _ -> "llmopt_q4_k_gated_linear_f16"
-                        | Ir.Dtype.Q5_K, 2 -> "llmopt_q5_k_gated_linear_f16_m2_x1_l32"
-                        | Ir.Dtype.Q5_0, 1
-                          when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
-                            "llmopt_q5_0_gated_linear_f16_llama_mv"
-                        | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
-                        | Ir.Dtype.Q4_0, m when m >= 32 -> "llmopt_q4_0_gated_linear_f16_m32"
-                        | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
-                        | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
-                        | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16_x8"
-                        | Ir.Dtype.IQ4_XS, 2 -> "llmopt_iq4_xs_gated_linear_f16_m2"
-                        | _ -> ""
-                      in
-                      if name = "" then Error "assignment contraction group has no Metal tactic"
-                      else
-                        let* grid_x =
-                          match quant, gate.m with
-                          | (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K), 2 ->
-                              short_row_quant_grid (gate.m * gate.n)
-                          | Ir.Dtype.Q5_0, 1
-                            when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
-                              let groups = (gate.n + 3) / 4 in
-                              if groups > max_int / 64 then Error "assignment gated grid overflows"
-                              else Ok (groups * 64)
-                          | Ir.Dtype.Q5_0, _ ->
-                              let groups = ((gate.m * gate.n) + 3) / 4 in
-                              if groups > max_int / 256 then Error "assignment gated grid overflows"
-                              else Ok (groups * 256)
-                          | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid gate.n
-                          | Ir.Dtype.Q4_0, m when m >= 32 ->
-                              let m_tiles = (gate.m + 31) / 32 in
-                              linear_f16_grid (m_tiles * gate.n * 2)
-                          | Ir.Dtype.Q4_0, m when m >= 16 ->
-                              let m_tiles = (gate.m + 15) / 16 in
-                              linear_f16_grid (m_tiles * gate.n)
-                          | Ir.Dtype.Q4_0, m when m >= 4 ->
-                              let m_tiles = (gate.m + 3) / 4 in
-                              linear_f16_grid (m_tiles * gate.n)
-                          | Ir.Dtype.Q4_0, _ ->
-                              let groups = (gate.n + 7) / 8 in
-                              linear_f16_grid (gate.m * groups)
-                          | Ir.Dtype.Q4_K, _ ->
-                              linear_f16_grid (gate.m * gate.n)
-                          | _ -> Error "assignment contraction group has unsupported geometry"
-                        in
-                        dispatched
-                          (dispatch_output ~name runtime state output
-                             ~operation:Kernel_abi.Operation.Gated_linear
-                             ~input_dtype:(Ir.Dtype.Quant quant) ~buffers ~parameters
-                             ~grid:(grid_x, 1, 1))
-                  | None ->
-                      dispatched (Error "assignment contraction group epilogue is not yet servable"))
-              | _ ->
-                  dispatched (Error "assignment contraction group with arity <> 2 is not yet servable"))
+                      match gated_match with
+                      | Some (gate, up, activation) ->
+                          let* () =
+                            validate_linear_shapes ~m:gate.m ~n:gate.n ~k:gate.k
+                              gate.input gate.weight output
+                          in
+                          let* () =
+                            validate_linear_shapes ~m:up.m ~n:up.n ~k:up.k up.input
+                              up.weight output
+                          in
+                          let* quant =
+                            match gate.storage, up.storage with
+                            | ( Ir.Linear_storage.Block_quantized gate_quant,
+                                Ir.Linear_storage.Block_quantized up_quant )
+                              when gate_quant = up_quant -> Ok gate_quant
+                            | _ -> Error "assignment contraction group requires matching block quantization"
+                          in
+                          let* buffers = find_values state [ gate.input; gate.weight; up.weight ] in
+                          let activation_tag =
+                            match activation with
+                            | Kernel_region.Primitive.Silu -> 0
+                            | Kernel_region.Primitive.Gelu -> 1
+                            | _ -> 0
+                          in
+                          let* parameters = Parameters.u32s [ gate.m; gate.n; gate.k; activation_tag ] in
+                          let name =
+                            match quant, gate.m with
+                            | Ir.Dtype.Q4_K, 2 -> "llmopt_q4_k_gated_linear_f16_m2_x1_l32"
+                            | Ir.Dtype.Q4_K, _ -> "llmopt_q4_k_gated_linear_f16"
+                            | Ir.Dtype.Q5_K, 2 -> "llmopt_q5_k_gated_linear_f16_m2_x1_l32"
+                            | Ir.Dtype.Q5_0, 1
+                              when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
+                                "llmopt_q5_0_gated_linear_f16_llama_mv"
+                            | Ir.Dtype.Q5_0, _ -> "llmopt_q5_0_gated_linear_f16"
+                            | Ir.Dtype.Q4_0, m when m >= 32 -> "llmopt_q4_0_gated_linear_f16_m32"
+                            | Ir.Dtype.Q4_0, m when m >= 16 -> "llmopt_q4_0_gated_linear_f16_m16"
+                            | Ir.Dtype.Q4_0, m when m >= 4 -> "llmopt_q4_0_gated_linear_f16_m4"
+                            | Ir.Dtype.Q4_0, _ -> "llmopt_q4_0_gated_linear_f16_x8"
+                            | Ir.Dtype.IQ4_XS, 2 -> "llmopt_iq4_xs_gated_linear_f16_m2"
+                            | _ -> ""
+                          in
+                          if name = "" then Error "assignment contraction group has no Metal tactic"
+                          else
+                            let* grid_x =
+                              match quant, gate.m with
+                              | (Ir.Dtype.Q4_K | Ir.Dtype.Q5_K), 2 ->
+                                  short_row_quant_grid (gate.m * gate.n)
+                              | Ir.Dtype.Q5_0, 1
+                                when Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q5_LLAMA_MV" = Some "1" ->
+                                  let groups = (gate.n + 3) / 4 in
+                                  if groups > max_int / 64 then Error "assignment gated grid overflows"
+                                  else Ok (groups * 64)
+                              | Ir.Dtype.Q5_0, _ ->
+                                  let groups = ((gate.m * gate.n) + 3) / 4 in
+                                  if groups > max_int / 256 then Error "assignment gated grid overflows"
+                                  else Ok (groups * 256)
+                              | Ir.Dtype.IQ4_XS, 2 -> linear_f16_grid gate.n
+                              | Ir.Dtype.Q4_0, m when m >= 32 ->
+                                  let m_tiles = (gate.m + 31) / 32 in
+                                  linear_f16_grid (m_tiles * gate.n * 2)
+                              | Ir.Dtype.Q4_0, m when m >= 16 ->
+                                  let m_tiles = (gate.m + 15) / 16 in
+                                  linear_f16_grid (m_tiles * gate.n)
+                              | Ir.Dtype.Q4_0, m when m >= 4 ->
+                                  let m_tiles = (gate.m + 3) / 4 in
+                                  linear_f16_grid (m_tiles * gate.n)
+                              | Ir.Dtype.Q4_0, _ ->
+                                  let groups = (gate.n + 7) / 8 in
+                                  linear_f16_grid (gate.m * groups)
+                              | Ir.Dtype.Q4_K, _ ->
+                                  linear_f16_grid (gate.m * gate.n)
+                              | _ -> Error "assignment contraction group has unsupported geometry"
+                            in
+                            dispatched
+                              (dispatch_output ~name runtime state output
+                                 ~operation:Kernel_abi.Operation.Gated_linear
+                                 ~input_dtype:(Ir.Dtype.Quant quant) ~buffers ~parameters
+                                 ~grid:(grid_x, 1, 1))
+                      | None ->
+                          dispatched (Error "assignment contraction group epilogue is not yet servable"))
+                  | _ ->
+                      dispatched (Error "assignment contraction group with arity <> 2 is not yet servable")))
         in
         (match assignment with
         | Some assignment -> dispatch_assignment assignment

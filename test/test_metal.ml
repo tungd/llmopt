@@ -736,4 +736,207 @@ let run () =
             "device const half* buf_0 [[buffer(2)]]"))
     "G4P12-02 zero-buffer digest kernel binds output at buffer 2 and params \
      at buffer 3";
-  print_endline "llmopt single-accumulator y*y digest proof passed"
+  print_endline "llmopt single-accumulator y*y digest proof passed";
+
+  (* G4P12-06-3: multi-slot contraction group lowering and registration proof.
+     Construct a two-projection arbitrary pointwise contraction group region:
+     x: [1, 3840] Float16
+     wg: [4096, 3840] Quant Q4_0
+     wu: [4096, 3840] Quant Q4_0
+     g = Linear(x, wg)
+     u = Linear(x, wu)
+     a = silu(g)
+     z = a + u  (arbitrary pointwise add over both projection slots)
+  *)
+  let multi_graph = Ir.Graph.create () in
+  let multi_x =
+    tensor_input multi_graph ~name:"multi-x"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 3840 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let multi_wg =
+    tensor_input multi_graph ~name:"multi-wg"
+      ~source:(Ir.Input_source.Tensor_store { key = "multi-wg" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let multi_wu =
+    tensor_input multi_graph ~name:"multi-wu"
+      ~source:(Ir.Input_source.Tensor_store { key = "multi-wu" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let multi_g =
+    Ir.Graph.fresh_tensor_value multi_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let multi_u =
+    Ir.Graph.fresh_tensor_value multi_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let multi_a =
+    Ir.Graph.fresh_tensor_value multi_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let multi_z =
+    Ir.Graph.fresh_tensor_value multi_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append multi_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ multi_x; multi_wg ] ~output:(Some multi_g);
+  Ir.Graph.append multi_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ multi_x; multi_wu ] ~output:(Some multi_u);
+  Ir.Graph.append multi_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, multi_g))))
+    ~inputs:[ multi_g ] ~output:(Some multi_a);
+  Ir.Graph.append multi_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add, Ir.Pointwise.Tensor multi_a,
+                 Ir.Pointwise.Tensor multi_u ))))
+    ~inputs:[ multi_a; multi_u ] ~output:(Some multi_z);
+  Ir.Graph.add_output multi_graph ~name:"multi-output" multi_z;
+  let multi_opt = Passes.optimize multi_graph |> expect_ok in
+  let multi_regions = Passes.Optimization.fusion_regions multi_opt in
+  expect (List.length multi_regions = 1)
+    "Passes.optimize discovers the two-projection arbitrary pointwise contraction group";
+  let multi_region = List.hd multi_regions in
+  (match Contraction_group.select multi_region with
+  | Some (Kernel_ir.Fused_tactic.Contraction_group { contractions; epilogue; output }) ->
+      expect (List.length contractions = 2) "multi-region tactic has 2 contractions";
+      expect (Ir.Value.equal output multi_z) "multi-region tactic output matches";
+      expect
+        (Applicative_expr.equal ( = ) epilogue
+           (Applicative_expr.Binop
+              ( Applicative_expr.Add,
+                Applicative_expr.Unop
+                  (Applicative_expr.Silu, Applicative_expr.Slot 0),
+                Applicative_expr.Slot 1 )))
+        "multi-region tactic epilogue is Add(Silu(0), 1)"
+  | _ -> fail "Contraction_group.select must admit multi_region as Contraction_group");
+
+  let multi_program =
+    Metal.lower ~fusion_regions:multi_regions
+      (Passes.Optimization.execution_graph multi_opt)
+    |> expect_ok
+  in
+  let multi_source = Metal.Program.source multi_program in
+  let multi_epilogue =
+    Applicative_expr.Binop
+      ( Applicative_expr.Add,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let digest_name =
+    Contraction_group.algebraic_kernel_name ~base:"llmopt_q4_0_linear_f16_x8"
+      multi_epilogue
+  in
+  let digest_entry =
+    List.find_opt
+      (fun entry -> Kernel_abi.Entry.name entry = digest_name)
+      (Metal.Program.kernels multi_program)
+  in
+  expect (Option.is_some digest_entry)
+    "Metal lowering declares the multi-slot contraction group digest kernel";
+  let entry = Option.get digest_entry in
+  expect
+    (Kernel_abi.Entry.operation entry = Kernel_abi.Operation.Gated_linear)
+    "digest kernel entry operation is Gated_linear";
+  expect
+    (Kernel_abi.Entry.input_dtype entry = Ir.Dtype.Quant Ir.Dtype.Q4_0)
+    "digest kernel entry input_dtype is Quant Q4_0";
+  expect
+    (Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16)
+    "digest kernel entry output_dtype is Float16";
+  expect
+    (Kernel_abi.Entry.threadgroup entry = (256, 1, 1))
+    "digest kernel entry threadgroup is (256, 1, 1)";
+  expect
+    (contains_substring multi_source "device const uchar* weight_0 [[buffer(1)]]"
+     && contains_substring multi_source "device const uchar* weight_1 [[buffer(2)]]"
+     && contains_substring multi_source "device half* output [[buffer(3)]]"
+     && contains_substring multi_source "constant QuantLinearParams& params [[buffer(4)]]")
+    "multi-slot digest kernel source has correct buffer layout (1: w0, 2: w1, 3: out, 4: params)";
+
+  (* Negative path: verify that passing an unsupported quant (e.g. Q8_0) fails loudly *)
+  let q8_graph = Ir.Graph.create () in
+  let q8_x =
+    tensor_input q8_graph ~name:"q8-x"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 3840 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_wg =
+    tensor_input q8_graph ~name:"q8-wg"
+      ~source:(Ir.Input_source.Tensor_store { key = "q8-wg" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
+  in
+  let q8_wu =
+    tensor_input q8_graph ~name:"q8-wu"
+      ~source:(Ir.Input_source.Tensor_store { key = "q8-wu" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
+  in
+  let q8_g =
+    Ir.Graph.fresh_tensor_value q8_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_u =
+    Ir.Graph.fresh_tensor_value q8_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_a =
+    Ir.Graph.fresh_tensor_value q8_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q8_z =
+    Ir.Graph.fresh_tensor_value q8_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append q8_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ q8_x; q8_wg ] ~output:(Some q8_g);
+  Ir.Graph.append q8_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
+    ~inputs:[ q8_x; q8_wu ] ~output:(Some q8_u);
+  Ir.Graph.append q8_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, q8_g))))
+    ~inputs:[ q8_g ] ~output:(Some q8_a);
+  Ir.Graph.append q8_graph
+    ~op:
+      (Ir.Op.Primitive
+         (Ir.Primitive.Pointwise
+            (Ir.Pointwise.Binary
+               ( Ir.Pointwise.Add, Ir.Pointwise.Tensor q8_a,
+                 Ir.Pointwise.Tensor q8_u ))))
+    ~inputs:[ q8_a; q8_u ] ~output:(Some q8_z);
+  Ir.Graph.add_output q8_graph ~name:"q8-output" q8_z;
+  let q8_opt = Passes.optimize q8_graph |> expect_ok in
+  let q8_regions = Passes.Optimization.fusion_regions q8_opt in
+  (match
+     Metal.lower ~fusion_regions:q8_regions
+       (Passes.Optimization.execution_graph q8_opt)
+   with
+  | Error msg ->
+      expect
+        (contains_substring msg
+           "Metal lower: multi-slot contraction group digest emission is defined only for Q4_0 x8 decode regions (got Q8_0 serving")
+        "unsupported quant in multi-slot contraction group fails loudly at lower"
+  | Ok _ ->
+      fail "Metal.lower unexpectedly succeeded for Q8_0 contraction group");
+
+  print_endline "llmopt multi-slot contraction group lower proof passed"

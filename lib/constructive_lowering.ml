@@ -1334,84 +1334,6 @@ let lower analysis =
   in
   let decisions = Analysis.decisions analysis in
   let regions = Analysis.regions analysis in
-  let gated_matches =
-    regions
-    |> List.filter_map (fun region ->
-           gated_match ~target ~graph ~decisions (Region.assignments region))
-  in
-  let claimed, gated_events =
-    List.fold_left
-      (fun (claimed, events) match_ ->
-        match overlap claimed match_.assignments with
-        | Some _ -> claimed, events
-        | None ->
-            let event =
-              { Lowering.Event.kind = match_.kind;
-                source_assignments = match_.assignments;
-                inputs = Ir.node_inputs match_.replacement;
-                outputs =
-                  Option.to_list (Ir.node_output match_.replacement)
-                  @ Ir.Op.additional_outputs
-                      (Ir.node_op match_.replacement);
-                replacement_node = match_.replacement }
-            in
-            let claimed =
-              List.fold_left
-                (fun claimed assignment ->
-                  Node_set.add (assignment_id assignment) claimed)
-                claimed match_.assignments
-            in
-            claimed, event :: events)
-      (Node_set.empty, []) gated_matches
-  in
-  let gated_events = List.rev gated_events in
-  let linear_matches =
-    regions
-    |> List.filter_map (fun region ->
-           linear_add_match ~decisions (Region.assignments region))
-  in
-  let claimed, linear_events, overlap_uncovered =
-    List.fold_left
-      (fun (claimed, events, uncovered) match_ ->
-        match overlap claimed match_.assignments with
-        | None ->
-            let event =
-              { Lowering.Event.kind = match_.kind;
-                source_assignments = match_.assignments;
-                inputs = Ir.node_inputs match_.replacement;
-                outputs =
-                  Option.to_list (Ir.node_output match_.replacement)
-                  @ Ir.Op.additional_outputs
-                      (Ir.node_op match_.replacement);
-                replacement_node = match_.replacement }
-            in
-            let claimed =
-              List.fold_left
-                (fun claimed assignment ->
-                  Node_set.add (assignment_id assignment) claimed)
-                claimed match_.assignments
-            in
-            claimed, event :: events, uncovered
-        | Some assignment ->
-            let source =
-              match match_.assignments with
-              | first :: _ -> assignment_id first
-              | [] -> assignment_id assignment
-            in
-            let destination =
-              match List.rev match_.assignments with
-              | last :: _ -> assignment_id last
-              | [] -> assignment_id assignment
-            in
-            claimed, events,
-            { Lowering.Uncovered.kind = match_.kind; source; destination;
-              source_member_node_ids =
-                List.map assignment_id match_.assignments;
-              reason = Lowering.Uncovered.Overlap (assignment_id assignment) }
-            :: uncovered)
-      (claimed, [], []) linear_matches
-  in
-  let linear_events = List.rev linear_events in
   let tactic_boundary_values = function
     | Kernel_ir.Fused_tactic.Rms_normalize
         { input; weight; residual; layer_scalar; output; _ } ->
@@ -1522,6 +1444,23 @@ let lower analysis =
                          None)
                  | _ -> None
                in
+               let select_contraction_group tactic =
+                 match tactic with
+                 | Kernel_ir.Fused_tactic.Contraction_group
+                     { contractions = first :: _; output; _ } as tactic
+                   when (match Region.outputs region with
+                         | [ region_output ] ->
+                             Ir.Value.equal region_output output
+                         | _ -> false) -> (
+                     match first.Kernel_ir.Fused_tactic.storage with
+                     | Ir.Linear_storage.Block_quantized _ ->
+                         let selected = assignment_slice assignments tactic in
+                         if selected = [] then None else Some (tactic, selected)
+                     | Ir.Linear_storage.Dense _
+                     | Ir.Linear_storage.Groupwise_packed _ ->
+                         None)
+                 | _ -> None
+               in
                let legacy_candidates =
                  Kernel_ir.Fused_tactic.select_all kernel_region
                  |> List.filter_map (fun tactic ->
@@ -1550,6 +1489,8 @@ let lower analysis =
                  (match Contraction_group.select kernel_region with
                  | Some (Kernel_ir.Fused_tactic.Linear_epilogue _ as tactic) ->
                      Option.to_list (select_linear_epilogue tactic)
+                 | Some (Kernel_ir.Fused_tactic.Contraction_group _ as tactic) ->
+                     Option.to_list (select_contraction_group tactic)
                  | _ -> []))
   in
   let all_assignment_producers =
@@ -1631,10 +1572,94 @@ let lower analysis =
                in
                claimed, event :: events
            | _ -> claimed, events)
-         (claimed, [])
+         (Node_set.empty, [])
   in
   let folded_events = List.rev folded_events in
-  let events = gated_events @ linear_events @ folded_events in
+  let gated_matches =
+    regions
+    |> List.filter (fun region ->
+           not (List.for_all (fun a -> Node_set.mem (assignment_id a) claimed)
+                  (Region.assignments region)))
+    |> List.filter_map (fun region ->
+           gated_match ~target ~graph ~decisions (Region.assignments region))
+  in
+  let claimed, gated_events =
+    List.fold_left
+      (fun (claimed, events) match_ ->
+        match overlap claimed match_.assignments with
+        | Some _ -> claimed, events
+        | None ->
+            let event =
+              { Lowering.Event.kind = match_.kind;
+                source_assignments = match_.assignments;
+                inputs = Ir.node_inputs match_.replacement;
+                outputs =
+                  Option.to_list (Ir.node_output match_.replacement)
+                  @ Ir.Op.additional_outputs
+                      (Ir.node_op match_.replacement);
+                replacement_node = match_.replacement }
+            in
+            let claimed =
+              List.fold_left
+                (fun claimed assignment ->
+                  Node_set.add (assignment_id assignment) claimed)
+                claimed match_.assignments
+            in
+            claimed, event :: events)
+      (claimed, []) gated_matches
+  in
+  let gated_events = List.rev gated_events in
+  let linear_matches =
+    regions
+    |> List.filter (fun region ->
+           not (List.for_all (fun a -> Node_set.mem (assignment_id a) claimed)
+                  (Region.assignments region)))
+    |> List.filter_map (fun region ->
+           linear_add_match ~decisions (Region.assignments region))
+  in
+  let claimed, linear_events, overlap_uncovered =
+    List.fold_left
+      (fun (claimed, events, uncovered) match_ ->
+        match overlap claimed match_.assignments with
+        | None ->
+            let event =
+              { Lowering.Event.kind = match_.kind;
+                source_assignments = match_.assignments;
+                inputs = Ir.node_inputs match_.replacement;
+                outputs =
+                  Option.to_list (Ir.node_output match_.replacement)
+                  @ Ir.Op.additional_outputs
+                      (Ir.node_op match_.replacement);
+                replacement_node = match_.replacement }
+            in
+            let claimed =
+              List.fold_left
+                (fun claimed assignment ->
+                  Node_set.add (assignment_id assignment) claimed)
+                claimed match_.assignments
+            in
+            claimed, event :: events, uncovered
+        | Some assignment ->
+            let source =
+              match match_.assignments with
+              | first :: _ -> assignment_id first
+              | [] -> assignment_id assignment
+            in
+            let destination =
+              match List.rev match_.assignments with
+              | last :: _ -> assignment_id last
+              | [] -> assignment_id assignment
+            in
+            claimed, events,
+            { Lowering.Uncovered.kind = match_.kind; source; destination;
+              source_member_node_ids =
+                List.map assignment_id match_.assignments;
+              reason = Lowering.Uncovered.Overlap (assignment_id assignment) }
+            :: uncovered)
+      (claimed, [], []) linear_matches
+  in
+  let linear_events = List.rev linear_events in
+  let events = folded_events @ gated_events @ linear_events in
   let cut_uncovered =
     decisions
     |> List.filter_map (function

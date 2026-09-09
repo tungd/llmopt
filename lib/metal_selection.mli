@@ -128,5 +128,6 @@ val region_tactics :
   Kernel_region.region list ->
   (Ir.Dtype.quant_type * Tactic.t) list *
   (Ir.Dtype.quant_type * Tactic.t) list *
-  (Ir.Dtype.quant_type * Tactic.t * Epilogue.t) list * bool * bool * 
-  bool * bool * gated_delta_tactic list
+  (Ir.Dtype.quant_type * Tactic.t * Epilogue.t) list *
+  (Ir.Dtype.quant_type * Tactic.t * int * int Applicative_expr.t) list *
+  bool * bool * bool * bool * gated_delta_tactic list

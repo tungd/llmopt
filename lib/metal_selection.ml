@@ -460,8 +460,8 @@ let region_tactics ~target regions =
   in
   regions
   |> List.fold_left
-       (fun (quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-             has_short_conv_silu, gated_delta) region ->
+       (fun (quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+             has_rms, has_rms_rope, has_short_conv_silu, gated_delta) region ->
          (* G4P12-02: route single-accumulator select through the
             elaboration - the legacy recognizer wins first and the widening
             only adds single-slot branch shapes ([y*y] -> pure monoid
@@ -478,17 +478,17 @@ let region_tactics ~target regions =
                    && is_residual_add_epilogue epilogue
                  then
                    quant, (storage, tactic) :: quant_add, quant_digest,
-                   has_w4, has_rms, has_rms_rope, has_short_conv_silu,
-                   gated_delta
+                   quant_multi_digest, has_w4, has_rms, has_rms_rope,
+                   has_short_conv_silu, gated_delta
                  else
                    quant, quant_add, (storage, tactic, epilogue) :: quant_digest,
-                   has_w4, has_rms, has_rms_rope, has_short_conv_silu,
-                   gated_delta
+                   quant_multi_digest, has_w4, has_rms, has_rms_rope,
+                   has_short_conv_silu, gated_delta
              | Ir.Linear_storage.Groupwise_packed _, _ ->
-                 quant, quant_add, quant_digest, true, has_rms, has_rms_rope,
-                 has_short_conv_silu, gated_delta
-             | _ -> quant, quant_add, quant_digest, has_w4, has_rms,
-                 has_rms_rope, has_short_conv_silu, gated_delta)
+                 quant, quant_add, quant_digest, quant_multi_digest, true,
+                 has_rms, has_rms_rope, has_short_conv_silu, gated_delta
+             | _ -> quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+                 has_rms, has_rms_rope, has_short_conv_silu, gated_delta)
          | Some
              (Kernel_ir.Fused_tactic.Gated_product
                { gate; up; output; _ }) ->
@@ -508,38 +508,48 @@ let region_tactics ~target regions =
                       Ir.Linear_storage.Groupwise_packed _ ) -> true
                   | _ -> false)
              in
-              quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-              has_short_conv_silu, gated_delta
-          | Some
-              (Kernel_ir.Fused_tactic.Contraction_group
-                { contractions; output; _ }) ->
-              let add quant (linear : Kernel_ir.Fused_tactic.linear) =
-                match linear.storage, select_linear linear output with
-                | Ir.Linear_storage.Block_quantized storage, Some tactic ->
-                    (storage, tactic) :: quant
-                | _ -> quant
-              in
-              let quant = List.fold_left add quant contractions in
-              let has_w4 =
-                has_w4
-                || List.exists
-                     (fun (c : Kernel_ir.Fused_tactic.linear) ->
-                       match c.storage with
-                       | Ir.Linear_storage.Groupwise_packed _ -> true
-                       | _ -> false)
-                     contractions
-              in
-              quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-              has_short_conv_silu, gated_delta
-          | Some (Kernel_ir.Fused_tactic.Rms_normalize _) ->
-             quant, quant_add, quant_digest, has_w4, true, has_rms_rope,
-             has_short_conv_silu, gated_delta
+             quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+             has_rms, has_rms_rope, has_short_conv_silu, gated_delta
+         | Some
+             (Kernel_ir.Fused_tactic.Contraction_group
+               { contractions; epilogue; output }) ->
+             let add quant (linear : Kernel_ir.Fused_tactic.linear) =
+               match linear.storage, select_linear linear output with
+               | Ir.Linear_storage.Block_quantized storage, Some tactic ->
+                   (storage, tactic) :: quant
+               | _ -> quant
+             in
+             let quant = List.fold_left add quant contractions in
+             let quant_multi_digest =
+               match contractions with
+               | first :: _ -> (
+                   match first.storage, select_linear first output with
+                   | Ir.Linear_storage.Block_quantized storage, Some tactic ->
+                       (storage, tactic, List.length contractions, epilogue)
+                       :: quant_multi_digest
+                   | _ -> quant_multi_digest)
+               | [] -> quant_multi_digest
+             in
+             let has_w4 =
+               has_w4
+               || List.exists
+                    (fun (c : Kernel_ir.Fused_tactic.linear) ->
+                      match c.storage with
+                      | Ir.Linear_storage.Groupwise_packed _ -> true
+                      | _ -> false)
+                    contractions
+             in
+             quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+             has_rms, has_rms_rope, has_short_conv_silu, gated_delta
+         | Some (Kernel_ir.Fused_tactic.Rms_normalize _) ->
+             quant, quant_add, quant_digest, quant_multi_digest, has_w4, true,
+             has_rms_rope, has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Rms_rope _) ->
-             quant, quant_add, quant_digest, has_w4, has_rms, true,
-             has_short_conv_silu, gated_delta
+             quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+             has_rms, true, has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Short_conv_silu _) ->
-             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-             true, gated_delta
+             quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+             has_rms, has_rms_rope, true, gated_delta
          | Some (Kernel_ir.Fused_tactic.Gated_delta { query; _ }) ->
              let gated_delta =
                match
@@ -550,14 +560,14 @@ let region_tactics ~target regions =
                    Gated_delta_head_major_f32 width :: gated_delta
                | _ -> gated_delta
              in
-             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-             has_short_conv_silu, gated_delta
+             quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+             has_rms, has_rms_rope, has_short_conv_silu, gated_delta
          | None ->
-             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-             has_short_conv_silu, gated_delta)
-       ([], [], [], false, false, false, false, [])
-  |> fun (quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-          has_short_conv_silu, gated_delta) ->
+             quant, quant_add, quant_digest, quant_multi_digest, has_w4,
+             has_rms, has_rms_rope, has_short_conv_silu, gated_delta)
+       ([], [], [], [], false, false, false, false, [])
+  |> fun (quant, quant_add, quant_digest, quant_multi_digest, has_w4, has_rms,
+          has_rms_rope, has_short_conv_silu, gated_delta) ->
   let compare_digest (storage, tactic, epilogue)
       (storage', tactic', epilogue') =
     let c = Stdlib.compare storage storage' in
@@ -570,8 +580,24 @@ let region_tactics ~target regions =
           (Epilogue.algebraic_kernel_name ~base:(Tactic.name tactic) epilogue)
           (Epilogue.algebraic_kernel_name ~base:(Tactic.name tactic') epilogue')
   in
+  let compare_multi_digest (storage, tactic, slots, epilogue)
+      (storage', tactic', slots', epilogue') =
+    let c = Stdlib.compare storage storage' in
+    if c <> 0 then c
+    else
+      let c = String.compare (Tactic.name tactic) (Tactic.name tactic') in
+      if c <> 0 then c
+      else
+        let c = Int.compare slots slots' in
+        if c <> 0 then c
+        else
+          String.compare
+            (Contraction_group.algebraic_kernel_name ~base:(Tactic.name tactic) epilogue)
+            (Contraction_group.algebraic_kernel_name ~base:(Tactic.name tactic') epilogue')
+  in
   ( List.sort_uniq Stdlib.compare quant,
     List.sort_uniq Stdlib.compare quant_add,
     List.sort_uniq compare_digest quant_digest,
+    List.sort_uniq compare_multi_digest quant_multi_digest,
     has_w4, has_rms, has_rms_rope, has_short_conv_silu,
     List.sort_uniq Stdlib.compare gated_delta )
