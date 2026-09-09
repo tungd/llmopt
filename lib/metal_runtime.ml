@@ -2719,6 +2719,7 @@ type assignment_execution =
       input : Ir.Value.t;
       weight : Ir.Value.t option;
       residual : Ir.Value.t option;
+      layer_scalar : Ir.Value.t option;
       output : Ir.Value.t;
       epsilon : float;
     }
@@ -2762,8 +2763,8 @@ let assignment_execution command =
       Some (Assignment_gated_product { gate; up; activation; output })
   | Some
       (Kernel_ir.Fused_tactic.Rms_normalize
-        { input; weight; residual; output; epsilon }) ->
-      Some (Assignment_rms_normalize { input; weight; residual; output; epsilon })
+        { input; weight; residual; layer_scalar; output; epsilon }) ->
+      Some (Assignment_rms_normalize { input; weight; residual; layer_scalar; output; epsilon })
   | Some
       (Kernel_ir.Fused_tactic.Rms_rope
         { config; input; weight; cosine; sine; output }) ->
@@ -2920,7 +2921,8 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                      ~operation:Kernel_abi.Operation.Rms_rope
                      ~input_dtype:(Ir.Value.dtype input) ~buffers ~parameters
                      ~grid:(grid_x, 1, 1))
-          | Assignment_rms_normalize { input; weight; residual; output; epsilon } ->
+          | Assignment_rms_normalize
+              { input; weight; residual; layer_scalar; output; epsilon } ->
               let input_shape = Ir.Value.logical_shape input in
               let* width =
                 match List.rev (Tensor_shape.dimensions input_shape) with
@@ -2929,19 +2931,49 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
               in
               let rows = Tensor_shape.numel input_shape / width in
               let* buffers =
-                match weight, residual with
-                | Some weight, Some residual ->
-                    find_values state [ input; weight; residual ]
-                | Some weight, None -> find_values state [ input; weight ]
-                | None, Some residual ->
-                    find_values state [ input; residual ]
-                | None, None -> find_values state [ input ]
+                [ Some input; weight; residual; layer_scalar ]
+                |> List.filter_map (fun x -> x)
+                |> find_values state
               in
               let* parameters = Parameters.rms_norm ~rows ~width ~epsilon in
               let input_dtype = Ir.Value.dtype input in
               let* entry, simd, wide =
-                match weight, residual with
-                | Some weight, Some _residual ->
+                match weight, residual, layer_scalar with
+                | Some weight, Some _residual, Some _scale ->
+                    let weight_dtype = Ir.Value.dtype weight in
+                    let wide =
+                      use_wide_rows ~rows ~width
+                      && input_dtype = Ir.Dtype.Float16
+                      && weight_dtype = Ir.Dtype.Float32
+                    in
+                    let name =
+                      if wide then "llmopt_rms_norm_add_scale_f16_wf32_wide"
+                      else "llmopt_rms_norm_add_scale_f16_wf32_simd"
+                    in
+                    let* entry =
+                      kernel_entry ~name runtime
+                        ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype
+                        ~output_dtype:(Ir.Value.dtype output)
+                    in
+                    Ok (entry, not wide, wide)
+                | Some weight, None, Some _scale ->
+                    let weight_dtype = Ir.Value.dtype weight in
+                    let wide =
+                      use_wide_rows ~rows ~width
+                      && input_dtype = Ir.Dtype.Float16
+                      && weight_dtype = Ir.Dtype.Float32
+                    in
+                    let name =
+                      if wide then "llmopt_rms_norm_scale_f16_wf32_wide"
+                      else "llmopt_rms_norm_scale_f16_wf32_simd"
+                    in
+                    let* entry =
+                      kernel_entry ~name runtime
+                        ~operation:Kernel_abi.Operation.Rms_norm ~input_dtype
+                        ~output_dtype:(Ir.Value.dtype output)
+                    in
+                    Ok (entry, not wide, wide)
+                | Some weight, Some _residual, None ->
                     let weight_dtype = Ir.Value.dtype weight in
                     let wide =
                       use_wide_rows ~rows ~width
@@ -2958,7 +2990,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                         ~output_dtype:(Ir.Value.dtype output)
                     in
                     Ok (entry, not wide, wide)
-                | Some weight, None ->
+                | Some weight, None, None ->
                     let weight_dtype = Ir.Value.dtype weight in
                     let wide =
                       use_wide_rows ~rows ~width
@@ -2970,7 +3002,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                         (Ir.Value.dtype output)
                     in
                     Ok (entry, simd, wide)
-                | None, Some _residual ->
+                | None, Some _residual, None ->
                     let wide = use_wide_rows ~rows ~width in
                     let name =
                       if wide then "llmopt_rms_norm_unweighted_add_f16_wide"
@@ -2982,7 +3014,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                         ~output_dtype:(Ir.Value.dtype output)
                     in
                     Ok (entry, not wide, wide)
-                | None, None ->
+                | None, None, None ->
                     let wide = use_wide_rows ~rows ~width in
                     let name =
                       if wide then "llmopt_rms_norm_unweighted_f16_wide"
@@ -2994,6 +3026,8 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                         ~output_dtype:(Ir.Value.dtype output)
                     in
                     Ok (entry, not wide, wide)
+                | None, _, Some _ ->
+                    Error "assignment RMSNorm with layer_scalar requires weight"
               in
               let* grid_x =
                 if wide then wide_rows_grid rows

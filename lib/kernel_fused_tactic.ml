@@ -30,6 +30,7 @@ open Kernel_region
         input : Ir.Value.t;
         weight : Ir.Value.t option;
         residual : Ir.Value.t option;
+        layer_scalar : Ir.Value.t option;
         output : Ir.Value.t;
         epsilon : float;
       }
@@ -318,18 +319,15 @@ open Kernel_region
                   | None -> try_unweighted ()))
           | _ -> try_unweighted ()
         in
-        let match_residual () =
-          match producer region result.slot with
+        let match_residual_slot slot =
+          match producer region slot with
           | Some
               { primitive = Primitive.Binary Primitive.Add;
                 inputs = [ left; right ]; _ } ->
               let try_residual norm_slot residual_slot =
                 match match_rms norm_slot, value_origin region values residual_slot with
                 | Some (input, weight, epsilon), Some residual ->
-                    Some
-                      (Rms_normalize
-                         { input; weight; residual = Some residual;
-                           output = result.value; epsilon })
+                    Some (input, weight, Some residual, epsilon)
                 | _ -> None
               in
               (match try_residual left right with
@@ -337,14 +335,46 @@ open Kernel_region
               | None -> try_residual right left)
           | _ -> None
         in
-        match match_residual () with
+        let match_rms_or_residual slot =
+          match match_residual_slot slot with
+          | Some tactic -> Some tactic
+          | None -> (
+              match match_rms slot with
+              | Some (input, weight, epsilon) ->
+                  Some (input, weight, None, epsilon)
+              | None -> None)
+        in
+        let match_scale () =
+          match producer region result.slot with
+          | Some
+              { primitive = Primitive.Binary Primitive.Mul;
+                inputs = [ left; right ]; _ } ->
+              let try_scale pre_slot scale_slot =
+                match value_origin region values scale_slot with
+                | Some scale
+                  when Tensor_shape.numel (Ir.Value.logical_shape scale) = 1 -> (
+                    match match_rms_or_residual (normalized_origin region pre_slot) with
+                    | Some (input, weight, residual, epsilon) ->
+                        Some
+                          (Rms_normalize
+                             { input; weight; residual; layer_scalar = Some scale;
+                               output = result.value; epsilon })
+                    | None -> None)
+                | _ -> None
+              in
+              (match try_scale left right with
+              | Some tactic -> Some tactic
+              | None -> try_scale right left)
+          | _ -> None
+        in
+        match match_scale () with
         | Some tactic -> Some tactic
         | None -> (
-            match match_rms result.slot with
-            | Some (input, weight, epsilon) ->
+            match match_rms_or_residual result.slot with
+            | Some (input, weight, residual, epsilon) ->
                 Some
                   (Rms_normalize
-                     { input; weight; residual = None;
+                     { input; weight; residual; layer_scalar = None;
                        output = result.value; epsilon })
             | None -> None))
 

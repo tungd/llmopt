@@ -30,6 +30,7 @@ type t =
       input : Ir.Value.t;
       weight : Ir.Value.t option;
       residual : Ir.Value.t option;
+      layer_scalar : Ir.Value.t option;
       output : Ir.Value.t;
       epsilon : float;
     }
