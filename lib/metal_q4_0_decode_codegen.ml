@@ -682,3 +682,200 @@ kernel void llmopt_q4_0_gated_linear_f16_x8(
     zero zero zero zero zero zero zero zero
     zero zero zero zero zero zero zero zero
     zero zero zero zero zero zero zero zero
+
+let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
+    ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
+  let canonical_epilogue = Applicative_expr.canonicalize epilogue in
+  let aux_values = Applicative_expr.required_values canonical_epilogue in
+  let num_aux = List.length aux_values in
+  let buf_idx_out = 1 + num_slots + num_aux in
+  let buf_idx_params = 2 + num_slots + num_aux in
+  let weight_buffers =
+    List.init num_slots (fun s ->
+        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
+          (1 + s))
+    |> String.concat "\n"
+  in
+  let aux_buffers =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
+               dtype_str k (1 + num_slots + k))
+      |> String.concat ""
+  in
+  let weight_bases =
+    List.init num_slots (fun s ->
+        let rows =
+          List.init 8 (fun j ->
+              if j = 0 then
+                Printf.sprintf
+                  "  device const uchar* row_%d_0 = base_%d + base_col * col_stride;"
+                  s s
+              else
+                Printf.sprintf
+                  "  device const uchar* row_%d_%d = base_%d + min(base_col + %du, params.n - 1u) * col_stride;"
+                  s j s j)
+          |> String.concat "\n"
+        in
+        Printf.sprintf "  device const uchar* base_%d = weight_%d;\n%s" s s rows)
+    |> String.concat "\n\n"
+  in
+  let accumulators =
+    List.init num_slots (fun s ->
+        Printf.sprintf
+          "  float acc%d_0 = 0.0f, acc%d_1 = 0.0f, acc%d_2 = 0.0f, acc%d_3 = 0.0f;\n\
+          \  float acc%d_4 = 0.0f, acc%d_5 = 0.0f, acc%d_6 = 0.0f, acc%d_7 = 0.0f;"
+          s s s s s s s s)
+    |> String.concat "\n"
+  in
+  let block_loads =
+    List.init num_slots (fun s ->
+        let blks =
+          List.init 8 (fun j ->
+              Printf.sprintf
+                "    device const uchar* blk_%d_%d = row_%d_%d + blk_byte_off;"
+                s j s j)
+          |> String.concat "\n"
+        in
+        let scales =
+          List.init 8 (fun j ->
+              Printf.sprintf
+                "    const half scale_%d_%d = *reinterpret_cast<device const half*>(blk_%d_%d + %du);"
+                s j s j scale_offset)
+          |> String.concat "\n"
+        in
+        let packeds =
+          List.init 8 (fun j ->
+              Printf.sprintf
+                "    const uchar packed_%d_%d = blk_%d_%d[%du + l];"
+                s j s j quant_offset)
+          |> String.concat "\n"
+        in
+        blks ^ "\n" ^ scales ^ "\n" ^ packeds)
+    |> String.concat "\n\n"
+  in
+  let block_accs =
+    List.init num_slots (fun s ->
+        let qs =
+          List.init 8 (fun j ->
+              Printf.sprintf
+                "    const float q_%d_%d_l = float(int(packed_%d_%d & 15u) - %d);\n\
+                \    const float q_%d_%d_h = float(int(packed_%d_%d >> 4u) - %d);"
+                s j s j zero s j s j zero)
+          |> String.concat "\n"
+        in
+        let accs =
+          List.init 8 (fun j ->
+              Printf.sprintf
+                "    acc%d_%d += float(scale_%d_%d) * (a_low * q_%d_%d_l + a_high * q_%d_%d_h);"
+                s j s j s j s j)
+          |> String.concat "\n"
+        in
+        qs ^ "\n" ^ accs)
+    |> String.concat "\n\n"
+  in
+  let simd_sums =
+    List.init num_slots (fun s ->
+        List.init 8 (fun j ->
+            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n\n"
+  in
+  let in_bufs =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf
+               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
+               dtype_str k k)
+      |> String.concat ""
+  in
+  let value_var v =
+    Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
+  in
+  let writebacks =
+    List.init 8 (fun j ->
+        let idx =
+          if j = 0 then "base_col" else Printf.sprintf "(base_col + %du)" j
+        in
+        let expr =
+          Applicative_expr.emit_msl_expr ~value_var
+            ~slot_emitter:(fun s -> Printf.sprintf "acc%d_%d" s j)
+            ~index_expr:idx canonical_epilogue
+        in
+        if j = 0 then
+          Printf.sprintf "    out_row[base_col] = half(%s);" expr
+        else
+          Printf.sprintf
+            "    if (base_col + %du < params.n) out_row[base_col + %du] = half(%s);"
+            j j expr)
+    |> String.concat "\n"
+  in
+  Printf.sprintf
+    {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+%s
+%s    device half* output [[buffer(%d)]],
+    constant QuantLinearParams& params [[buffer(%d)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint col_groups = (params.n + 7u) >> 3u;
+  const uint total_elements = params.m * col_groups;
+  if (simd_idx >= total_elements) return;
+
+  const uint row = simd_idx / col_groups;
+  const uint group_idx = simd_idx - row * col_groups;
+  const uint base_col = group_idx << 3u;
+
+  device const half* in_ptr = input + row * params.k;
+
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+%s
+
+%s
+
+  const uint half_blocks = blocks >> 1u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  for (uint b = 0u; b < half_blocks; ++b) {
+    const uint block_idx = (b << 1u) + b_offset;
+    const uint blk_byte_off = block_idx * %du;
+
+%s
+
+    const uint k_idx = block_idx * %du + l;
+    const float a_low = float(in_ptr[k_idx]);
+    const float a_high = float(in_ptr[k_idx + 16u]);
+
+%s
+  }
+
+%s
+
+  if (lane == 0u) {
+    device half* out_row = output + row * params.n;
+%s%s
+  }
+}
+|}
+    name weight_buffers aux_buffers buf_idx_out buf_idx_params
+    block_elements block_bytes weight_bases accumulators block_bytes
+    block_loads block_elements block_accs simd_sums in_bufs writebacks

@@ -173,6 +173,35 @@ let rec to_string slot_to_string = function
       Printf.sprintf "%s(%s, %s, %s)" (triop_to_string op) (to_string slot_to_string a)
         (to_string slot_to_string b) (to_string slot_to_string c)
 
+let map_reads ~rename expr =
+  let rec go = function
+    | Slot _ | Const _ as leaf -> leaf
+    | Read { value; coord } -> Read { value = rename value; coord }
+    | Unop (op, operand) -> Unop (op, go operand)
+    | Binop (op, left, right) -> Binop (op, go left, go right)
+    | Triop (op, a, b, c) -> Triop (op, go a, go b, go c)
+  in
+  go expr
+
+let canonicalize expr =
+  let required = required_values expr in
+  let ordinal value =
+    let rec find index = function
+      | [] ->
+          invalid_arg
+            "Applicative_expr.canonicalize: tensor not required by the \
+             expression"
+      | candidate :: rest ->
+          if Ir.Value.equal value candidate then index else find (index + 1) rest
+    in
+    find 0 required
+  in
+  let rename value =
+    Ir.Value.make_tensor ~id:(ordinal value)
+      ~shape:(Ir.Value.logical_shape value) ~dtype:(Ir.Value.dtype value)
+  in
+  map_reads ~rename expr
+
 let rec emit_msl_expr ?value_var ~slot_emitter ~index_expr expr =
   let get_var =
     match value_var with

@@ -173,35 +173,10 @@ let emit_msl_writeback ~acc ~idx = function
   | Expr expr ->
       Applicative_expr.emit_msl_expr ~slot_emitter:(fun Acc -> acc) ~index_expr:idx expr
 
-let map_reads ~rename expr =
-  let rec go expr =
-    match expr with
-    | Slot _ | Const _ as leaf -> leaf
-    | Read { value; coord } -> Read { value = rename value; coord }
-    | Unop (op, operand) -> Unop (op, go operand)
-    | Binop (op, left, right) -> Binop (op, go left, go right)
-    | Triop (op, a, b, c) -> Triop (op, go a, go b, go c)
-  in
-  go expr
+let map_reads = Applicative_expr.map_reads
 
 let canonicalize epilogue =
-  let expr = to_expr epilogue in
-  let required = Applicative_expr.required_values expr in
-  let ordinal value =
-    let rec find index = function
-      | [] ->
-          invalid_arg
-            "Epilogue.canonicalize: tensor not required by the epilogue expression"
-      | candidate :: rest ->
-          if Ir.Value.equal value candidate then index else find (index + 1) rest
-    in
-    find 0 required
-  in
-  let rename value =
-    Ir.Value.make_tensor ~id:(ordinal value)
-      ~shape:(Ir.Value.logical_shape value) ~dtype:(Ir.Value.dtype value)
-  in
-  Expr (map_reads ~rename expr)
+  Expr (Applicative_expr.canonicalize (to_expr epilogue))
 
 let msl_buffer_decls ~start_index epilogue =
   (* Buffer order and identity must agree exactly with the tensor reads of

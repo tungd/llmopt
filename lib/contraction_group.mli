@@ -154,3 +154,7 @@ val fold_linear_epilogue : Kernel_region.region -> Epilogue.t option
 (** G4P12-02 widened fold over the same admission, including the bare
     identity region (steps = [] -> [Epilogue.none]), mirroring the legacy
     [Kernel_ir.Fused_tactic.fold_linear_epilogue] coverage. *)
+
+val algebraic_kernel_name : base:string -> int Applicative_expr.t -> string
+(** Deterministic kernel name digest for a multi-slot expression, computed from
+    its canonicalized form and required tensor dtypes. *)

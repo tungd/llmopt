@@ -592,3 +592,18 @@ let select region =
       match Kernel_ir.Fused_tactic.select region with
       | Some tactic -> Some tactic
       | None -> select_linear_epilogue region)
+
+let algebraic_kernel_name ~base (expr : int Applicative_expr.t) : string =
+  let canonical = Applicative_expr.canonicalize expr in
+  let writeback =
+    Applicative_expr.emit_msl_expr
+      ~slot_emitter:(fun slot -> Printf.sprintf "slot%d" slot)
+      ~index_expr:"col" canonical
+  in
+  let dtypes =
+    Applicative_expr.required_values canonical
+    |> List.map (fun value -> Ir.Dtype.to_string (Ir.Value.dtype value))
+    |> String.concat ","
+  in
+  let digest = Digest.string (dtypes ^ "|" ^ writeback) in
+  base ^ "_" ^ String.sub (Digest.to_hex digest) 0 8

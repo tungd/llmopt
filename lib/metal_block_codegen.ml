@@ -721,6 +721,39 @@ let q4_0_m32_epilogue_kernel ~name ~epilogue ~target schema =
         ~block_bytes ())
     ~name ~epilogue ~target schema
 
+let q4_0_multi_linear_f16_x8_kernel ~name ~epilogue ?(num_slots = 2) ~target
+    schema =
+  let physical = Block_schema.physical_layout schema in
+  let logical = Block_schema.logical_decode schema in
+  let equation = Block_schema.Logical_decode.equation logical in
+  let* zero =
+    offset_zero (Block_schema.Logical_decode.code_signedness equation)
+  in
+  let* scale_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Block_scale
+  in
+  let* quant_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized
+  in
+  let block_elements = Block_schema.Physical_layout.block_elements physical in
+  let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+  let simd_lanes = target.Target_hardware.memory.simd_lanes in
+  if Block_schema.quant_type schema <> Some Ir.Dtype.Q4_0 then
+    Error
+      "constructive Q4_0 multi-linear x8 emitter received another storage schema"
+  else if Block_schema.Logical_decode.code_bits equation <> 4 then
+    Error "constructive Q4_0 multi-linear x8 emitter requires four-bit codes"
+  else if block_elements <> 32 || simd_lanes <> 32 then
+    Error
+      (Printf.sprintf
+         "constructive Q4_0 multi-linear x8 emission requires block=32 and \
+          SIMD=32 (got block=%d SIMD=%d)"
+         block_elements simd_lanes)
+  else
+    Ok
+      (emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ~num_slots ~scale_offset
+         ~quant_offset ~zero ~block_elements ~block_bytes ())
+
 (* G4P12-04d-A2 schema-level admission for the generic and _m2 _add twins.
    The twins carry no epilogue parameter (they are Residual_add by
    construction with the additive tensor bound to the flat [bias] buffer(2)

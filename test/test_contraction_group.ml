@@ -563,4 +563,197 @@ let run () =
       | None -> fail "cast chain must reconstruct a single-acc Expr epilogue"));
   Printf.printf "  [PASS] conservative cuts\n%!";
 
+  Printf.printf "F. Multi-slot parametric kernel emission (G4P12-06-2)\n%!";
+  let q4_0_schema =
+    match
+      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0)
+    with
+    | Ok schema -> schema
+    | Error err -> fail (Block_schema.Error.to_string err)
+  in
+  let contains_substr haystack needle =
+    let hlen = String.length haystack in
+    let nlen = String.length needle in
+    let rec check i =
+      if i + nlen > hlen then false
+      else if String.sub haystack i nlen = needle then true
+      else check (i + 1)
+    in
+    if nlen = 0 then true else check 0
+  in
+  let compile_msl_kernel kernel_text =
+    let preamble =
+      "#include <metal_stdlib>\n\
+       using namespace metal;\n\n\
+       struct QuantLinearParams {\n\
+           uint m;\n\
+           uint n;\n\
+           uint k;\n\
+           uint has_bias;\n\
+       };\n\n"
+    in
+    let full_src = preamble ^ kernel_text in
+    let tmp_src = Filename.temp_file "test_multi_linear" ".metal" in
+    let tmp_air = Filename.temp_file "test_multi_linear" ".air" in
+    let oc = open_out tmp_src in
+    output_string oc full_src;
+    close_out oc;
+    let cmd =
+      Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
+        (Filename.quote tmp_src) (Filename.quote tmp_air)
+    in
+    let ok = Sys.command cmd = 0 in
+    (try Sys.remove tmp_src with _ -> ());
+    (try Sys.remove tmp_air with _ -> ());
+    ok
+  in
+  (* 1. SwiGLU two-slot kernel *)
+  let swiglu_epilogue =
+    Applicative_expr.Binop
+      ( Applicative_expr.Mul,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let swiglu_kernel_name =
+    Contraction_group.algebraic_kernel_name
+      ~base:"llmopt_q4_0_multi_linear_f16_x8" swiglu_epilogue
+  in
+  let swiglu_src =
+    expect_ok
+      (Metal_block_codegen.q4_0_multi_linear_f16_x8_kernel
+         ~name:swiglu_kernel_name ~epilogue:swiglu_epilogue
+         ~target:Target_hardware.default q4_0_schema)
+  in
+  expect
+    (contains_substr swiglu_src ("kernel void " ^ swiglu_kernel_name))
+    "swiglu kernel name matches digest";
+  expect
+    (contains_substr swiglu_src "device const uchar* weight_0 [[buffer(1)]]")
+    "swiglu buffer 1 is weight_0";
+  expect
+    (contains_substr swiglu_src "device const uchar* weight_1 [[buffer(2)]]")
+    "swiglu buffer 2 is weight_1";
+  expect
+    (contains_substr swiglu_src "device half* output [[buffer(3)]]")
+    "swiglu buffer 3 is output";
+  expect
+    (contains_substr swiglu_src "constant QuantLinearParams& params [[buffer(4)]]")
+    "swiglu buffer 4 is params";
+  expect
+    (contains_substr swiglu_src "acc0_0 = simd_sum(acc0_0);")
+    "swiglu slot 0 reduction";
+  expect
+    (contains_substr swiglu_src "acc1_0 = simd_sum(acc1_0);")
+    "swiglu slot 1 reduction";
+  expect
+    (contains_substr swiglu_src
+       "out_row[base_col] = half(((acc0_0 * (1.0f / (1.0f + metal::exp(-acc0_0)))) * acc1_0));")
+    "swiglu writeback matches Silu(0)*1";
+  expect
+    (compile_msl_kernel swiglu_src)
+    "swiglu multi-slot kernel compiles cleanly with xcrun metal";
+  Printf.printf "  [PASS] two-slot SwiGLU parametric emission\n%!";
+
+  (* 2. Two-slot arbitrary pointwise silu(g) + u *)
+  let add_epilogue =
+    Applicative_expr.Binop
+      ( Applicative_expr.Add,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let add_src =
+    expect_ok
+      (Metal_block_codegen.q4_0_multi_linear_f16_x8_kernel
+         ~name:"test_silu_add" ~epilogue:add_epilogue
+         ~target:Target_hardware.default q4_0_schema)
+  in
+  expect
+    (contains_substr add_src
+       "out_row[base_col] = half(((acc0_0 * (1.0f / (1.0f + metal::exp(-acc0_0)))) + acc1_0));")
+    "silu_add writeback matches Silu(0)+1";
+  expect
+    (compile_msl_kernel add_src)
+    "silu_add multi-slot kernel compiles cleanly with xcrun metal";
+  Printf.printf "  [PASS] two-slot arbitrary pointwise parametric emission\n%!";
+
+  (* 3. Two-slot GeGLU with auxiliary buffer (residual add) *)
+  let residual =
+    Ir.Value.make_tensor ~id:99 ~shape:Fixture.shape_1_64 ~dtype:Ir.Dtype.Float16
+  in
+  let geglu_res_epilogue =
+    Applicative_expr.Binop
+      ( Applicative_expr.Add,
+        Applicative_expr.Binop
+          ( Applicative_expr.Mul,
+            Applicative_expr.Unop (Applicative_expr.Gelu, Applicative_expr.Slot 0),
+            Applicative_expr.Slot 1 ),
+        Applicative_expr.Read
+          { value = residual; coord = Coordinate_map.identity } )
+  in
+  let res_src =
+    expect_ok
+      (Metal_block_codegen.q4_0_multi_linear_f16_x8_kernel
+         ~name:"test_geglu_residual" ~epilogue:geglu_res_epilogue
+         ~target:Target_hardware.default q4_0_schema)
+  in
+  expect
+    (contains_substr res_src "device const half* buf_0 [[buffer(3)]]")
+    "geglu residual has auxiliary buffer 3";
+  expect
+    (contains_substr res_src "device half* output [[buffer(4)]]")
+    "geglu residual has output buffer 4";
+  expect
+    (contains_substr res_src "constant QuantLinearParams& params [[buffer(5)]]")
+    "geglu residual has params buffer 5";
+  expect
+    (contains_substr res_src "in_buf_0")
+    "geglu residual indexes auxiliary buffer via in_buf_0";
+  expect
+    (compile_msl_kernel res_src)
+    "geglu residual multi-slot kernel compiles cleanly with xcrun metal";
+  Printf.printf "  [PASS] two-slot GeGLU + residual auxiliary buffer emission\n%!";
+
+  (* 4. Three-slot contraction group *)
+  let three_slot_epilogue =
+    Applicative_expr.Binop
+      ( Applicative_expr.Add,
+        Applicative_expr.Binop
+          ( Applicative_expr.Add,
+            Applicative_expr.Slot 0,
+            Applicative_expr.Slot 1 ),
+        Applicative_expr.Slot 2 )
+  in
+  let three_src =
+    expect_ok
+      (Metal_block_codegen.q4_0_multi_linear_f16_x8_kernel
+         ~name:"test_three_slot" ~epilogue:three_slot_epilogue ~num_slots:3
+         ~target:Target_hardware.default q4_0_schema)
+  in
+  expect
+    (contains_substr three_src "device const uchar* weight_0 [[buffer(1)]]")
+    "three-slot has weight_0";
+  expect
+    (contains_substr three_src "device const uchar* weight_1 [[buffer(2)]]")
+    "three-slot has weight_1";
+  expect
+    (contains_substr three_src "device const uchar* weight_2 [[buffer(3)]]")
+    "three-slot has weight_2";
+  expect
+    (contains_substr three_src "device half* output [[buffer(4)]]")
+    "three-slot has output buffer 4";
+  expect
+    (contains_substr three_src "constant QuantLinearParams& params [[buffer(5)]]")
+    "three-slot has params buffer 5";
+  expect
+    (contains_substr three_src "acc2_0 = simd_sum(acc2_0);")
+    "three-slot slot 2 reduction";
+  expect
+    (contains_substr three_src
+       "out_row[base_col] = half(((acc0_0 + acc1_0) + acc2_0));")
+    "three-slot writeback matches (0+1)+2";
+  expect
+    (compile_msl_kernel three_src)
+    "three-slot multi-slot kernel compiles cleanly with xcrun metal";
+  Printf.printf "  [PASS] three-slot parametric emission\n%!";
+
   Printf.printf "All typed contraction-group algebra tests passed!\n%!"

@@ -79,6 +79,13 @@ val required_values : 'var t -> Ir.Value.t list
 val to_string : ('a -> string) -> 'a t -> string
 (** Human-readable representation of the expression tree. *)
 
+val map_reads : rename:(Ir.Value.t -> Ir.Value.t) -> 'var t -> 'var t
+(** Transforms all [Read] tensor values in the expression using [rename]. *)
+
+val canonicalize : 'var t -> 'var t
+(** Canonicalizes tensor read references in the expression to 0-based ordinals
+    according to their first syntactic occurrence ([required_values]). *)
+
 val emit_msl_expr :
   ?value_var:(Ir.Value.t -> string) ->
   slot_emitter:('a -> string) ->
