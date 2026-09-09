@@ -1,0 +1,43 @@
+Gemma 4 Round 8 performance with scaled residual RMSNorm epilogue fusion eliminating 96 barriers and collapsing 48 post-FFN layernorm elementwise dispatches
+============================================================================================================================================================
+
+Source and artifact
+-------------------
+
+Artifact: _artifacts/gemma4-12b-qat-round7-2026-09-05
+Model Program sha256: 9856d3a011c1c348c6be4391e08ada362efbdf292e98d9ad4c4d91e6b408965a
+Prefill package sha256: 9a51f827c9d0664a114abd25003cdef88f78e812f97c9b5707c8d1046720a229
+Decode package sha256: 813370568c3e80fa6dde8175cff91c26526536906e51538c56ec6a1101eabca8
+Prompt token count: 37
+Pinned llama.cpp receipt: bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json
+Prior execution receipt: bench/results/uoc-gemma4-performance-round7-2026-09-05.txt
+
+Repository verification
+-----------------------
+
+Command: ninja -f ninja.build all test
+Exit status: 0
+Result: OCaml suite passed; 79 Python tests passed.
+
+Device execution
+----------------
+
+Command: _build/bin/llmopt-bench-tokens --model-dir /tmp/test-bundle-round8 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --max-new-tokens 128 --warmup
+Exit status: 0
+Load seconds: 10.133662
+TTFT seconds: 3.912145
+Elapsed seconds: 18.811494
+Tokens per second: 6.804351
+Inter-token count: 127
+Inter-token mean ms: 117.317707
+Inter-token median ms: 108.587027
+Completion token count: 128
+Completion tokens: 100,45518,107,14947,135383,568,11124,568,147505,236789,236751,236761,107,14947,135383,236761,107,4225,552,236761,107,4225,552,6795,32404,236764,65272,32404,236764,65272,32404,236764,39524,990,58692,236764,990,58692,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,990,58692,236764,32404,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,32404,236764,38789,236764,990,58692,236764,32404,236764,38789,236764,38789,236764,32404,236764,38789,236764,4044,236761,107,140,236829,107,140,236829,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,58991
+
+Architectural verification
+--------------------------
+
+1. Scaled Residual RMSNorm Epilogue Fusion: Admitted mixed Float16 x Float32 scalar broadcast binary operations in constructive lowering and region metadata validation. Fused tactic pattern matching now absorbs the post-residual layer_scalar multiplication directly into the RMSNorm reduction region.
+2. Barrier and Dispatch Elimination: Decoded barriers dropped by 96 (from 2797 to 2701, exactly 2 barriers eliminated per layer across all 48 layers). Standalone elementwise mul dispatches collapsed into fused wide/simd shaders (llmopt_rms_norm_add_scale_f16_wf32_wide).
+3. Throughput Doubling: Generation throughput nearly doubled from 3.44 tok/s to 6.80 tok/s on Apple M4 Pro, reducing inter-token median latency from 206.2ms to 108.6ms.
+4. Parity Invariant: 128/128 completion tokens strictly match the pinned golden reference sequence.
