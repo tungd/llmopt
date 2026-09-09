@@ -26,6 +26,11 @@ type t =
       activation : Primitive.unary;
       output : Ir.Value.t;
     }
+  | Contraction_group of {
+      contractions : linear list;
+      epilogue : int Applicative_expr.t;
+      output : Ir.Value.t;
+    }
   | Rms_normalize of {
       input : Ir.Value.t;
       weight : Ir.Value.t option;

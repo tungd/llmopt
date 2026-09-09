@@ -108,6 +108,12 @@ val single_acc_epilogue : t -> Epilogue.t option
     every other chain yields the pure monoid [Expr].  Returns [None] for
     multi-contraction / multi-export groups. *)
 
+val multi_acc_epilogue : t -> int Applicative_expr.t option
+(** Reconstructs the multi-accumulator scalar expression tree for a group
+    writing exactly one export.  Each contraction slot [c_i] is assigned
+    variable [Slot i] ([0..N-1]), and all scalar steps are inlined.
+    Returns [None] if inlining fails or if there is not exactly one export. *)
+
 val use_count : t -> Kernel_region.Slot.t -> int
 (** Number of consumer references to the slot across the group's steps (the
     slot's use obligation).  Exports themselves do not count. *)
@@ -137,6 +143,12 @@ val select : Kernel_region.region -> Kernel_ir.Fused_tactic.t option
 val select_linear_epilogue : Kernel_region.region -> Kernel_ir.Fused_tactic.t option
 (** The widening alone (no legacy-first fallback): [Some] exactly for the
     single-accumulator chains described under [select]. *)
+
+val select_contraction_group : Kernel_region.region -> Kernel_ir.Fused_tactic.t option
+(** Multi-slot contraction group selection: returns
+    [Some (Kernel_ir.Fused_tactic.Contraction_group ...)] for regions with 2
+    or more contractions sharing the same input, geometry, and storage, and
+    writing a single export through inlinable scalar steps. *)
 
 val fold_linear_epilogue : Kernel_region.region -> Epilogue.t option
 (** G4P12-02 widened fold over the same admission, including the bare

@@ -447,6 +447,31 @@ let single_acc_epilogue group =
         | Some expr -> Some (reconstruct group expr))
   | _ -> None
 
+let multi_acc_epilogue (group : t) =
+  match group.exports with
+  | [ export ] when group.contractions <> [] ->
+      let env = ref Slot_map.empty in
+      let ok =
+        try
+          List.iteri
+            (fun index (contraction : contraction) ->
+              env :=
+                Slot_map.add contraction.slot
+                  (Applicative_expr.Slot index)
+                  !env)
+            group.contractions;
+          List.iter
+            (fun (step : step) ->
+              let value = inline !env step.expr in
+              env := Slot_map.add step.slot value !env)
+            group.steps;
+          true
+        with Not_found -> false
+      in
+      if not ok then None
+      else Slot_map.find_opt export.slot !env
+  | _ -> None
+
 (* ------------------------------------------------------------------------ *)
 (* G4P12-02 widening: select/fold routed through the elaboration            *)
 (* ------------------------------------------------------------------------ *)
@@ -525,12 +550,45 @@ let select_linear_epilogue region =
           | _ -> None)
       | _ -> None)
 
+let select_contraction_group region =
+  match of_region region with
+  | None -> None
+  | Some group -> (
+      match group.contractions with
+      | first :: _ :: _ ->
+          let compatible (c : contraction) =
+            Ir.Value.equal c.input first.input
+            && c.m = first.m && c.n = first.n && c.k = first.k
+            && c.storage = first.storage
+            && c.parameters = []
+          in
+          if List.for_all compatible group.contractions then
+            match multi_acc_epilogue group with
+            | Some epilogue -> (
+                match group.exports with
+                | [ export ] ->
+                    Some
+                      (Kernel_ir.Fused_tactic.Contraction_group
+                         {
+                           contractions =
+                             List.map linear_of_contraction group.contractions;
+                           epilogue;
+                           output = export.value;
+                         })
+                | _ -> None)
+            | None -> None
+          else None
+      | _ -> None)
+
 let fold_linear_epilogue region =
   match of_region region with
   | Some group -> single_acc_chain_epilogue group
   | None -> None
 
 let select region =
-  match Kernel_ir.Fused_tactic.select region with
+  match select_contraction_group region with
   | Some tactic -> Some tactic
-  | None -> select_linear_epilogue region
+  | None -> (
+      match Kernel_ir.Fused_tactic.select region with
+      | Some tactic -> Some tactic
+      | None -> select_linear_epilogue region)

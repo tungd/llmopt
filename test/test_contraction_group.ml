@@ -388,7 +388,56 @@ let run () =
       (* Multi-contraction groups never collapse to a single accumulator. *)
       expect
         (Contraction_group.single_acc_epilogue group = None)
-        "two-slot group has no single-accumulator epilogue"));
+        "two-slot group has no single-accumulator epilogue";
+      (* But they reconstruct a multi-accumulator expression tree. *)
+      (match Contraction_group.multi_acc_epilogue group with
+      | Some epilogue ->
+          expect
+            (Applicative_expr.equal ( = ) epilogue
+               (Applicative_expr.Binop
+                  ( Applicative_expr.Add,
+                    Applicative_expr.Unop
+                      (Applicative_expr.Silu, Applicative_expr.Slot 0),
+                    Applicative_expr.Slot 1 )))
+            "multi-accumulator expression is Add(Silu(0), 1)"
+      | None -> fail "two-slot group must have multi-accumulator epilogue")));
+  (* Test selection: select_contraction_group and widened select *)
+  (match Contraction_group.select_contraction_group two_slot_region with
+  | Some (Kernel_ir.Fused_tactic.Contraction_group { contractions; epilogue; output }) ->
+      expect (List.length contractions = 2) "group tactic has 2 contractions";
+      expect (Ir.Value.equal output o_z) "group tactic output matches";
+      expect
+        (Applicative_expr.equal ( = ) epilogue
+           (Applicative_expr.Binop
+              ( Applicative_expr.Add,
+                Applicative_expr.Unop
+                  (Applicative_expr.Silu, Applicative_expr.Slot 0),
+                Applicative_expr.Slot 1 )))
+        "group tactic epilogue is Add(Silu(0), 1)"
+  | _ -> fail "select_contraction_group must select two_slot_region");
+  (match Contraction_group.select two_slot_region with
+  | Some (Kernel_ir.Fused_tactic.Contraction_group { contractions; _ }) ->
+      expect (List.length contractions = 2) "widened select admits two_slot_region as Contraction_group"
+  | _ -> fail "widened select must return Contraction_group for two_slot_region");
+  (* Gated product (SwiGLU) region: g = x*wg, u = x*wu, a = silu(g), z = a * u *)
+  let swiglu_region =
+    single_result_region ~name:"two-slot-swiglu" ~inputs:inputs_gated
+      ~steps:[ g_step; u_step; silu_step 3 o_a; mul_step 5 4 o_z ]
+      ~result_index:6 o_z
+  in
+  (match Contraction_group.select_contraction_group swiglu_region with
+  | Some (Kernel_ir.Fused_tactic.Contraction_group { contractions; epilogue; output }) ->
+      expect (List.length contractions = 2) "SwiGLU group has 2 contractions";
+      expect (Ir.Value.equal output o_z) "SwiGLU group output matches";
+      expect
+        (Applicative_expr.equal ( = ) epilogue
+           (Applicative_expr.Binop
+              ( Applicative_expr.Mul,
+                Applicative_expr.Unop
+                  (Applicative_expr.Silu, Applicative_expr.Slot 0),
+                Applicative_expr.Slot 1 )))
+        "SwiGLU epilogue is Mul(Silu(0), 1)"
+  | _ -> fail "select_contraction_group must select swiglu_region");
   Printf.printf "  [PASS] two-slot group\n%!";
 
   Printf.printf "D. Exercise (c): exported intermediate + fused consumer\n%!";

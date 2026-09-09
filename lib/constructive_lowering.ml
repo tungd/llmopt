@@ -1439,6 +1439,13 @@ let lower analysis =
           :: linear.weight :: linear.Kernel_ir.Fused_tactic.parameters )
         @ Epilogue.inputs epilogue, output
     | Kernel_ir.Fused_tactic.Gated_product _ -> assert false
+    | Kernel_ir.Fused_tactic.Contraction_group
+        { contractions; epilogue; output } ->
+        (List.concat_map
+           (fun (linear : Kernel_ir.Fused_tactic.linear) ->
+             linear.input :: linear.weight :: linear.parameters)
+           contractions)
+        @ Applicative_expr.required_values epilogue, output
   in
   let assignment_slice assignments tactic =
     let boundaries, output = tactic_boundary_values tactic in
@@ -1592,6 +1599,8 @@ let lower analysis =
                          Lowering.Kind.Linear_add
                      | Ir.Linear_storage.Dense _
                      | Ir.Linear_storage.Groupwise_packed _ -> assert false)
+                 | Kernel_ir.Fused_tactic.Contraction_group _ ->
+                     Lowering.Kind.Gated_linear
                  | _ -> assert false
                in
                let _, output = tactic_boundary_values tactic in

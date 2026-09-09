@@ -508,9 +508,30 @@ let region_tactics ~target regions =
                       Ir.Linear_storage.Groupwise_packed _ ) -> true
                   | _ -> false)
              in
-             quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
-             has_short_conv_silu, gated_delta
-         | Some (Kernel_ir.Fused_tactic.Rms_normalize _) ->
+              quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
+              has_short_conv_silu, gated_delta
+          | Some
+              (Kernel_ir.Fused_tactic.Contraction_group
+                { contractions; output; _ }) ->
+              let add quant (linear : Kernel_ir.Fused_tactic.linear) =
+                match linear.storage, select_linear linear output with
+                | Ir.Linear_storage.Block_quantized storage, Some tactic ->
+                    (storage, tactic) :: quant
+                | _ -> quant
+              in
+              let quant = List.fold_left add quant contractions in
+              let has_w4 =
+                has_w4
+                || List.exists
+                     (fun (c : Kernel_ir.Fused_tactic.linear) ->
+                       match c.storage with
+                       | Ir.Linear_storage.Groupwise_packed _ -> true
+                       | _ -> false)
+                     contractions
+              in
+              quant, quant_add, quant_digest, has_w4, has_rms, has_rms_rope,
+              has_short_conv_silu, gated_delta
+          | Some (Kernel_ir.Fused_tactic.Rms_normalize _) ->
              quant, quant_add, quant_digest, has_w4, true, has_rms_rope,
              has_short_conv_silu, gated_delta
          | Some (Kernel_ir.Fused_tactic.Rms_rope _) ->

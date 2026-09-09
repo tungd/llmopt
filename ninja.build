@@ -248,8 +248,8 @@ build _build/ocaml/kernel_region.cmi: ocaml_interface lib/kernel_region.mli | _b
 build _build/ocaml/kernel_region.cmx: ocaml_module lib/kernel_region.ml | _build/ocaml/kernel_region.cmi _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx
 build _build/ocaml/kernel_scan.cmi: ocaml_interface lib/kernel_scan.mli | _build/ocaml/ir.cmi
 build _build/ocaml/kernel_scan.cmx: ocaml_module lib/kernel_scan.ml | _build/ocaml/kernel_scan.cmi _build/ocaml/ir.cmx _build/ocaml/tensor_shape.cmx
-build _build/ocaml/kernel_fused_tactic.cmi: ocaml_interface lib/kernel_fused_tactic.mli | _build/ocaml/kernel_region.cmi _build/ocaml/ir.cmi _build/ocaml/epilogue.cmi
-build _build/ocaml/kernel_fused_tactic.cmx: ocaml_module lib/kernel_fused_tactic.ml | _build/ocaml/kernel_fused_tactic.cmi _build/ocaml/kernel_region.cmx _build/ocaml/ir.cmx _build/ocaml/epilogue.cmx _build/ocaml/tensor_shape.cmx
+build _build/ocaml/kernel_fused_tactic.cmi: ocaml_interface lib/kernel_fused_tactic.mli | _build/ocaml/kernel_region.cmi _build/ocaml/ir.cmi _build/ocaml/epilogue.cmi _build/ocaml/applicative_expr.cmi
+build _build/ocaml/kernel_fused_tactic.cmx: ocaml_module lib/kernel_fused_tactic.ml | _build/ocaml/kernel_fused_tactic.cmi _build/ocaml/kernel_region.cmx _build/ocaml/ir.cmx _build/ocaml/epilogue.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/tensor_shape.cmx
 build _build/ocaml/kernel_ir.cmi: ocaml_interface lib/kernel_ir.mli | _build/ocaml/kernel_region.cmi _build/ocaml/kernel_scan.cmi _build/ocaml/kernel_fused_tactic.cmi _build/ocaml/ir.cmi _build/ocaml/tensor_shape.cmi
 build _build/ocaml/kernel_ir.cmx: ocaml_module lib/kernel_ir.ml | _build/ocaml/kernel_ir.cmi _build/ocaml/kernel_region.cmx _build/ocaml/kernel_scan.cmx _build/ocaml/kernel_fused_tactic.cmx
 
