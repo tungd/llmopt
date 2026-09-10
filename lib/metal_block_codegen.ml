@@ -22,6 +22,11 @@ let q4_k_linear ~target schema =
     Error "constructive Q4_K emitter requires four-bit codes"
   else
     let value_function = "llmopt_schema_q4_k_value" in
+    let block_elements = Block_schema.Physical_layout.block_elements physical in
+    let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+    let subblock_elements =
+      Block_schema.Logical_decode.subblock_elements logical
+    in
     Ok
       (emit_superblock ~m2_x4:true schema ~name:"q4_k" ~value_function
          (Printf.sprintf {|
@@ -40,7 +45,9 @@ inline float %s(device const uchar* block, uint lane, uint subblock) {
   const uint code = (subblock & 1u) == 0u ? (packed & 15u) : (packed >> 4u);
   return d * float(scale) * float(code) - dmin * float(minimum);
 }
-|} value_function scale_offset minimum_offset table_offset quant_offset))
+|} value_function scale_offset minimum_offset table_offset quant_offset)
+      ^ emit_superblock_gated_m2 ~name:"q4_k" ~value_function
+          ~block_elements ~block_bytes ~subblock_elements)
 
 let q5_k_linear ~target schema =
   let physical = Block_schema.physical_layout schema in
@@ -56,6 +63,11 @@ let q5_k_linear ~target schema =
     Error "constructive Q5_K emitter requires five-bit codes"
   else
     let value_function = "llmopt_schema_q5_k_value" in
+    let block_elements = Block_schema.Physical_layout.block_elements physical in
+    let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+    let subblock_elements =
+      Block_schema.Logical_decode.subblock_elements logical
+    in
     Ok
       (emit_superblock ~m2_x4:true schema ~name:"q5_k" ~value_function
          (Printf.sprintf {|
@@ -76,7 +88,9 @@ inline float %s(device const uchar* block, uint lane, uint subblock) {
   return d * float(scale) * float(nibble | (high << 4u))
       - dmin * float(minimum);
 }
-|} value_function scale_offset minimum_offset table_offset low_offset high_offset))
+|} value_function scale_offset minimum_offset table_offset low_offset high_offset)
+      ^ emit_superblock_gated_m2 ~name:"q5_k" ~value_function
+          ~block_elements ~block_bytes ~subblock_elements)
 
 let q6_k_linear ~target schema =
   let physical = Block_schema.physical_layout schema in
@@ -92,6 +106,11 @@ let q6_k_linear ~target schema =
     Error "constructive Q6_K emitter requires six-bit codes"
   else
     let value_function = "llmopt_schema_q6_k_value" in
+    let block_elements = Block_schema.Physical_layout.block_elements physical in
+    let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+    let subblock_elements =
+      Block_schema.Logical_decode.subblock_elements logical
+    in
     Ok
       (emit_superblock ~m2_x4:true schema ~name:"q6_k" ~value_function
          (Printf.sprintf {|
@@ -109,7 +128,9 @@ inline float %s(device const uchar* block, uint lane, uint subblock) {
   const float scale = float(*reinterpret_cast<device const half*>(block + %du));
   return scale * float(subscale) * float(int(code) - %d);
 }
-|} value_function low_offset high_offset table_offset scale_offset zero))
+|} value_function low_offset high_offset table_offset scale_offset zero)
+      ^ emit_superblock_gated_m2 ~name:"q6_k" ~value_function
+          ~block_elements ~block_bytes ~subblock_elements)
 
 let iq4_xs_linear ~target schema =
   let physical = Block_schema.physical_layout schema in
