@@ -240,6 +240,9 @@ inline float %s(device const uchar* block, uint lane) {
 |} value_function scale_offset high_offset low_offset zero
       ^ emit_linear_pair ~name:"q5_0" ~value_function
           ~block_elements:(Block_schema.Physical_layout.block_elements physical)
+          ~block_bytes:(Block_schema.Physical_layout.block_bytes physical)
+      ^ emit_block32_gated ~name:"q5_0" ~value_function
+          ~block_elements:(Block_schema.Physical_layout.block_elements physical)
           ~block_bytes:(Block_schema.Physical_layout.block_bytes physical))
 
 (* Digest-keyed epilogue variants of the real Q4_0 decode kernels.          *)

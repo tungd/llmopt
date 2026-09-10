@@ -88,6 +88,56 @@ kernel void llmopt_%s_linear_f16_m2(
     name block_elements block_bytes block_elements value_function block_bytes
     name block_elements block_bytes block_elements value_function block_bytes
 
+(* G4P12-05-2: parametric gated emitter for block32 families.  The kernel
+   uses simdgroup pairs with threadgroup memory for cross-projection
+   synchronization: each threadgroup computes four outputs with two
+   simdgroups each (projection = simdgroup & 1), storing accumulators
+   in threadgroup half[8] before applying llmopt_gated_product.
+   Same threading model as the llama zoo Q5_0 gated generic it replaces,
+   but using uchar* weight pointers and the schema value function. *)
+let emit_block32_gated ~name ~value_function ~block_elements ~block_bytes =
+  Printf.sprintf {|
+kernel void llmopt_%s_gated_linear_f16(
+    device const half* input [[buffer(0)]],
+    device const uchar* gate_weight [[buffer(1)]],
+    device const uchar* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  threadgroup half projections[8];
+  const uint local_output = simdgroup >> 1;
+  const uint projection = simdgroup & 1u;
+  const uint task = threadgroup_position.x * 4u + local_output;
+  const uint total_tasks = params.m * params.n;
+  const bool active = task < total_tasks;
+  const uint row = active ? task / params.n : 0u;
+  const uint col = active ? task - row * params.n : 0u;
+  const uint blocks = params.k / %du;
+  device const uchar* row_blocks =
+    (projection == 0u ? gate_weight : up_weight) + col * blocks * %du;
+  device const half* activation = input + row * params.k;
+  float acc = 0.0f;
+  if (active) {
+    for (uint b = 0; b < blocks; ++b) {
+      acc += float(activation[b * %du + lane])
+          * %s(row_blocks + b * %du, lane);
+    }
+  }
+  acc = simd_sum(acc);
+  if (lane == 0u) projections[simdgroup] = half(acc);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (active && projection == 0u && lane == 0u) {
+    product[row * params.n + col] =
+      llmopt_gated_product(
+        float(projections[simdgroup]), float(projections[simdgroup + 1u]),
+        params.has_bias);
+  }
+}
+|}
+    name block_elements block_bytes block_elements value_function block_bytes
+
 (* G4P12-05-1: parametric-style _add twins for the generic and paired-row
    (_m2) tiles of the block32 families (Q8_0 first; Q5_0 reuses these once it
    leaves the legacy shim).  The decode bodies mirror emit_linear_pair
