@@ -754,6 +754,129 @@ let regions_of_components plan assignment_order adjacency =
            inputs = region_inputs plan assignments member_set;
            outputs = region_outputs plan assignments member_set })
 
+let has_block_quantized_linear assignments =
+  List.exists
+    (fun assignment ->
+      match Assignment.primitive assignment with
+      | Kernel_region.Primitive.Linear
+          { storage = Ir.Linear_storage.Block_quantized _; _ } -> true
+      | _ -> false)
+    assignments
+
+(** Merge adjacent fusion regions that could form a multi-export contraction
+    group.  Two regions [A] and [B] are merged when:
+    - [A] produces a graph output that is consumed by [B] as input;
+    - both contain at least one block-quantized contraction.
+
+    The merged region combines assignments, removes the intermediate from
+    the input set, and retains both graph outputs. *)
+let merge_multi_export_regions plan assignment_order regions =
+  let graph = Compute_plan.graph plan in
+  (* Map graph-output values to the region index that produces them. *)
+  let output_to_region =
+    List.mapi
+      (fun idx region ->
+        Region.outputs region
+        |> List.filter (fun v -> graph_output graph v)
+        |> List.map (fun v -> (value_id v, idx)))
+      regions
+    |> List.concat_map Fun.id
+    |> List.fold_left
+         (fun m (vid, idx) -> Value_id_map.add vid idx m)
+         Value_id_map.empty
+  in
+  (* Build union-find parent array. *)
+  let n = List.length regions in
+  let parent = Array.init n Fun.id in
+  let rec find i =
+    if parent.(i) = i then i
+    else begin
+      parent.(i) <- find parent.(i);
+      parent.(i)
+    end
+  in
+  let union a b =
+    let ra = find a and rb = find b in
+    if ra <> rb then parent.(ra) <- rb
+  in
+  (* Find mergeable pairs. *)
+  List.iteri
+    (fun consumer_idx region ->
+      let consumer_assignments = Region.assignments region in
+      if has_block_quantized_linear consumer_assignments then
+        Region.inputs region
+        |> List.iter (fun input ->
+               match Value_id_map.find_opt (value_id input) output_to_region with
+               | Some producer_idx
+                 when producer_idx <> consumer_idx
+                      && has_block_quantized_linear
+                           (List.nth regions producer_idx
+                            |> Region.assignments) ->
+                   union producer_idx consumer_idx
+               | _ -> ()))
+    regions;
+  (* Rebuild regions from merged groups. *)
+  let groups =
+    let tbl = Hashtbl.create n in
+    Array.iteri
+      (fun i _ ->
+        let root = find i in
+        Hashtbl.replace tbl root
+          (i :: (Hashtbl.find_opt tbl root |> Option.value ~default:[])))
+      parent;
+    Hashtbl.fold (fun _ members acc -> members :: acc) tbl []
+  in
+  List.map
+    (fun members ->
+      let member_regions = List.map (List.nth regions) members in
+      (* Topologically sort merged assignments using the global assignment
+         order so that [kernel_region_of_assignments] can build its slot
+         map without forward-reference errors. *)
+      let merged_set =
+        List.concat_map Region.assignments member_regions
+        |> List.map Assignment.node_id
+        |> Node_set.of_list
+      in
+      let all_assignments =
+        assignment_order
+        |> List.filter (fun a -> Node_set.mem (Assignment.node_id a) merged_set)
+      in
+      let member_set =
+        all_assignments
+        |> List.map Assignment.node_id
+        |> Node_set.of_list
+      in
+      let all_outputs =
+        List.concat_map Region.outputs member_regions
+        |> unique_values
+        |> List.filter (fun value ->
+               graph_output graph value
+               ||
+               let consumers = Compute_plan.consumers plan value in
+               consumers = []
+               || List.exists
+                    (fun use_ ->
+                      not
+                        (Node_set.mem
+                           (Compute_plan.Use.consumer use_) member_set))
+                    consumers)
+      in
+      let all_inputs =
+        List.concat_map Region.inputs member_regions
+        |> unique_values
+        |> List.filter (fun value ->
+               (* Remove values that are now produced internally. *)
+               not
+                 (List.exists
+                    (fun assignment ->
+                      Assignment.outputs assignment
+                      |> List.exists (Ir.Value.equal value))
+                    all_assignments))
+      in
+      { Region.assignments = all_assignments; inputs = all_inputs;
+        outputs = all_outputs })
+    groups
+
 let analyze ~target plan =
   let requests = Compute_plan.topological_order plan in
   let normalized = normalize_requests requests in
@@ -769,7 +892,8 @@ let analyze ~target plan =
   let candidates = candidate_edges plan in
   let decisions = decisions_of_edges plan normalized candidates in
   let adjacency = accepted_adjacency decisions in
-  let regions = regions_of_components plan assignments adjacency in
+  let raw_regions = regions_of_components plan assignments adjacency in
+  let regions = merge_multi_export_regions plan assignments raw_regions in
   { Analysis.target; graph = Compute_plan.graph plan; assignments; regions;
     decisions; stages = Compute_plan.stages plan }
 
@@ -1380,8 +1504,15 @@ let lower analysis =
            contractions)
         @ aux, List.hd outputs
   in
+  let tactic_all_outputs = function
+    | Kernel_ir.Fused_tactic.Multi_export_contraction_group { outputs; _ } ->
+        outputs
+    | tactic ->
+        let _, output = tactic_boundary_values tactic in
+        [ output ]
+  in
   let assignment_slice assignments tactic =
-    let boundaries, output = tactic_boundary_values tactic in
+    let boundaries, _ = tactic_boundary_values tactic in
     let boundary value =
       List.exists (fun candidate -> Ir.Value.equal candidate value) boundaries
     in
@@ -1408,7 +1539,10 @@ let lower analysis =
               Assignment.inputs assignment
               |> List.fold_left visit (Node_set.add id seen)
     in
-    let selected = visit Node_set.empty output in
+    let all_outputs = tactic_all_outputs tactic in
+    let selected =
+      List.fold_left visit Node_set.empty all_outputs
+    in
     assignments
     |> List.filter (fun assignment ->
            Node_set.mem (assignment_id assignment) selected)
@@ -1572,7 +1706,8 @@ let lower analysis =
                      Lowering.Kind.Gated_linear
                  | _ -> assert false
                in
-               let _, output = tactic_boundary_values tactic in
+               let all_outputs = tactic_all_outputs tactic in
+               let primary_output = List.hd all_outputs in
                let member_set =
                  assignments |> List.map assignment_id |> Node_set.of_list
                in
@@ -1581,7 +1716,7 @@ let lower analysis =
                  assignments
                  |> List.find_opt (fun assignment ->
                         Assignment.outputs assignment
-                        |> List.exists (Ir.Value.equal output))
+                        |> List.exists (Ir.Value.equal primary_output))
                  |> Option.value ~default:final_assignment
                  |> Assignment.source_node
                in
@@ -1589,7 +1724,7 @@ let lower analysis =
                  { Lowering.Event.kind = kind;
                    source_assignments = assignments;
                    inputs;
-                   outputs = [ output ];
+                   outputs = all_outputs;
                    replacement_node }
                in
                let claimed =

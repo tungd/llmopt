@@ -1009,15 +1009,10 @@ let run () =
     ~inputs:[ me_a; me_u ] ~output:(Some me_z);
   Ir.Graph.add_output me_graph ~name:"me-output-a" me_a;
   Ir.Graph.add_output me_graph ~name:"me-output-z" me_z;
-  (* The optimizer produces one fusion region per graph output.  With two
-     outputs (me_a, me_z), it creates two single-export regions.  The
-     multi-export contraction group selection fires on regions with 2+ exports
-     that the optimizer groups into one component.  The optimizer's region
-     formation is conservative here; the selection/emission/runtime stack is
-     proven by the contraction-group unit tests (section G, H).  The
-     full-stack proof below verifies the Metal lowering path handles the
-     multi-export digest list correctly: we verify that the emission produces
-     a compilable multi-export kernel and that the lowering registers it. *)
+  (* The optimizer's [merge_multi_export_regions] pass now groups adjacent
+     block-quantized regions whose graph outputs feed into each other,
+     producing a single multi-export fusion region.  The full-stack proof
+     below verifies the complete path: graph → optimize → Metal.lower. *)
   let q4_0_schema =
     match Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0) with
     | Ok schema -> schema
@@ -1053,5 +1048,34 @@ let run () =
     (contains_substring me_src "out_row_0[base_col]"
      && contains_substring me_src "out_row_1[base_col]")
     "multi-export digest kernel source writes to both output rows";
+
+  (* End-to-end optimizer proof: verify that Passes.optimize produces a
+     single multi-export fusion region from the two-output graph. *)
+  let me_optimization = Passes.optimize me_graph |> expect_ok in
+  let me_regions = Passes.Optimization.fusion_regions me_optimization in
+  (match me_regions with
+  | [ region ] ->
+      let results = Kernel_region.results region in
+      expect
+        (List.length results = 2)
+        "end-to-end: optimizer produces 1 region with 2 results for multi-export graph"
+  | _ ->
+      expect false
+        (Printf.sprintf
+           "end-to-end: expected 1 fusion region, got %d"
+           (List.length me_regions)));
+  begin
+  (* Metal.lower proof: the multi-export region compiles and registers. *)
+  let me_e2e_program =
+    Metal.lower ~fusion_regions:me_regions
+      (Passes.Optimization.execution_graph me_optimization)
+    |> expect_ok
+  in
+  let me_e2e_source = Metal.Program.source me_e2e_program in
+  expect
+    (contains_substring me_e2e_source "output_0"
+     && contains_substring me_e2e_source "output_1")
+    "end-to-end: Metal program contains multi-export output buffers"
+  end;
 
   print_endline "llmopt multi-export contraction group lower proof passed"
