@@ -24,6 +24,10 @@ val emit_superblock_m2_add :
   name:string ->
   value_function:string ->
   block_elements:int -> block_bytes:int -> subblock_elements:int -> string
+val emit_superblock_gated_m2 :
+  name:string ->
+  value_function:string ->
+  block_elements:int -> block_bytes:int -> subblock_elements:int -> string
 val emit_superblock_linear_pair :
   name:string ->
   value_function:string ->

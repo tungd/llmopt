@@ -1078,4 +1078,32 @@ let run () =
     "end-to-end: Metal program contains multi-export output buffers"
   end;
 
-  print_endline "llmopt multi-export contraction group lower proof passed"
+  print_endline "llmopt multi-export contraction group lower proof passed";
+
+  (* IQ4_XS gated_m2 parametric emitter proof: verify the IQ4_XS linear_kernels
+     output contains the gated_m2 kernel emitted by the parametric path. *)
+  let iq4_xs_schema =
+    match Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.IQ4_XS) with
+    | Ok schema -> schema
+    | Error err -> fail (Block_schema.Error.to_string err)
+  in
+  let iq4_xs_source =
+    Metal_block_codegen.linear_kernels ~target:Target_hardware.default iq4_xs_schema
+    |> expect_ok
+  in
+  expect
+    (contains_substring iq4_xs_source "llmopt_iq4_xs_gated_linear_f16_m2")
+    "IQ4_XS linear_kernels emits the gated_m2 kernel";
+  expect
+    (contains_substring iq4_xs_source "llmopt_gated_product")
+    "IQ4_XS gated_m2 kernel uses llmopt_gated_product";
+  expect
+    (contains_substring iq4_xs_source "gate_weight [[buffer(1)]]"
+     && contains_substring iq4_xs_source "up_weight [[buffer(2)]]")
+    "IQ4_XS gated_m2 kernel has gate_weight and up_weight buffers";
+  expect
+    (contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(gate_packed"
+     && contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(up_packed")
+    "IQ4_XS gated_m2 kernel uses schema value function for both projections";
+
+  print_endline "llmopt IQ4_XS gated_m2 parametric emitter proof passed"

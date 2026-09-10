@@ -127,6 +127,11 @@ let iq4_xs_linear ~target schema =
         Block_schema.Logical_decode.Packed_power_of_two { bias; denominator; _ } ] ->
       let values = values |> List.map string_of_int |> String.concat ", " in
       let value_function = "llmopt_schema_iq4_xs_value" in
+      let block_elements = Block_schema.Physical_layout.block_elements physical in
+      let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+      let subblock_elements =
+        Block_schema.Logical_decode.subblock_elements logical
+      in
       Ok
         (emit_superblock ~m2_x4:false schema ~name:"iq4_xs" ~value_function
            (Printf.sprintf {|
@@ -144,7 +149,9 @@ inline float %s(device const uchar* block, uint lane, uint subblock) {
       * float(llmopt_schema_iq4_xs_values[code]);
 }
 |} values value_function scale_offset high_offset low_offset bias quant_offset
-              denominator))
+              denominator)
+        ^ emit_superblock_gated_m2 ~name:"iq4_xs" ~value_function
+            ~block_elements ~block_bytes ~subblock_elements)
   | _ -> Error "constructive IQ4_XS emitter requires the codebook power-of-two schema"
 
 let q8_0_linear ~target schema =

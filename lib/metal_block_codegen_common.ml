@@ -246,6 +246,55 @@ kernel void %s(
     name block_elements block_bytes block_bytes subblocks block_elements
     subblock_elements value_function
 
+(* G4P12-05-2: parametric gated m=2 emitter for superblock families.  The
+   kernel takes two weight buffers (gate + up) as uchar pointers, processes
+   m=2 rows with two projections each, and writes back through
+   llmopt_gated_product.  Decode is via the family's schema value function,
+   decode-identical to the llama zoo gated_m2 tile it replaces. *)
+let emit_superblock_gated_m2 ~name ~value_function ~block_elements
+    ~block_bytes ~subblock_elements =
+  let subblocks = block_elements / subblock_elements in
+  Printf.sprintf {|
+kernel void llmopt_%s_gated_linear_f16_m2(
+    device const half* input [[buffer(0)]],
+    device const uchar* gate_weight [[buffer(1)]],
+    device const uchar* up_weight [[buffer(2)]],
+    device half* product [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint col = gid >> 5u;
+  if (col >= params.n) return;
+  const uint blocks = params.k / %du;
+  device const uchar* gate_row_blocks = gate_weight + col * blocks * %du;
+  device const uchar* up_row_blocks = up_weight + col * blocks * %du;
+  float accumulators[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+  for (uint block = 0; block < blocks; ++block) {
+    device const uchar* gate_packed = gate_row_blocks + block * %du;
+    device const uchar* up_packed = up_row_blocks + block * %du;
+    for (uint subblock = 0; subblock < %du; ++subblock) {
+      const uint k = block * %du + subblock * %du + lane;
+      const float x0 = float(input[k]);
+      const float x1 = float(input[params.k + k]);
+      const float gate_val = %s(gate_packed, lane, subblock);
+      const float up_val = %s(up_packed, lane, subblock);
+      accumulators[0] += x0 * gate_val;
+      accumulators[1] += x1 * gate_val;
+      accumulators[2] += x0 * up_val;
+      accumulators[3] += x1 * up_val;
+    }
+  }
+  for (uint index = 0; index < 4u; ++index)
+    accumulators[index] = simd_sum(accumulators[index]);
+  if (lane == 0u) {
+    product[col] = llmopt_gated_product(accumulators[0], accumulators[2], params.has_bias);
+    product[params.n + col] = llmopt_gated_product(accumulators[1], accumulators[3], params.has_bias);
+  }
+}
+|}
+    name block_elements block_bytes block_bytes block_bytes block_bytes
+    subblocks block_elements subblock_elements value_function value_function
+
 let emit_superblock_linear_pair ~name ~value_function ~block_elements
     ~block_bytes ~subblock_elements =
   let subblocks = block_elements / subblock_elements in
