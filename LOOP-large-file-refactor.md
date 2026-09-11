@@ -310,7 +310,18 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   results. The remaining `metal.ml` explains assembly without embedded shader
   catalogs or per-operation emitter bodies.
 
-- [ ] 7. Split schema-driven block code generation by emission responsibility.
+- [x] 7. Split schema-driven block code generation by emission responsibility.
+  DONE (metal_block_codegen.ml 3109 -> 43). Leaf emitters live in
+  metal_block_codegen_common (geometry checks + block32/superblock templates),
+  metal_q4_0_decode_codegen (x4/x8/gated decode emitters),
+  metal_q4_0_prefill_codegen (m16/m32 emitters), metal_q4_0_qkv_codegen (QKV x8/m32),
+  and metal_q4_0_epilogue_codegen (epilogue stores + digest_of_flat).
+  Non-Q4_0 formats and their residual/add variants are in metal_block_codegen_formats.ml.
+  Q4_0 schema assembly, specialized epilogue/multi-linear wrappers, and add twins
+  live in metal_q4_0_codegen.ml. metal_block_codegen.ml is now a clean 43-line
+  dispatch and wrapper facade; its public .mli contract is 100% preserved.
+  Verified: ninja all green; test suites (OCaml + 79 Python) pass; smoke tests pass.
+
   Change: extract shared schema offset/geometry checks and common block32 and
   superblock loops into `metal_block_codegen_common.ml`; put the non-Q4_0
   format assemblers and their residual/add variants in
