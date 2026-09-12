@@ -1,4 +1,4 @@
-type t
+type t = Metal_native.t
 type runtime = t
 
 val load_package :
@@ -10,12 +10,7 @@ val load_packages :
 val device_name : t -> string
 val package : t -> Serving_package.t
 
-module Decode_uniforms : sig
-  type t
-
-  val create : past_tokens:int -> (t, string) result
-  val past_tokens : t -> int
-end
+module Decode_uniforms = Metal_native.Decode_uniforms
 
 module Quant_qkv_tactic : sig
   val kernel_name :
@@ -39,144 +34,9 @@ module Paged_attention_tactic : sig
   val groups_by_kv_head : string -> bool
 end
 
-module Buffer : sig
-  type t
+module Buffer = Metal_native.Buffer
 
-  val of_bytes : runtime:runtime -> bytes -> (t, string) result
-  val create : runtime:runtime -> bytes:int -> (t, string) result
-  val view : parent:t -> offset:int -> bytes:int -> (t, string) result
-  val contents : t -> (bytes, string) result
-  val argmax_f16 : t -> vocabulary:int -> (int, string) result
-  val byte_length : t -> int
-  val copy : source:t -> destination:t -> (unit, string) result
-  val set_int64 : t -> offset:int -> int64 -> (unit, string) result
-  val set_u32_array : t -> offset:int -> int array -> (unit, string) result
-end
-
-module Cache : sig
-  module Attention : sig
-    type t = Key | Value
-  end
-
-  type t
-  type batch
-
-  val create : runtime:runtime -> config:Kv_cache.Config.t -> (t, string) result
-  val format : t -> Kv_cache.Format.t
-  val token_pool_bytes : t -> int
-  val checkpoint_pool_bytes : t -> int
-
-  val with_batch :
-    t -> (batch -> ('a, string) result) -> ('a, string) result
-
-  val with_batch_async :
-    t -> (batch -> ('a, string) result) -> ('a, string) result
-
-  val pack_attention :
-    t ->
-    layer:int ->
-    kind:Attention.t ->
-    slots:Kv_cache.Slot.t array ->
-    source:Buffer.t ->
-    (string, string) result
-
-  val pack_attention_slice :
-    t ->
-    layer:int ->
-    kind:Attention.t ->
-    slots:Kv_cache.Slot.t array ->
-    source_items:int ->
-    source_offset:int ->
-    source:Buffer.t ->
-    (string, string) result
-
-  val unpack_attention :
-    t ->
-    layer:int ->
-    kind:Attention.t ->
-    slots:Kv_cache.Slot.t array ->
-    destination:Buffer.t ->
-    (string, string) result
-
-  val batch_pack_attention :
-    batch ->
-    layer:int ->
-    kind:Attention.t ->
-    slots:Kv_cache.Slot.t array ->
-    source:Buffer.t ->
-    (string, string) result
-
-  val batch_pack_attention_pair :
-    batch ->
-    layer:int ->
-    slots:Kv_cache.Slot.t array ->
-    key_source:Buffer.t ->
-    value_source:Buffer.t ->
-    (string, string) result
-
-  val batch_pack_attention_slice :
-    batch ->
-    layer:int ->
-    kind:Attention.t ->
-    slots:Kv_cache.Slot.t array ->
-    source_items:int ->
-    source_offset:int ->
-    source:Buffer.t ->
-    (string, string) result
-
-  val batch_pack_attention_pair_slice :
-    batch ->
-    layer:int ->
-    slots:Kv_cache.Slot.t array ->
-    source_items:int ->
-    source_offset:int ->
-    key_source:Buffer.t ->
-    value_source:Buffer.t ->
-    (string, string) result
-
-  val batch_unpack_attention :
-    batch ->
-    layer:int ->
-    kind:Attention.t ->
-    slots:Kv_cache.Slot.t array ->
-    destination:Buffer.t ->
-    (string, string) result
-
-  val pack_checkpoint :
-    t ->
-    layer:int ->
-    checkpoint:Kv_cache.Checkpoint.t ->
-    source:Buffer.t ->
-    (string, string) result
-
-  val unpack_checkpoint :
-    t ->
-    layer:int ->
-    checkpoint:Kv_cache.Checkpoint.t ->
-    destination:Buffer.t ->
-    (string, string) result
-
-  val batch_pack_checkpoint :
-    batch ->
-    layer:int ->
-    checkpoint:Kv_cache.Checkpoint.t ->
-    source:Buffer.t ->
-    (string, string) result
-
-  val batch_unpack_checkpoint :
-    batch ->
-    layer:int ->
-    checkpoint:Kv_cache.Checkpoint.t ->
-    destination:Buffer.t ->
-    (string, string) result
-
-  val q8_attention_inputs :
-    t ->
-    slots:Kv_cache.Slot.t array ->
-    ((string * Buffer.t) list, string) result
-
-  val update_pack_slot : t -> Kv_cache.Slot.t -> (unit, string) result
-end
+module Cache = Metal_cache
 
 module Execution : sig
   type t
@@ -288,48 +148,6 @@ val dispatch_speculative_attention :
   unit ->
   (string, string) result
 
-module Ring_queue : sig
-  type t
+module Ring_queue = Metal_native.Ring_queue
 
-  val default_pipeline_depth : int
-  val pipeline_depth : unit -> int
-
-  val create : unit -> (t, string) result
-
-  val submit :
-    t ->
-    request_id:int ->
-    token:int ->
-    past_tokens:int ->
-    flags:int ->
-    (bool, string) result
-
-  val wait_completion : t -> (int * int * int, string) result
-  val poll_completion : t -> ((int * int * int) option, string) result
-
-  val start_worker :
-    t ->
-    runtime:runtime ->
-    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int * bool)
-               array ->
-    token_buffer:Buffer.t ->
-    output_buffer:Buffer.t ->
-    (unit, string) result
-
-  val destroy : t -> (unit, string) result
-end
-
-module Prebaked : sig
-  type t
-
-  val create :
-    runtime:runtime ->
-    dispatches:(string * Buffer.t list * bytes * int * int * int * int * int * int * bool)
-               array ->
-    token_buffer:Buffer.t ->
-    output_buffer:Buffer.t ->
-    (t, string) result
-
-  val execute :
-    t -> token:int -> past_tokens:int -> checkpoint:int -> (int, string) result
-end
+module Prebaked = Metal_native.Prebaked
