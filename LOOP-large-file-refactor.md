@@ -342,7 +342,18 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   epilogues and row guards. This item changes ownership, not Q4_0 arithmetic,
   schema geometry, generated names, or which templates remain available.
 
-- [ ] 8. Extract the runtime's native adapter, parameters, and physical cache.
+- [x] 8. Extract the runtime's native adapter, parameters, and physical cache.
+  DONE (metal_runtime.ml 5397 -> 3868). Extracted pure parameter encoders
+  into metal_parameters.ml/.mli (370 lines), native handle declarations, runtime
+  record, library loading, protect, Buffer, Batch, Ring_queue, Prebaked, and
+  low-level dispatch into metal_native.ml/.mli (363 lines), and physical KV cache
+  implementation into metal_cache.ml/.mli (473 lines). Public Metal_runtime aliases
+  these modules and retains identical native runtime/buffer identity, wire formats,
+  and lifetimes. Native stubs in native/ocaml_metal_stubs.m remain untouched.
+  Verified: ninja all green; 79 Python unit tests pass; OCaml test suite passes;
+  all 4 smoke targets (native-schedule-smoke, w4a16-serving-smoke,
+  ocaml-metal-primitives-smoke, ocaml-metal-runtime-smoke) pass on Apple M4 Pro.
+
   Change: create `metal_native.ml` owning the external handle declarations,
   runtime record and loading, `protect`, `Buffer`, `Batch`, `Ring_queue`,
   `Prebaked`, tensor lookup, and low-level dispatch. Native symbol strings and
