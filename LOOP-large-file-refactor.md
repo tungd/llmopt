@@ -369,7 +369,7 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   successful compilation. Keep mapped archive and buffer parents alive exactly
   as before, and keep command batching/commit/abort ownership in `Batch`.
 
-- [ ] 9. Break up runtime encoding without changing its traversal or lifetime.
+- [x] 9. Break up runtime encoding without changing its traversal or lifetime.
   Change: create `metal_execution_state.ml` owning `Execution`,
   `Execution_batch`, `execution_state` (as module-scoped `t`), value/input maps,
   workspace binding, retained resources, `with_execution_batch`, and the cache
