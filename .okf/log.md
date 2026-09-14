@@ -1,6 +1,10 @@
 # Update Log
 
 ## 2026-09-14
+* **llama.cpp native throughput benchmark on Apple M4 Pro**: Re-executed `llama-bench` build 10531 on Apple M4 Pro (MTL, BLAS) for `LiquidAI/LFM2.5-350M-GGUF` at 512 prompt / 128 generation tokens across 5 repetitions:
+  - `Q4_0`: Prompt throughput **8,122.25 tok/s** (mean 63.09 ms); Generation throughput **501.82 tok/s** (mean 255.85 ms, 1.999 ms / token). Receipts recorded in `bench/results/lfm25-350m-llama-cpp-q4-2026-09-14.json` and `lfm25-350m-llama-cpp-q4.json`.
+  - `Q8_0`: Prompt throughput **7,965.82 tok/s** (mean 64.31 ms); Generation throughput **362.46 tok/s** (mean 354.00 ms, 2.766 ms / token). Receipt recorded in `bench/results/lfm25-350m-llama-cpp-q8-2026-09-14.json`.
+  - Confirmed stability against the historical August 26 baseline (8,162.33 prompt / 367.86 gen tok/s), showing < 2.5% delta across runs. Documented in exp-0170 and `.okf/benchmarks/llama-cpp.md`.
 * **General multi-slot contraction group codegen and shader zoo retirement**: Commit `f9c256d` generalizes multi-slot contraction group code generation across all seven block-quant formats (Q4_0, Q8_0, Q5_0, Q4_K, Q5_K, Q6_K, IQ4_XS) and retires legacy bespoke monolithic templates and kernels, completing the shift from bespoke shader zoo sprawl to the general algebraic ops/IR compiler model:
   - `lib/metal_block_codegen_common.ml/.mli`: Replaced bespoke `emit_block32_gated` and `emit_superblock_gated_m2` with `emit_block32_multi_linear` and `emit_superblock_multi_linear` parameterized by `num_slots` and `epilogue : int Applicative_expr.t`. Both dynamically emit auxiliary row buffers, evaluate arbitrary Applicative expressions over multi-slot accumulator variables (`acc0..acc(N-1)`), and store results with single-rounding precision.
   - `lib/metal_block_codegen_formats.ml/.mli` and `lib/metal_block_codegen.ml/.mli`: Exported schema-level multi-linear admissions (`q8_0_multi_linear_kernel`, `q5_0_multi_linear_kernel`, `q4_k_multi_linear_kernel`, `q5_k_multi_linear_kernel`, `q6_k_multi_linear_kernel`, `iq4_xs_multi_linear_kernel`).

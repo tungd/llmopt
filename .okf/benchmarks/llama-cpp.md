@@ -52,10 +52,10 @@ ninja -f ninja.build bench-llama-cpp
 
 The target invokes `llama-bench` with 512 prompt tokens, 128 generation tokens,
 five repetitions, batch size 2,048, ubatch size 512, and 99 GPU layers. The
-native receipt is written to
-`bench/results/lfm25-350m-llama-cpp-q8-2026-08-26.json`; the ignored raw stderr
-and full artifact are under `_artifacts/llama-cpp/`. The chosen values are
-recorded configuration for comparison, not a performance gate.
+receipts are recorded under `bench/results/`:
+- **Q4_0** (`bench/results/lfm25-350m-llama-cpp-q4-2026-09-14.json` / `lfm25-350m-llama-cpp-q4.json`): **8,122.25 tok/s** prompt (63.09 ms), **501.82 tok/s** generation (255.85 ms, 1.999 ms/tok).
+- **Q8_0** (`bench/results/lfm25-350m-llama-cpp-q8-2026-09-14.json`): **7,965.82 tok/s** prompt (64.31 ms), **362.46 tok/s** generation (354.00 ms, 2.766 ms/tok).
+Historical Q8_0 baseline (`bench/results/lfm25-350m-llama-cpp-q8-2026-08-26.json`): 8,162.33 tok/s prompt, 367.86 tok/s generation (< 2.5% delta across runs). The raw stderr and full artifacts are under `_artifacts/llama-cpp/`. The chosen values are recorded configuration for comparison, not a performance gate.
 
 # Same-trace ERS receipt
 
