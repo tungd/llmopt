@@ -927,17 +927,30 @@ let run () =
   Ir.Graph.add_output q8_graph ~name:"q8-output" q8_z;
   let q8_opt = Passes.optimize q8_graph |> expect_ok in
   let q8_regions = Passes.Optimization.fusion_regions q8_opt in
-  (match
-     Metal.lower ~fusion_regions:q8_regions
-       (Passes.Optimization.execution_graph q8_opt)
-   with
-  | Error msg ->
-      expect
-        (contains_substring msg
-           "Metal lower: multi-slot contraction group digest emission is defined only for Q4_0 x8 decode regions (got Q8_0 serving")
-        "unsupported quant in multi-slot contraction group fails loudly at lower"
-  | Ok _ ->
-      fail "Metal.lower unexpectedly succeeded for Q8_0 contraction group");
+  let q8_epilogue =
+    Applicative_expr.Binop
+      ( Applicative_expr.Add,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let q8_digest_name =
+    Contraction_group.algebraic_kernel_name ~base:"llmopt_q8_0_linear_f16"
+      q8_epilogue
+  in
+  let q8_program =
+    Metal.lower ~fusion_regions:q8_regions
+      (Passes.Optimization.execution_graph q8_opt)
+    |> expect_ok
+  in
+  let q8_source = Metal.Program.source q8_program in
+  expect
+    (contains_substring q8_source q8_digest_name)
+    "q8 program source contains multi-linear contraction group kernel";
+  expect
+    (List.exists
+       (fun k -> Kernel_abi.Entry.name k = q8_digest_name)
+       (Metal.Program.kernels q8_program))
+    "q8 program registers multi-linear contraction group kernel entry";
 
   print_endline "llmopt multi-slot contraction group lower proof passed";
 
@@ -1080,30 +1093,39 @@ let run () =
 
   print_endline "llmopt multi-export contraction group lower proof passed";
 
-  (* IQ4_XS gated_m2 parametric emitter proof: verify the IQ4_XS linear_kernels
-     output contains the gated_m2 kernel emitted by the parametric path. *)
+  (* IQ4_XS multi-linear parametric emitter proof: verify iq4_xs_multi_linear_kernel
+     emits a valid multi-slot kernel using the schema value function. *)
   let iq4_xs_schema =
     match Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.IQ4_XS) with
     | Ok schema -> schema
     | Error err -> fail (Block_schema.Error.to_string err)
   in
+  let iq4_swiglu_epilogue =
+    Applicative_expr.Binop
+      ( Applicative_expr.Mul,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let iq4_kernel_name =
+    Contraction_group.algebraic_kernel_name
+      ~base:"llmopt_iq4_xs_linear_f16" iq4_swiglu_epilogue
+  in
   let iq4_xs_source =
-    Metal_block_codegen.linear_kernels ~target:Target_hardware.default iq4_xs_schema
+    Metal_block_codegen.iq4_xs_multi_linear_kernel
+      ~name:iq4_kernel_name ~epilogue:iq4_swiglu_epilogue
+      ~target:Target_hardware.default iq4_xs_schema
     |> expect_ok
   in
   expect
-    (contains_substring iq4_xs_source "llmopt_iq4_xs_gated_linear_f16_m2")
-    "IQ4_XS linear_kernels emits the gated_m2 kernel";
+    (contains_substring iq4_xs_source ("kernel void " ^ iq4_kernel_name))
+    "IQ4_XS multi-linear kernel has correct name";
   expect
-    (contains_substring iq4_xs_source "llmopt_gated_product")
-    "IQ4_XS gated_m2 kernel uses llmopt_gated_product";
+    (contains_substring iq4_xs_source "device const uchar* weight_0 [[buffer(1)]]"
+     && contains_substring iq4_xs_source "device const uchar* weight_1 [[buffer(2)]]")
+    "IQ4_XS multi-linear kernel has weight_0 and weight_1 buffers";
   expect
-    (contains_substring iq4_xs_source "gate_weight [[buffer(1)]]"
-     && contains_substring iq4_xs_source "up_weight [[buffer(2)]]")
-    "IQ4_XS gated_m2 kernel has gate_weight and up_weight buffers";
-  expect
-    (contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(gate_packed"
-     && contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(up_packed")
-    "IQ4_XS gated_m2 kernel uses schema value function for both projections";
+    (contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(packed_0"
+     && contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(packed_1")
+    "IQ4_XS multi-linear kernel uses schema value function for both projections";
 
-  print_endline "llmopt IQ4_XS gated_m2 parametric emitter proof passed"
+  print_endline "llmopt IQ4_XS multi-linear parametric emitter proof passed"

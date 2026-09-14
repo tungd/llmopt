@@ -644,58 +644,6 @@ kernel void llmopt_q4_k_gated_linear_f16_m2_x1_l32(
   }
 }
 
-kernel void llmopt_q4_k_down_add_f16(
-    device const half* product [[buffer(0)]],
-    device const block_q4_K* down_weight [[buffer(1)]],
-    device const half* residual [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
-    uint gid [[thread_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint simd_idx = gid >> 5;
-  const uint total_elements = params.m * params.k;
-  if (simd_idx >= total_elements) return;
-  const uint row = simd_idx / params.k;
-  const uint col = simd_idx - row * params.k;
-  const uint num_superblocks = params.n >> 8;
-  device const block_q4_K* down_row = down_weight + col * num_superblocks;
-  device const half* in_ptr = product + row * params.n;
-  float down_acc = 0.0f;
-  for (uint sb = 0; sb < num_superblocks; ++sb) {
-    device const block_q4_K& b = down_row[sb];
-    const float d = float(b.d);
-    const float dmin = float(b.dmin);
-    float dl[8], ml[8];
-    for (int j = 0; j < 4; ++j) {
-      const uint8_t sc0 = extract_bits(b.scales[j], 0u, 6u);
-      const uint8_t m0 = extract_bits(b.scales[j + 4], 0u, 6u);
-      const uint8_t sc1 = extract_bits(b.scales[j + 8], 0u, 4u) | (extract_bits(b.scales[j], 6u, 2u) << 4);
-      const uint8_t m1 = extract_bits(b.scales[j + 8], 4u, 4u) | (extract_bits(b.scales[j + 4], 6u, 2u) << 4);
-      dl[j] = d * float(sc0);
-      ml[j] = dmin * float(m0);
-      dl[j + 4] = d * float(sc1);
-      ml[j + 4] = dmin * float(m1);
-    }
-    const uint8_t q0 = b.qs[lane];
-    const uint8_t q1 = b.qs[32 + lane];
-    const uint8_t q2 = b.qs[64 + lane];
-    const uint8_t q3 = b.qs[96 + lane];
-    const uint base_idx = sb * 256 + lane;
-    down_acc += float(in_ptr[base_idx + 0])   * (dl[0] * float(extract_bits(q0, 0u, 4u)) - ml[0])
-              + float(in_ptr[base_idx + 32])  * (dl[1] * float(extract_bits(q0, 4u, 4u)) - ml[1])
-              + float(in_ptr[base_idx + 64])  * (dl[2] * float(extract_bits(q1, 0u, 4u)) - ml[2])
-              + float(in_ptr[base_idx + 96])  * (dl[3] * float(extract_bits(q1, 4u, 4u)) - ml[3])
-              + float(in_ptr[base_idx + 128]) * (dl[4] * float(extract_bits(q2, 0u, 4u)) - ml[4])
-              + float(in_ptr[base_idx + 160]) * (dl[5] * float(extract_bits(q2, 4u, 4u)) - ml[5])
-              + float(in_ptr[base_idx + 192]) * (dl[6] * float(extract_bits(q3, 0u, 4u)) - ml[6])
-              + float(in_ptr[base_idx + 224]) * (dl[7] * float(extract_bits(q3, 4u, 4u)) - ml[7]);
-  }
-  down_acc = simd_sum(down_acc);
-  if (lane == 0) {
-    output[row * params.k + col] = half(down_acc + float(residual[row * params.k + col]));
-  }
-}
-
 kernel void llmopt_q4_k_linear_f16_llama_mv_add(
     device const half* input [[buffer(0)]],
     device const block_q4_K* weight [[buffer(1)]],

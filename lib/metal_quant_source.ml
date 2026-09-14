@@ -318,15 +318,7 @@ let kquant_entries =
     kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
       ~name:"llmopt_q5_k_gated_linear_f16_m2_x1_l32"
       ~operation:Kernel_abi.Operation.Gated_linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_iq4_xs_gated_linear_f16_m2"
-      ~operation:Kernel_abi.Operation.Gated_linear
-      ~input_dtype:(Ir.Dtype.Quant IQ4_XS) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q4_k_down_add_f16"
-      ~operation:Kernel_abi.Operation.Fused_linear
-      ~input_dtype:(Ir.Dtype.Quant Q4_K) ~output_dtype:Ir.Dtype.Float16 ]
+      ~input_dtype:(Ir.Dtype.Quant Q5_K) ~output_dtype:Ir.Dtype.Float16 ]
 
 let emit_dequant_q8_0 () = metal_header ^ quant_common_source ^ q8_0_source
 let emit_dequant_q5_0 () = metal_header ^ quant_common_source ^ q5_0_source

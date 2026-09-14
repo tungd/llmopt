@@ -610,14 +610,14 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
               (Ok ()) contractions
           in
           let* grid_x =
-            if quant = Ir.Dtype.Q4_0 && String.ends_with ~suffix:"_x8" base_name then
+            if String.ends_with ~suffix:"_x8" base_name then
               let groups = (first.n + 7) / 8 in
               linear_f16_grid (first.m * groups)
+            else if String.ends_with ~suffix:"_x4" base_name then
+              let groups = (first.n + 3) / 4 in
+              linear_f16_grid (first.m * groups)
             else
-              Error
-                (Printf.sprintf
-                   "assignment contraction group digest dispatch is defined only for Q4_0 x8 (got %s %s)"
-                   (Ir.Dtype.quant_to_string quant) base_name)
+              linear_f16_grid (first.m * first.n)
           in
           let canonical_epilogue = Applicative_expr.canonicalize epilogue in
           let aux_values = Applicative_expr.required_values canonical_epilogue in

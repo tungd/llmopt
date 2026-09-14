@@ -204,8 +204,8 @@ build _build/ocaml/ir.cmx: ocaml_module_sexp lib/ir.ml | _build/ocaml/ir.cmi _bu
 
 build _build/ocaml/block_schema.cmi: ocaml_interface lib/block_schema.mli | _build/ocaml/ir.cmi
 build _build/ocaml/block_schema.cmx: ocaml_module lib/block_schema.ml | _build/ocaml/block_schema.cmi _build/ocaml/ir.cmx
-build _build/ocaml/metal_block_codegen_common.cmi: ocaml_interface lib/metal_block_codegen_common.mli | _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi
-build _build/ocaml/metal_block_codegen_common.cmx: ocaml_module lib/metal_block_codegen_common.ml | _build/ocaml/metal_block_codegen_common.cmi _build/ocaml/block_schema.cmx _build/ocaml/target_hardware.cmx
+build _build/ocaml/metal_block_codegen_common.cmi: ocaml_interface lib/metal_block_codegen_common.mli | _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi _build/ocaml/applicative_expr.cmi
+build _build/ocaml/metal_block_codegen_common.cmx: ocaml_module lib/metal_block_codegen_common.ml | _build/ocaml/metal_block_codegen_common.cmi _build/ocaml/block_schema.cmx _build/ocaml/target_hardware.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/ir.cmx
 build _build/ocaml/metal_q4_0_epilogue_codegen.cmi: ocaml_interface lib/metal_q4_0_epilogue_codegen.mli | _build/ocaml/block_schema.cmi _build/ocaml/epilogue.cmi _build/ocaml/ir.cmi _build/ocaml/target_hardware.cmi _build/ocaml/metal_block_codegen_common.cmi
 build _build/ocaml/metal_q4_0_epilogue_codegen.cmx: ocaml_module lib/metal_q4_0_epilogue_codegen.ml | _build/ocaml/metal_q4_0_epilogue_codegen.cmi _build/ocaml/block_schema.cmx _build/ocaml/epilogue.cmx _build/ocaml/ir.cmx _build/ocaml/target_hardware.cmx _build/ocaml/metal_block_codegen_common.cmx
 build _build/ocaml/metal_q4_0_decode_codegen.cmi: ocaml_interface lib/metal_q4_0_decode_codegen.mli | _build/ocaml/epilogue.cmi _build/ocaml/metal_q4_0_epilogue_codegen.cmi _build/ocaml/applicative_expr.cmi
@@ -214,8 +214,8 @@ build _build/ocaml/metal_q4_0_prefill_codegen.cmi: ocaml_interface lib/metal_q4_
 build _build/ocaml/metal_q4_0_prefill_codegen.cmx: ocaml_module lib/metal_q4_0_prefill_codegen.ml | _build/ocaml/metal_q4_0_prefill_codegen.cmi _build/ocaml/epilogue.cmx _build/ocaml/metal_q4_0_epilogue_codegen.cmx
 build _build/ocaml/metal_q4_0_qkv_codegen.cmi: ocaml_interface lib/metal_q4_0_qkv_codegen.mli
 build _build/ocaml/metal_q4_0_qkv_codegen.cmx: ocaml_module lib/metal_q4_0_qkv_codegen.ml | _build/ocaml/metal_q4_0_qkv_codegen.cmi
-build _build/ocaml/metal_block_codegen_formats.cmi: ocaml_interface lib/metal_block_codegen_formats.mli | _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi
-build _build/ocaml/metal_block_codegen_formats.cmx: ocaml_module lib/metal_block_codegen_formats.ml | _build/ocaml/metal_block_codegen_formats.cmi _build/ocaml/block_schema.cmx _build/ocaml/target_hardware.cmx _build/ocaml/ir.cmx _build/ocaml/metal_block_codegen_common.cmx
+build _build/ocaml/metal_block_codegen_formats.cmi: ocaml_interface lib/metal_block_codegen_formats.mli | _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi _build/ocaml/applicative_expr.cmi
+build _build/ocaml/metal_block_codegen_formats.cmx: ocaml_module lib/metal_block_codegen_formats.ml | _build/ocaml/metal_block_codegen_formats.cmi _build/ocaml/block_schema.cmx _build/ocaml/target_hardware.cmx _build/ocaml/ir.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/metal_block_codegen_common.cmx
 build _build/ocaml/metal_q4_0_codegen.cmi: ocaml_interface lib/metal_q4_0_codegen.mli | _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi _build/ocaml/epilogue.cmi _build/ocaml/applicative_expr.cmi
 build _build/ocaml/metal_q4_0_codegen.cmx: ocaml_module lib/metal_q4_0_codegen.ml | _build/ocaml/metal_q4_0_codegen.cmi _build/ocaml/block_schema.cmx _build/ocaml/target_hardware.cmx _build/ocaml/ir.cmx _build/ocaml/epilogue.cmx _build/ocaml/applicative_expr.cmx _build/ocaml/metal_block_codegen_common.cmx _build/ocaml/metal_q4_0_decode_codegen.cmx _build/ocaml/metal_q4_0_prefill_codegen.cmx _build/ocaml/metal_q4_0_qkv_codegen.cmx _build/ocaml/metal_q4_0_epilogue_codegen.cmx
 build _build/ocaml/metal_block_codegen.cmi: ocaml_interface lib/metal_block_codegen.mli | _build/ocaml/ir.cmi _build/ocaml/block_schema.cmi _build/ocaml/target_hardware.cmi _build/ocaml/epilogue.cmi _build/ocaml/applicative_expr.cmi

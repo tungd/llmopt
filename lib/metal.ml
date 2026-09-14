@@ -154,22 +154,6 @@ let block32_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_gated_linear_f16_m32"
       ~operation:Kernel_abi.Operation.Gated_linear
-      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_0_dual_swiglu_f16"
-      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_0_down_add_f16"
-      ~operation:Kernel_abi.Operation.Fused_linear
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q4_0_dual_swiglu_f16"
-      ~operation:Kernel_abi.Operation.W4a16_swiglu_ffn
-      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q4_0_down_add_f16"
-      ~operation:Kernel_abi.Operation.Fused_linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16 ]
 
 let add_block32_kernels program =
@@ -683,20 +667,46 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            let kernel_name =
              Contraction_group.algebraic_kernel_name ~base epilogue
            in
-           match quant with
-           | Ir.Dtype.Q4_0 ->
-               let* kernel =
+           let* kernel =
+             let canonical_epilogue = Applicative_expr.canonicalize epilogue in
+             match quant with
+             | Ir.Dtype.Q4_0 ->
                  Metal_block_codegen.q4_0_multi_linear_f16_x8_kernel
                    ~name:kernel_name ~num_slots
-                   ~epilogue:(Applicative_expr.canonicalize epilogue)
+                   ~epilogue:canonical_epilogue
                    ~target q4_0_digest_schema
-               in
-               Ok (source ^ kernel)
-           | _ ->
-               Error
-                 (Printf.sprintf
-                    "Metal lower: multi-slot contraction group digest emission is defined only for Q4_0 x8 decode regions (got %s serving %s)"
-                    (Ir.Dtype.quant_to_string quant) base))
+             | Ir.Dtype.Q8_0 ->
+                 Metal_block_codegen.q8_0_multi_linear_kernel
+                   ~name:kernel_name ~num_slots
+                   ~epilogue:canonical_epilogue
+                   ~target q8_0_twin_schema
+             | Ir.Dtype.Q5_0 ->
+                 Metal_block_codegen.q5_0_multi_linear_kernel
+                   ~name:kernel_name ~num_slots
+                   ~epilogue:canonical_epilogue
+                   ~target q5_0_twin_schema
+             | Ir.Dtype.Q4_K ->
+                 Metal_block_codegen.q4_k_multi_linear_kernel
+                   ~name:kernel_name ~num_slots
+                   ~epilogue:canonical_epilogue
+                   ~target q4_k_twin_schema
+             | Ir.Dtype.Q5_K ->
+                 Metal_block_codegen.q5_k_multi_linear_kernel
+                   ~name:kernel_name ~num_slots
+                   ~epilogue:canonical_epilogue
+                   ~target q5_k_twin_schema
+             | Ir.Dtype.Q6_K ->
+                 Metal_block_codegen.q6_k_multi_linear_kernel
+                   ~name:kernel_name ~num_slots
+                   ~epilogue:canonical_epilogue
+                   ~target q6_k_twin_schema
+             | Ir.Dtype.IQ4_XS ->
+                 Metal_block_codegen.iq4_xs_multi_linear_kernel
+                   ~name:kernel_name ~num_slots
+                   ~epilogue:canonical_epilogue
+                   ~target iq4_xs_twin_schema
+           in
+           Ok (source ^ kernel))
          (Ok "")
   in
   let region_quant_multi_digest_entries =

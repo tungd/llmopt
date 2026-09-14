@@ -10,10 +10,15 @@ val require_block32 :
 val emit_linear_pair :
   name:string ->
   value_function:string -> block_elements:int -> block_bytes:int -> string
-val emit_block32_gated :
+val emit_block32_multi_linear :
   name:string ->
+  epilogue:int Applicative_expr.t ->
+  ?num_slots:int ->
   value_function:string ->
-  block_elements:int -> block_bytes:int -> string
+  block_elements:int ->
+  block_bytes:int ->
+  unit ->
+  string
 val emit_block32_linear_add :
   name:string ->
   value_function:string -> block_elements:int -> block_bytes:int -> string
@@ -28,10 +33,16 @@ val emit_superblock_m2_add :
   name:string ->
   value_function:string ->
   block_elements:int -> block_bytes:int -> subblock_elements:int -> string
-val emit_superblock_gated_m2 :
+val emit_superblock_multi_linear :
   name:string ->
+  epilogue:int Applicative_expr.t ->
+  ?num_slots:int ->
   value_function:string ->
-  block_elements:int -> block_bytes:int -> subblock_elements:int -> string
+  block_elements:int ->
+  block_bytes:int ->
+  subblock_elements:int ->
+  unit ->
+  string
 val emit_superblock_linear_pair :
   name:string ->
   value_function:string ->
