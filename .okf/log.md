@@ -1,6 +1,16 @@
 # Update Log
 
 ## 2026-09-14
+* **Multi-export contraction group schedule, memory planning, and on-device Metal execution (exp-0171)**: Commits `43145ac` and `44b2313` wire multi-export / multi-output contraction group fusion regions end-to-end through the compiler schedule and runtime dispatch, and prove real on-device Metal execution with bit-exact parity:
+  - `lib/ir.ml/.mli` and `lib/dag_analysis.ml`: Added `Ir.Op.Fused_region { extra_outputs : Value.t list }` and `Ir.Op.additional_outputs` to expose all region output values from carrier nodes to downstream analysis passes.
+  - `lib/serving_schedule_codec.ml`: Assigned opcode tag `42` for binary serialization/deserialization of `Fused_region`.
+  - `lib/serving_schedule_core.ml`: Collapses member nodes into the single carrier node bound to `Fused_region { extra_outputs }`, wiring multi-output consumers without cycles or deadlocks.
+  - `lib/serving_schedule_sequence.ml`: Substitutes primary and extra outputs during sequence and prompt specialization.
+  - `lib/serving_schedule_validation.ml`: Validates `command_outputs` (primary + extra outputs) against `region_outputs`.
+  - `lib/serving_memory_plan.ml`: Validates that distinct physical memory slices are allocated for each exported tensor (`check_disjoint`).
+  - `lib/contraction_group.ml/.mli`: Fixed codec deserialization elaboration by making `value : Ir.Value.t option` in `contraction` and `step`, maintaining classification when provenance is omitted in deserialized packages.
+  - `lib/metal_dispatch_assignment.ml`: Generalized grid calculations and bound all outputs for `Assignment_multi_export_contraction_group`.
+  - On-device Apple M4 Pro verification (`test/test_contraction_group.ml` Section K): Compiled multi-export Q4_0 kernel to metallib, loaded package into `Metal_runtime`, and executed on Apple M4 Pro GPU. Achieved 64/64 bit-exact numerical parity for both outputs (`out_a = 64.0` at `0x5400`, `out_z = 96.0` at `0x5600`). Measured throughput of **142.92 µs / dispatch** (6,996.9 dispatches/sec) across 100 on-device dispatches. Documented in `exp-0171`.
 * **llama.cpp native throughput benchmark on Apple M4 Pro**: Re-executed `llama-bench` build 10531 on Apple M4 Pro (MTL, BLAS) for `LiquidAI/LFM2.5-350M-GGUF` at 512 prompt / 128 generation tokens across 5 repetitions:
   - `Q4_0`: Prompt throughput **8,122.25 tok/s** (mean 63.09 ms); Generation throughput **501.82 tok/s** (mean 255.85 ms, 1.999 ms / token). Receipts recorded in `bench/results/lfm25-350m-llama-cpp-q4-2026-09-14.json` and `lfm25-350m-llama-cpp-q4.json`.
   - `Q8_0`: Prompt throughput **7,965.82 tok/s** (mean 64.31 ms); Generation throughput **362.46 tok/s** (mean 354.00 ms, 2.766 ms / token). Receipt recorded in `bench/results/lfm25-350m-llama-cpp-q8-2026-09-14.json`.
