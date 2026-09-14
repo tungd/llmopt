@@ -406,7 +406,21 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   focused assertion should exercise a concrete moved invariant, not introduce
   a new test framework or synthetic performance claim.
 
-- [ ] 10. Extract independent serving-engine domains while retaining one engine owner.
+- [x] 10. Extract independent serving-engine domains while retaining one engine owner.
+  DONE (serving_engine.ml 2609 -> 1791 lines). Extracted:
+  - `serving_engine_contract.ml/.mli`: Attention_binding.t, Recurrent_binding.t,
+    Head.t, contract record t, contract_of_parts, contract, validate_packages,
+    and package metadata validation.
+  - `serving_rope_table.ml/.mli`: type t, create, row, slice, slot_for_position.
+  - `serving_speculative.ml/.mli`: Speculative_acceptance, Target_coupled_mtp,
+    Medusa, and pure ngram proposal logic (Prompt_lookup.find_candidate_ngram,
+    propose_linear, propose_tree).
+  Serving_engine retains Step, Prompt, Sequence, engine creation, prefill/decode/
+  replay, cache lease/release, and Prompt_lookup.verify_and_commit. Public
+  serving_engine.mli is preserved 100% verbatim. All 6 binaries in ninja.build
+  updated with link dependencies. Full `ninja all`, `test`, `ocaml-test`, and
+  Metal smoke tests pass green on Apple M4 Pro.
+
   Change: move attention/recurrent bindings, head/entrypoint contract records,
   input/output metadata checks, `contract_of_parts`, `contract`, and
   `validate_packages` into `serving_engine_contract.ml`. Keep each domain's
