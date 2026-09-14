@@ -1,7 +1,13 @@
 # Update Log
 
 ## 2026-09-14
+* **Gemma 4 12B QAT on-device Metal execution breakthrough (exp-0172)**: Executed full-model Gemma 4 (12B QAT UD-Q4_K_XL, 48 layers, 385 primitive assignment regions per entrypoint) on host Apple Silicon Metal (Apple M4 Pro GPU) using `_build/bin/llmopt-bench-tokens` across 128 completion tokens:
+  - **Bit-Exact Parity**: 128/128 completion tokens strictly matched the golden reference sequence bit-for-bit (`100, 45518, 107, 14947, 135383, 568, 11124, 568, 147505, 236789, ...`), confirming zero numerical drift across the entire 48-layer stack.
+  - **Throughput Breakthrough**: Measured generation throughput reached **8.87 tokens/second** (14.43 s elapsed for 128 tokens), up from 3.44 tok/s in Round 7 (`exp-0152`), achieving a **2.58x speedup**.
+  - **Latency Reduction**: Time-To-First-Token (TTFT) on prompt-37 dropped from 8.12 s to **3.48 s** (2.33x faster). Inter-token mean latency reached **86.24 ms** (down from 228.72 ms, 2.65x faster) and median latency reached **79.59 ms** (down from 206.15 ms, 2.59x faster).
+  - Receipts recorded in `bench/results/uoc-gemma4-performance-exp0172-2026-09-14.txt` and documented in `exp-0172`.
 * **Multi-export contraction group schedule, memory planning, and on-device Metal execution (exp-0171)**: Commits `43145ac` and `44b2313` wire multi-export / multi-output contraction group fusion regions end-to-end through the compiler schedule and runtime dispatch, and prove real on-device Metal execution with bit-exact parity:
+
   - `lib/ir.ml/.mli` and `lib/dag_analysis.ml`: Added `Ir.Op.Fused_region { extra_outputs : Value.t list }` and `Ir.Op.additional_outputs` to expose all region output values from carrier nodes to downstream analysis passes.
   - `lib/serving_schedule_codec.ml`: Assigned opcode tag `42` for binary serialization/deserialization of `Fused_region`.
   - `lib/serving_schedule_core.ml`: Collapses member nodes into the single carrier node bound to `Fused_region { extra_outputs }`, wiring multi-output consumers without cycles or deadlocks.
