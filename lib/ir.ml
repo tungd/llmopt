@@ -778,12 +778,14 @@ module Op = struct
         epsilon : float;
         extra_outputs : Value.t list;
       }
+    | Fused_region of { extra_outputs : Value.t list }
   let additional_outputs = function
     | W4a16_lm_head_argmax { extra_outputs; _ } -> extra_outputs
     | W4a16_qkv_linear { extra_outputs; _ } -> extra_outputs
     | Quant_qkv_linear { extra_outputs; _ } -> extra_outputs
     | Rms_rope_qk { extra_outputs; _ } -> extra_outputs
     | Rotary_qk { extra_outputs; _ } -> extra_outputs
+    | Fused_region { extra_outputs } -> extra_outputs
     | _ -> []
 
   (* Rewrite the values consumed inside the op payload (pointwise tensor
@@ -864,6 +866,8 @@ module Op = struct
         Printf.sprintf "w4a16-lm-head-argmax%s[%dx%dx%d,eps=%.9g]"
           (if extra_outputs = [] then "" else "+logits-output") m n k
           epsilon
+    | Fused_region { extra_outputs } ->
+        Printf.sprintf "fused-region[%d-extra-outputs]" (List.length extra_outputs)
 end
 
 type node = {

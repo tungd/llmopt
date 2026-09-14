@@ -420,6 +420,7 @@ module Op : sig
         epsilon : float;
         extra_outputs : Value.t list;
       }
+    | Fused_region of { extra_outputs : Value.t list }
   val additional_outputs : t -> Value.t list
 
   (* Rewrite the values consumed inside the op payload (pointwise tensor

@@ -64,57 +64,61 @@ let attach_fusion_region commands region =
     Kernel_region.inputs region
     |> List.map (fun ({ Kernel_region.value; _ } : Kernel_region.input) -> value)
   in
-  let region_output =
-    match Kernel_region.results region with
-    | [ result ] -> Some (Kernel_region.result_value result)
-    | _ -> None
-  in
-  let member_ids = Kernel_region.member_node_ids region |> Int_set.of_list in
-  let matches =
-    commands
-    |> List.filter (fun command ->
-           Int_set.mem command.Command.node_id member_ids
-           &&
-           match command.Command.output, region_output with
-           | Some command_output, Some region_output ->
-               Ir.Value.equal command_output region_output
-           | None, None -> true
-           | _ -> false)
-  in
-  match matches, region_output with
-  | [ matched ], Some output ->
-      (* Fusion commands execute the assignment region.  A value-free carrier
-         prevents serialization from retaining assignment-local temporaries. *)
-      let carrier = Ir.Op.Primitive (Ir.Primitive.Cast (Ir.Value.dtype output)) in
-      Ok
-        (commands
-        |> List.filter_map (fun command ->
-               if command.Command.node_id = matched.Command.node_id then
-                 Some
-                   { command with
-                     Command.op = carrier;
-                     Command.inputs = region_inputs;
-                     output = region_output;
-                     fusion_region = Some region }
-               else if Int_set.mem command.Command.node_id member_ids then None
-               else Some command))
-  | [ _ ], None ->
+  let results = Kernel_region.results region in
+  match results with
+  | [] ->
       Error
         (Printf.sprintf "fusion region %s has no result" (Kernel_region.name region))
-  | [], _ ->
-      Error
-        (Printf.sprintf
-           "fusion region %s has no executable schedule command (members=%s result=%s)"
-           (Kernel_region.name region)
-           (Kernel_region.member_node_ids region |> List.map string_of_int
-          |> String.concat ",")
-           (match region_output with
-           | None -> "none"
-           | Some value -> string_of_int (value_id value)))
-  | _, _ ->
-      Error
-        (Printf.sprintf "fusion region %s maps to multiple schedule commands"
-           (Kernel_region.name region))
+  | primary_result :: extra_results ->
+      let primary_output = Kernel_region.result_value primary_result in
+      let extra_outputs = List.map Kernel_region.result_value extra_results in
+      let carrier =
+        if extra_outputs = [] then
+          Ir.Op.Primitive (Ir.Primitive.Cast (Ir.Value.dtype primary_output))
+        else
+          Ir.Op.Fused_region { extra_outputs }
+      in
+      let member_ids = Kernel_region.member_node_ids region |> Int_set.of_list in
+      let matches =
+        commands
+        |> List.filter (fun command ->
+               Int_set.mem command.Command.node_id member_ids
+               &&
+               match command.Command.output with
+               | Some command_output ->
+                   Ir.Value.equal command_output primary_output
+               | None -> false)
+      in
+      let matched =
+        match matches with
+        | [ matched ] -> Some matched
+        | _ ->
+            commands
+            |> List.filter (fun command -> Int_set.mem command.Command.node_id member_ids)
+            |> (fun list -> match List.rev list with x :: _ -> Some x | [] -> None)
+      in
+      match matched with
+      | Some matched ->
+          Ok
+            (commands
+            |> List.filter_map (fun command ->
+                   if command.Command.node_id = matched.Command.node_id then
+                     Some
+                       { command with
+                         Command.op = carrier;
+                         Command.inputs = region_inputs;
+                         output = Some primary_output;
+                         fusion_region = Some region }
+                   else if Int_set.mem command.Command.node_id member_ids then None
+                   else Some command))
+      | None ->
+          Error
+            (Printf.sprintf
+               "fusion region %s has no executable schedule command (members=%s result=%s)"
+               (Kernel_region.name region)
+               (Kernel_region.member_node_ids region |> List.map string_of_int
+              |> String.concat ",")
+               (string_of_int (value_id primary_output)))
 
 let is_gpu_command_in_schedule cmd =
   match cmd.Command.fusion_region with

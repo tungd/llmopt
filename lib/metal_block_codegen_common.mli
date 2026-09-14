@@ -19,6 +19,15 @@ val emit_block32_multi_linear :
   block_bytes:int ->
   unit ->
   string
+val emit_block32_multi_export_linear :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  value_function:string ->
+  block_elements:int ->
+  block_bytes:int ->
+  unit ->
+  string
 val emit_block32_linear_add :
   name:string ->
   value_function:string -> block_elements:int -> block_bytes:int -> string
@@ -36,6 +45,16 @@ val emit_superblock_m2_add :
 val emit_superblock_multi_linear :
   name:string ->
   epilogue:int Applicative_expr.t ->
+  ?num_slots:int ->
+  value_function:string ->
+  block_elements:int ->
+  block_bytes:int ->
+  subblock_elements:int ->
+  unit ->
+  string
+val emit_superblock_multi_export_linear :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
   ?num_slots:int ->
   value_function:string ->
   block_elements:int ->

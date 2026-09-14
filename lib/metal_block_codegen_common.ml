@@ -199,6 +199,134 @@ kernel void %s(
     block_elements block_bytes row_blocks accumulators
     block_elements block_accumulations simd_sums in_bufs expr
 
+let emit_block32_multi_export_linear ~name ~epilogues ?(num_slots = 2)
+    ~value_function ~block_elements ~block_bytes () =
+  let num_exports = List.length epilogues in
+  let canonical_epilogues = List.map Applicative_expr.canonicalize epilogues in
+  let aux_values =
+    List.concat_map Applicative_expr.required_values canonical_epilogues
+    |> List.fold_left
+         (fun acc v ->
+           if List.exists (fun v' -> Ir.Value.equal v v') acc then acc
+           else acc @ [ v ])
+         []
+  in
+  let num_aux = List.length aux_values in
+  let first_output_buf = 1 + num_slots + num_aux in
+  let buf_idx_params = first_output_buf + num_exports in
+  let weight_buffers =
+    List.init num_slots (fun s ->
+        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
+          (1 + s))
+    |> String.concat "\n"
+  in
+  let aux_buffers =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
+               dtype_str k (1 + num_slots + k))
+      |> String.concat ""
+  in
+  let output_buffers =
+    List.init num_exports (fun e ->
+        Printf.sprintf "    device half* output_%d [[buffer(%d)]]," e
+          (first_output_buf + e))
+    |> String.concat "\n"
+  in
+  let row_blocks =
+    List.init num_slots (fun s ->
+        Printf.sprintf
+          "  device const uchar* row_blocks_%d = weight_%d + column * col_stride;"
+          s s)
+    |> String.concat "\n"
+  in
+  let accumulators =
+    List.init num_slots (fun s ->
+        Printf.sprintf "  float acc%d = 0.0f;" s)
+    |> String.concat "\n"
+  in
+  let block_accumulations =
+    List.init num_slots (fun s ->
+        Printf.sprintf
+          "    acc%d += act * %s(row_blocks_%d + block * %du, lane);"
+          s value_function s block_bytes)
+    |> String.concat "\n"
+  in
+  let simd_sums =
+    List.init num_slots (fun s ->
+        Printf.sprintf "  acc%d = simd_sum(acc%d);" s s)
+    |> String.concat "\n"
+  in
+  let in_bufs =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf
+               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
+               dtype_str k k)
+      |> String.concat ""
+  in
+  let value_var v =
+    Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
+  in
+  let writebacks =
+    canonical_epilogues
+    |> List.mapi (fun e epil ->
+           let expr =
+             Applicative_expr.emit_msl_expr ~value_var
+               ~slot_emitter:(fun s -> Printf.sprintf "acc%d" s)
+               ~index_expr:"column" epil
+           in
+           Printf.sprintf "    output_%d[output_index] = half(%s);" e expr)
+    |> String.concat "\n"
+  in
+  Printf.sprintf
+    {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+%s
+%s%s
+    constant QuantLinearParams& params [[buffer(%d)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint output_index = gid >> 5u;
+  const uint output_elements = params.m * params.n;
+  if (output_index >= output_elements) return;
+  const uint row = output_index / params.n;
+  const uint column = output_index - row * params.n;
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+%s
+  device const half* activation = input + row * params.k;
+%s
+  for (uint block = 0; block < blocks; ++block) {
+    const uint k = block * %du + lane;
+    const float act = float(activation[k]);
+%s
+  }
+%s
+  if (lane == 0u) {
+%s%s
+  }
+}
+|}
+    name weight_buffers aux_buffers output_buffers buf_idx_params
+    block_elements block_bytes row_blocks accumulators
+    block_elements block_accumulations simd_sums in_bufs writebacks
+
 
 (* G4P12-05-1: parametric-style _add twins for the generic and paired-row
    (_m2) tiles of the block32 families (Q8_0 first; Q5_0 reuses these once it
@@ -480,6 +608,146 @@ kernel void %s(
     block_elements block_bytes row_blocks accumulators
     packed_blocks subblocks block_elements subblock_elements
     subblock_accumulations simd_sums in_bufs expr
+
+let emit_superblock_multi_export_linear ~name ~epilogues ?(num_slots = 2)
+    ~value_function ~block_elements ~block_bytes ~subblock_elements () =
+  let subblocks = block_elements / subblock_elements in
+  let num_exports = List.length epilogues in
+  let canonical_epilogues = List.map Applicative_expr.canonicalize epilogues in
+  let aux_values =
+    List.concat_map Applicative_expr.required_values canonical_epilogues
+    |> List.fold_left
+         (fun acc v ->
+           if List.exists (fun v' -> Ir.Value.equal v v') acc then acc
+           else acc @ [ v ])
+         []
+  in
+  let num_aux = List.length aux_values in
+  let first_output_buf = 1 + num_slots + num_aux in
+  let buf_idx_params = first_output_buf + num_exports in
+  let weight_buffers =
+    List.init num_slots (fun s ->
+        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
+          (1 + s))
+    |> String.concat "\n"
+  in
+  let aux_buffers =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
+               dtype_str k (1 + num_slots + k))
+      |> String.concat ""
+  in
+  let output_buffers =
+    List.init num_exports (fun e ->
+        Printf.sprintf "    device half* output_%d [[buffer(%d)]]," e
+          (first_output_buf + e))
+    |> String.concat "\n"
+  in
+  let row_blocks =
+    List.init num_slots (fun s ->
+        Printf.sprintf
+          "  device const uchar* row_blocks_%d = weight_%d + column * col_stride;"
+          s s)
+    |> String.concat "\n"
+  in
+  let accumulators =
+    List.init num_slots (fun s ->
+        Printf.sprintf "  float acc%d = 0.0f;" s)
+    |> String.concat "\n"
+  in
+  let packed_blocks =
+    List.init num_slots (fun s ->
+        Printf.sprintf
+          "    device const uchar* packed_%d = row_blocks_%d + block * %du;"
+          s s block_bytes)
+    |> String.concat "\n"
+  in
+  let subblock_accumulations =
+    List.init num_slots (fun s ->
+        Printf.sprintf
+          "      acc%d += act * %s(packed_%d, lane, subblock);"
+          s value_function s)
+    |> String.concat "\n"
+  in
+  let simd_sums =
+    List.init num_slots (fun s ->
+        Printf.sprintf "  acc%d = simd_sum(acc%d);" s s)
+    |> String.concat "\n"
+  in
+  let in_bufs =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf
+               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
+               dtype_str k k)
+      |> String.concat ""
+  in
+  let value_var v =
+    Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
+  in
+  let writebacks =
+    canonical_epilogues
+    |> List.mapi (fun e epil ->
+           let expr =
+             Applicative_expr.emit_msl_expr ~value_var
+               ~slot_emitter:(fun s -> Printf.sprintf "acc%d" s)
+               ~index_expr:"column" epil
+           in
+           Printf.sprintf "    output_%d[output_index] = half(%s);" e expr)
+    |> String.concat "\n"
+  in
+  Printf.sprintf
+    {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+%s
+%s%s
+    constant QuantLinearParams& params [[buffer(%d)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint output_index = gid >> 5u;
+  const uint output_elements = params.m * params.n;
+  if (output_index >= output_elements) return;
+  const uint row = output_index / params.n;
+  const uint column = output_index - row * params.n;
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+%s
+  device const half* activation = input + row * params.k;
+%s
+  for (uint block = 0; block < blocks; ++block) {
+%s
+    for (uint subblock = 0; subblock < %du; ++subblock) {
+      const uint k = block * %du + subblock * %du + lane;
+      const float act = float(activation[k]);
+%s
+    }
+  }
+%s
+  if (lane == 0u) {
+%s%s
+  }
+}
+|}
+    name weight_buffers aux_buffers output_buffers buf_idx_params
+    block_elements block_bytes row_blocks accumulators
+    packed_blocks subblocks block_elements subblock_elements
+    subblock_accumulations simd_sums in_bufs writebacks
 
 
 let emit_superblock_linear_pair ~name ~value_function ~block_elements

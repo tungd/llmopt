@@ -487,3 +487,56 @@ let iq4_xs_multi_linear_kernel ~name ~epilogue ?(num_slots = 2) ~target schema =
     (emit_superblock_multi_linear ~name ~epilogue ~num_slots
        ~value_function:"llmopt_schema_iq4_xs_value" ~block_elements ~block_bytes
        ~subblock_elements ())
+
+let q8_0_multi_export_linear_kernel ~name ~epilogues ?(num_slots = 2) ~target schema =
+  let* block_elements, block_bytes =
+    q8_0_twin_schema_geometry ~label:"multi-export-linear" ~target schema
+  in
+  Ok
+    (emit_block32_multi_export_linear ~name ~epilogues ~num_slots
+       ~value_function:"llmopt_schema_q8_0_value" ~block_elements ~block_bytes ())
+
+let q5_0_multi_export_linear_kernel ~name ~epilogues ?(num_slots = 2) ~target schema =
+  let* block_elements, block_bytes =
+    q5_0_twin_schema_geometry ~label:"multi-export-linear" ~target schema
+  in
+  Ok
+    (emit_block32_multi_export_linear ~name ~epilogues ~num_slots
+       ~value_function:"llmopt_schema_q5_0_value" ~block_elements ~block_bytes ())
+
+let q4_k_multi_export_linear_kernel ~name ~epilogues ?(num_slots = 2) ~target schema =
+  let* block_elements, block_bytes, subblock_elements =
+    q4_k_twin_schema_geometry ~label:"multi-export-linear" ~target schema
+  in
+  Ok
+    (emit_superblock_multi_export_linear ~name ~epilogues ~num_slots
+       ~value_function:"llmopt_schema_q4_k_value" ~block_elements ~block_bytes
+       ~subblock_elements ())
+
+let q5_k_multi_export_linear_kernel ~name ~epilogues ?(num_slots = 2) ~target schema =
+  let* block_elements, block_bytes, subblock_elements =
+    q5_k_twin_schema_geometry ~label:"multi-export-linear" ~target schema
+  in
+  Ok
+    (emit_superblock_multi_export_linear ~name ~epilogues ~num_slots
+       ~value_function:"llmopt_schema_q5_k_value" ~block_elements ~block_bytes
+       ~subblock_elements ())
+
+let q6_k_multi_export_linear_kernel ~name ~epilogues ?(num_slots = 2) ~target schema =
+  let* block_elements, block_bytes, subblock_elements =
+    q6_k_twin_schema_geometry ~label:"multi-export-linear" ~target schema
+  in
+  Ok
+    (emit_superblock_multi_export_linear ~name ~epilogues ~num_slots
+       ~value_function:"llmopt_schema_q6_k_value" ~block_elements ~block_bytes
+       ~subblock_elements ())
+
+let iq4_xs_multi_export_linear_kernel ~name ~epilogues ?(num_slots = 2) ~target schema =
+  let* block_elements, block_bytes, subblock_elements =
+    iq4_xs_twin_schema_geometry ~label:"multi-export-linear" ~target schema
+  in
+  Ok
+    (emit_superblock_multi_export_linear ~name ~epilogues ~num_slots
+       ~value_function:"llmopt_schema_iq4_xs_value" ~block_elements ~block_bytes
+       ~subblock_elements ())
+

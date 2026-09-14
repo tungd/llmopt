@@ -185,10 +185,13 @@ let validate_fusion_command command region =
     Kernel_region.inputs region
     |> List.map (fun ({ Kernel_region.value; _ } : Kernel_region.input) -> value)
   in
-  let region_output =
-    match Kernel_region.results region with
-    | [ result ] -> Some (Kernel_region.result_value result)
-    | _ -> None
+  let region_outputs =
+    Kernel_region.results region
+    |> List.map (fun result -> Kernel_region.result_value result)
+  in
+  let command_outputs =
+    Option.to_list command.Command.output
+    @ Ir.Op.additional_outputs command.Command.op
   in
   let same_values left right =
     List.length left = List.length right
@@ -201,10 +204,10 @@ let validate_fusion_command command region =
     Error "fusion command has no executable assignment tactic"
   else if not (same_values command.Command.inputs region_inputs) then
     Error "fusion command inputs differ from its assignment-region boundary"
+  else if not (same_values command_outputs region_outputs) then
+    Error "fusion command output differs from its assignment-region result"
   else
-    match command.Command.output, region_output with
-    | Some actual, Some expected when Ir.Value.equal actual expected -> Ok ()
-    | _ -> Error "fusion command output differs from its assignment-region result"
+    Ok ()
 
 let validate_command seen_values command =
   let input_ids = List.map value_id command.Command.inputs in

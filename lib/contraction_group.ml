@@ -35,14 +35,14 @@ type contraction = {
   input : Ir.Value.t;
   weight : Ir.Value.t;
   parameters : Ir.Value.t list;
-  value : Ir.Value.t;
+  value : Ir.Value.t option;
   shape : Tensor_shape.t;
 }
 
 type step = {
   slot : Kernel_region.Slot.t;
   expr : expr;
-  value : Ir.Value.t;
+  value : Ir.Value.t option;
   shape : Tensor_shape.t;
   dtype : Ir.Dtype.t;
 }
@@ -123,20 +123,17 @@ let canonical_binary op left right =
 let scalar_unary input_values producers output operands wrap =
   match (output, operands) with
   | Some output, [ operand ] -> (
-      match
-        ( operand_expr input_values producers operand,
-          Kernel_region.output_value output )
-      with
-      | Some operand_expr, Some value ->
+      match operand_expr input_values producers operand with
+      | Some operand_expr ->
           Scalar
             {
               slot = Kernel_region.output_slot output;
               expr = wrap operand_expr;
-              value;
+              value = Kernel_region.output_value output;
               shape = Kernel_region.output_shape output;
               dtype = Kernel_region.output_dtype output;
             }
-      | _ -> Opaque)
+      | None -> Opaque)
   | _ -> Opaque
 
 let scalar_binary input_values producers output operands op =
@@ -146,18 +143,15 @@ let scalar_binary input_values producers output operands op =
         ( operand_expr input_values producers left,
           operand_expr input_values producers right )
       with
-      | Some left_expr, Some right_expr -> (
-          match Kernel_region.output_value output with
-          | Some value ->
-              Scalar
-                {
-                  slot = Kernel_region.output_slot output;
-                  expr = canonical_binary op left_expr right_expr;
-                  value;
-                  shape = Kernel_region.output_shape output;
-                  dtype = Kernel_region.output_dtype output;
-                }
-          | None -> Opaque)
+      | Some left_expr, Some right_expr ->
+          Scalar
+            {
+              slot = Kernel_region.output_slot output;
+              expr = canonical_binary op left_expr right_expr;
+              value = Kernel_region.output_value output;
+              shape = Kernel_region.output_shape output;
+              dtype = Kernel_region.output_dtype output;
+            }
       | _ -> Opaque)
   | _ -> Opaque
 
@@ -167,23 +161,20 @@ let classify input_values producers binding =
       match externals input_values (Kernel_region.binding_inputs binding) with
       | Some (input :: weight :: parameters) -> (
           match output with
-          | Some output -> (
-              match Kernel_region.output_value output with
-              | Some value ->
-                  Contraction
-                    {
-                      slot = Kernel_region.output_slot output;
-                      m;
-                      n;
-                      k;
-                      storage;
-                      input;
-                      weight;
-                      parameters;
-                      value;
-                      shape = Kernel_region.output_shape output;
-                    }
-              | None -> Opaque)
+          | Some output ->
+              Contraction
+                {
+                  slot = Kernel_region.output_slot output;
+                  m;
+                  n;
+                  k;
+                  storage;
+                  input;
+                  weight;
+                  parameters;
+                  value = Kernel_region.output_value output;
+                  shape = Kernel_region.output_shape output;
+                }
           | None -> Opaque)
       | _ -> Opaque)
   | Kernel_region.Primitive.Linear _, _ -> Opaque

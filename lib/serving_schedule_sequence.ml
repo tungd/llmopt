@@ -442,7 +442,8 @@ open Serving_schedule_core
   let producer commands value =
     List.find_opt
       (fun command ->
-        Option.exists (fun output -> same_value output value) command.Command.output)
+        Option.exists (fun output -> same_value output value) command.Command.output
+        || List.exists (same_value value) (Ir.Op.additional_outputs command.Command.op))
       commands
 
   let use_count commands value =
@@ -667,13 +668,28 @@ open Serving_schedule_core
               let values =
                 Value_map.add (Ir.Value.id original) result values
               in
+              let* extra_results, values =
+                match command.Command.op with
+                | Ir.Op.Fused_region { extra_outputs } ->
+                    List.fold_left
+                      (fun acc extra ->
+                        let* extra_res_acc, vals = acc in
+                        let* spec = specialized_generic_value substitutions extra in
+                        Ok (spec :: extra_res_acc, Value_map.add (Ir.Value.id extra) spec vals))
+                      (Ok ([], values)) extra_outputs
+                    |> Result.map (fun (rev_extras, vals) -> (List.rev rev_extras, vals))
+                | _ -> Ok ([], values)
+              in
               let* fusion_region =
                 Kernel_region.specialize
                   ~dimension:(substitute substitutions)
                   ~value:(mapped values) region
               in
               let op =
-                Ir.Op.Primitive (Ir.Primitive.Cast (Ir.Value.dtype result))
+                if extra_results = [] then
+                  Ir.Op.Primitive (Ir.Primitive.Cast (Ir.Value.dtype result))
+                else
+                  Ir.Op.Fused_region { extra_outputs = extra_results }
               in
               map_commands values
                 ({ command with

@@ -183,3 +183,52 @@ val iq4_xs_multi_linear_kernel :
   target:Target_hardware.t ->
   Block_schema.t ->
   (string, string) result
+
+val q8_0_multi_export_linear_kernel :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val q5_0_multi_export_linear_kernel :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val q4_k_multi_export_linear_kernel :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val q5_k_multi_export_linear_kernel :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val q6_k_multi_export_linear_kernel :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val iq4_xs_multi_export_linear_kernel :
+  name:string ->
+  epilogues:int Applicative_expr.t list ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+

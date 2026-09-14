@@ -45,7 +45,8 @@ module Fixture = struct
 
   (* steps: (primitive, operand slot ints, output value).  Region inputs take
      slots 0..n-1 in order; step i binds slot (n + i). *)
-  let make_region ~name ~inputs ~steps ~results =
+
+  let make_region_with_members ~member_node_ids ~name ~inputs ~steps ~results =
     let inputs =
       List.mapi
         (fun index value ->
@@ -113,10 +114,13 @@ module Fixture = struct
       |> expect_ok
     in
     Kernel_region.create ~name
-      ~member_node_ids:[ 1; 2; 3; 4; 5; 6; 7; 8 ]
+      ~member_node_ids
       ~inputs ~bindings ~results ~effects ~resource:Kernel_region.Resource.zero
     |> expect_ok_kernel
 
+  let make_region ~name ~inputs ~steps ~results =
+    make_region_with_members ~member_node_ids:[ 1; 2; 3; 4; 5; 6; 7; 8 ]
+      ~name ~inputs ~steps ~results
   let single_result_region ~name ~inputs ~steps ~result_index result_value =
     make_region ~name ~inputs ~steps ~results:[ (result_index, result_value) ]
 end
@@ -955,33 +959,194 @@ let run () =
          ~name:me_kernel_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
          ~target:Target_hardware.default q4_0_schema)
   in
-  expect
-    (contains_substr me_src ("kernel void " ^ me_kernel_name))
-    "multi-export kernel name matches digest";
-  expect
-    (contains_substr me_src "device const uchar* weight_0 [[buffer(1)]]")
-    "multi-export buffer 1 is weight_0";
-  expect
-    (contains_substr me_src "device const uchar* weight_1 [[buffer(2)]]")
-    "multi-export buffer 2 is weight_1";
-  expect
-    (contains_substr me_src "device half* output_0 [[buffer(3)]]")
-    "multi-export buffer 3 is output_0";
-  expect
-    (contains_substr me_src "device half* output_1 [[buffer(4)]]")
-    "multi-export buffer 4 is output_1";
-  expect
-    (contains_substr me_src "constant QuantLinearParams& params [[buffer(5)]]")
-    "multi-export buffer 5 is params";
-  expect
-    (contains_substr me_src "out_row_0[base_col]")
-    "multi-export has writeback for output_0";
-  expect
-    (contains_substr me_src "out_row_1[base_col]")
-    "multi-export has writeback for output_1";
-  expect
-    (compile_msl_kernel me_src)
-    "multi-export kernel compiles cleanly with xcrun metal";
-  Printf.printf "  [PASS] multi-export kernel emission\n%!";
 
-  Printf.printf "All typed contraction-group algebra tests passed!\n%!"
+  let () =
+    expect
+      (contains_substr me_src ("kernel void " ^ me_kernel_name))
+      "multi-export kernel name matches digest";
+    expect
+      (contains_substr me_src "device const uchar* weight_0 [[buffer(1)]]")
+      "multi-export buffer 1 is weight_0";
+    expect
+      (contains_substr me_src "device const uchar* weight_1 [[buffer(2)]]")
+      "multi-export buffer 2 is weight_1";
+    expect
+      (contains_substr me_src "device half* output_0 [[buffer(3)]]")
+      "multi-export buffer 3 is output_0";
+    expect
+      (contains_substr me_src "device half* output_1 [[buffer(4)]]")
+      "multi-export buffer 4 is output_1";
+    expect
+      (contains_substr me_src "constant QuantLinearParams& params [[buffer(5)]]")
+      "multi-export buffer 5 is params";
+    expect
+      (contains_substr me_src "out_row_0[base_col]")
+      "multi-export has writeback for output_0";
+    expect
+      (contains_substr me_src "out_row_1[base_col]")
+      "multi-export has writeback for output_1";
+    expect
+      (compile_msl_kernel me_src)
+      "multi-export kernel compiles cleanly with xcrun metal";
+    Printf.printf "  [PASS] multi-export kernel emission
+%!"
+  in
+
+  let () = Printf.printf "I. Multi-export block32 & superblock kernel emission
+%!" in
+  let me_kernel_q8_name =
+    Contraction_group.algebraic_kernel_name
+      ~base:"llmopt_q8_0_multi_export_f16" me_epilogue_1
+  in
+  let me_q8_src =
+    expect_ok
+      (Metal_block_codegen.q8_0_multi_export_linear_kernel
+         ~name:me_kernel_q8_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
+         ~target:Target_hardware.default q8_0_schema)
+  in
+  let () = expect (compile_msl_kernel (q8_linear_src ^ me_q8_src)) "Q8_0 multi-export kernel compiles cleanly with xcrun metal" in
+
+  let me_kernel_q4k_name =
+    Contraction_group.algebraic_kernel_name
+      ~base:"llmopt_q4_k_multi_export_f16" me_epilogue_1
+  in
+  let me_q4k_src =
+    expect_ok
+      (Metal_block_codegen.q4_k_multi_export_linear_kernel
+         ~name:me_kernel_q4k_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
+         ~target:Target_hardware.default q4_k_schema)
+  in
+  let () =
+    expect (compile_msl_kernel (q4_k_linear_src ^ me_q4k_src)) "Q4_K multi-export kernel compiles cleanly with xcrun metal";
+    Printf.printf "  [PASS] multi-export block32 & superblock kernel emission\n%!"
+  in
+
+  let () = Printf.printf "J. Multi-export schedule, memory plan, and dispatch assignment
+%!" in
+  let graph = Ir.Graph.create () in
+  let val_x = Ir.Graph.fresh_tensor_value graph ~shape:shape_1_64 ~dtype:Ir.Dtype.Float16 in
+  let val_w1 = Ir.Graph.fresh_tensor_value graph ~shape:shape_64_64 ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0) in
+  let val_w2 = Ir.Graph.fresh_tensor_value graph ~shape:shape_64_64 ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0) in
+  let () =
+    Ir.Graph.append graph ~op:(Ir.Op.Input { name = "x"; source = Ir.Input_source.Runtime }) ~inputs:[] ~output:(Some val_x);
+    Ir.Graph.append graph ~op:(Ir.Op.Input { name = "w1"; source = Ir.Input_source.Tensor_store { key = "w1" } }) ~inputs:[] ~output:(Some val_w1);
+    Ir.Graph.append graph ~op:(Ir.Op.Input { name = "w2"; source = Ir.Input_source.Tensor_store { key = "w2" } }) ~inputs:[] ~output:(Some val_w2)
+  in
+
+  let val_g = Ir.Graph.fresh_tensor_value graph ~shape:shape_1_64 ~dtype:Ir.Dtype.Float16 in
+  let () = Ir.Graph.append graph ~op:(Ir.Op.Linear { m = 1; n = 64; k = 64; bias = false }) ~inputs:[ val_x; val_w1 ] ~output:(Some val_g) in
+  let val_u = Ir.Graph.fresh_tensor_value graph ~shape:shape_1_64 ~dtype:Ir.Dtype.Float16 in
+  let () = Ir.Graph.append graph ~op:(Ir.Op.Linear { m = 1; n = 64; k = 64; bias = false }) ~inputs:[ val_x; val_w2 ] ~output:(Some val_u) in
+  let val_a = Ir.Graph.fresh_tensor_value graph ~shape:shape_1_64 ~dtype:Ir.Dtype.Float16 in
+  let () = Ir.Graph.append graph ~op:(Ir.Op.Primitive (Ir.Primitive.Pointwise (Ir.Pointwise.Unary (Ir.Pointwise.Silu, val_g)))) ~inputs:[ val_g ] ~output:(Some val_a) in
+  let val_z = Ir.Graph.fresh_tensor_value graph ~shape:shape_1_64 ~dtype:Ir.Dtype.Float16 in
+  let () = Ir.Graph.append graph ~op:(Ir.Op.Primitive (Ir.Primitive.Pointwise (Ir.Pointwise.Binary (Ir.Pointwise.Add, Ir.Pointwise.Tensor val_a, Ir.Pointwise.Tensor val_u)))) ~inputs:[ val_a; val_u ] ~output:(Some val_z) in
+
+  let () =
+    Ir.Graph.append graph ~op:(Ir.Op.Output { name = "out_a" }) ~inputs:[ val_a ] ~output:None;
+    Ir.Graph.append graph ~op:(Ir.Op.Output { name = "out_z" }) ~inputs:[ val_z ] ~output:None
+  in
+
+  let find_node_id_by_output out_val =
+    Ir.Graph.nodes graph
+    |> List.find_map (fun node ->
+           match Ir.node_output node with
+           | Some out when Ir.Value.equal out out_val -> Some (Ir.node_id node)
+           | _ -> None)
+    |> Option.get
+  in
+  let node_g = find_node_id_by_output val_g in
+  let node_u = find_node_id_by_output val_u in
+  let node_a = find_node_id_by_output val_a in
+  let node_z = find_node_id_by_output val_z in
+
+  let me_sched_region =
+    make_region_with_members ~member_node_ids:[ node_g; node_u; node_a; node_z ]
+      ~name:"multi-export-schedule-region"
+      ~inputs:[ val_x; val_w1; val_w2 ]
+      ~steps:
+        [ (Kernel_region.Primitive.linear ~m:1 ~n:64 ~k:64 ~bias:false
+             ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0),
+           [ 0; 1 ], val_g);
+          (Kernel_region.Primitive.linear ~m:1 ~n:64 ~k:64 ~bias:false
+             ~storage:(Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0),
+           [ 0; 2 ], val_u);
+          silu_step 3 val_a;
+          add_step 5 4 val_z ]
+      ~results:[ (5, val_a); (6, val_z) ]
+  in
+
+  let schedule =
+    Serving_schedule.of_graph ~fusion_regions:[ me_sched_region ] graph
+    |> expect_ok
+  in
+  let commands = Serving_schedule.commands schedule in
+  let carrier_opt =
+    List.find_opt
+      (fun cmd ->
+        match Serving_schedule.Command.op cmd with
+        | Ir.Op.Fused_region { extra_outputs } ->
+            List.exists (Ir.Value.equal val_z) extra_outputs
+            && (match Serving_schedule.Command.output cmd with Some out -> Ir.Value.equal val_a out | None -> false)
+        | _ -> false)
+      commands
+  in
+  let () = expect (Option.is_some carrier_opt) "carrier command with Fused_region { extra_outputs = [val_z] } and output = Some val_a exists in schedule" in
+  let carrier = Option.get carrier_opt in
+  let () = expect (Serving_schedule.Command.fusion_region carrier = Some me_sched_region) "carrier command carries the fusion region" in
+  let () = expect (Serving_schedule.Command.node_id carrier = node_a) "carrier inherits the matched node id" in
+
+  (* Verify member node collapsing: node_g, node_u, node_z should not be separate commands *)
+  let collapsed_command_count =
+    List.filter
+      (fun cmd ->
+        let id = Serving_schedule.Command.node_id cmd in
+        id = node_g || id = node_u || id = node_z)
+      commands
+    |> List.length
+  in
+  let () = expect (collapsed_command_count = 0) "non-carrier member nodes were collapsed out of schedule commands" in
+
+  let () = expect (Result.is_ok (Serving_schedule.of_graph ~fusion_regions:[ me_sched_region ] graph)) "multi-export fusion command passes validation" in
+
+  let roundtrip_sched =
+    schedule |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  let () =
+    expect
+      (Serving_schedule.commands roundtrip_sched
+       |> List.exists (fun cmd ->
+              match Serving_schedule.Command.op cmd with
+              | Ir.Op.Fused_region { extra_outputs } ->
+                  List.exists (Ir.Value.equal val_z) extra_outputs
+              | _ -> false))
+      "Fused_region survives schedule serialization codec roundtrip"
+  in
+
+  let memory_plan = Serving_memory_plan.create schedule |> expect_ok in
+  let () =
+    expect (Option.is_some (Serving_memory_plan.allocation memory_plan val_a)) "memory plan allocates storage for primary output val_a";
+    expect (Option.is_some (Serving_memory_plan.allocation memory_plan val_z)) "memory plan allocates storage for extra output val_z";
+    expect (Serving_memory_plan.check_disjoint memory_plan [ val_a; val_z ]) "memory plan allocations for val_a and val_z are disjoint"
+  in
+
+  let () =
+    match Metal_dispatch_assignment.assignment_execution carrier with
+    | Some (Metal_dispatch_assignment.Assignment_multi_export_contraction_group { contractions; epilogues; outputs }) ->
+        expect (List.length contractions = 2) "assigned multi-export has 2 contractions";
+        expect (List.length epilogues = 2) "assigned multi-export has 2 epilogues";
+        expect (List.length outputs = 2) "assigned multi-export has 2 outputs";
+        expect (Ir.Value.equal (List.hd outputs) val_a) "first output is val_a";
+        expect (Ir.Value.equal (List.nth outputs 1) val_z) "second output is val_z"
+    | _ -> fail "assignment_execution on carrier must yield Assignment_multi_export_contraction_group"
+  in
+
+  let metal_program = Metal.lower ~fusion_regions:[ me_sched_region ] graph |> expect_ok in
+  let p_src = Metal.Program.source metal_program in
+  let () =
+    expect (contains_substr p_src "kernel void llmopt_q4_0_linear_f16_x8") "Metal program contains the specialized multi-export kernel";
+    Printf.printf "  [PASS] multi-export schedule, memory plan, and dispatch assignment
+%!"
+  in
+  Printf.printf "All typed contraction-group algebra tests passed!
+%!"

@@ -104,7 +104,8 @@ module Resource_class = struct
     | Ir.Op.Matmul _
     | Ir.Op.Fused_matmul_bias _
     | Ir.Op.Linear _
-    | Ir.Op.Linear_add _ ->
+    | Ir.Op.Linear_add _
+    | Ir.Op.Fused_region _ ->
         Compute_bound
     | Ir.Op.Rms_norm _
     | Ir.Op.Rms_norm_add _

@@ -1392,6 +1392,10 @@ let write_op writer = function
       Binary.Writer.u8 writer 22;
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.channels config);
       Binary.Writer.u64 writer (Ir.Short_conv_prefill.window config)
+  | Ir.Op.Fused_region { extra_outputs } ->
+      Binary.Writer.u8 writer 42;
+      Binary.Writer.u8 writer (List.length extra_outputs);
+      List.iter (write_value writer) extra_outputs
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -1596,6 +1600,16 @@ let read_op values reader =
           (Ir.Op.Rotary_qk
              { q_heads; k_heads; width; half_dimension; extra_outputs })
       else Error "schedule contains invalid rotary-QK secondary outputs"
+  | 42 ->
+      let* count = Binary.Reader.u8 reader in
+      let rec outputs acc remaining =
+        if remaining = 0 then Ok (List.rev acc)
+        else
+          let* output = read_value reader in
+          outputs (output :: acc) (remaining - 1)
+      in
+      let* extra_outputs = outputs [] count in
+      Ok (Ir.Op.Fused_region { extra_outputs })
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

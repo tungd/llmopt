@@ -61,7 +61,7 @@ type contraction = {
   input : Ir.Value.t;
   weight : Ir.Value.t;
   parameters : Ir.Value.t list;
-  value : Ir.Value.t;
+  value : Ir.Value.t option;
   shape : Tensor_shape.t;
 }
 (** A single assignment [value = input * weight (+ parameters)] bound at
@@ -70,7 +70,7 @@ type contraction = {
 type step = {
   slot : Kernel_region.Slot.t;
   expr : expr;
-  value : Ir.Value.t;
+  value : Ir.Value.t option;
   shape : Tensor_shape.t;
   dtype : Ir.Dtype.t;
 }
