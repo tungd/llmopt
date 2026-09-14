@@ -441,7 +441,21 @@ All module/file names introduced below are **planned**, under `lib/` unless a
   speculative helper modules can be understood without runtime lifecycle code;
   engine paths still own cache lease/release and speculative commit/rollback.
 
-- [ ] 11. Update the architecture map to the implemented ownership.
+- [x] 11. Update the architecture map to the implemented ownership.
+  DONE: Updated `.okf/architecture.md` frontmatter `sources`, Section 2 subsystem
+  table, Section 3 module descriptions, and Section 4 format tables to reflect all
+  extracted units (`Kernel_region`, `Kernel_scan`, `Kernel_fused_tactic`,
+  `Serving_schedule_types`, `Serving_schedule_validation`, `Serving_schedule_core`,
+  `Serving_schedule_sequence`, `Serving_schedule_codec`, `Metal_selection`,
+  `Metal_program`, `Metal_primary_codegen`, `Metal_parametric_codegen`,
+  `Metal_block_codegen`, `Metal_native`, `Metal_parameters`, `Metal_cache`,
+  `Metal_execution_state`, `Metal_dispatch_common`, `Metal_dispatch_*`,
+  `Metal_schedule_executor`, `Serving_engine_contract`, `Serving_rope_table`, and
+  `Serving_speculative`).
+  Added 2026-09-14 update log entry in `.okf/log.md`.
+  Verified OKF strict validation passes (`okf_validate.py .okf --strict`:
+  ✓ conformant, 0 errors, 3 pre-existing decision warnings).
+
   Change: update the relevant portions of `.okf/architecture.md` and affected
   source references to the actual extracted owners. Keep public caller paths
   and existing semantic decisions clear; this LOOP records the decomposition
@@ -505,9 +519,7 @@ is part of this refactor.
 
 Preserve unrelated work throughout. If a commit is separately requested, stage
 only the intended files/hunks; do not use broad staging in this mixed checkout.
-All unfinished items remain in scope when execution resumes.
-
-Next action: `/loop-execute LOOP-large-file-refactor.md`.
+Next action: None. All 11 refactor items complete.
 
 ---
 
@@ -569,24 +581,13 @@ Current serving_schedule_core.ml line anchors (doc header shifts originals +4):
 
 ## Execution log
 
-Item 1 completed (session 2, commits 0c88715..e29b49a).  Final state:
-test/test.ml 8024 -> 22 lines (pure suite runner).  New units under test/:
-test_support.ml, test_fold_catalog.ml, test_generation.ml (500),
-test_schedule.ml (3045), test_hardware.ml (94), test_model_program.ml (349),
-test_cache.ml (444), test_quant.ml (653), test_graph.ml (1839),
-test_metal.ml (730).  All green; llmopt-test stdout byte-identical to the
-64-line pre-refactor baseline; assertion call inventory (543) and message
-strings preserved (only sanctioned fixture-duplication strings added).
+- Item 1 completed (session 2, commits 0c88715..e29b49a): `test/test.ml` 8024 -> 22 lines (pure suite runner). Extracted 10 focused suites under `test/`.
+- Item 2 completed (session 3, commit 9b5966a): `lib/kernel_ir.ml` 2543 -> 9 lines. Extracted `Kernel_region`, `Kernel_scan`, and `Kernel_fused_tactic`.
+- Items 3 & 4 completed (session 3, commit 6682283): `lib/serving_schedule.ml` 4517 -> 11 lines. Extracted `Serving_schedule_types`, `Serving_schedule_validation`, `Serving_schedule_core`, `Serving_schedule_sequence`, and `Serving_schedule_codec`.
+- Items 5, 6, 7 completed (session 4, commits 3d7a8d0..3bcfc67): `lib/metal.ml` 10484 -> 890 lines. Extracted `Metal_selection`, `Metal_program`, `Metal_primary_codegen`, `Metal_parametric_codegen`, and `Metal_block_codegen`.
+- Item 8 completed: Pass decomposition into dedicated `lib/pass_*.ml` units.
+- Item 9 completed (session 5, commit 2085a06): `lib/metal_runtime.ml` 5024 -> 20 lines. Extracted `Metal_native`, `Metal_parameters`, `Metal_cache`, `Metal_execution_state`, `Metal_dispatch_common`, 6 dedicated dispatch modules, and `Metal_schedule_executor`.
+- Item 10 completed (session 6, commit d2ee2d2): `lib/serving_engine.ml` 2608 -> 1792 lines. Extracted `Serving_engine_contract`, `Serving_rope_table`, and `Serving_speculative`.
+- Item 11 completed (session 6): `.okf/architecture.md` frontmatter sources, subsystem table, module descriptions, and format table updated. `.okf/log.md` updated with 2026-09-14 log entry. OKF validation verified conformant.
 
-Baseline artifacts live in _artifacts/refactor-check/ (baseline-test.out etc.).
-
-Working notes for the remaining items:
-- Ninja build-file quirks: large single-line `edit` calls are unreliable; patch
-  the llmopt-test link line with a python replace and verify each edit with grep.
-- Test-edge deps can be derived by scanning capitalized module identifiers
-  against lib/*.ml (a python `uses()` helper did this during extraction).
-- Multi-fragment suites need one `run ()` call site that preserves marker
-  order, and a `;` seam between fragments.
-
-Next action: item 2 (Kernel IR region/scan/tactic separation, kernel_ir.ml 2543
-lines). Resume with `/loop-execute LOOP-large-file-refactor.md`.
+All 11 items complete. Full verification suite green (`ninja all`, `test`, `ocaml-test`, smoke tests). Public APIs and `.mli` contracts preserved 100% verbatim.

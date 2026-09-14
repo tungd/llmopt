@@ -4,7 +4,7 @@ title: 'Dynamo/FX Compiler with an OCaml Metal Serving Runtime'
 description: 'A model-neutral Ahead-Of-Time (AOT) compilation and serving architecture: PyTorch Dynamo captures FX graphs, OCaml effect-driven passes lower and fuse megakernels against GGUF/UD weights, and the zero-JIT native runtime hosts continuous batching, radix prefix caching, and SIMD stochastic sampling on Apple Silicon.'
 tags: [architecture, pytorch, fx, ocaml, metal, gemma, qwen, smollm, lfm, gguf, unsloth, continuous-batching, radix-cache, megakernels, aot]
 status: stable
-generated: { by: 'process:antigravity', at: '2026-08-31T10:15:00+07:00' }
+generated: { by: 'process:antigravity', at: '2026-09-14T11:20:00+07:00' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -20,7 +20,16 @@ sources:
     title: High-level compiler intermediate representation
   - id: local-kernel-ir
     resource: /lib/kernel_ir.ml
-    title: Kernel intermediate representation and stateful scan analysis
+    title: Kernel intermediate representation facade and region routing
+  - id: local-kernel-region
+    resource: /lib/kernel_region.ml
+    title: Kernel slot, primitive, effect, and region records
+  - id: local-kernel-scan
+    resource: /lib/kernel_scan.ml
+    title: Kernel stateful scan and recurrence recovery
+  - id: local-kernel-fused-tactic
+    resource: /lib/kernel_fused_tactic.ml
+    title: Fused tactic selection and linear epilogue folding
   - id: local-passes
     resource: /lib/passes.ml
     title: Modular compiler optimization pass pipeline
@@ -44,13 +53,58 @@ sources:
     title: Versioned serving-package representation (ABI v25)
   - id: local-serving-schedule
     resource: /lib/serving_schedule.ml
-    title: Binary typed command schedule (ABI v27)
+    title: Binary typed command schedule facade (ABI v27)
+  - id: local-serving-schedule-types
+    resource: /lib/serving_schedule_types.ml
+    title: Schedule command, stage, and tensor input types
+  - id: local-serving-schedule-validation
+    resource: /lib/serving_schedule_validation.ml
+    title: Schedule and fusion command validation rules
+  - id: local-serving-schedule-core
+    resource: /lib/serving_schedule_core.ml
+    title: Command schedule creation, validation, and barrier pruning
+  - id: local-serving-schedule-codec
+    resource: /lib/serving_schedule_codec.ml
+    title: Binary schedule serialization and deserialization
+  - id: local-serving-schedule-sequence
+    resource: /lib/serving_schedule_sequence.ml
+    title: Schedule sequence construction for prefill and decode
   - id: local-metal
     resource: /lib/metal.ml
-    title: Metal Shading Language (MSL) code generator and megakernels
+    title: Metal Shading Language (MSL) code generator facade
+  - id: local-metal-source-common
+    resource: /lib/metal_source_common.ml
+    title: Metal entry constructors and shared header definitions
+  - id: local-metal-selection
+    resource: /lib/metal_selection.ml
+    title: Metal tactic queries, capability tests, and fusion region selection
+  - id: local-metal-program
+    resource: /lib/metal_program.ml
+    title: Compiled Metal program structure and representations
+  - id: local-metal-primary-codegen
+    resource: /lib/metal_primary_codegen.ml
+    title: Primary kernel representation and lower_primary
+  - id: local-metal-parametric-codegen
+    resource: /lib/metal_parametric_codegen.ml
+    title: Parametric kernel emitters (W4A16, Q4_K, SIMDgroup GEMM)
+  - id: local-metal-block-codegen
+    resource: /lib/metal_block_codegen.ml
+    title: Schema-driven parameterized block-quant code generation
   - id: local-metal-runtime
     resource: /lib/metal_runtime.ml
-    title: Native OCaml Metal runtime and batched command dispatcher
+    title: Native OCaml Metal runtime facade
+  - id: local-metal-execution-state
+    resource: /lib/metal_execution_state.ml
+    title: Runtime execution context and dispatch state
+  - id: local-metal-dispatch-common
+    resource: /lib/metal_dispatch_common.ml
+    title: Shared dispatch helpers, buffer encoding, and grid sizing
+  - id: local-metal-dispatch-assignment
+    resource: /lib/metal_dispatch_assignment.ml
+    title: Dispatch for assignment-based fusion kernels
+  - id: local-metal-schedule-executor
+    resource: /lib/metal_schedule_executor.ml
+    title: Metal schedule execution traversal and workspace preparation
   - id: local-metal-stubs
     resource: /native/ocaml_metal_stubs.m
     title: Objective-C Metal and ARM NEON SIMD runtime bindings
@@ -60,6 +114,18 @@ sources:
   - id: local-model-linker
     resource: /lib/model_program_linker.ml
     title: Model-neutral captured-package linker
+  - id: local-serving-engine
+    resource: /lib/serving_engine.ml
+    title: Continuous batching serving engine lifecycle owner
+  - id: local-serving-engine-contract
+    resource: /lib/serving_engine_contract.ml
+    title: Serving engine contract, bindings, and package validation
+  - id: local-serving-rope-table
+    resource: /lib/serving_rope_table.ml
+    title: Precomputed RoPE frequency tables and slot slicing
+  - id: local-serving-speculative
+    resource: /lib/serving_speculative.ml
+    title: Pure speculative acceptance, MTP transactions, Medusa, and ngram proposals
   - id: local-radix-cache
     resource: /lib/radix_cache.ml
     title: OCaml compressed radix prefix cache
@@ -135,16 +201,17 @@ sources:
 | Concern | Owning Module / Subsystem | Primary Implementation Files |
 |---|---|---|
 | **Graph Acquisition & Binary Transport** | Python FX Adapter | [`python/llmopt_backend/`](file:///Users/tung/Projects/std23/llmopt/python/llmopt_backend/__init__.py), [`lib/capture.ml`](file:///Users/tung/Projects/std23/llmopt/lib/capture.ml) |
-| **Compiler IR & Topology Matching** | OCaml Compiler Core | [`lib/ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/ir.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml), [`lib/fusion_query.ml`](file:///Users/tung/Projects/std23/llmopt/lib/fusion_query.ml) |
-| **Optimization Passes & Fusions** | Modular Pass Pipeline | [`lib/passes.ml`](file:///Users/tung/Projects/std23/llmopt/lib/passes.ml), [`lib/pass_fuse_*.ml`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_swiglu_ffn.ml) |
+| **Compiler IR & Topology Matching** | OCaml Compiler Core | [`lib/ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/ir.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml), [`lib/kernel_region.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_region.ml), [`lib/kernel_scan.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_scan.ml), [`lib/kernel_fused_tactic.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_fused_tactic.ml), [`lib/fusion_query.ml`](file:///Users/tung/Projects/std23/llmopt/lib/fusion_query.ml) |
+| **Optimization Passes & Fusions** | Modular Pass Pipeline | [`lib/passes.ml`](file:///Users/tung/Projects/std23/llmopt/lib/passes.ml), [`lib/pass_fuse_*.ml`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_swiglu_ffn.ml), [`lib/pass_co_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/pass_co_schedule.ml), [`lib/dag_analysis.ml`](file:///Users/tung/Projects/std23/llmopt/lib/dag_analysis.ml) |
 | **Linear Tactic Selection** | Shared Tactic Registry | [`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml) |
 | **Hardware Discovery & Cost Model** | Target Hardware | [`lib/target_hardware.ml`](file:///Users/tung/Projects/std23/llmopt/lib/target_hardware.ml), [`lib/kernel_cost_model.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_cost_model.ml) |
-| **Code Generation (MSL)** | Metal Backend | [`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml) |
+| **Code Generation (MSL)** | Metal Backend | [`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/metal_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_program.ml), [`lib/metal_selection.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_selection.ml), [`lib/metal_primary_codegen.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_primary_codegen.ml), [`lib/metal_parametric_codegen.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_parametric_codegen.ml), [`lib/metal_block_codegen.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_block_codegen.ml), [`lib/metal_*_source.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_source_common.ml) |
 | **Static Memory Liveness** | Memory Planner | [`lib/serving_memory_plan.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_memory_plan.ml) |
-| **Packaging & Contracts** | Package / Schedule ABI | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml), [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml) |
+| **Packaging & Contracts** | Package / Schedule ABI | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml), [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml), [`lib/serving_schedule_core.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule_core.ml), [`lib/serving_schedule_codec.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule_codec.ml), [`lib/serving_schedule_sequence.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule_sequence.ml) |
 | **Root Execution Contract** | Model Program Linker | [`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml), [`lib/model_program_linker.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program_linker.ml) |
 | **Weight Ingestion** | GGUF & Weight Archive | [`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml), [`lib/weight_archive.ml`](file:///Users/tung/Projects/std23/llmopt/lib/weight_archive.ml) |
-| **Metal Dispatch & FFI** | Native Metal Runtime | [`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml), [`native/ocaml_metal_stubs.m`](file:///Users/tung/Projects/std23/llmopt/native/ocaml_metal_stubs.m) |
+| **Metal Dispatch & FFI** | Native Metal Runtime | [`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml), [`lib/metal_schedule_executor.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_schedule_executor.ml), [`lib/metal_execution_state.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_execution_state.ml), [`lib/metal_dispatch_*.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_dispatch_common.ml), [`native/ocaml_metal_stubs.m`](file:///Users/tung/Projects/std23/llmopt/native/ocaml_metal_stubs.m) |
+| **Serving Engine & Speculative Execution** | Serving Engine | [`lib/serving_engine.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine.ml), [`lib/serving_engine_contract.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine_contract.ml), [`lib/serving_rope_table.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_rope_table.ml), [`lib/serving_speculative.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_speculative.ml) |
 | **Prefix & Recurrent Caching** | Serving Cache & Radix | [`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/kv_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kv_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml) |
 | **Continuous Batching Queue** | Serving Queue (SRPT) | [`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml) |
 | **Sampling & Generation** | NEON SIMD Sampler | [`lib/sampling.ml`](file:///Users/tung/Projects/std23/llmopt/lib/sampling.ml), [`lib/generation_core.ml`](file:///Users/tung/Projects/std23/llmopt/lib/generation_core.ml) |
@@ -164,21 +231,22 @@ The entry point is a PyTorch `torch.compile` custom backend.[^pytorch-backend-co
 
 ## 3.2. Compiler IR, Effect Planning, & Modular Passes
 
-The compiler pipeline ([`bin/fx_compile.ml`](file:///Users/tung/Projects/std23/llmopt/bin/fx_compile.ml)) reads `graph.llmopt` into high-level IR ([`lib/ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/ir.ml)) and executes an ordered pipeline of pure passes ([`lib/passes.ml`](file:///Users/tung/Projects/std23/llmopt/lib/passes.ml)):
+The compiler pipeline ([`bin/fx_compile.ml`](file:///Users/tung/Projects/std23/llmopt/bin/fx_compile.ml)) reads `graph.llmopt` into high-level IR ([`lib/ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/ir.ml)) and executes an ordered pipeline of pure passes managed by [`lib/passes.ml`](file:///Users/tung/Projects/std23/llmopt/lib/passes.ml):
 
-1. **Constructive assignment regions ([`lib/constructive_lowering.ml`](file:///Users/tung/Projects/std23/llmopt/lib/constructive_lowering.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml))**:
+1. **Constructive assignment regions ([`lib/constructive_lowering.ml`](file:///Users/tung/Projects/std23/llmopt/lib/constructive_lowering.ml), [`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml), [`lib/kernel_region.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_region.ml))**:
+   - `Kernel_region` defines slot, primitive, effect, resource, and region models, constructing explicit bindings and validating region metadata.
    - Normalizes Linear, pointwise, reduction, movement, ShortConv, padding, batched-matmul, slice-update, and recurrence requests into one primitive assignment vocabulary.
-   - Uses dependency, fan-out, effect, and resource facts to form legal components, then extracts exact executable slices for gated Linear, Linear-add, RMSNorm, RMSNorm-RoPE, ShortConv-SiLU, and gated-delta tactics.
+   - Uses dependency, fan-out, effect, and resource facts to form legal components, then extracts exact executable slices for gated Linear, Linear-add, RMSNorm, RMSNorm-RoPE, ShortConv-SiLU, and gated-delta tactics via `Kernel_fused_tactic` ([`lib/kernel_fused_tactic.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_fused_tactic.ml)).
 2. **Typed layout provenance ([`lib/pass_fuse_linear_bias.ml`](file:///Users/tung/Projects/std23/llmopt/lib/pass_fuse_linear_bias.ml))**:
    - Composes logical source axes, broadcast axes, and flattened axis products across movement primitives.
    - Canonicalizes grouped-query head replication, token-major attention values and outputs, and token-major gated-delta inputs without fixed AST node sequences.
-3. **Stateful scan recovery ([`lib/kernel_ir.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_ir.ml))**:
-   - Recovers explicit induction order and carried tensors from update dependencies, then represents triangular recurrence as a primitive operation.
+3. **Stateful scan recovery ([`lib/kernel_scan.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_scan.ml))**:
+   - `Kernel_scan` recovers explicit induction order and carried tensors from update dependencies, then represents triangular recurrence as a primitive operation.
    - Padded zero-state gated-delta regions execute directly from their serialized assignment bindings.
 4. **Target-costed kernel selection ([`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml))**:
    - Chooses shape, dtype, storage-layout, and target-specific tactics from the hardware-probe profile.
    - Covered fused regions retain primitive source graphs and provide executable boundary values directly to Metal lowering and runtime dispatch.
-5. **DAG Concurrency & Antichain Co-Scheduling ([`Pass_co_schedule`](file:///Users/tung/Projects/std23/llmopt/lib/pass_co_schedule.ml))**:
+5. **DAG Concurrency & Antichain Co-Scheduling ([`Pass_co_schedule`](file:///Users/tung/Projects/std23/llmopt/lib/pass_co_schedule.ml), [`lib/dag_analysis.ml`](file:///Users/tung/Projects/std23/llmopt/lib/dag_analysis.ml))**:
    - Analyzes SSA dependency DAGs and computes ready antichains of independent operations (e.g., parallel Q/K/V projections or parallel layer components).
    - Groups independent kernels into concurrent execution stages bounded by `Ir.Op.Barrier_wait` and dispatched via `MTLDispatchTypeConcurrent`.
 
@@ -226,14 +294,6 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   - **Block-32**: `Q4_0`, `Q8_0`, `Q5_0`
   - **Superblock-256 (K-Quants & Unsloth UD)**: `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`
   - **Groupwise W4**: Group-64 scales with 2-complement low-nibble packing.
-## 3.4. Quantization Ingestion & Weight Architecture
-
-`llmopt` provides first-class support for both native GGUF files and internal aligned binary archives:
-* **Direct GGUF Mmap ([`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml))**: Reads GGUF v2/v3 metadata, resolves tensor name aliases, and creates zero-copy 256-byte aligned `MTLBuffer` views directly from memory-mapped GGUF files without intermediate memory copies or conversions.
-* **Quantization Coverage**:
-  - **Block-32**: `Q4_0`, `Q8_0`, `Q5_0`
-  - **Superblock-256 (K-Quants & Unsloth UD)**: `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`
-  - **Groupwise W4**: Group-64 scales with 2-complement low-nibble packing.
 * **Hardware Bitfield Acceleration ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml))**: Replaced manual shift/mask sequences in Superblock-256 unpacking with native `metal::extract_bits(src, offset, count)` hardware bitfield extraction instructions across all quantized compute and embedding paths.
 * **Split-K Intra-Threadgroup Parallel Reductions ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml))**: For wide reduction dimensions ($K \ge 4096$), partitions inner dimension across 4 SIMDgroups per column in 256-thread threadgroups, reducing partial sums across SIMD groups via threadgroup shared memory in deterministic FP32/FP16 order without global atomics.
 
@@ -244,6 +304,15 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   - Generates deterministic 256-byte aligned offset assignments into a single retained Metal workspace buffer.
   - Eliminates dynamic `[MTLDevice newBufferWithLength]` allocations during model execution.
 * **Native Metal Runtime ([`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
+  - Acts as the operational facade for GPU execution, coordinating compilation, caching, buffer tracking, and dispatch submission.
+  - **Schedule Executor ([`lib/metal_schedule_executor.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_schedule_executor.ml))**: Traverses the solidified command schedule, prepares workspace buffers, handles barrier synchronization, and routes commands through execution state context ([`lib/metal_execution_state.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_execution_state.ml)).
+  - **Modular Dispatch Subsystem**: Operation-specific dispatch logic is partitioned into dedicated domain handlers with shared grid and parameter encoding ([`lib/metal_dispatch_common.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_dispatch_common.ml)):
+    - `Metal_dispatch_tensor`: Dense tensor movement, casts, embedding, pointwise, and reduction operations.
+    - `Metal_dispatch_normalization`: RMSNorm and rotary position embedding kernels.
+    - `Metal_dispatch_recurrent`: ShortConv, triangular recurrence, and gated-delta recurrence steps.
+    - `Metal_dispatch_attention`: Standard, wide-head, and paged Q8 attention dispatchers.
+    - `Metal_dispatch_linear`: Dense and quantized matrix-vector / GEMM operations.
+    - `Metal_dispatch_assignment`: Dynamic argument assembly and dispatch for constructive fused assignment regions.
   - Encodes entire schedule execution into consolidated command buffers.
   - Reuses cached `MTLComputePipelineState` objects with automatic tactic candidate fallback.
   - Supports precompiled direct dispatch lists whose dynamic paged-attention and checkpoint parameters are patched for each execution. The earlier ICB realization was removed after it produced a deterministic long-decode collapse despite explicit ICB barriers; the AOT schedule and serving-request queue remain separate contracts.
@@ -253,6 +322,17 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
 * **Model Program ABI v3 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
   - Encapsulates compiled prefill schedules, decode schedules, state plans, tokenizer metadata, and chat templates into a self-contained root artifact (`model.llmopt`). ABI v3 records storage format, KV-head count, and head dimension per attention layer and continues to read uniform ABI-v2 programs.
   - The Q8 physical cache stores heterogeneous key/value regions through explicit logical offsets. The cache pack/unpack and paged-attention kernels consume those offsets, so 64-, 256-, and 512-wide attention heads do not alter the generic cache contract.
+* **Serving Engine & Contract Validation ([`lib/serving_engine.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine.ml), [`lib/serving_engine_contract.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine_contract.ml))**:
+  - `Serving_engine_contract` owns head, attention, and recurrent bindings, input/output metadata checks, and package validation for prefill and decode phases.
+  - `Serving_engine` remains the unified operational coordinator managing continuous execution steps, logical and physical cache lease/release transactions, and `Prompt_lookup.verify_and_commit`.
+* **Rotary Position Tables ([`lib/serving_rope_table.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_rope_table.ml))**:
+  - Precomputes and caches FP16 cosine/sine tables from inverse-frequency tensors; provides efficient sliced buffer views and single-slot copies for decode steps.
+* **Speculative Decoding Algorithms ([`lib/serving_speculative.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_speculative.ml))**:
+  - Isolates pure draft proposal and speculative verification logic independent of runtime lifecycle:
+    - `Speculative_acceptance`: Pure greedy $K+1$ draft token matching and acceptance.
+    - `Target_coupled_mtp`: Transaction coordinator for target-coupled multi-token prediction.
+    - `Medusa`: Tree attention masks, tree generation, and speculative tree candidate evaluation.
+    - `Prompt_lookup`: History ngram candidate search and linear/tree proposal generation.
 * **Speculative Tree-Mask Attention ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/metal_runtime.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_runtime.ml))**:
   - Registers fused tree-attention megakernels (`llmopt_attention_tree_speculative_f16`) for compact bitmask causal adjacency topologies. No current target Model Program invokes them for end-to-end verification.
 * **Compressed Radix Cache & Optimistic Rollback ([`lib/radix_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/radix_cache.ml), [`lib/serving_cache.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_cache.ml))**:
@@ -260,7 +340,7 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   - Supports tested speculative slot reservation, partial commit, and rollback metadata. These operations are not yet bound to physical Gemma verification writes.
 * **Continuous Batching Queue and Acceptance Semantics ([`lib/serving_queue.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_queue.ml), [`lib/serving_engine.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine.ml))**:
   - The queue retains its measured prefill/decode SRPT model with no speculative rate multiplier.
-  - `Serving_engine.Speculative_acceptance` implements the pure greedy `K+1` rule. Target-coupled proposal and verification execution remain open under the Gemma MTP runtime contract.
+  - Pure speculative acceptance and proposal algorithms delegate to `Serving_speculative`. Target-coupled proposal and verification execution remain open under the Gemma MTP runtime contract.
 * **Streaming NEON SIMD Sampler ([`lib/sampling.ml`](file:///Users/tung/Projects/std23/llmopt/lib/sampling.ml), [`native/ocaml_metal_stubs.m`](file:///Users/tung/Projects/std23/llmopt/native/ocaml_metal_stubs.m))**:
   - Zero-heap-allocation, single-pass streaming min-heap sampler implemented in ARM NEON assembly.
   - Supports dynamic `temperature`, `top_k`, `top_p`, `min_p`, and seeded PRNG with $< 20\text{ µs}$ per-token execution time without vocabulary sorting.
@@ -292,7 +372,7 @@ separate claims; no row generalizes those properties to every benchmark run.[^sl
 |---|---|---|---|
 | **Binary Transport** | `LLMOPTFX` | Version 2 | [`lib/capture.ml`](file:///Users/tung/Projects/std23/llmopt/lib/capture.ml), [`python/llmopt_backend/fx_graph.py`](file:///Users/tung/Projects/std23/llmopt/python/llmopt_backend/fx_graph.py) |
 | **Serving Package** | `LLMOPTPKG` | ABI Version 25 | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml) |
-| **Serving Schedule** | `LLMOPTSCHED` | Version 27 | [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml) |
+| **Serving Schedule** | `LLMOPTSCHED` | Version 27 | [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml) (backed by `lib/serving_schedule_core.ml` and `lib/serving_schedule_codec.ml`) |
 | **Model Program** | `LLMOPTMP` | ABI Version 2 | [`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml) |
 | **Binary Weight Archive** | `LLMOPTWA` | Version 1 | [`lib/weight_archive.ml`](file:///Users/tung/Projects/std23/llmopt/lib/weight_archive.ml) |
 | **Native GGUF Ingestion** | `GGUF` | v2 / v3 | [`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml) |
