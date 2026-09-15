@@ -1,6 +1,6 @@
 let usage () =
   prerr_endline
-    "usage: llmopt-package-check <package-directory> [--prefill-specialization <captured-tokens> <tokens>]";
+    "usage: llmopt-package-check <package-directory> [--prefill-specialization <captured-tokens> <tokens>] [--dump-commands <path>]";
   exit 64
 
 let positive value =
@@ -9,13 +9,23 @@ let positive value =
   | _ -> usage ()
 
 let () =
-  let root, prefill_specialization =
-    match Array.to_list Sys.argv with
-    | [ _; root ] -> root, None
-    | [ _; root; "--prefill-specialization"; captured; tokens ] ->
-        root, Some (positive captured, positive tokens)
+  let rec parse root prefill_specialization dump_commands = function
+    | [] -> root, prefill_specialization, dump_commands
+    | [ root ] -> root, prefill_specialization, dump_commands
+    | "--prefill-specialization" :: captured :: tokens :: rest ->
+        parse root (Some (positive captured, positive tokens)) dump_commands rest
+    | "--dump-commands" :: path :: rest ->
+        parse root prefill_specialization (Some path) rest
+    | root :: rest when not (String.starts_with ~prefix:"--" root) ->
+        parse root prefill_specialization dump_commands rest
     | _ -> usage ()
   in
+  let root, prefill_specialization, dump_commands =
+    match Array.to_list Sys.argv with
+    | _ :: args -> parse "" None None args
+    | [] -> usage ()
+  in
+  if root = "" then usage ();
   let manifest = Filename.concat root "package.llmopt" in
   match Serving_package.of_file manifest with
   | Error message ->
@@ -85,4 +95,47 @@ let () =
             tensor_count
             (Serving_memory_plan.workspace_bytes memory_plan)
             (Serving_memory_plan.bytes_without_reuse memory_plan)
-            (Serving_memory_plan.allocation_count memory_plan))
+            (Serving_memory_plan.allocation_count memory_plan);
+          match dump_commands with
+          | None -> ()
+          | Some path ->
+              let oc = open_out path in
+              Fun.protect
+                ~finally:(fun () -> close_out_noerr oc)
+                (fun () ->
+                  List.iter
+                    (fun cmd ->
+                      let node_id = Serving_schedule.Command.node_id cmd in
+                      let op = Ir.Op.to_string (Serving_schedule.Command.op cmd) in
+                      let region =
+                        match Serving_schedule.Command.fusion_region cmd with
+                        | None -> "none"
+                        | Some r -> Kernel_region.name r
+                      in
+                      let inputs =
+                        Serving_schedule.Command.inputs cmd
+                        |> List.map (fun v -> string_of_int (Ir.Value_id.to_int (Ir.Value.id v)))
+                        |> String.concat ","
+                      in
+                      let output =
+                        match Serving_schedule.Command.output cmd with
+                        | None -> "none"
+                        | Some v -> string_of_int (Ir.Value_id.to_int (Ir.Value.id v))
+                      in
+                      let tactic =
+                        match Serving_schedule.Command.fusion_region cmd with
+                        | None -> "none"
+                        | Some r -> (
+                            match Contraction_group.select r with
+                            | None -> "none"
+                            | Some (Kernel_ir.Fused_tactic.Contraction_group { epilogue; _ }) ->
+                                "Contraction_group(" ^ Applicative_expr.to_string (fun s -> "slot" ^ string_of_int s) epilogue ^ ")"
+                            | Some (Kernel_ir.Fused_tactic.Gated_product _) -> "Gated_product"
+                            | Some (Kernel_ir.Fused_tactic.Linear_epilogue _) -> "Linear_epilogue"
+                            | Some (Kernel_ir.Fused_tactic.Rms_normalize _) -> "Rms_normalize"
+                            | Some (Kernel_ir.Fused_tactic.Rms_rope _) -> "Rms_rope"
+                            | Some _ -> "other")
+                      in
+                      Printf.fprintf oc "%d | op=%s | region=%s | tactic=%s | in=[%s] | out=%s\n"
+                        node_id op region tactic inputs output)
+                    (Serving_schedule.commands schedule)))

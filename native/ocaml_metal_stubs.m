@@ -82,6 +82,8 @@ typedef struct {
   NSUInteger buffer_count;
   id<MTLBuffer> buffers[16];
   NSUInteger offsets[16];
+  NSUInteger lengths[16];
+  char kernel_name[128];
   uint8_t parameters[256];
   NSUInteger parameter_length;
   MTLSize grid;
@@ -1858,6 +1860,7 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     if (getenv("LLMOPT_PROFILE_PLAN") != NULL) {
       fprintf(stderr, "llmopt-prebaked-kernel: %s\n", kname);
     }
+    snprintf(plan->records[i].kernel_name, sizeof(plan->records[i].kernel_name), "%s", kname);
     value buffers = Field(item, 1);
     value params = Field(item, 2);
     plan->records[i].grid = MTLSizeMake(Long_val(Field(item, 3)), Long_val(Field(item, 4)), Long_val(Field(item, 5)));
@@ -1877,6 +1880,7 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
       if (b != NULL) {
         plan->records[i].buffers[b_idx] = [b->buffer retain];
         plan->records[i].offsets[b_idx] = b->offset;
+        plan->records[i].lengths[b_idx] = b->length;
       }
       b_idx++;
       rem = Field(rem, 1);
@@ -1893,6 +1897,37 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
   CAMLreturn(alloc_prebaked(plan));
 }
 
+static bool range_has_nan(const char *kname, id<MTLBuffer> buf, NSUInteger offset, NSUInteger length) {
+  if (buf == nil || length == 0) return false;
+  if (strstr(kname, "_i64") != NULL || strstr(kname, "cache_pack") != NULL) return false;
+  NSUInteger total_len = [buf length];
+  if (offset >= total_len) return false;
+  if (offset + length > total_len) {
+    length = total_len - offset;
+  }
+  const uint8_t *raw = (const uint8_t *)[buf contents] + offset;
+  if (strcmp(kname, "llmopt_matmul") == 0 || strstr(kname, "_f32") != NULL) {
+    const uint32_t *u32 = (const uint32_t *)raw;
+    NSUInteger count32 = length / 4;
+    for (NSUInteger k = 0; k < count32; k++) {
+      uint32_t v = u32[k];
+      if ((v & 0x7F800000) == 0x7F800000 && (v & 0x007FFFFF) != 0) {
+        return true;
+      }
+    }
+  } else {
+    const uint16_t *u16 = (const uint16_t *)raw;
+    NSUInteger count16 = length / 2;
+    for (NSUInteger k = 0; k < count16; k++) {
+      uint16_t v = u16[k];
+      if ((v & 0x7C00) == 0x7C00 && (v & 0x03FF) != 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v_past_tokens, value v_checkpoint) {
   CAMLparam4(v_plan, v_token, v_past_tokens, v_checkpoint);
   llmopt_prebaked_plan *plan = Prebaked_val(v_plan);
@@ -1904,7 +1939,87 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
     *ptr = token;
   }
 
-  @autoreleasepool {
+  const char *nan_check_env = getenv("LLMOPT_DEBUG_NAN_CHECK");
+  if (nan_check_env != NULL && (past_tokens > 0 || getenv("LLMOPT_CHECK_PREFILL") != NULL)) {
+    @autoreleasepool {
+      fprintf(stderr, "[DEBUG_NAN_CHECK] Starting check across %zu records (past_tokens=%d)...\n",
+              plan->record_count, past_tokens);
+      for (size_t i = 0; i < plan->record_count; i++) {
+        llmopt_dispatch_record *r = &plan->records[i];
+        bool had_bad_before[16] = {false};
+        for (NSUInteger b = 0; b < r->buffer_count; b++) {
+          if (range_has_nan(r->kernel_name, r->buffers[b], r->offsets[b], r->lengths[b])) {
+            had_bad_before[b] = true;
+          }
+        }
+
+        id<MTLCommandBuffer> cmd = [plan->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:r->pipeline];
+        if (r->buffer_count > 0) {
+          [enc setBuffers:r->buffers offsets:r->offsets
+                withRange:NSMakeRange(0, r->buffer_count)];
+        }
+        if (r->parameter_length > 0) {
+          if (r->is_paged_attention && r->parameter_length >= 16) {
+            *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
+          }
+          if (r->is_checkpoint_pack && r->parameter_length >= 4) {
+            *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
+          }
+          [enc setBytes:r->parameters length:r->parameter_length
+                atIndex:r->buffer_count];
+        }
+        [enc dispatchThreads:r->grid threadsPerThreadgroup:r->group];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        if (cmd.status != MTLCommandBufferStatusCompleted) {
+          fprintf(stderr, "[DEBUG_NAN_CHECK] Dispatch %zu '%s' failed on Metal: %s\n",
+                  i, r->kernel_name, [[cmd.error localizedDescription] UTF8String]);
+        }
+
+        for (NSUInteger b = 0; b < r->buffer_count; b++) {
+          if (range_has_nan(r->kernel_name, r->buffers[b], r->offsets[b], r->lengths[b])) {
+            if (!had_bad_before[b]) {
+              fprintf(stderr, "\n==================================================\n");
+              fprintf(stderr, "[DEBUG_NAN_CHECK] FIRST NaN PRODUCED AT RECORD %zu:\n", i);
+              fprintf(stderr, "  kernel: '%s'\n", r->kernel_name);
+              fprintf(stderr, "  buffer: %lu (offset=%lu, length=%lu, total_buf_len=%lu)\n",
+                      (unsigned long)b, (unsigned long)r->offsets[b], (unsigned long)r->lengths[b],
+                      (unsigned long)[r->buffers[b] length]);
+              fprintf(stderr, "  grid: (%lu, %lu, %lu), group: (%lu, %lu, %lu)\n",
+                      r->grid.width, r->grid.height, r->grid.depth,
+                      r->group.width, r->group.height, r->group.depth);
+              if (r->parameter_length > 0) {
+                fprintf(stderr, "  parameters (%lu bytes, u32):", r->parameter_length);
+                for (NSUInteger p = 0; p + 4 <= r->parameter_length && p < 48; p += 4) {
+                  fprintf(stderr, " %u", *(uint32_t *)(&r->parameters[p]));
+                }
+                fprintf(stderr, "\n");
+              }
+              const uint16_t *words = (const uint16_t *)((const uint8_t *)[r->buffers[b] contents] + r->offsets[b]);
+              fprintf(stderr, "  first 16 half words (hex):");
+              for (int k = 0; k < 16 && (NSUInteger)k * 2 < r->lengths[b]; k++) {
+                fprintf(stderr, " 0x%04x", words[k]);
+              }
+              fprintf(stderr, "\n");
+              for (NSUInteger in_b = 0; in_b < r->buffer_count; in_b++) {
+                fprintf(stderr, "  buffer[%lu]: offset=%lu, len=%lu, total=%lu\n",
+                        (unsigned long)in_b, (unsigned long)r->offsets[in_b],
+                        (unsigned long)r->lengths[in_b], (unsigned long)[r->buffers[in_b] length]);
+              }
+              fprintf(stderr, "==================================================\n\n");
+              fflush(stderr);
+              exit(1);
+            }
+          }
+        }
+      }
+    }
+  } else {
+    @autoreleasepool {
     uint64_t started = mach_absolute_time();
     id<MTLCommandBuffer> cmd = [plan->queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
@@ -1956,6 +2071,7 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
     if (cmd.status != MTLCommandBufferStatusCompleted) {
       fail_with_error("Prebaked Metal batch failed", cmd.error);
     }
+  }
   }
 
   int32_t next_token = 0;

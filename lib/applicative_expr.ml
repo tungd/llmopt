@@ -226,7 +226,7 @@ let rec emit_msl_expr ?value_var ~slot_emitter ~index_expr expr =
       Printf.sprintf "(%s * (1.0f / (1.0f + metal::exp(-%s))))" e e
   | Unop (Gelu, a) ->
       let e = emit_msl_expr ?value_var ~slot_emitter ~index_expr a in
-      Printf.sprintf "(0.5f * %s * (1.0f + metal::tanh(0.79788456f * (%s + 0.044715f * %s * %s * %s))))"
+      Printf.sprintf "(0.5f * %s * (1.0f + metal::tanh(metal::clamp(0.7978845608f * (%s + 0.044715f * %s * %s * %s), -10.0f, 10.0f))))"
         e e e e e
   | Unop (Exp, a) ->
       Printf.sprintf "metal::exp(%s)" (emit_msl_expr ?value_var ~slot_emitter ~index_expr a)

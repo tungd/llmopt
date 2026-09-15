@@ -152,13 +152,13 @@ let emit_msl_writeback ~acc ~idx = function
   | Silu ->
       Printf.sprintf "(%s * (1.0f / (1.0f + metal::exp(-%s))))" acc acc
   | Gelu ->
-      Printf.sprintf "(0.5f * %s * (1.0f + metal::tanh(0.79788456f * (%s + 0.044715f * %s * %s * %s))))"
+      Printf.sprintf "(0.5f * %s * (1.0f + metal::tanh(metal::clamp(0.7978845608f * (%s + 0.044715f * %s * %s * %s), -10.0f, 10.0f))))"
         acc acc acc acc acc
   | Silu_mul _ ->
       Printf.sprintf "((%s * (1.0f / (1.0f + metal::exp(-%s)))) * (float)up[%s])"
         acc acc idx
   | Gelu_mul _ ->
-      Printf.sprintf "((0.5f * %s * (1.0f + metal::tanh(0.79788456f * (%s + 0.044715f * %s * %s * %s)))) * (float)up[%s])"
+      Printf.sprintf "((0.5f * %s * (1.0f + metal::tanh(metal::clamp(0.7978845608f * (%s + 0.044715f * %s * %s * %s), -10.0f, 10.0f)))) * (float)up[%s])"
         acc acc acc acc acc idx
   | Residual_add _ ->
       Printf.sprintf "(%s + (float)residual[%s])" acc idx
@@ -168,7 +168,7 @@ let emit_msl_writeback ~acc ~idx = function
       Printf.sprintf "(((%s * (1.0f / (1.0f + metal::exp(-%s)))) * (float)up[%s]) + (float)residual[%s])"
         acc acc idx idx
   | Gelu_mul_residual_add _ ->
-      Printf.sprintf "(((0.5f * %s * (1.0f + metal::tanh(0.79788456f * (%s + 0.044715f * %s * %s * %s)))) * (float)up[%s]) + (float)residual[%s])"
+      Printf.sprintf "(((0.5f * %s * (1.0f + metal::tanh(metal::clamp(0.7978845608f * (%s + 0.044715f * %s * %s * %s), -10.0f, 10.0f)))) * (float)up[%s]) + (float)residual[%s])"
         acc acc acc acc acc idx idx
   | Expr expr ->
       Applicative_expr.emit_msl_expr ~slot_emitter:(fun Acc -> acc) ~index_expr:idx expr
