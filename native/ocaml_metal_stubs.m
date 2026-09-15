@@ -1857,14 +1857,18 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
   for (mlsize_t i = 0; i < total; i++) {
     value item = Field(v_dispatches, i);
     const char *kname = String_val(Field(item, 0));
-    if (getenv("LLMOPT_PROFILE_PLAN") != NULL) {
-      fprintf(stderr, "llmopt-prebaked-kernel: %s\n", kname);
-    }
     snprintf(plan->records[i].kernel_name, sizeof(plan->records[i].kernel_name), "%s", kname);
     value buffers = Field(item, 1);
     value params = Field(item, 2);
     plan->records[i].grid = MTLSizeMake(Long_val(Field(item, 3)), Long_val(Field(item, 4)), Long_val(Field(item, 5)));
     plan->records[i].group = MTLSizeMake(Long_val(Field(item, 6)), Long_val(Field(item, 7)), Long_val(Field(item, 8)));
+    if (getenv("LLMOPT_PROFILE_PLAN") != NULL) {
+      fprintf(stderr, "llmopt-prebaked-kernel[%zu]: %s grid=(%lu,%lu,%lu) group=(%lu,%lu,%lu)\n",
+              i, kname, (unsigned long)plan->records[i].grid.width,
+              (unsigned long)plan->records[i].grid.height, (unsigned long)plan->records[i].grid.depth,
+              (unsigned long)plan->records[i].group.width,
+              (unsigned long)plan->records[i].group.height, (unsigned long)plan->records[i].group.depth);
+    }
     plan->records[i].barrier_before = Bool_val(Field(item, 9));
     if (plan->records[i].barrier_before) {
       plan->barrier_count += 1;
@@ -2017,6 +2021,84 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
           }
         }
       }
+    }
+  } else if (getenv("LLMOPT_PROFILE_BREAKDOWN") != NULL && past_tokens > 0) {
+    @autoreleasepool {
+      typedef struct {
+        char name[128];
+        double total_ms;
+        size_t count;
+      } kernel_stat;
+      kernel_stat stats[128];
+      size_t stat_count = 0;
+      double overall_gpu_ms = 0.0;
+
+      for (size_t i = 0; i < plan->record_count; i++) {
+        llmopt_dispatch_record *r = &plan->records[i];
+        id<MTLCommandBuffer> cmd = [plan->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:r->pipeline];
+        if (r->buffer_count > 0) {
+          [enc setBuffers:r->buffers offsets:r->offsets
+                withRange:NSMakeRange(0, r->buffer_count)];
+        }
+        if (r->parameter_length > 0) {
+          if (r->is_paged_attention && r->parameter_length >= 16) {
+            *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
+          }
+          if (r->is_checkpoint_pack && r->parameter_length >= 4) {
+            *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
+          }
+          [enc setBytes:r->parameters length:r->parameter_length
+                atIndex:r->buffer_count];
+        }
+        [enc dispatchThreads:r->grid threadsPerThreadgroup:r->group];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+        double d_ms = 0.0;
+        if (cmd.GPUEndTime > cmd.GPUStartTime) {
+          d_ms = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0;
+        }
+        overall_gpu_ms += d_ms;
+        size_t found = stat_count;
+        for (size_t s = 0; s < stat_count; s++) {
+          if (strcmp(stats[s].name, r->kernel_name) == 0) {
+            found = s;
+            break;
+          }
+        }
+        if (found < stat_count) {
+          stats[found].total_ms += d_ms;
+          stats[found].count += 1;
+        } else if (stat_count < 128) {
+          snprintf(stats[stat_count].name, sizeof(stats[stat_count].name), "%s", r->kernel_name);
+          stats[stat_count].total_ms = d_ms;
+          stats[stat_count].count = 1;
+          stat_count++;
+        }
+      }
+      for (size_t i = 0; i < stat_count; i++) {
+        for (size_t j = i + 1; j < stat_count; j++) {
+          if (stats[j].total_ms > stats[i].total_ms) {
+            kernel_stat tmp = stats[i];
+            stats[i] = stats[j];
+            stats[j] = tmp;
+          }
+        }
+      }
+      fprintf(stderr, "\n========== DECODE KERNEL BREAKDOWN (past_tokens=%d) ==========\n", past_tokens);
+      fprintf(stderr, "%-48s | %5s | %10s | %10s | %6s\n", "Kernel Name", "Calls", "Total (ms)", "Avg (us)", "Pct");
+      fprintf(stderr, "-------------------------------------------------+-------+------------+------------+-------\n");
+      for (size_t s = 0; s < stat_count; s++) {
+        double avg_us = (stats[s].total_ms / stats[s].count) * 1000.0;
+        double pct = overall_gpu_ms > 0 ? (stats[s].total_ms / overall_gpu_ms) * 100.0 : 0.0;
+        fprintf(stderr, "%-48s | %5zu | %10.3f | %10.2f | %5.1f%%\n",
+                stats[s].name, stats[s].count, stats[s].total_ms, avg_us, pct);
+      }
+      fprintf(stderr, "-------------------------------------------------+-------+------------+------------+-------\n");
+      fprintf(stderr, "%-48s | %5zu | %10.3f |            | 100.0%%\n", "TOTAL DISPATCHES", plan->record_count, overall_gpu_ms);
+      fprintf(stderr, "===============================================================\n\n");
     }
   } else {
     @autoreleasepool {
