@@ -320,6 +320,8 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
             let base_name = Kernel_abi.Entry.name tactic_entry in
             let digest_columns =
               if quant <> Ir.Dtype.Q4_0 then None
+              else if String.ends_with ~suffix:"_x16" base_name then
+                Some ((linear.n + 15) / 16)
               else if String.ends_with ~suffix:"_x8" base_name then
                 Some ((linear.n + 7) / 8)
               else if String.ends_with ~suffix:"_x4" base_name then
@@ -334,7 +336,7 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
             | None ->
                 Error
                   (Printf.sprintf
-                     "assignment Linear-epilogue %s is not servable: digest emission is defined only for Q4_0 x8/x4/m16/m32 decode regions (plain tactic %s)"
+                     "assignment Linear-epilogue %s is not servable: digest emission is defined only for Q4_0 x16/x8/x4/m16/m32 decode regions (plain tactic %s)"
                      (Epilogue.to_string epilogue) base_name)
             | Some columns ->
                 let digest_name =
@@ -610,7 +612,10 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
               (Ok ()) contractions
           in
           let* grid_x =
-            if String.ends_with ~suffix:"_x8" base_name then
+            if String.ends_with ~suffix:"_x16" base_name then
+              let groups = (first.n + 15) / 16 in
+              linear_f16_grid (first.m * groups)
+            else if String.ends_with ~suffix:"_x8" base_name then
               let groups = (first.n + 7) / 8 in
               linear_f16_grid (first.m * groups)
             else if String.ends_with ~suffix:"_x4" base_name then
@@ -790,7 +795,10 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
                           (Ok ()) contractions
                       in
                       let* grid_x =
-                        if String.ends_with ~suffix:"_x8" base_name then
+                        if String.ends_with ~suffix:"_x16" base_name then
+                          let groups = (first.n + 15) / 16 in
+                          linear_f16_grid (first.m * groups)
+                        else if String.ends_with ~suffix:"_x8" base_name then
                           let groups = (first.n + 7) / 8 in
                           linear_f16_grid (first.m * groups)
                         else if String.ends_with ~suffix:"_x4" base_name then

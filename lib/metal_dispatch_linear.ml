@@ -258,6 +258,11 @@ let dispatch_quant_qkv_linear_command (context : Metal_execution_state.context)
     else if String.ends_with ~suffix:"_m32" name then
       let m_tiles = (m + 31) / 32 in
       linear_f16_grid (m_tiles * (n_q + n_k + n_v) * 2)
+    else if String.ends_with ~suffix:"_x16" name then
+      let q_groups = (n_q + 15) / 16 in
+      let k_groups = (n_k + 15) / 16 in
+      let v_groups = (n_v + 15) / 16 in
+      linear_f16_grid (m * (q_groups + k_groups + v_groups))
     else if String.ends_with ~suffix:"_x8" name then
       let q_groups = (n_q + 7) / 8 in
       let k_groups = (n_k + 7) / 8 in

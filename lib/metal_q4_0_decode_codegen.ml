@@ -460,6 +460,201 @@ kernel void llmopt_q4_0_linear_f16_x8(
       "Metal_block_codegen q4_0_linear_f16_x8: epilogue emission requires \
        split_k = 1"
 
+let emit_q4_0_linear_f16_x16 ?(split_k = 1) ?(name = "llmopt_q4_0_linear_f16_x16")
+    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
+    ~block_bytes () =
+  let row_blocks_decls =
+    List.init 16 (fun j ->
+        if j = 0 then
+          "  device const uchar* row_blocks0 = weight + min(base_col, params.n - 1u) * col_stride;"
+        else
+          Printf.sprintf
+            "  device const uchar* row_blocks%d = weight + min(base_col + %du, params.n - 1u) * col_stride;"
+            j j)
+    |> String.concat "\n"
+  in
+  let accumulators_decls =
+    List.init 16 (fun j -> Printf.sprintf "  float accumulator%d = 0.0f;" j)
+    |> String.concat "\n"
+  in
+  let oct_accumulates =
+    List.init 16 (fun j ->
+        Printf.sprintf "    Q4_0_OCT_ACCUMULATE(accumulator%d, row_blocks%d);" j j)
+    |> String.concat "\n"
+  in
+  let rem_accumulates =
+    List.init 16 (fun j ->
+        Printf.sprintf "    Q4_0_PAIR_ACCUMULATE(accumulator%d, row_blocks%d);" j j)
+    |> String.concat "\n"
+  in
+  let odd_accumulates =
+    List.init 16 (fun j ->
+        Printf.sprintf
+          "    accumulator%d += a * llmopt_schema_q4_0_value(row_blocks%d + blk_byte_off, lane);"
+          j j)
+    |> String.concat "\n"
+  in
+  let simd_sums =
+    List.init 16 (fun j ->
+        Printf.sprintf "  accumulator%d = simd_sum(accumulator%d);" j j)
+    |> String.concat "\n"
+  in
+  let bias_adds =
+    List.init 16 (fun j ->
+        if j = 0 then "      accumulator0 += float(bias[base_col]);"
+        else
+          Printf.sprintf
+            "      if (base_col + %du < params.n) accumulator%d += float(bias[base_col + %du]);"
+            j j j)
+    |> String.concat "\n"
+  in
+  let stores =
+    List.init 16 (fun j ->
+        if j = 0 then "    output[base_col] = half(accumulator0);"
+        else
+          Printf.sprintf
+            "    if (base_col + %du < params.n) output[base_col + %du] = half(accumulator%d);"
+            j j j)
+    |> String.concat "\n"
+  in
+  let flat_split1 =
+    Printf.sprintf {|
+#define Q4_0_OCT_ACCUMULATE(col_acc, row_ptr) \
+  { \
+    device const uchar* blk0 = (row_ptr) + blk_byte_off; \
+    device const uchar* blk1 = blk0 + 36u; \
+    device const uchar* blk2 = blk0 + 72u; \
+    device const uchar* blk3 = blk0 + 108u; \
+    const half s0 = *reinterpret_cast<device const half*>(blk0 + %du); \
+    const half s1 = *reinterpret_cast<device const half*>(blk1 + %du); \
+    const half s2 = *reinterpret_cast<device const half*>(blk2 + %du); \
+    const half s3 = *reinterpret_cast<device const half*>(blk3 + %du); \
+    const uchar p0 = blk0[%du + l]; \
+    const uchar p1 = blk1[%du + l]; \
+    const uchar p2 = blk2[%du + l]; \
+    const uchar p3 = blk3[%du + l]; \
+    const float q0_l = float(int(p0 & 15u) - %d); \
+    const float q0_h = float(int(p0 >> 4u) - %d); \
+    const float q1_l = float(int(p1 & 15u) - %d); \
+    const float q1_h = float(int(p1 >> 4u) - %d); \
+    const float q2_l = float(int(p2 & 15u) - %d); \
+    const float q2_h = float(int(p2 >> 4u) - %d); \
+    const float q3_l = float(int(p3 & 15u) - %d); \
+    const float q3_h = float(int(p3 >> 4u) - %d); \
+    (col_acc) += float(s0) * (a0_low * q0_l + a0_high * q0_h) \
+               + float(s1) * (a1_low * q1_l + a1_high * q1_h) \
+               + float(s2) * (a2_low * q2_l + a2_high * q2_h) \
+               + float(s3) * (a3_low * q3_l + a3_high * q3_h); \
+  }
+
+#define Q4_0_PAIR_ACCUMULATE(col_acc, row_ptr) \
+  { \
+    device const uchar* blk = (row_ptr) + blk_byte_off; \
+    const half s = *reinterpret_cast<device const half*>(blk + %du); \
+    const uchar p = blk[%du + l]; \
+    const float q_l = float(int(p & 15u) - %d); \
+    const float q_h = float(int(p >> 4u) - %d); \
+    (col_acc) += float(s) * (a_low * q_l + a_high * q_h); \
+  }
+
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const uchar* weight [[buffer(1)]],
+    device const half* bias [[buffer(2)]],
+    device half* output [[buffer(3)]],
+    constant QuantLinearParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_in_tg = tid >> 5u;
+  const uint tg_idx = (gid - tid) >> 8u;
+  const uint col_group = tg_idx * 8u + simd_in_tg;
+  const uint base_col = col_group << 4u;
+  if (base_col >= params.n) return;
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+%s
+  device const half* activation = input;
+%s
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  const uint oct_blocks = blocks >> 3u;
+  for (uint b = 0u; b < oct_blocks; ++b) {
+    const uint block_idx = (b << 3u) + b_offset;
+    const uint blk_byte_off = block_idx * %du;
+    const uint k_idx0 = block_idx * %du + l;
+    const float a0_low = float(activation[k_idx0]);
+    const float a0_high = float(activation[k_idx0 + 16u]);
+    const float a1_low = float(activation[k_idx0 + 64u]);
+    const float a1_high = float(activation[k_idx0 + 80u]);
+    const float a2_low = float(activation[k_idx0 + 128u]);
+    const float a2_high = float(activation[k_idx0 + 144u]);
+    const float a3_low = float(activation[k_idx0 + 192u]);
+    const float a3_high = float(activation[k_idx0 + 208u]);
+
+%s
+  }
+
+  const uint rem_start = oct_blocks << 3u;
+  const uint rem_half = (blocks - rem_start) >> 1u;
+  for (uint b = 0u; b < rem_half; ++b) {
+    const uint block_idx = rem_start + (b << 1u) + b_offset;
+    const uint blk_byte_off = block_idx * %du;
+    const uint k_idx = block_idx * %du + l;
+    const float a_low = float(activation[k_idx]);
+    const float a_high = float(activation[k_idx + 16u]);
+
+%s
+  }
+
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    const uint blk_byte_off = block_idx * %du;
+    const uint k_idx = block_idx * %du + lane;
+    const float a = float(activation[k_idx]);
+%s
+  }
+
+%s
+
+  if (lane == 0u && base_col < params.n) {
+    if (params.has_bias != 0u) {
+%s
+    }
+%s
+  }
+}
+
+#undef Q4_0_OCT_ACCUMULATE
+#undef Q4_0_PAIR_ACCUMULATE
+|}
+      scale_offset scale_offset scale_offset scale_offset
+      quant_offset quant_offset quant_offset quant_offset
+      zero zero zero zero zero zero zero zero
+      scale_offset quant_offset zero zero
+      name block_elements block_bytes
+      row_blocks_decls accumulators_decls
+      block_bytes block_elements oct_accumulates
+      block_bytes block_elements rem_accumulates
+      block_bytes block_elements odd_accumulates
+      simd_sums bias_adds stores
+  in
+  if Epilogue.equal epilogue Epilogue.none then
+    if split_k = 1 then flat_split1
+    else invalid_arg "Metal_block_codegen q4_0_linear_f16_x16: split_k > 1 not supported"
+  else if split_k = 1 then
+    match q4_0_x16_digest_of_flat ~name epilogue flat_split1 with
+    | Ok text -> text
+    | Error message ->
+        invalid_arg
+          (Printf.sprintf
+             "Metal_block_codegen q4_0_linear_f16_x16: %s" message)
+  else
+    invalid_arg
+      "Metal_block_codegen q4_0_linear_f16_x16: epilogue emission requires \
+       split_k = 1"
+
 let emit_q4_0_gated_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =
   Printf.sprintf {|
@@ -880,6 +1075,253 @@ kernel void %s(
     block_elements block_bytes weight_bases accumulators block_bytes
     block_loads block_elements block_accs simd_sums in_bufs writebacks
 
+let emit_q4_0_multi_linear_f16_x16 ~name ~epilogue ?(num_slots = 2)
+    ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
+  let canonical_epilogue = Applicative_expr.canonicalize epilogue in
+  let aux_values = Applicative_expr.required_values canonical_epilogue in
+  let num_aux = List.length aux_values in
+  let buf_idx_out = 1 + num_slots + num_aux in
+  let buf_idx_params = 2 + num_slots + num_aux in
+  let weight_buffers =
+    List.init num_slots (fun s ->
+        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
+          (1 + s))
+    |> String.concat "\n"
+  in
+  let aux_buffers =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
+               dtype_str k (1 + num_slots + k))
+      |> String.concat ""
+  in
+  let weight_bases =
+    List.init num_slots (fun s ->
+        let rows =
+          List.init 16 (fun j ->
+              if j = 0 then
+                Printf.sprintf
+                  "  device const uchar* row_%d_0 = base_%d + base_col * col_stride;"
+                  s s
+              else
+                Printf.sprintf
+                  "  device const uchar* row_%d_%d = base_%d + min(base_col + %du, params.n - 1u) * col_stride;"
+                  s j s j)
+          |> String.concat "\n"
+        in
+        Printf.sprintf "  device const uchar* base_%d = weight_%d;\n%s" s s rows)
+    |> String.concat "\n\n"
+  in
+  let accumulators =
+    List.init num_slots (fun s ->
+        let acc_decls =
+          List.init 16 (fun j -> Printf.sprintf "acc%d_%d = 0.0f" s j)
+          |> String.concat ", "
+        in
+        Printf.sprintf "  float %s;" acc_decls)
+    |> String.concat "\n"
+  in
+  let oct_accumulates =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf "    Q4_0_OCT_ACCUMULATE(acc%d_%d, row_%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n"
+  in
+  let rem_accumulates =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf "    Q4_0_PAIR_ACCUMULATE(acc%d_%d, row_%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n"
+  in
+  let odd_accumulates =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf
+              "    acc%d_%d += a * llmopt_schema_q4_0_value(row_%d_%d + blk_byte_off, lane);"
+              s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n"
+  in
+  let simd_sums =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n\n"
+  in
+  let in_bufs =
+    if num_aux = 0 then ""
+    else
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf
+               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
+               dtype_str k k)
+      |> String.concat ""
+  in
+  let value_var v =
+    Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
+  in
+  let writebacks =
+    List.init 16 (fun j ->
+        let idx =
+          if j = 0 then "base_col" else Printf.sprintf "(base_col + %du)" j
+        in
+        let expr =
+          Applicative_expr.emit_msl_expr ~value_var
+            ~slot_emitter:(fun s -> Printf.sprintf "acc%d_%d" s j)
+            ~index_expr:idx canonical_epilogue
+        in
+        if j = 0 then
+          Printf.sprintf "    out_row[base_col] = half(%s);" expr
+        else
+          Printf.sprintf
+            "    if (base_col + %du < params.n) out_row[base_col + %du] = half(%s);"
+            j j expr)
+    |> String.concat "\n"
+  in
+  Printf.sprintf
+    {|
+#define Q4_0_OCT_ACCUMULATE(col_acc, row_ptr) \
+  { \
+    device const uchar* blk0 = (row_ptr) + blk_byte_off; \
+    device const uchar* blk1 = blk0 + 36u; \
+    device const uchar* blk2 = blk0 + 72u; \
+    device const uchar* blk3 = blk0 + 108u; \
+    const half s0 = *reinterpret_cast<device const half*>(blk0 + %du); \
+    const half s1 = *reinterpret_cast<device const half*>(blk1 + %du); \
+    const half s2 = *reinterpret_cast<device const half*>(blk2 + %du); \
+    const half s3 = *reinterpret_cast<device const half*>(blk3 + %du); \
+    const uchar p0 = blk0[%du + l]; \
+    const uchar p1 = blk1[%du + l]; \
+    const uchar p2 = blk2[%du + l]; \
+    const uchar p3 = blk3[%du + l]; \
+    const float q0_l = float(int(p0 & 15u) - %d); \
+    const float q0_h = float(int(p0 >> 4u) - %d); \
+    const float q1_l = float(int(p1 & 15u) - %d); \
+    const float q1_h = float(int(p1 >> 4u) - %d); \
+    const float q2_l = float(int(p2 & 15u) - %d); \
+    const float q2_h = float(int(p2 >> 4u) - %d); \
+    const float q3_l = float(int(p3 & 15u) - %d); \
+    const float q3_h = float(int(p3 >> 4u) - %d); \
+    (col_acc) += float(s0) * (a0_low * q0_l + a0_high * q0_h) \
+               + float(s1) * (a1_low * q1_l + a1_high * q1_h) \
+               + float(s2) * (a2_low * q2_l + a2_high * q2_h) \
+               + float(s3) * (a3_low * q3_l + a3_high * q3_h); \
+  }
+
+#define Q4_0_PAIR_ACCUMULATE(col_acc, row_ptr) \
+  { \
+    device const uchar* blk = (row_ptr) + blk_byte_off; \
+    const half s = *reinterpret_cast<device const half*>(blk + %du); \
+    const uchar p = blk[%du + l]; \
+    const float q_l = float(int(p & 15u) - %d); \
+    const float q_h = float(int(p >> 4u) - %d); \
+    (col_acc) += float(s) * (a_low * q_l + a_high * q_h); \
+  }
+
+kernel void %s(
+    device const half* input [[buffer(0)]],
+%s
+%s    device half* output [[buffer(%d)]],
+    constant QuantLinearParams& params [[buffer(%d)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint col_groups = (params.n + 15u) >> 4u;
+  const uint total_elements = params.m * col_groups;
+  if (simd_idx >= total_elements) return;
+
+  const uint row = simd_idx / col_groups;
+  const uint group_idx = simd_idx - row * col_groups;
+  const uint base_col = group_idx << 4u;
+
+  device const half* in_ptr = input + row * params.k;
+
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+%s
+
+%s
+
+  const uint oct_blocks = blocks >> 3u;
+  const uint l = lane & 15u;
+  const uint b_offset = lane >> 4u;
+
+  for (uint b = 0u; b < oct_blocks; ++b) {
+    const uint block_idx = (b << 3u) + b_offset;
+    const uint blk_byte_off = block_idx * %du;
+
+    const uint k_idx0 = block_idx * %du + l;
+    const float a0_low = float(in_ptr[k_idx0]);
+    const float a0_high = float(in_ptr[k_idx0 + 16u]);
+    const float a1_low = float(in_ptr[k_idx0 + 64u]);
+    const float a1_high = float(in_ptr[k_idx0 + 80u]);
+    const float a2_low = float(in_ptr[k_idx0 + 128u]);
+    const float a2_high = float(in_ptr[k_idx0 + 144u]);
+    const float a3_low = float(in_ptr[k_idx0 + 192u]);
+    const float a3_high = float(in_ptr[k_idx0 + 208u]);
+
+%s
+  }
+
+  const uint rem_start = oct_blocks << 3u;
+  const uint rem_half = (blocks - rem_start) >> 1u;
+  for (uint b = 0u; b < rem_half; ++b) {
+    const uint block_idx = rem_start + (b << 1u) + b_offset;
+    const uint blk_byte_off = block_idx * %du;
+    const uint k_idx = block_idx * %du + l;
+    const float a_low = float(in_ptr[k_idx]);
+    const float a_high = float(in_ptr[k_idx + 16u]);
+
+%s
+  }
+
+  if ((blocks & 1u) != 0u) {
+    const uint block_idx = blocks - 1u;
+    const uint blk_byte_off = block_idx * %du;
+    const uint k_idx = block_idx * %du + lane;
+    const float a = float(in_ptr[k_idx]);
+%s
+  }
+
+%s
+
+  if (lane == 0u) {
+    device half* out_row = output + row * params.n;
+%s%s
+  }
+}
+
+#undef Q4_0_OCT_ACCUMULATE
+#undef Q4_0_PAIR_ACCUMULATE
+|}
+    scale_offset scale_offset scale_offset scale_offset
+    quant_offset quant_offset quant_offset quant_offset
+    zero zero zero zero zero zero zero zero
+    scale_offset quant_offset zero zero
+    name weight_buffers aux_buffers buf_idx_out buf_idx_params
+    block_elements block_bytes weight_bases accumulators
+    block_bytes block_elements oct_accumulates
+    block_bytes block_elements rem_accumulates
+    block_bytes block_elements odd_accumulates
+    simd_sums in_bufs writebacks
+
 let emit_q4_0_multi_export_linear_f16_x8 ~name ~epilogues ?(num_slots = 2)
     ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
   let num_exports = List.length epilogues in
@@ -1097,3 +1539,267 @@ let emit_q4_0_multi_export_linear_f16_x8 ~name ~epilogues ?(num_slots = 2)
       export_writebacks;
       "  }";
       "}" ]
+
+let emit_q4_0_multi_export_linear_f16_x16 ~name ~epilogues ?(num_slots = 2)
+    ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
+  let num_exports = List.length epilogues in
+  let canonical_epilogues = List.map Applicative_expr.canonicalize epilogues in
+  let all_aux_values =
+    List.concat_map Applicative_expr.required_values canonical_epilogues
+    |> List.fold_left
+         (fun acc v ->
+           if List.exists (fun v' -> Ir.Value.equal v v') acc then acc
+           else acc @ [ v ])
+         []
+  in
+  let num_aux = List.length all_aux_values in
+  let first_output_buf = 1 + num_slots + num_aux in
+  let buf_idx_params = first_output_buf + num_exports in
+  let weight_buffers =
+    List.init num_slots (fun s ->
+        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
+          (1 + s))
+    |> String.concat "\n"
+  in
+  let aux_buffers =
+    if num_aux = 0 then ""
+    else
+      all_aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
+               dtype_str k (1 + num_slots + k))
+      |> String.concat ""
+  in
+  let output_buffers =
+    List.init num_exports (fun e ->
+        Printf.sprintf "    device half* output_%d [[buffer(%d)]]," e
+          (first_output_buf + e))
+    |> String.concat "\n"
+  in
+  let weight_bases =
+    List.init num_slots (fun s ->
+        let rows =
+          List.init 16 (fun j ->
+              if j = 0 then
+                Printf.sprintf
+                  "  device const uchar* row_%d_0 = base_%d + base_col * col_stride;"
+                  s s
+              else
+                Printf.sprintf
+                  "  device const uchar* row_%d_%d = base_%d + min(base_col + %du, params.n - 1u) * col_stride;"
+                  s j s j)
+          |> String.concat "\n"
+        in
+        Printf.sprintf "  device const uchar* base_%d = weight_%d;\n%s" s s rows)
+    |> String.concat "\n\n"
+  in
+  let accumulators =
+    List.init num_slots (fun s ->
+        let acc_decls =
+          List.init 16 (fun j -> Printf.sprintf "acc%d_%d = 0.0f" s j)
+          |> String.concat ", "
+        in
+        Printf.sprintf "  float %s;" acc_decls)
+    |> String.concat "\n"
+  in
+  let oct_accumulates =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf "    Q4_0_OCT_ACCUMULATE(acc%d_%d, row_%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n"
+  in
+  let rem_accumulates =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf "    Q4_0_PAIR_ACCUMULATE(acc%d_%d, row_%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n"
+  in
+  let odd_accumulates =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf
+              "    acc%d_%d += a * llmopt_schema_q4_0_value(row_%d_%d + blk_byte_off, lane);"
+              s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n"
+  in
+  let simd_sums =
+    List.init num_slots (fun s ->
+        List.init 16 (fun j ->
+            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n\n"
+  in
+  let in_bufs =
+    if num_aux = 0 then ""
+    else
+      all_aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf
+               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
+               dtype_str k k)
+      |> String.concat ""
+  in
+  let value_var v =
+    Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
+  in
+  let export_writebacks =
+    canonical_epilogues
+    |> List.mapi (fun e canonical ->
+        let out_row = Printf.sprintf "out_row_%d" e in
+        List.init 16 (fun j ->
+            let idx =
+              if j = 0 then "base_col"
+              else Printf.sprintf "(base_col + %du)" j
+            in
+            let expr =
+              Applicative_expr.emit_msl_expr ~value_var
+                ~slot_emitter:(fun s -> Printf.sprintf "acc%d_%d" s j)
+                ~index_expr:idx canonical
+            in
+            if j = 0 then
+              Printf.sprintf "    %s[base_col] = half(%s);" out_row expr
+            else
+              Printf.sprintf
+                "    if (base_col + %du < params.n) %s[base_col + %du] = half(%s);"
+                j out_row j expr)
+        |> String.concat "\n")
+    |> String.concat "\n\n"
+  in
+  let out_row_decls =
+    List.init num_exports (fun e ->
+        Printf.sprintf "    device half* out_row_%d = output_%d + row * params.n;" e e)
+    |> String.concat "\n"
+  in
+  String.concat "\n"
+    [ Printf.sprintf {|
+#define Q4_0_OCT_ACCUMULATE(col_acc, row_ptr) \
+  { \
+    device const uchar* blk0 = (row_ptr) + blk_byte_off; \
+    device const uchar* blk1 = blk0 + 36u; \
+    device const uchar* blk2 = blk0 + 72u; \
+    device const uchar* blk3 = blk0 + 108u; \
+    const half s0 = *reinterpret_cast<device const half*>(blk0 + %du); \
+    const half s1 = *reinterpret_cast<device const half*>(blk1 + %du); \
+    const half s2 = *reinterpret_cast<device const half*>(blk2 + %du); \
+    const half s3 = *reinterpret_cast<device const half*>(blk3 + %du); \
+    const uchar p0 = blk0[%du + l]; \
+    const uchar p1 = blk1[%du + l]; \
+    const uchar p2 = blk2[%du + l]; \
+    const uchar p3 = blk3[%du + l]; \
+    const float q0_l = float(int(p0 & 15u) - %d); \
+    const float q0_h = float(int(p0 >> 4u) - %d); \
+    const float q1_l = float(int(p1 & 15u) - %d); \
+    const float q1_h = float(int(p1 >> 4u) - %d); \
+    const float q2_l = float(int(p2 & 15u) - %d); \
+    const float q2_h = float(int(p2 >> 4u) - %d); \
+    const float q3_l = float(int(p3 & 15u) - %d); \
+    const float q3_h = float(int(p3 >> 4u) - %d); \
+    (col_acc) += float(s0) * (a0_low * q0_l + a0_high * q0_h) \
+               + float(s1) * (a1_low * q1_l + a1_high * q1_h) \
+               + float(s2) * (a2_low * q2_l + a2_high * q2_h) \
+               + float(s3) * (a3_low * q3_l + a3_high * q3_h); \
+  }
+
+#define Q4_0_PAIR_ACCUMULATE(col_acc, row_ptr) \
+  { \
+    device const uchar* blk = (row_ptr) + blk_byte_off; \
+    const half s = *reinterpret_cast<device const half*>(blk + %du); \
+    const uchar p = blk[%du + l]; \
+    const float q_l = float(int(p & 15u) - %d); \
+    const float q_h = float(int(p >> 4u) - %d); \
+    (col_acc) += float(s) * (a_low * q_l + a_high * q_h); \
+  }
+|}
+        scale_offset scale_offset scale_offset scale_offset
+        quant_offset quant_offset quant_offset quant_offset
+        zero zero zero zero zero zero zero zero
+        scale_offset quant_offset zero zero;
+      Printf.sprintf "kernel void %s(" name;
+      "    device const half* input [[buffer(0)]],";
+      weight_buffers;
+      aux_buffers;
+      output_buffers;
+      Printf.sprintf "    constant QuantLinearParams& params [[buffer(%d)]]," buf_idx_params;
+      "    uint gid [[thread_position_in_grid]],";
+      "    uint tid [[thread_index_in_threadgroup]],";
+      "    uint lane [[thread_index_in_simdgroup]]) {";
+      "  const uint simd_idx = gid >> 5u;";
+      "  const uint col_groups = (params.n + 15u) >> 4u;";
+      "  const uint total_elements = params.m * col_groups;";
+      "  if (simd_idx >= total_elements) return;";
+      "";
+      "  const uint row = simd_idx / col_groups;";
+      "  const uint group_idx = simd_idx - row * col_groups;";
+      "  const uint base_col = group_idx << 4u;";
+      "";
+      "  device const half* in_ptr = input + row * params.k;";
+      "";
+      Printf.sprintf "  const uint blocks = params.k / %du;" block_elements;
+      Printf.sprintf "  const uint col_stride = blocks * %du;" block_bytes;
+      weight_bases;
+      "";
+      accumulators;
+      "";
+      "  const uint oct_blocks = blocks >> 3u;";
+      "  const uint l = lane & 15u;";
+      "  const uint b_offset = lane >> 4u;";
+      "";
+      "  for (uint b = 0u; b < oct_blocks; ++b) {";
+      "    const uint block_idx = (b << 3u) + b_offset;";
+      Printf.sprintf "    const uint blk_byte_off = block_idx * %du;" block_bytes;
+      "";
+      Printf.sprintf "    const uint k_idx0 = block_idx * %du + l;" block_elements;
+      "    const float a0_low = float(in_ptr[k_idx0]);";
+      "    const float a0_high = float(in_ptr[k_idx0 + 16u]);";
+      "    const float a1_low = float(in_ptr[k_idx0 + 64u]);";
+      "    const float a1_high = float(in_ptr[k_idx0 + 80u]);";
+      "    const float a2_low = float(in_ptr[k_idx0 + 128u]);";
+      "    const float a2_high = float(in_ptr[k_idx0 + 144u]);";
+      "    const float a3_low = float(in_ptr[k_idx0 + 192u]);";
+      "    const float a3_high = float(in_ptr[k_idx0 + 208u]);";
+      "";
+      oct_accumulates;
+      "  }";
+      "";
+      "  const uint rem_start = oct_blocks << 3u;";
+      "  const uint rem_half = (blocks - rem_start) >> 1u;";
+      "  for (uint b = 0u; b < rem_half; ++b) {";
+      "    const uint block_idx = rem_start + (b << 1u) + b_offset;";
+      Printf.sprintf "    const uint blk_byte_off = block_idx * %du;" block_bytes;
+      Printf.sprintf "    const uint k_idx = block_idx * %du + l;" block_elements;
+      "    const float a_low = float(in_ptr[k_idx]);";
+      "    const float a_high = float(in_ptr[k_idx + 16u]);";
+      rem_accumulates;
+      "  }";
+      "";
+      "  if ((blocks & 1u) != 0u) {";
+      "    const uint block_idx = blocks - 1u;";
+      Printf.sprintf "    const uint blk_byte_off = block_idx * %du;" block_bytes;
+      Printf.sprintf "    const uint k_idx = block_idx * %du + lane;" block_elements;
+      "    const float a = float(in_ptr[k_idx]);";
+      odd_accumulates;
+      "  }";
+      "";
+      simd_sums;
+      "";
+      in_bufs;
+      "  if (lane == 0u) {";
+      out_row_decls;
+      export_writebacks;
+      "  }";
+      "}";
+      "#undef Q4_0_OCT_ACCUMULATE";
+      "#undef Q4_0_PAIR_ACCUMULATE" ]

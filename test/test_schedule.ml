@@ -1295,6 +1295,10 @@ let run () =
     "Metal lowering emits the all-Q4_0 QKV x8 wide kernel";
   expect
     (contains_substring (Metal.Program.source q4_qkv_program)
+       "kernel void llmopt_q4_0_qkv_linear_f16_x16")
+    "Metal lowering emits the all-Q4_0 QKV x16 wide kernel";
+  expect
+    (contains_substring (Metal.Program.source q4_qkv_program)
        "kernel void llmopt_q4_0_qkv_linear_f16_m32")
     "Metal lowering emits the all-Q4_0 QKV m32 batched kernel";
 

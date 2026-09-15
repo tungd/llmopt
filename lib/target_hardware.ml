@@ -47,10 +47,15 @@ module Execution_profile = struct
     memory_bandwidth_gbps : float;
     fp16_tflops : float;
     dispatch_overhead_seconds : float;
+    max_registers_per_thread : int;
+    nominal_registers_per_thread : int;
+    concurrency_saturation_waves : float;
   }
 
-  let create ~gpu_cores ~max_threads_per_threadgroup ~memory_bandwidth_gbps
-      ~fp16_tflops ~dispatch_overhead_seconds =
+  let create_with_registers ~max_registers_per_thread
+      ~nominal_registers_per_thread ~concurrency_saturation_waves ~gpu_cores
+      ~max_threads_per_threadgroup ~memory_bandwidth_gbps ~fp16_tflops
+      ~dispatch_overhead_seconds =
     if gpu_cores <= 0 then Error "gpu_cores must be positive"
     else if max_threads_per_threadgroup <= 0 then
       Error "max_threads_per_threadgroup must be positive"
@@ -60,6 +65,12 @@ module Execution_profile = struct
       Error "fp16_tflops must be positive"
     else if (not (Float.is_finite dispatch_overhead_seconds)) || dispatch_overhead_seconds <= 0.0 then
       Error "dispatch_overhead_seconds must be positive"
+    else if max_registers_per_thread <= 0 then
+      Error "max_registers_per_thread must be positive"
+    else if nominal_registers_per_thread <= 0 then
+      Error "nominal_registers_per_thread must be positive"
+    else if (not (Float.is_finite concurrency_saturation_waves)) || concurrency_saturation_waves <= 0.0 then
+      Error "concurrency_saturation_waves must be positive"
     else
       Ok
         {
@@ -68,7 +79,17 @@ module Execution_profile = struct
           memory_bandwidth_gbps;
           fp16_tflops;
           dispatch_overhead_seconds;
+          max_registers_per_thread;
+          nominal_registers_per_thread;
+          concurrency_saturation_waves;
         }
+
+  let create ~gpu_cores ~max_threads_per_threadgroup ~memory_bandwidth_gbps
+      ~fp16_tflops ~dispatch_overhead_seconds =
+    create_with_registers ~max_registers_per_thread:64
+      ~nominal_registers_per_thread:32 ~concurrency_saturation_waves:2.0
+      ~gpu_cores ~max_threads_per_threadgroup ~memory_bandwidth_gbps
+      ~fp16_tflops ~dispatch_overhead_seconds
 
   let m4_pro =
     {
@@ -77,6 +98,9 @@ module Execution_profile = struct
       memory_bandwidth_gbps = 273.0;
       fp16_tflops = 18.7;
       dispatch_overhead_seconds = 6.5e-6;
+      max_registers_per_thread = 64;
+      nominal_registers_per_thread = 32;
+      concurrency_saturation_waves = 2.0;
     }
 
   let default_apple =
@@ -86,6 +110,9 @@ module Execution_profile = struct
       memory_bandwidth_gbps = 100.0;
       fp16_tflops = 10.0;
       dispatch_overhead_seconds = 7.0e-6;
+      max_registers_per_thread = 64;
+      nominal_registers_per_thread = 32;
+      concurrency_saturation_waves = 2.0;
     }
 
   let of_device_name device_name =
@@ -107,6 +134,9 @@ module Execution_profile = struct
         memory_bandwidth_gbps = 800.0;
         fp16_tflops = 75.0;
         dispatch_overhead_seconds = 6.0e-6;
+        max_registers_per_thread = 64;
+        nominal_registers_per_thread = 32;
+        concurrency_saturation_waves = 2.0;
       }
     else if has "max" then
       {
@@ -115,6 +145,9 @@ module Execution_profile = struct
         memory_bandwidth_gbps = 400.0;
         fp16_tflops = 37.0;
         dispatch_overhead_seconds = 6.0e-6;
+        max_registers_per_thread = 64;
+        nominal_registers_per_thread = 32;
+        concurrency_saturation_waves = 2.0;
       }
     else if has "pro" then
       {
@@ -123,6 +156,9 @@ module Execution_profile = struct
         memory_bandwidth_gbps = 273.0;
         fp16_tflops = 18.7;
         dispatch_overhead_seconds = 6.5e-6;
+        max_registers_per_thread = 64;
+        nominal_registers_per_thread = 32;
+        concurrency_saturation_waves = 2.0;
       }
     else
       default_apple
@@ -347,6 +383,12 @@ let to_json (hw : t) : Yojson.Basic.t =
             ("fp16_tflops", `Float hw.execution.fp16_tflops);
             ( "dispatch_overhead_seconds",
               `Float hw.execution.dispatch_overhead_seconds );
+            ( "max_registers_per_thread",
+              `Int hw.execution.max_registers_per_thread );
+            ( "nominal_registers_per_thread",
+              `Int hw.execution.nominal_registers_per_thread );
+            ( "concurrency_saturation_waves",
+              `Float hw.execution.concurrency_saturation_waves );
           ] );
     ]
 
@@ -377,9 +419,27 @@ let of_json (json : Yojson.Basic.t) : (t, string) result =
     let dispatch_overhead_seconds =
       exec |> member "dispatch_overhead_seconds" |> to_float
     in
+    let max_registers_per_thread =
+      match exec |> member "max_registers_per_thread" with
+      | `Int n -> n
+      | _ -> 64
+    in
+    let nominal_registers_per_thread =
+      match exec |> member "nominal_registers_per_thread" with
+      | `Int n -> n
+      | _ -> 32
+    in
+    let concurrency_saturation_waves =
+      match exec |> member "concurrency_saturation_waves" with
+      | `Float f -> f
+      | `Int n -> float_of_int n
+      | _ -> 2.0
+    in
     let* execution =
-      Execution_profile.create ~gpu_cores ~max_threads_per_threadgroup
+      Execution_profile.create_with_registers ~gpu_cores ~max_threads_per_threadgroup
         ~memory_bandwidth_gbps ~fp16_tflops ~dispatch_overhead_seconds
+        ~max_registers_per_thread ~nominal_registers_per_thread
+        ~concurrency_saturation_waves
     in
     create ~device_name ~memory ~execution
   with Type_error (msg, _) -> Error ("JSON decoding error: " ^ msg)

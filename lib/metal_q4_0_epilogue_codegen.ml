@@ -80,6 +80,9 @@ let q4_0_single_row_digest_of_flat ~columns ~label ~name epilogue kernel =
                 ^ q4_0_single_row_epilogue_store ~columns epilogue
                 ^ "\n  }\n}\n"))
 
+let q4_0_x16_digest_of_flat ~name epilogue kernel =
+  q4_0_single_row_digest_of_flat ~columns:16 ~label:"x16" ~name epilogue kernel
+
 let q4_0_x8_digest_of_flat ~name epilogue kernel =
   q4_0_single_row_digest_of_flat ~columns:8 ~label:"x8" ~name epilogue kernel
 

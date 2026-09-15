@@ -6,6 +6,8 @@ val q4_0_single_row_digest_of_flat :
   columns:int ->
   label:string ->
   name:string -> Epilogue.t -> string -> (string, string) result
+val q4_0_x16_digest_of_flat :
+  name:string -> Epilogue.t -> string -> (string, string) result
 val q4_0_x8_digest_of_flat :
   name:string -> Epilogue.t -> string -> (string, string) result
 val q4_0_x4_digest_of_flat :

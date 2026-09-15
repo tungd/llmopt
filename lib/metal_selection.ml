@@ -27,8 +27,8 @@ module Tactic = struct
   let f16_io input_dtype output_dtype =
     input_dtype = Ir.Dtype.Float16 && output_dtype = Ir.Dtype.Float16
 
-  let select_linear ~target ~m ~n ~k ~input_dtype ~storage ~output_dtype =
-    Kernel_abi.Linear_tactic.select_costed ~target ~m ~n ~k ~input_dtype
+  let select_linear_slots ~slots ~target ~m ~n ~k ~input_dtype ~storage ~output_dtype =
+    Kernel_abi.Linear_tactic.select_costed_slots ~slots ~target ~m ~n ~k ~input_dtype
       ~storage ~output_dtype
     |> Option.map (fun selection ->
            let candidate =
@@ -39,6 +39,9 @@ module Tactic = struct
            in
            { name = Kernel_abi.Linear_tactic.name tactic;
              threadgroup = Kernel_abi.Linear_tactic.threadgroup tactic })
+
+  let select_linear ~target ~m ~n ~k ~input_dtype ~storage ~output_dtype =
+    select_linear_slots ~slots:1 ~target ~m ~n ~k ~input_dtype ~storage ~output_dtype
 
   let attention_registry : attention_registration list =
     [ { build =
@@ -443,7 +446,8 @@ let quant_add_twin_servable (storage : Ir.Dtype.quant_type)
   | Ir.Dtype.Q4_0 ->
       let name = Tactic.name tactic in
       not
-        (String.ends_with ~suffix:"_x8" name
+        (String.ends_with ~suffix:"_x16" name
+        || String.ends_with ~suffix:"_x8" name
         || String.ends_with ~suffix:"_x4" name)
   | _ -> true
 
@@ -453,8 +457,8 @@ let is_residual_add_epilogue epilogue =
   | _ -> false
 
 let region_tactics ~target regions =
-  let select_linear linear output =
-    Tactic.select_linear ~target ~m:linear.Kernel_ir.Fused_tactic.m
+  let select_linear ?(slots = 1) linear output =
+    Tactic.select_linear_slots ~slots ~target ~m:linear.Kernel_ir.Fused_tactic.m
       ~n:linear.n ~k:linear.k ~input_dtype:(Ir.Value.dtype linear.input)
       ~storage:linear.storage ~output_dtype:(Ir.Value.dtype output)
   in
@@ -471,7 +475,7 @@ let region_tactics ~target regions =
          | Some
              (Kernel_ir.Fused_tactic.Linear_epilogue
                { linear; epilogue; output }) ->
-             (match linear.storage, select_linear linear output with
+             (match linear.storage, select_linear ~slots:1 linear output with
              | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                  let quant = (storage, tactic) :: quant in
                  if
@@ -499,7 +503,7 @@ let region_tactics ~target regions =
                { gate; up; output; _ }) ->
              let add linear quant =
                match linear.Kernel_ir.Fused_tactic.storage,
-                 select_linear linear output
+                 select_linear ~slots:2 linear output
                with
                | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                    (storage, tactic) :: quant
@@ -519,8 +523,9 @@ let region_tactics ~target regions =
          | Some
              (Kernel_ir.Fused_tactic.Contraction_group
                { contractions; epilogue; output }) ->
+             let slots = List.length contractions in
              let add quant (linear : Kernel_ir.Fused_tactic.linear) =
-               match linear.storage, select_linear linear output with
+               match linear.storage, select_linear ~slots linear output with
                | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                    (storage, tactic) :: quant
                | _ -> quant
@@ -529,7 +534,7 @@ let region_tactics ~target regions =
              let quant_multi_digest =
                match contractions with
                | first :: _ -> (
-                   match first.storage, select_linear first output with
+                   match first.storage, select_linear ~slots first output with
                    | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                        (storage, tactic, List.length contractions, epilogue)
                        :: quant_multi_digest
@@ -551,8 +556,9 @@ let region_tactics ~target regions =
          | Some
              (Kernel_ir.Fused_tactic.Multi_export_contraction_group
                { contractions; epilogues; outputs }) ->
+             let slots = List.length contractions in
              let add quant (linear : Kernel_ir.Fused_tactic.linear) =
-               match linear.storage, select_linear linear (List.hd outputs) with
+               match linear.storage, select_linear ~slots linear (List.hd outputs) with
                | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                    (storage, tactic) :: quant
                | _ -> quant
@@ -561,7 +567,7 @@ let region_tactics ~target regions =
              let quant_multi_export_digest =
                match contractions with
                | first :: _ -> (
-                   match first.storage, select_linear first (List.hd outputs) with
+                   match first.storage, select_linear ~slots first (List.hd outputs) with
                    | Ir.Linear_storage.Block_quantized storage, Some tactic ->
                        (storage, tactic, List.length contractions,
                         epilogues, outputs)

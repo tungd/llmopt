@@ -33,9 +33,23 @@ module Execution_profile : sig
     memory_bandwidth_gbps : float;
     fp16_tflops : float;
     dispatch_overhead_seconds : float;
+    max_registers_per_thread : int;
+    nominal_registers_per_thread : int;
+    concurrency_saturation_waves : float;
   }
 
   val create :
+    gpu_cores:int ->
+    max_threads_per_threadgroup:int ->
+    memory_bandwidth_gbps:float ->
+    fp16_tflops:float ->
+    dispatch_overhead_seconds:float ->
+    (t, string) result
+
+  val create_with_registers :
+    max_registers_per_thread:int ->
+    nominal_registers_per_thread:int ->
+    concurrency_saturation_waves:float ->
     gpu_cores:int ->
     max_threads_per_threadgroup:int ->
     memory_bandwidth_gbps:float ->

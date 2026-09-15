@@ -198,10 +198,19 @@ let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
     quant =
   let input_dtype = Ir.Dtype.Quant quant in
   let candidates =
-    Kernel_abi.Linear_tactic.select_all
-      ~supports_simd:(fun ~threads:_ -> true) ~m ~n ~k
-      ~input_dtype:Ir.Dtype.Float16
-      ~storage:(Ir.Linear_storage.Block_quantized quant) ~output_dtype
+    match
+      Kernel_abi.Linear_tactic.select_costed ~target:Target_hardware.default ~m ~n ~k
+        ~input_dtype:Ir.Dtype.Float16
+        ~storage:(Ir.Linear_storage.Block_quantized quant) ~output_dtype
+    with
+    | Some selection ->
+        Kernel_abi.Linear_tactic.Selection.alternatives selection
+        |> List.map Kernel_abi.Linear_tactic.Candidate.tactic
+    | None ->
+        Kernel_abi.Linear_tactic.select_all
+          ~supports_simd:(fun ~threads:_ -> true) ~m ~n ~k
+          ~input_dtype:Ir.Dtype.Float16
+          ~storage:(Ir.Linear_storage.Block_quantized quant) ~output_dtype
   in
   let rec try_candidates = function
     | [] ->
@@ -312,6 +321,7 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     else if String.ends_with ~suffix:"_m2_x2_l32" tactic_name then
       m * ((n + 1) / 2)
     else if String.ends_with ~suffix:"_m2_x1_l32" tactic_name then m * n
+    else if String.ends_with ~suffix:"_x16" tactic_name then (n + 15) / 16
     else if String.ends_with ~suffix:"_x8" tactic_name then (n + 7) / 8
     else if String.ends_with ~suffix:"_m2_x4" tactic_name
          || String.ends_with ~suffix:"_x4" tactic_name

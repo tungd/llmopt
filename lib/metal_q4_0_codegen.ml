@@ -437,6 +437,8 @@ kernel void llmopt_q4_0_linear_f16_m4_add(
           ~block_bytes ()
       ^ emit_q4_0_linear_f16_x8 ~split_k:1 ~scale_offset ~quant_offset ~zero
           ~block_elements ~block_bytes ()
+      ^ emit_q4_0_linear_f16_x16 ~split_k:1 ~scale_offset ~quant_offset ~zero
+          ~block_elements ~block_bytes ()
       ^ emit_q4_0_linear_f16_m16 ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes ()
       ^ emit_q4_0_linear_f16_m16_add ~scale_offset ~quant_offset ~zero ~block_elements
@@ -447,6 +449,14 @@ kernel void llmopt_q4_0_linear_f16_m4_add(
           ~block_bytes
       ^ emit_q4_0_gated_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
           ~block_bytes)
+
+let q4_0_x16_epilogue_kernel ~name ~epilogue ~target schema =
+  q4_0_decode_epilogue_kernel ~columns:16 ~label:"x16"
+    ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
+                    ~block_bytes ->
+      emit_q4_0_linear_f16_x16 ~split_k:1 ~scale_offset ~quant_offset ~zero
+        ~block_elements ~block_bytes ())
+    ~name ~epilogue ~target schema
 
 let q4_0_x8_epilogue_kernel ~name ~epilogue ~target schema =
   q4_0_decode_epilogue_kernel ~columns:8 ~label:"x8"
@@ -515,6 +525,39 @@ let q4_0_multi_linear_f16_x8_kernel ~name ~epilogue ?(num_slots = 2) ~target
       (emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ~num_slots ~scale_offset
          ~quant_offset ~zero ~block_elements ~block_bytes ())
 
+let q4_0_multi_linear_f16_x16_kernel ~name ~epilogue ?(num_slots = 2) ~target
+    schema =
+  let physical = Block_schema.physical_layout schema in
+  let logical = Block_schema.logical_decode schema in
+  let equation = Block_schema.Logical_decode.equation logical in
+  let* zero =
+    offset_zero (Block_schema.Logical_decode.code_signedness equation)
+  in
+  let* scale_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Block_scale
+  in
+  let* quant_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized
+  in
+  let block_elements = Block_schema.Physical_layout.block_elements physical in
+  let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+  let simd_lanes = target.Target_hardware.memory.simd_lanes in
+  if Block_schema.quant_type schema <> Some Ir.Dtype.Q4_0 then
+    Error
+      "constructive Q4_0 multi-linear x16 emitter received another storage schema"
+  else if Block_schema.Logical_decode.code_bits equation <> 4 then
+    Error "constructive Q4_0 multi-linear x16 emitter requires four-bit codes"
+  else if block_elements <> 32 || simd_lanes <> 32 then
+    Error
+      (Printf.sprintf
+         "constructive Q4_0 multi-linear x16 emission requires block=32 and \
+          SIMD=32 (got block=%d SIMD=%d)"
+         block_elements simd_lanes)
+  else
+    Ok
+      (emit_q4_0_multi_linear_f16_x16 ~name ~epilogue ~num_slots ~scale_offset
+         ~quant_offset ~zero ~block_elements ~block_bytes ())
+
 let q4_0_multi_export_linear_f16_x8_kernel ~name ~epilogues ?(num_slots = 2)
     ~target schema =
   let physical = Block_schema.physical_layout schema in
@@ -546,6 +589,39 @@ let q4_0_multi_export_linear_f16_x8_kernel ~name ~epilogues ?(num_slots = 2)
   else
     Ok
       (emit_q4_0_multi_export_linear_f16_x8 ~name ~epilogues ~num_slots
+         ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes ())
+
+let q4_0_multi_export_linear_f16_x16_kernel ~name ~epilogues ?(num_slots = 2)
+    ~target schema =
+  let physical = Block_schema.physical_layout schema in
+  let logical = Block_schema.logical_decode schema in
+  let equation = Block_schema.Logical_decode.equation logical in
+  let* zero =
+    offset_zero (Block_schema.Logical_decode.code_signedness equation)
+  in
+  let* scale_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Block_scale
+  in
+  let* quant_offset =
+    field_offset physical Block_schema.Physical_layout.Field.Quantized
+  in
+  let block_elements = Block_schema.Physical_layout.block_elements physical in
+  let block_bytes = Block_schema.Physical_layout.block_bytes physical in
+  let simd_lanes = target.Target_hardware.memory.simd_lanes in
+  if Block_schema.quant_type schema <> Some Ir.Dtype.Q4_0 then
+    Error
+      "constructive Q4_0 multi-export x16 emitter received another storage schema"
+  else if Block_schema.Logical_decode.code_bits equation <> 4 then
+    Error "constructive Q4_0 multi-export x16 emitter requires four-bit codes"
+  else if block_elements <> 32 || simd_lanes <> 32 then
+    Error
+      (Printf.sprintf
+         "constructive Q4_0 multi-export x16 emission requires block=32 and \
+          SIMD=32 (got block=%d SIMD=%d)"
+         block_elements simd_lanes)
+  else
+    Ok
+      (emit_q4_0_multi_export_linear_f16_x16 ~name ~epilogues ~num_slots
          ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes ())
 
 (* G4P12-04d-A2 schema-level admission for the generic and _m2 _add twins.
@@ -618,5 +694,6 @@ let q4_0_qkv ~target schema =
   let block_bytes = Block_schema.Physical_layout.block_bytes physical in
   Ok
     (emit_q4_0_qkv_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes
+    ^ emit_q4_0_qkv_linear_f16_x16 ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes
     ^ emit_q4_0_qkv_linear_f16_m32 ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes)
 

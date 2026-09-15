@@ -140,6 +140,10 @@ let block32_entries =
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_q4_0_linear_f16_x16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_gated_linear_f16_x8"
       ~operation:Kernel_abi.Operation.Gated_linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
@@ -617,7 +621,9 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            let base = Tactic.name tactic in
            let kernel_name = Epilogue.algebraic_kernel_name ~base epilogue in
            let q4_0_digest_emitter base =
-             if String.ends_with ~suffix:"_x8" base then
+             if String.ends_with ~suffix:"_x16" base then
+               Some Metal_block_codegen.q4_0_x16_epilogue_kernel
+             else if String.ends_with ~suffix:"_x8" base then
                Some Metal_block_codegen.q4_0_x8_epilogue_kernel
              else if String.ends_with ~suffix:"_x4" base then
                Some Metal_block_codegen.q4_0_x4_epilogue_kernel
@@ -645,7 +651,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                Error
                  (Printf.sprintf
                     "Metal lower: digest epilogue emission is defined only for \
-                     Q4_0 x8/x4/m16/m32 decode regions (got %s serving %s)"
+                     Q4_0 x16/x8/x4/m16/m32 decode regions (got %s serving %s)"
                     (Ir.Dtype.quant_to_string quant) base))
          (Ok "")
   in
@@ -671,8 +677,12 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
              let canonical_epilogue = Applicative_expr.canonicalize epilogue in
              match quant with
              | Ir.Dtype.Q4_0 ->
-                 Metal_block_codegen.q4_0_multi_linear_f16_x8_kernel
-                   ~name:kernel_name ~num_slots
+                 let emit =
+                   if String.ends_with ~suffix:"_x16" base then
+                     Metal_block_codegen.q4_0_multi_linear_f16_x16_kernel
+                   else Metal_block_codegen.q4_0_multi_linear_f16_x8_kernel
+                 in
+                 emit ~name:kernel_name ~num_slots
                    ~epilogue:canonical_epilogue
                    ~target q4_0_digest_schema
              | Ir.Dtype.Q8_0 ->
@@ -734,8 +744,12 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            let* kernel =
              match quant with
              | Ir.Dtype.Q4_0 ->
-                 Metal_block_codegen.q4_0_multi_export_linear_f16_x8_kernel
-                   ~name:kernel_name ~num_slots
+                 let emit =
+                   if String.ends_with ~suffix:"_x16" base then
+                     Metal_block_codegen.q4_0_multi_export_linear_f16_x16_kernel
+                   else Metal_block_codegen.q4_0_multi_export_linear_f16_x8_kernel
+                 in
+                 emit ~name:kernel_name ~num_slots
                    ~epilogues:canonical_epilogues
                    ~target q4_0_digest_schema
              | Ir.Dtype.Q8_0 ->

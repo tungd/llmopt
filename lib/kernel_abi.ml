@@ -181,10 +181,17 @@ module Linear_tactic = struct
         activation_reuse : int;
         split_k_partitions : int;
         threadgroup_sram_bytes : int;
+        registers_per_thread : int;
         dispatches : int;
       }
 
-      let make ~threadgroup_threads (work_sharing : Work_sharing.t) =
+      let make ~threadgroup_threads ?(slots = 1) (work_sharing : Work_sharing.t) =
+        let registers_per_thread =
+          if work_sharing.activation_reuse >= 4 then
+            (3 * work_sharing.activation_reuse * slots) + 8
+          else
+            32
+        in
         { threadgroup_threads;
           simdgroups_per_threadgroup = work_sharing.simdgroups_per_threadgroup;
           output_values_per_threadgroup =
@@ -193,6 +200,7 @@ module Linear_tactic = struct
           activation_reuse = work_sharing.activation_reuse;
           split_k_partitions = work_sharing.split_k_partitions;
           threadgroup_sram_bytes = work_sharing.threadgroup_sram_bytes;
+          registers_per_thread;
           dispatches = work_sharing.dispatches }
 
       let threadgroup_threads resource = resource.threadgroup_threads
@@ -204,6 +212,7 @@ module Linear_tactic = struct
       let activation_reuse resource = resource.activation_reuse
       let split_k_partitions resource = resource.split_k_partitions
       let threadgroup_sram_bytes resource = resource.threadgroup_sram_bytes
+      let registers_per_thread resource = resource.registers_per_thread
       let dispatches resource = resource.dispatches
     end
 
@@ -214,12 +223,15 @@ module Linear_tactic = struct
         target_simd_width : int;
         target_max_threads_per_threadgroup : int;
         target_sram_capacity_bytes : int;
+        target_max_registers_per_thread : int;
       }
 
       let make ~resource ~simd_width ~target_simd_width
-          ~target_max_threads_per_threadgroup ~target_sram_capacity_bytes =
+          ~target_max_threads_per_threadgroup ~target_sram_capacity_bytes
+          ~target_max_registers_per_thread =
         { resource; simd_width; target_simd_width;
-          target_max_threads_per_threadgroup; target_sram_capacity_bytes }
+          target_max_threads_per_threadgroup; target_sram_capacity_bytes;
+          target_max_registers_per_thread }
 
       let resource legality = legality.resource
       let simd_width legality = legality.simd_width
@@ -228,6 +240,8 @@ module Linear_tactic = struct
         legality.target_max_threads_per_threadgroup
       let target_sram_capacity_bytes legality =
         legality.target_sram_capacity_bytes
+      let target_max_registers_per_thread legality =
+        legality.target_max_registers_per_thread
     end
 
     module Cost = struct
@@ -241,6 +255,8 @@ module Linear_tactic = struct
         memory_bytes : float;
         workgroups : int;
         core_utilization : float;
+        bandwidth_utilization : float;
+        occupancy_factor : float;
         dispatches : int;
         compute_seconds : float;
         memory_seconds : float;
@@ -251,7 +267,8 @@ module Linear_tactic = struct
 
       let make ~flops ~physical_storage_bytes ~input_bytes ~output_bytes
           ~weight_traffic_bytes ~activation_traffic_bytes ~workgroups
-          ~core_utilization ~dispatches ~compute_seconds ~memory_seconds
+          ~core_utilization ~bandwidth_utilization ~occupancy_factor
+          ~dispatches ~compute_seconds ~memory_seconds
           ~roofline_seconds ~dispatch_seconds =
         let memory_bytes =
           weight_traffic_bytes +. activation_traffic_bytes +. output_bytes
@@ -261,8 +278,9 @@ module Linear_tactic = struct
         in
         { flops; physical_storage_bytes; input_bytes; output_bytes;
           weight_traffic_bytes; activation_traffic_bytes; memory_bytes;
-          workgroups; core_utilization; dispatches; compute_seconds;
-          memory_seconds; roofline_seconds; dispatch_seconds; total_seconds }
+          workgroups; core_utilization; bandwidth_utilization; occupancy_factor;
+          dispatches; compute_seconds; memory_seconds; roofline_seconds;
+          dispatch_seconds; total_seconds }
 
       let flops cost = cost.flops
       let physical_storage_bytes cost = cost.physical_storage_bytes
@@ -273,6 +291,8 @@ module Linear_tactic = struct
       let memory_bytes cost = cost.memory_bytes
       let workgroups cost = cost.workgroups
       let core_utilization cost = cost.core_utilization
+      let bandwidth_utilization cost = cost.bandwidth_utilization
+      let occupancy_factor cost = cost.occupancy_factor
       let dispatches cost = cost.dispatches
       let compute_seconds cost = cost.compute_seconds
       let memory_seconds cost = cost.memory_seconds
@@ -311,6 +331,7 @@ module Linear_tactic = struct
     m : int;
     n : int;
     k : int;
+    slots : int;
     input_dtype : Ir.Dtype.t;
     storage : Ir.Linear_storage.layout;
     output_dtype : Ir.Dtype.t;
@@ -499,6 +520,24 @@ module Linear_tactic = struct
           ~decoded_weight_reuse:1 ~activation_reuse:8
           ~threadgroup_sram_bytes:0 ~dispatches:1 }
 
+  let sixteen_column_decode_quant_registration quant : registration =
+    { build =
+        (fun _ ->
+          { name = quant_kernel_name quant ^ "_x16";
+            threadgroup = (256, 1, 1) });
+      accepts =
+        (fun (problem : problem) ->
+          problem.m = 1 && problem.n > 0 && problem.n mod 16 = 0 && problem.k > 0
+          && problem.k mod block_elements quant = 0
+          && f16_io problem.input_dtype problem.output_dtype
+          && block_quantized problem quant
+          && problem.supports_simd ~threads:256);
+      work_sharing =
+        Work_sharing.make ~simdgroups_per_threadgroup:8
+          ~output_values_per_threadgroup:128 ~split_k_partitions:1
+          ~decoded_weight_reuse:1 ~activation_reuse:16
+          ~threadgroup_sram_bytes:0 ~dispatches:1 }
+
   let full_simd_kquant_registration ~accepts_superblocks quant suffix :
       registration =
     { build =
@@ -614,6 +653,8 @@ module Linear_tactic = struct
         Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
     @ List.map eight_column_decode_quant_registration
       [ Ir.Dtype.Q4_0 ]
+    @ List.map sixteen_column_decode_quant_registration
+      [ Ir.Dtype.Q4_0 ]
     @ List.map four_column_decode_quant_registration
       [ Ir.Dtype.Q4_0 ]
     @ List.map quant_registration
@@ -622,7 +663,7 @@ module Linear_tactic = struct
 
   let select_all ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype =
     let problem =
-      { supports_simd; m; n; k; input_dtype; storage; output_dtype }
+      { supports_simd; m; n; k; slots = 1; input_dtype; storage; output_dtype }
     in
     registry
     |> List.filter_map (fun (registration : registration) ->
@@ -644,6 +685,10 @@ module Linear_tactic = struct
     && target.memory.sram_capacity_bytes > 0
     && target.execution.gpu_cores > 0
     && target.execution.max_threads_per_threadgroup > 0
+    && target.execution.max_registers_per_thread > 0
+    && target.execution.nominal_registers_per_thread > 0
+    && Float.is_finite target.execution.concurrency_saturation_waves
+    && target.execution.concurrency_saturation_waves > 0.0
     && Float.is_finite target.execution.memory_bandwidth_gbps
     && target.execution.memory_bandwidth_gbps > 0.0
     && Float.is_finite target.execution.fp16_tflops
@@ -674,7 +719,7 @@ module Linear_tactic = struct
             threadgroup_x * threadgroup_y * threadgroup_z
           in
           let resource =
-            Candidate.Resource.make ~threadgroup_threads
+            Candidate.Resource.make ~threadgroup_threads ~slots:problem.slots
               registration.work_sharing
           in
           let simd_width =
@@ -696,6 +741,8 @@ module Linear_tactic = struct
              > target.execution.max_threads_per_threadgroup
              || Candidate.Resource.threadgroup_sram_bytes resource
                 > target.memory.sram_capacity_bytes
+             || Candidate.Resource.registers_per_thread resource
+                > target.execution.max_registers_per_thread
              || simd_width <= 0
              || simdgroups <= 0
              || simdgroups > max_int / simd_width
@@ -753,12 +800,42 @@ module Linear_tactic = struct
                 let compute_seconds =
                   flops /. peak_flops_per_second /. core_utilization
                 in
+                let registers =
+                  Candidate.Resource.registers_per_thread resource
+                in
+                let occupancy_factor, bandwidth_utilization,
+                    effective_bandwidth_bytes_per_second =
+                  if problem.m = 1 then
+                    let occ =
+                      min 1.0
+                        (float_of_int target.execution.nominal_registers_per_thread
+                        /. float_of_int (max 1 registers))
+                    in
+                    let bw_util =
+                      if workgroups >= target.execution.gpu_cores then
+                        let waves_per_core =
+                          float_of_int workgroups
+                          /. float_of_int target.execution.gpu_cores
+                        in
+                        let saturation_waves =
+                          target.execution.concurrency_saturation_waves
+                          /. max 1e-6 occ
+                        in
+                        min 1.0 (waves_per_core /. saturation_waves)
+                      else
+                        1.0
+                    in
+                    occ, bw_util,
+                    bandwidth_bytes_per_second *. max 1e-3 bw_util
+                  else
+                    1.0, 1.0, bandwidth_bytes_per_second
+                in
                 let memory_bytes =
                   weight_traffic_bytes +. activation_traffic_bytes
                   +. output_bytes
                 in
                 let memory_seconds =
-                  memory_bytes /. bandwidth_bytes_per_second
+                  memory_bytes /. effective_bandwidth_bytes_per_second
                 in
                 let roofline_seconds = max compute_seconds memory_seconds in
                 let dispatches =
@@ -776,11 +853,14 @@ module Linear_tactic = struct
                       target.execution.max_threads_per_threadgroup
                     ~target_sram_capacity_bytes:
                       target.memory.sram_capacity_bytes
+                    ~target_max_registers_per_thread:
+                      target.execution.max_registers_per_thread
                 in
                 let cost =
                   Candidate.Cost.make ~flops ~physical_storage_bytes
                     ~input_bytes ~output_bytes ~weight_traffic_bytes
                     ~activation_traffic_bytes ~workgroups ~core_utilization
+                    ~bandwidth_utilization ~occupancy_factor
                     ~dispatches ~compute_seconds ~memory_seconds
                     ~roofline_seconds ~dispatch_seconds
                 in
@@ -792,8 +872,8 @@ module Linear_tactic = struct
                     { Candidate.tactic = tactic; schema; target_tactic;
                       legality; cost }
 
-  let select_costed ~(target : Target_hardware.t) ~m ~n ~k ~input_dtype
-      ~storage ~output_dtype =
+  let select_costed_slots ~slots ~(target : Target_hardware.t) ~m ~n ~k
+      ~input_dtype ~storage ~output_dtype =
     if m <= 0 || n <= 0 || k <= 0 || not (target_has_valid_resources target)
     then None
     else
@@ -806,7 +886,7 @@ module Linear_tactic = struct
                   threads > 0
                   && threads <= target.execution.max_threads_per_threadgroup
                   && threads mod target.memory.simd_lanes = 0);
-              m; n; k; input_dtype; storage; output_dtype }
+              m; n; k; slots = max 1 slots; input_dtype; storage; output_dtype }
           in
           let candidates =
             List.filter_map
@@ -830,4 +910,9 @@ module Linear_tactic = struct
           | chosen :: alternatives ->
               Some
                 { Selection.chosen; alternatives = chosen :: alternatives }
+
+  let select_costed ~(target : Target_hardware.t) ~m ~n ~k ~input_dtype
+      ~storage ~output_dtype =
+    select_costed_slots ~slots:1 ~target ~m ~n ~k ~input_dtype ~storage
+      ~output_dtype
 end

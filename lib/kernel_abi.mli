@@ -81,6 +81,7 @@ module Linear_tactic : sig
       val activation_reuse : t -> int
       val split_k_partitions : t -> int
       val threadgroup_sram_bytes : t -> int
+      val registers_per_thread : t -> int
       val dispatches : t -> int
     end
 
@@ -92,6 +93,7 @@ module Linear_tactic : sig
       val target_simd_width : t -> int
       val target_max_threads_per_threadgroup : t -> int
       val target_sram_capacity_bytes : t -> int
+      val target_max_registers_per_thread : t -> int
     end
 
     module Cost : sig
@@ -106,6 +108,8 @@ module Linear_tactic : sig
       val memory_bytes : t -> float
       val workgroups : t -> int
       val core_utilization : t -> float
+      val bandwidth_utilization : t -> float
+      val occupancy_factor : t -> float
       val dispatches : t -> int
       val compute_seconds : t -> float
       val memory_seconds : t -> float
@@ -156,6 +160,17 @@ module Linear_tactic : sig
   val threadgroup : t -> int * int * int
 
   val select_costed :
+    target:Target_hardware.t ->
+    m:int ->
+    n:int ->
+    k:int ->
+    input_dtype:Ir.Dtype.t ->
+    storage:Ir.Linear_storage.layout ->
+    output_dtype:Ir.Dtype.t ->
+    Selection.t option
+
+  val select_costed_slots :
+    slots:int ->
     target:Target_hardware.t ->
     m:int ->
     n:int ->

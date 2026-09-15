@@ -20,12 +20,15 @@ let qkv_kernels ~target schema =
   | Some Ir.Dtype.Q4_0 -> Metal_q4_0_codegen.q4_0_qkv ~target schema
   | _ -> Error "constructive QKV emission only implemented for Q4_0"
 
+let q4_0_x16_epilogue_kernel = Metal_q4_0_codegen.q4_0_x16_epilogue_kernel
 let q4_0_x8_epilogue_kernel = Metal_q4_0_codegen.q4_0_x8_epilogue_kernel
 let q4_0_x4_epilogue_kernel = Metal_q4_0_codegen.q4_0_x4_epilogue_kernel
 let q4_0_m16_epilogue_kernel = Metal_q4_0_codegen.q4_0_m16_epilogue_kernel
 let q4_0_m32_epilogue_kernel = Metal_q4_0_codegen.q4_0_m32_epilogue_kernel
 let q4_0_multi_linear_f16_x8_kernel = Metal_q4_0_codegen.q4_0_multi_linear_f16_x8_kernel
+let q4_0_multi_linear_f16_x16_kernel = Metal_q4_0_codegen.q4_0_multi_linear_f16_x16_kernel
 let q4_0_multi_export_linear_f16_x8_kernel = Metal_q4_0_codegen.q4_0_multi_export_linear_f16_x8_kernel
+let q4_0_multi_export_linear_f16_x16_kernel = Metal_q4_0_codegen.q4_0_multi_export_linear_f16_x16_kernel
 let q4_0_linear_add_kernel = Metal_q4_0_codegen.q4_0_linear_add_kernel
 let q4_0_m2_add_kernel = Metal_q4_0_codegen.q4_0_m2_add_kernel
 
