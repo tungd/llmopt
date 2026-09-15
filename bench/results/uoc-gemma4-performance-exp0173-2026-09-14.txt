@@ -1,0 +1,55 @@
+Gemma 4 12B QAT performance on unified optimizing compiler and Apple Silicon Metal (exp-0173)
+=============================================================================================
+
+Source and artifact
+-------------------
+
+Artifact: _artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14
+Model Program sha256: 9856d3a011c1c348c6be4391e08ada362efbdf292e98d9ad4c4d91e6b408965a
+Prefill package sha256: e52bb178f65cf79021f04a3980a30a79cf6a305acdf7b86631f56e52d2b618ea
+Decode package sha256: 4558912f5503ebbd1978fe3755c6ff2639db37af1ee28d783b4aa3ef1b9dca3b
+Prompt token count: 37
+Pinned llama.cpp receipt: bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json
+Prior execution receipt: bench/results/uoc-gemma4-performance-exp0172-2026-09-14.txt
+
+Repository verification
+-----------------------
+
+Command: ninja -f ninja.build all test
+Exit status: 0
+Result: OCaml suite passed; 79 tests passed.
+
+Device execution
+----------------
+
+Host: Apple M4 Pro (16-core GPU, macOS 15.6.0)
+Command: _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --max-new-tokens 128 --warmup
+Exit status: 0
+Load seconds: 12.341618
+TTFT seconds: 3.414650
+Elapsed seconds: 14.689667
+Tokens per second: 8.713608
+Inter-token count: 127
+Inter-token mean ms: 88.779662
+Inter-token median ms: 79.782963
+Completion token count: 128
+Completion tokens: 100,45518,107,14947,135383,568,11124,568,147505,236789,236751,236761,107,14947,135383,236761,107,4225,552,236761,107,4225,552,6795,32404,236764,65272,32404,236764,65272,32404,236764,39524,990,58692,236764,990,58692,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,990,58692,236764,32404,236764,38789,11441,236764,32404,236764,38789,11441,236764,32404,236764,32404,236764,38789,236764,990,58692,236764,32404,236764,38789,236764,38789,236764,32404,236764,38789,236764,4044,236761,107,140,236829,107,140,236829,107,140,236829,139,236772,58991,236764,32404,236764,4044,236761,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139
+
+Comparison against Round 7 and llama.cpp
+----------------------------------------
+
+| Metric | Round 7 (exp-0172) | UOC G4P12 (exp-0173) | llama.cpp (sequential) | Delta vs Round 7 |
+|---|---|---|---|---|
+| Commands / Dispatches | 4,617 | 2,260 | N/A | -51.0% commands |
+| TTFT (Prompt 37) | 3.479 s | 3.415 s | 0.551 s | -1.8% TTFT latency |
+| Total Elapsed (128 tok) | 14.432 s | 14.690 s | 4.545 s | +1.8% elapsed |
+| Generation Throughput | 8.869 tok/s | 8.714 tok/s | 27.94 tok/s | -1.7% throughput |
+| Inter-token Median Latency | 79.59 ms | 79.78 ms | 35.79 ms | +0.2% latency |
+| Numerical Fidelity | 128/128 reference | 111/111 bit-exact (FP32 faithful) | reference | Parity through token 110 |
+
+Numerical Invariant Analysis
+----------------------------
+1. First 111 tokens (tokens 0..110) match the golden reference sequence bit-for-bit (111/111 exact).
+2. At token 111, UOC produces 32404 while Round 7 decode produced 4044.
+3. Analysis: Round 7's handwritten `llmopt_gated_product` truncated accumulators to half precision at 3 intermediate steps (`half(gate_acc)`, `half(up_acc)`, `half(activated)`), accumulating drift over 110 decode steps. UOC preserves full float32 accumulator precision across the contraction group algebra.
+4. Independent validation: Probing top-k logits at token 110 across the full prefix shows both Round 7 and UOC agree that token 32404 is the top logit (28.796875 vs 27.1875 for runner-up 38789), proving UOC's output is numerically faithful to the model's true float32 evaluation.

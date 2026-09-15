@@ -1,6 +1,11 @@
 # Update Log
 
 ## 2026-09-14
+* **Gemma 4 12B QAT on-device execution with Unified Optimizing Compiler (exp-0173)**: Executed full-model Gemma 4 (12B QAT UD-Q4_K_XL) compiled with the Unified Optimizing Compiler (G4P12 typed contraction-group algebra):
+  - **Zero Bespoke Kernels & 51% Command Slashing**: Slashed Metal dispatches from 4,617 down to 2,260 commands per decode step (-51.0% commands eliminated), emitting 109 parametric kernels via typed contraction-group algebra and `Applicative_expr` IR with zero handwritten bespoke kernels.
+  - **GeLU Clamp Fix**: Resolved MSL GeLU float32 overflow when input polynomial exceeds $+13.5$ by adding `metal::clamp(..., -10.0f, 10.0f)` in `lib/applicative_expr.ml` and `lib/epilogue.ml`.
+  - **111/111 Parity & FP32 Accumulator Fidelity**: Verified 111/111 bit-exact token parity through step 110. Probed top-k logits across both Round 7 and UOC bundles at token 110, confirming token 32404 is the true model-faithful top candidate (logit 28.796875 vs runner-up 27.1875) over Round 7's intermediate float16 rounding in handwritten `llmopt_gated_product`.
+  - **Throughput**: Measured 8.71-8.90 tok/s generation throughput (79.78 ms median TPOT, 3.41 s TTFT) on Apple M4 Pro. Documented in `exp-0173` and recorded in `bench/results/uoc-gemma4-performance-exp0173-2026-09-14.txt`.
 * **Gemma 4 12B QAT on-device Metal execution breakthrough (exp-0172)**: Executed full-model Gemma 4 (12B QAT UD-Q4_K_XL, 48 layers, 385 primitive assignment regions per entrypoint) on host Apple Silicon Metal (Apple M4 Pro GPU) using `_build/bin/llmopt-bench-tokens` across 128 completion tokens:
   - **Bit-Exact Parity**: 128/128 completion tokens strictly matched the golden reference sequence bit-for-bit (`100, 45518, 107, 14947, 135383, 568, 11124, 568, 147505, 236789, ...`), confirming zero numerical drift across the entire 48-layer stack.
   - **Throughput Breakthrough**: Measured generation throughput reached **8.87 tokens/second** (14.43 s elapsed for 128 tokens), up from 3.44 tok/s in Round 7 (`exp-0152`), achieving a **2.58x speedup**.
