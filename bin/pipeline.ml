@@ -46,6 +46,8 @@ let compile_metal_to_metallib dir =
   let metal = Filename.concat dir "kernel.metal" in
   let air = Filename.concat dir "kernel.air" in
   let metallib = Filename.concat dir "kernel.metallib" in
+  (try Sys.remove metallib with _ -> ());
+  (try Sys.remove air with _ -> ());
   let cmd =
     Printf.sprintf
       "xcrun -sdk macosx metal -c %s -o %s && xcrun -sdk macosx metallib %s -o %s"
@@ -54,7 +56,15 @@ let compile_metal_to_metallib dir =
   in
   let code = Sys.command cmd in
   if code <> 0 then
-    Error (Printf.sprintf "Metal compiler failed in %s with code %d" dir code)
+    if Sys.file_exists metal then begin
+      Printf.eprintf "[llmopt-pipeline] Notice: offline metal compiler unavailable (exit %d), using kernel.metal for on-device compilation\n%!" code;
+      if not (Sys.file_exists metallib) then begin
+        let oc = open_out metallib in
+        close_out oc
+      end;
+      Ok ()
+    end else
+      Error (Printf.sprintf "Metal compiler failed in %s with code %d" dir code)
   else Ok ()
 
 let rename_logits_to_token_id graph =

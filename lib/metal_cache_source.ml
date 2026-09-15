@@ -582,6 +582,256 @@ kernel void llmopt_attention_q8_paged_simd_generic(
   }
 }
 
+kernel void llmopt_attention_q8_paged_simd_h256(
+    device const half* query [[buffer(0)]],
+    device const half* current_key [[buffer(1)]],
+    device const half* current_value [[buffer(2)]],
+    device const uchar* pool [[buffer(3)]],
+    device const uint* slots [[buffer(4)]],
+    device const uchar* mask [[buffer(5)]],
+    device half* output [[buffer(6)]],
+    constant Q8PagedAttentionParams& params [[buffer(7)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x;
+  const uint q_len = params.query_length == 0 ? 1 : params.query_length;
+  const uint rows = params.batches * params.query_heads * q_len;
+  if (row >= rows) return;
+  const uint q_pos = row % q_len;
+  const uint head = (row / q_len) % params.query_heads;
+  const uint batch = row / (q_len * params.query_heads);
+  const uint heads_per_kv = params.query_heads / params.kv_heads;
+  const uint kv_head = head / heads_per_kv;
+  const uint query_base =
+      ((batch * params.query_heads + head) * q_len + q_pos) * 256u;
+  const uint current_base =
+      (batch * params.kv_heads + kv_head) * q_len * 256u;
+  const uint key_length = params.past_length + q_pos + 1u;
+  const uint first_key = params.window == 0u || key_length <= params.window
+      ? 0u : key_length - params.window;
+
+  float q[8];
+  #pragma unroll
+  for (uint c = 0; c < 8u; ++c) {
+    q[c] = float(query[query_base + lane + c * 32u]);
+  }
+
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+  float results[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+  for (uint key_position = first_key; key_position < key_length; ++key_position) {
+    if (mask != nullptr && params.mask_batches > 0) {
+      const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
+      const uint mask_head = params.mask_heads == 1 ? 0 : head;
+      const uint mask_key_stride = params.past_length + q_len;
+      const uint mask_index =
+          ((mask_batch * params.mask_heads + mask_head) * q_len + q_pos)
+              * mask_key_stride + key_position;
+      if (!llmopt_q8_paged_mask_active(mask, params, mask_index)) continue;
+    }
+
+    float partial_score = 0.0f;
+    if (key_position < params.past_length) {
+      const uint slot_base = slots[key_position] * params.token_stride;
+      device const char* k_values =
+          reinterpret_cast<device const char*>(pool + slot_base)
+          + params.key_offset + kv_head * 256u;
+      device const half* k_scales =
+          reinterpret_cast<device const half*>(pool + slot_base + params.token_elements)
+          + (params.key_offset / 64u + kv_head * 4u);
+
+      const float k0 = float(k_values[lane + 0u]);
+      const float k1 = float(k_values[lane + 32u]);
+      const float sc0 = float(k_scales[0]);
+
+      const float k2 = float(k_values[lane + 64u]);
+      const float k3 = float(k_values[lane + 96u]);
+      const float sc1 = float(k_scales[1]);
+
+      const float k4 = float(k_values[lane + 128u]);
+      const float k5 = float(k_values[lane + 160u]);
+      const float sc2 = float(k_scales[2]);
+
+      const float k6 = float(k_values[lane + 192u]);
+      const float k7 = float(k_values[lane + 224u]);
+      const float sc3 = float(k_scales[3]);
+
+      partial_score = (k0 * q[0] + k1 * q[1]) * sc0
+                    + (k2 * q[2] + k3 * q[3]) * sc1
+                    + (k4 * q[4] + k5 * q[5]) * sc2
+                    + (k6 * q[6] + k7 * q[7]) * sc3;
+    } else {
+      const uint offset = current_base + (key_position - params.past_length) * 256u;
+      #pragma unroll
+      for (uint c = 0; c < 8u; ++c) {
+        partial_score += float(current_key[offset + lane + c * 32u]) * q[c];
+      }
+    }
+
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_maximum = max(maximum, score);
+    const float previous_scale = denominator == 0.0f ? 0.0f : exp(maximum - next_maximum);
+    const float current_scale = exp(score - next_maximum);
+
+    if (key_position < params.past_length) {
+      const uint slot_base = slots[key_position] * params.token_stride;
+      device const char* v_values =
+          reinterpret_cast<device const char*>(pool + slot_base)
+          + params.value_offset + kv_head * 256u;
+      device const half* v_scales =
+          reinterpret_cast<device const half*>(pool + slot_base + params.token_elements)
+          + (params.value_offset / 64u + kv_head * 4u);
+
+      const float cs0 = current_scale * float(v_scales[0]);
+      const float cs1 = current_scale * float(v_scales[1]);
+      const float cs2 = current_scale * float(v_scales[2]);
+      const float cs3 = current_scale * float(v_scales[3]);
+
+      results[0] = results[0] * previous_scale + cs0 * float(v_values[lane + 0u]);
+      results[1] = results[1] * previous_scale + cs0 * float(v_values[lane + 32u]);
+      results[2] = results[2] * previous_scale + cs1 * float(v_values[lane + 64u]);
+      results[3] = results[3] * previous_scale + cs1 * float(v_values[lane + 96u]);
+      results[4] = results[4] * previous_scale + cs2 * float(v_values[lane + 128u]);
+      results[5] = results[5] * previous_scale + cs2 * float(v_values[lane + 160u]);
+      results[6] = results[6] * previous_scale + cs3 * float(v_values[lane + 192u]);
+      results[7] = results[7] * previous_scale + cs3 * float(v_values[lane + 224u]);
+    } else {
+      const uint offset = current_base + (key_position - params.past_length) * 256u;
+      #pragma unroll
+      for (uint c = 0; c < 8u; ++c) {
+        results[c] = results[c] * previous_scale + current_scale * float(current_value[offset + lane + c * 32u]);
+      }
+    }
+
+    denominator = denominator * previous_scale + current_scale;
+    maximum = next_maximum;
+  }
+
+  const uint output_base =
+      ((batch * q_len + q_pos) * params.query_heads + head) * 256u;
+  const float inv_den = denominator == 0.0f ? 0.0f : (1.0f / denominator);
+  #pragma unroll
+  for (uint c = 0; c < 8u; ++c) {
+    output[output_base + lane + c * 32u] = half(results[c] * inv_den);
+  }
+}
+
+kernel void llmopt_attention_q8_paged_simd_h512(
+    device const half* query [[buffer(0)]],
+    device const half* current_key [[buffer(1)]],
+    device const half* current_value [[buffer(2)]],
+    device const uchar* pool [[buffer(3)]],
+    device const uint* slots [[buffer(4)]],
+    device const uchar* mask [[buffer(5)]],
+    device half* output [[buffer(6)]],
+    constant Q8PagedAttentionParams& params [[buffer(7)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint row = threadgroup_position.x;
+  const uint q_len = params.query_length == 0 ? 1 : params.query_length;
+  const uint rows = params.batches * params.query_heads * q_len;
+  if (row >= rows) return;
+  const uint q_pos = row % q_len;
+  const uint head = (row / q_len) % params.query_heads;
+  const uint batch = row / (q_len * params.query_heads);
+  const uint heads_per_kv = params.query_heads / params.kv_heads;
+  const uint kv_head = head / heads_per_kv;
+  const uint query_base =
+      ((batch * params.query_heads + head) * q_len + q_pos) * 512u;
+  const uint current_base =
+      (batch * params.kv_heads + kv_head) * q_len * 512u;
+  const uint key_length = params.past_length + q_pos + 1u;
+  const uint first_key = params.window == 0u || key_length <= params.window
+      ? 0u : key_length - params.window;
+
+  float q[16];
+  #pragma unroll
+  for (uint c = 0; c < 16u; ++c) {
+    q[c] = float(query[query_base + lane + c * 32u]);
+  }
+
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+  float results[16] = {0.0f};
+
+  for (uint key_position = first_key; key_position < key_length; ++key_position) {
+    if (mask != nullptr && params.mask_batches > 0) {
+      const uint mask_batch = params.mask_batches == 1 ? 0 : batch;
+      const uint mask_head = params.mask_heads == 1 ? 0 : head;
+      const uint mask_key_stride = params.past_length + q_len;
+      const uint mask_index =
+          ((mask_batch * params.mask_heads + mask_head) * q_len + q_pos)
+              * mask_key_stride + key_position;
+      if (!llmopt_q8_paged_mask_active(mask, params, mask_index)) continue;
+    }
+
+    float partial_score = 0.0f;
+    if (key_position < params.past_length) {
+      const uint slot_base = slots[key_position] * params.token_stride;
+      device const char* k_values =
+          reinterpret_cast<device const char*>(pool + slot_base)
+          + params.key_offset + kv_head * 512u;
+      device const half* k_scales =
+          reinterpret_cast<device const half*>(pool + slot_base + params.token_elements)
+          + (params.key_offset / 64u + kv_head * 8u);
+
+      #pragma unroll
+      for (uint g = 0; g < 8u; ++g) {
+        const float k0 = float(k_values[lane + (g * 2u + 0u) * 32u]);
+        const float k1 = float(k_values[lane + (g * 2u + 1u) * 32u]);
+        const float sc = float(k_scales[g]);
+        partial_score += (k0 * q[g * 2u + 0u] + k1 * q[g * 2u + 1u]) * sc;
+      }
+    } else {
+      const uint offset = current_base + (key_position - params.past_length) * 512u;
+      #pragma unroll
+      for (uint c = 0; c < 16u; ++c) {
+        partial_score += float(current_key[offset + lane + c * 32u]) * q[c];
+      }
+    }
+
+    const float score = simd_sum(partial_score) * params.scale;
+    const float next_maximum = max(maximum, score);
+    const float previous_scale = denominator == 0.0f ? 0.0f : exp(maximum - next_maximum);
+    const float current_scale = exp(score - next_maximum);
+
+    if (key_position < params.past_length) {
+      const uint slot_base = slots[key_position] * params.token_stride;
+      device const char* v_values =
+          reinterpret_cast<device const char*>(pool + slot_base)
+          + params.value_offset + kv_head * 512u;
+      device const half* v_scales =
+          reinterpret_cast<device const half*>(pool + slot_base + params.token_elements)
+          + (params.value_offset / 64u + kv_head * 8u);
+
+      #pragma unroll
+      for (uint g = 0; g < 8u; ++g) {
+        const float cs = current_scale * float(v_scales[g]);
+        results[g * 2u + 0u] = results[g * 2u + 0u] * previous_scale + cs * float(v_values[lane + (g * 2u + 0u) * 32u]);
+        results[g * 2u + 1u] = results[g * 2u + 1u] * previous_scale + cs * float(v_values[lane + (g * 2u + 1u) * 32u]);
+      }
+    } else {
+      const uint offset = current_base + (key_position - params.past_length) * 512u;
+      #pragma unroll
+      for (uint c = 0; c < 16u; ++c) {
+        results[c] = results[c] * previous_scale + current_scale * float(current_value[offset + lane + c * 32u]);
+      }
+    }
+
+    denominator = denominator * previous_scale + current_scale;
+    maximum = next_maximum;
+  }
+
+  const uint output_base =
+      ((batch * q_len + q_pos) * params.query_heads + head) * 512u;
+  const float inv_den = denominator == 0.0f ? 0.0f : (1.0f / denominator);
+  #pragma unroll
+  for (uint c = 0; c < 16u; ++c) {
+    output[output_base + lane + c * 32u] = half(results[c] * inv_den);
+  }
+}
+
 kernel void llmopt_attention_q8_paged_simd_h64_gqa3(
     device const half* query [[buffer(0)]],
     device const half* current_key [[buffer(1)]],
@@ -1026,6 +1276,14 @@ let cache_entries =
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_attention_q8_paged_simd_generic"
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_attention_q8_paged_simd_h256"
+      ~operation:Kernel_abi.Operation.Attention
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_attention_q8_paged_simd_h512"
       ~operation:Kernel_abi.Operation.Attention
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)

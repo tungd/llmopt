@@ -593,8 +593,25 @@ CAMLprim value caml_llmopt_metal_load_library(value context_value,
   @autoreleasepool {
     NSString *path = [NSString stringWithUTF8String:String_val(path_value)];
     NSError *error = nil;
-    id<MTLLibrary> metal_library =
-        [context->device newLibraryWithFile:path error:&error];
+    id<MTLLibrary> metal_library = nil;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+      NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+      if (attrs && [attrs fileSize] > 0) {
+        metal_library = [context->device newLibraryWithFile:path error:&error];
+      }
+    }
+    if (metal_library == nil) {
+      NSString *metalPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"metal"];
+      if ([[NSFileManager defaultManager] fileExistsAtPath:metalPath]) {
+        NSString *source = [NSString stringWithContentsOfFile:metalPath encoding:NSUTF8StringEncoding error:&error];
+        if (source != nil) {
+          MTLCompileOptions *options = [[MTLCompileOptions alloc] init];
+          options.fastMathEnabled = YES;
+          metal_library = [context->device newLibraryWithSource:source options:options error:&error];
+          [options release];
+        }
+      }
+    }
     if (metal_library == nil) {
       fail_with_error("cannot load Metal library", error);
     }

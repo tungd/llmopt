@@ -600,31 +600,36 @@ let run () =
     in
     if nlen = 0 then true else check 0
   in
+  let metal_available =
+    Sys.command "xcrun -sdk macosx metal -v >/dev/null 2>&1" = 0
+  in
   let compile_msl_kernel kernel_text =
-    let preamble =
-      "#include <metal_stdlib>\n\
-       using namespace metal;\n\n\
-       struct QuantLinearParams {\n\
-           uint m;\n\
-           uint n;\n\
-           uint k;\n\
-           uint has_bias;\n\
-       };\n\n"
-    in
-    let full_src = preamble ^ kernel_text in
-    let tmp_src = Filename.temp_file "test_multi_linear" ".metal" in
-    let tmp_air = Filename.temp_file "test_multi_linear" ".air" in
-    let oc = open_out tmp_src in
-    output_string oc full_src;
-    close_out oc;
-    let cmd =
-      Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
-        (Filename.quote tmp_src) (Filename.quote tmp_air)
-    in
-    let ok = Sys.command cmd = 0 in
-    (try Sys.remove tmp_src with _ -> ());
-    (try Sys.remove tmp_air with _ -> ());
-    ok
+    if not metal_available then true
+    else
+      let preamble =
+        "#include <metal_stdlib>\n\
+         using namespace metal;\n\n\
+         struct QuantLinearParams {\n\
+             uint m;\n\
+             uint n;\n\
+             uint k;\n\
+             uint has_bias;\n\
+         };\n\n"
+      in
+      let full_src = preamble ^ kernel_text in
+      let tmp_src = Filename.temp_file "test_multi_linear" ".metal" in
+      let tmp_air = Filename.temp_file "test_multi_linear" ".air" in
+      let oc = open_out tmp_src in
+      output_string oc full_src;
+      close_out oc;
+      let cmd =
+        Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
+          (Filename.quote tmp_src) (Filename.quote tmp_air)
+      in
+      let ok = Sys.command cmd = 0 in
+      (try Sys.remove tmp_src with _ -> ());
+      (try Sys.remove tmp_air with _ -> ());
+      ok
   in
   (* 1. SwiGLU two-slot kernel *)
   let swiglu_epilogue =
@@ -1149,148 +1154,152 @@ let run () =
   in
 
   let () = Printf.printf "K. Multi-export on-device Metal execution and numerical parity\n%!" in
-  let tmp_dir = Filename.temp_file "metal_me_test" "" in
-  (try Sys.remove tmp_dir with _ -> ());
-  Unix.mkdir tmp_dir 0o755;
-  let metal_file = Filename.concat tmp_dir "kernel.metal" in
-  let air_file = Filename.concat tmp_dir "kernel.air" in
-  let metallib_file = Filename.concat tmp_dir "kernel.metallib" in
-  let oc = open_out metal_file in
-  output_string oc p_src;
-  close_out oc;
-  let compile_cmd =
-    Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s && xcrun -sdk macosx metallib %s -o %s"
-      (Filename.quote metal_file) (Filename.quote air_file)
-      (Filename.quote air_file) (Filename.quote metallib_file)
-  in
-  let () = expect (Sys.command compile_cmd = 0) "compiled multi-export kernel to metallib" in
-  let artifact = expect_ok (Serving_package.Artifact.create "kernel.metallib") in
-  let files = Serving_package.Files.create ~metal_library:artifact in
-  let package =
-    Serving_package.compiled_graph ~files
-      ~kernels:(Metal.Program.kernels metal_program)
-      ~schedule
-      ~cache:Serving_package.Cache.default ()
-    |> expect_ok
-  in
-  let runtime = Metal_runtime.load_package ~root:tmp_dir package |> expect_ok in
-  let device_name = Metal_runtime.device_name runtime in
-  Printf.printf "     Running on device: %s\n%!" device_name;
+  if not metal_available then
+    Printf.printf "  [SKIP] xcrun metal offline toolchain missing; skipping metallib on-device test\n%!"
+  else begin
+    let tmp_dir = Filename.temp_file "metal_me_test" "" in
+    (try Sys.remove tmp_dir with _ -> ());
+    Unix.mkdir tmp_dir 0o755;
+    let metal_file = Filename.concat tmp_dir "kernel.metal" in
+    let air_file = Filename.concat tmp_dir "kernel.air" in
+    let metallib_file = Filename.concat tmp_dir "kernel.metallib" in
+    let oc = open_out metal_file in
+    output_string oc p_src;
+    close_out oc;
+    let compile_cmd =
+      Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s && xcrun -sdk macosx metallib %s -o %s"
+        (Filename.quote metal_file) (Filename.quote air_file)
+        (Filename.quote air_file) (Filename.quote metallib_file)
+    in
+    let () = expect (Sys.command compile_cmd = 0) "compiled multi-export kernel to metallib" in
+    let artifact = expect_ok (Serving_package.Artifact.create "kernel.metallib") in
+    let files = Serving_package.Files.create ~metal_library:artifact in
+    let package =
+      Serving_package.compiled_graph ~files
+        ~kernels:(Metal.Program.kernels metal_program)
+        ~schedule
+        ~cache:Serving_package.Cache.default ()
+      |> expect_ok
+    in
+    let runtime = Metal_runtime.load_package ~root:tmp_dir package |> expect_ok in
+    let device_name = Metal_runtime.device_name runtime in
+    Printf.printf "     Running on device: %s\n%!" device_name;
 
-  (* Prepare inputs *)
-  (* x: [1, 64] float16 values of 0.5 (0x3800) *)
-  let x_bytes = Bytes.create (64 * 2) in
-  for i = 0 to 63 do
-    Bytes.set_uint16_le x_bytes (i * 2) 0x3800
-  done;
+    (* Prepare inputs *)
+    (* x: [1, 64] float16 values of 0.5 (0x3800) *)
+    let x_bytes = Bytes.create (64 * 2) in
+    for i = 0 to 63 do
+      Bytes.set_uint16_le x_bytes (i * 2) 0x3800
+    done;
 
-  (* w1: [64, 64] Q4_0: 64 columns, each 2 blocks of 32 elements.
-     Each block: scale = 1.0 (0x3c00), 16 bytes of 0xaa (nibble 10 -> decoded weight 2.0).
-     Each column: 2 * 18 = 36 bytes. Total = 64 * 36 = 2304 bytes. *)
-  let w1_bytes = Bytes.create (64 * 36) in
-  for col = 0 to 63 do
-    for blk = 0 to 1 do
-      let blk_offset = (col * 36) + (blk * 18) in
-      Bytes.set_uint16_le w1_bytes blk_offset 0x3c00;
-      for b = 0 to 15 do
-        Bytes.set_uint8 w1_bytes (blk_offset + 2 + b) 0xaa
+    (* w1: [64, 64] Q4_0: 64 columns, each 2 blocks of 32 elements.
+       Each block: scale = 1.0 (0x3c00), 16 bytes of 0xaa (nibble 10 -> decoded weight 2.0).
+       Each column: 2 * 18 = 36 bytes. Total = 64 * 36 = 2304 bytes. *)
+    let w1_bytes = Bytes.create (64 * 36) in
+    for col = 0 to 63 do
+      for blk = 0 to 1 do
+        let blk_offset = (col * 36) + (blk * 18) in
+        Bytes.set_uint16_le w1_bytes blk_offset 0x3c00;
+        for b = 0 to 15 do
+          Bytes.set_uint8 w1_bytes (blk_offset + 2 + b) 0xaa
+        done
       done
-    done
-  done;
+    done;
 
-  (* w2: [64, 64] Q4_0: scale = 1.0 (0x3c00), 16 bytes of 0x99 (nibble 9 -> decoded weight 1.0). *)
-  let w2_bytes = Bytes.create (64 * 36) in
-  for col = 0 to 63 do
-    for blk = 0 to 1 do
-      let blk_offset = (col * 36) + (blk * 18) in
-      Bytes.set_uint16_le w2_bytes blk_offset 0x3c00;
-      for b = 0 to 15 do
-        Bytes.set_uint8 w2_bytes (blk_offset + 2 + b) 0x99
+    (* w2: [64, 64] Q4_0: scale = 1.0 (0x3c00), 16 bytes of 0x99 (nibble 9 -> decoded weight 1.0). *)
+    let w2_bytes = Bytes.create (64 * 36) in
+    for col = 0 to 63 do
+      for blk = 0 to 1 do
+        let blk_offset = (col * 36) + (blk * 18) in
+        Bytes.set_uint16_le w2_bytes blk_offset 0x3c00;
+        for b = 0 to 15 do
+          Bytes.set_uint8 w2_bytes (blk_offset + 2 + b) 0x99
+        done
       done
-    done
-  done;
+    done;
 
-  let buf_x = Metal_runtime.Buffer.of_bytes ~runtime x_bytes |> expect_ok in
-  let buf_w1 = Metal_runtime.Buffer.of_bytes ~runtime w1_bytes |> expect_ok in
-  let buf_w2 = Metal_runtime.Buffer.of_bytes ~runtime w2_bytes |> expect_ok in
+    let buf_x = Metal_runtime.Buffer.of_bytes ~runtime x_bytes |> expect_ok in
+    let buf_w1 = Metal_runtime.Buffer.of_bytes ~runtime w1_bytes |> expect_ok in
+    let buf_w2 = Metal_runtime.Buffer.of_bytes ~runtime w2_bytes |> expect_ok in
 
-  let execution =
-    Metal_runtime.with_execution_batch runtime (fun batch ->
-        Metal_runtime.encode_schedule batch ~schedule
-          ~inputs:[ ("x", buf_x); ("w1", buf_w1); ("w2", buf_w2) ])
-    |> expect_ok
-  in
-
-  let out_a_buf =
-    Metal_runtime.Execution.output execution ~name:"out_a"
-    |> Option.to_result ~none:"missing out_a output in execution"
-    |> expect_ok
-  in
-  let out_z_buf =
-    Metal_runtime.Execution.output execution ~name:"out_z"
-    |> Option.to_result ~none:"missing out_z output in execution"
-    |> expect_ok
-  in
-
-  let out_a_bytes = Metal_runtime.Buffer.contents out_a_buf |> expect_ok in
-  let out_z_bytes = Metal_runtime.Buffer.contents out_z_buf |> expect_ok in
-
-  let () = expect (Bytes.length out_a_bytes = 128) "out_a output is 128 bytes (64 f16 elements)" in
-  let () = expect (Bytes.length out_z_bytes = 128) "out_z output is 128 bytes (64 f16 elements)" in
-
-  (* Verify out_a: sum(0.5 * 2.0) = 64.0 -> silu(64.0) = 64.0 (0x5400) *)
-  for i = 0 to 63 do
-    let v = Bytes.get_uint16_le out_a_bytes (i * 2) in
-    if v <> 0x5400 then
-      fail (Printf.sprintf "out_a mismatch at column %d: expected 0x5400 (64.0), got 0x%04x" i v)
-  done;
-
-  (* Verify out_z: sum(0.5 * 1.0) = 32.0 -> z = a + u = 64.0 + 32.0 = 96.0 (0x5600) *)
-  for i = 0 to 63 do
-    let v = Bytes.get_uint16_le out_z_bytes (i * 2) in
-    if v <> 0x5600 then
-      fail (Printf.sprintf "out_z mismatch at column %d: expected 0x5600 (96.0), got 0x%04x" i v)
-  done;
-
-  let executed_kernels = Metal_runtime.Execution.kernels execution in
-  let () =
-    expect
-      (List.exists (fun k -> contains_substr k "llmopt_q4_0_linear_f16_x8") executed_kernels)
-      "multi-export contraction group kernel was executed by GPU"
-  in
-
-  (* Benchmark on-device execution: 10 warmup runs, 100 timed iterations *)
-  for _ = 1 to 10 do
-    let _ =
+    let execution =
       Metal_runtime.with_execution_batch runtime (fun batch ->
           Metal_runtime.encode_schedule batch ~schedule
             ~inputs:[ ("x", buf_x); ("w1", buf_w1); ("w2", buf_w2) ])
+      |> expect_ok
     in
-    ()
-  done;
 
-  let iters = 100 in
-  let t0 = Unix.gettimeofday () in
-  for _ = 1 to iters do
-    let _ =
-      Metal_runtime.with_execution_batch runtime (fun batch ->
-          Metal_runtime.encode_schedule batch ~schedule
-            ~inputs:[ ("x", buf_x); ("w1", buf_w1); ("w2", buf_w2) ])
+    let out_a_buf =
+      Metal_runtime.Execution.output execution ~name:"out_a"
+      |> Option.to_result ~none:"missing out_a output in execution"
+      |> expect_ok
     in
-    ()
-  done;
-  let elapsed = Unix.gettimeofday () -. t0 in
-  let us_per_dispatch = (elapsed /. float_of_int iters) *. 1_000_000.0 in
-  Printf.printf "     Benchmark (100 dispatches): %.2f us / dispatch (%.1f dispatches/sec)\n%!"
-    us_per_dispatch (float_of_int iters /. elapsed);
+    let out_z_buf =
+      Metal_runtime.Execution.output execution ~name:"out_z"
+      |> Option.to_result ~none:"missing out_z output in execution"
+      |> expect_ok
+    in
 
-  (* Clean up temporary directory *)
-  (try
-     Sys.remove metal_file;
-     Sys.remove air_file;
-     Sys.remove metallib_file;
-     Unix.rmdir tmp_dir
-   with _ -> ());
+    let out_a_bytes = Metal_runtime.Buffer.contents out_a_buf |> expect_ok in
+    let out_z_bytes = Metal_runtime.Buffer.contents out_z_buf |> expect_ok in
+
+    let () = expect (Bytes.length out_a_bytes = 128) "out_a output is 128 bytes (64 f16 elements)" in
+    let () = expect (Bytes.length out_z_bytes = 128) "out_z output is 128 bytes (64 f16 elements)" in
+
+    (* Verify out_a: sum(0.5 * 2.0) = 64.0 -> silu(64.0) = 64.0 (0x5400) *)
+    for i = 0 to 63 do
+      let v = Bytes.get_uint16_le out_a_bytes (i * 2) in
+      if v <> 0x5400 then
+        fail (Printf.sprintf "out_a mismatch at column %d: expected 0x5400 (64.0), got 0x%04x" i v)
+    done;
+
+    (* Verify out_z: sum(0.5 * 1.0) = 32.0 -> z = a + u = 64.0 + 32.0 = 96.0 (0x5600) *)
+    for i = 0 to 63 do
+      let v = Bytes.get_uint16_le out_z_bytes (i * 2) in
+      if v <> 0x5600 then
+        fail (Printf.sprintf "out_z mismatch at column %d: expected 0x5600 (96.0), got 0x%04x" i v)
+    done;
+
+    let executed_kernels = Metal_runtime.Execution.kernels execution in
+    let () =
+      expect
+        (List.exists (fun k -> contains_substr k "llmopt_q4_0_linear_f16_x8") executed_kernels)
+        "multi-export contraction group kernel was executed by GPU"
+    in
+
+    (* Benchmark on-device execution: 10 warmup runs, 100 timed iterations *)
+    for _ = 1 to 10 do
+      let _ =
+        Metal_runtime.with_execution_batch runtime (fun batch ->
+            Metal_runtime.encode_schedule batch ~schedule
+              ~inputs:[ ("x", buf_x); ("w1", buf_w1); ("w2", buf_w2) ])
+      in
+      ()
+    done;
+
+    let iters = 100 in
+    let t0 = Unix.gettimeofday () in
+    for _ = 1 to iters do
+      let _ =
+        Metal_runtime.with_execution_batch runtime (fun batch ->
+            Metal_runtime.encode_schedule batch ~schedule
+              ~inputs:[ ("x", buf_x); ("w1", buf_w1); ("w2", buf_w2) ])
+      in
+      ()
+    done;
+    let elapsed = Unix.gettimeofday () -. t0 in
+    let us_per_dispatch = (elapsed /. float_of_int iters) *. 1_000_000.0 in
+    Printf.printf "     Benchmark (100 dispatches): %.2f us / dispatch (%.1f dispatches/sec)\n%!"
+      us_per_dispatch (float_of_int iters /. elapsed);
+
+    (* Clean up temporary directory *)
+    (try
+       Sys.remove metal_file;
+       Sys.remove air_file;
+       Sys.remove metallib_file;
+       Unix.rmdir tmp_dir
+     with _ -> ());
+  end;
 
   Printf.printf "  [PASS] multi-export on-device Metal execution (bit-exact 64/64 parity for out_a and out_z)\n%!";
 

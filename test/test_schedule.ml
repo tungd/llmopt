@@ -1406,6 +1406,18 @@ let run () =
     (Metal_runtime.Paged_attention_tactic.kernel_name
        ~experimental_gqa3_split8:true ~split8:true ~query_heads:16 ~kv_heads:8
        ~head_dimension:256
+    = "llmopt_attention_q8_paged_simd_h256")
+    "wide-head h256 paged attention selects the h256 specialized kernel";
+  expect
+    (Metal_runtime.Paged_attention_tactic.kernel_name
+       ~experimental_gqa3_split8:true ~split8:true ~query_heads:16 ~kv_heads:8
+       ~head_dimension:512
+    = "llmopt_attention_q8_paged_simd_h512")
+    "wide-head h512 paged attention selects the h512 specialized kernel";
+  expect
+    (Metal_runtime.Paged_attention_tactic.kernel_name
+       ~experimental_gqa3_split8:true ~split8:true ~query_heads:16 ~kv_heads:8
+       ~head_dimension:128
     = "llmopt_attention_q8_paged_simd_generic")
     "wide-head paged attention selects the generic kernel";
 

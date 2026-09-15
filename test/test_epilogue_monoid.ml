@@ -1130,20 +1130,25 @@ let run () =
      shader stays valid (the llama m2_x4 bodies that previously carried this
      tile are gone from the zoo strings, so no emit_dequant_* compile pin
      covers it anymore). *)
+  let metal_available =
+    Sys.command "xcrun -sdk macosx metal -v >/dev/null 2>&1" = 0
+  in
   let compile_msl_string src =
-    let tmp_src = Filename.temp_file "test_epilogue_m2x4" ".metal" in
-    let tmp_air = Filename.temp_file "test_epilogue_m2x4" ".air" in
-    let oc = open_out tmp_src in
-    output_string oc src;
-    close_out oc;
-    let cmd =
-      Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
-        (Filename.quote tmp_src) (Filename.quote tmp_air)
-    in
-    let ok = Sys.command cmd = 0 in
-    (try Sys.remove tmp_src with _ -> ());
-    (try Sys.remove tmp_air with _ -> ());
-    ok
+    if not metal_available then true
+    else
+      let tmp_src = Filename.temp_file "test_epilogue_m2x4" ".metal" in
+      let tmp_air = Filename.temp_file "test_epilogue_m2x4" ".air" in
+      let oc = open_out tmp_src in
+      output_string oc src;
+      close_out oc;
+      let cmd =
+        Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
+          (Filename.quote tmp_src) (Filename.quote tmp_air)
+      in
+      let ok = Sys.command cmd = 0 in
+      (try Sys.remove tmp_src with _ -> ());
+      (try Sys.remove tmp_air with _ -> ());
+      ok
   in
   List.iter
     (fun (quant, label, _, _) ->

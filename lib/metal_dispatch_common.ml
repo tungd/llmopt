@@ -34,7 +34,9 @@ module Paged_attention_tactic = struct
   let kernel_name ~experimental_gqa3_split8 ~split8 ~query_heads ~kv_heads
       ~head_dimension =
     let gqa3_shape = query_heads = 3 * kv_heads in
-    if head_dimension <> 64 then "llmopt_attention_q8_paged_simd_generic"
+    if head_dimension = 256 then "llmopt_attention_q8_paged_simd_h256"
+    else if head_dimension = 512 then "llmopt_attention_q8_paged_simd_h512"
+    else if head_dimension <> 64 then "llmopt_attention_q8_paged_simd_generic"
     else if split8 && gqa3_shape && experimental_gqa3_split8 then
       "llmopt_attention_q8_paged_simd_h64_gqa3_split8"
     else if split8 then "llmopt_attention_q8_paged_simd_h64_split8"
