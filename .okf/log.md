@@ -1,7 +1,8 @@
 # Update Log
 
 ## 2026-09-18
-* **Bounded projection measurements**: [exp-0175](experiments/exp-0175-q4-decode-tile-bandwidth-2026-09-18.md) preserves the stream-read probe and two existing-Q4-tile sweeps with full synthetic CPU-reference parity. Stream bandwidth reaches 241 GB/s; wider tiles do not win uniformly. FFN-down x16 is a candidate for subsequent validation, not an implemented serving change.
+* **QK-only fusion verification**: [exp-0174](experiments/exp-0174-qk-only-device-parity-2026-09-18.md) records ten passing on-device Q4/Q5 parity cases and the homogeneous-Q5 MSL source-dependency fix. OCaml and 79 Python tests pass; full build is blocked by an unrelated Webs interface mismatch. Two Gemma attempts were stopped by the 25% memory guard; the later profiled run completed and shows quantized projections at ~70% of the 79.8 ms decode GPU budget.
+* **Bounded projection measurements**: [exp-0175](experiments/exp-0175-q4-decode-tile-bandwidth-2026-09-18.md) preserves the stream-read probe and existing-Q4-tile sweeps with full synthetic CPU-reference parity, then A/B tests an opt-in FFN-down x16 override on the full model: bit-identical 256-token outputs and both x16 medians (~62 ms) beating both baseline medians (~66-69 ms). Selection traces prove the dispatched kernel; the override stays env-gated experimental.
 * **QK-only fusion verification**: [exp-0174](experiments/exp-0174-qk-only-device-parity-2026-09-18.md) records ten passing on-device Q4/Q5 parity cases and the homogeneous-Q5 MSL source-dependency fix. OCaml and 79 Python tests pass; full build is blocked by an unrelated Webs interface mismatch. Two Gemma attempts were stopped by the 25% memory guard; the later profiled run completed and shows quantized projections at ~70% of the 79.8 ms decode GPU budget.
 
 ## 2026-09-14

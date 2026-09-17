@@ -197,6 +197,10 @@ let validate_linear_shapes ~m ~n ~k input weight output =
 let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
     quant =
   let input_dtype = Ir.Dtype.Quant quant in
+  let override_down_x16 =
+    Sys.getenv_opt "LLMOPT_EXPERIMENTAL_Q4_DOWN_X16" = Some "1"
+    && quant = Ir.Dtype.Q4_0 && m = 1 && n = 3840 && k = 15360
+  in
   let candidates =
     match
       Kernel_abi.Linear_tactic.select_costed ~target:Target_hardware.default ~m ~n ~k
@@ -212,8 +216,24 @@ let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
           ~input_dtype:Ir.Dtype.Float16
           ~storage:(Ir.Linear_storage.Block_quantized quant) ~output_dtype
   in
-  let rec try_candidates = function
+  let candidates =
+    if override_down_x16 then
+      let x16_first left right =
+        let is_x16 tactic =
+          String.ends_with ~suffix:"_x16" (Kernel_abi.Linear_tactic.name tactic)
+        in
+        (if is_x16 right then 1 else 0) - (if is_x16 left then 1 else 0)
+      in
+      List.stable_sort x16_first candidates
+    else candidates
+  in
+  let rec try_candidates ?(traced = false) = function
     | [] ->
+        let () =
+          if traced then
+            Printf.eprintf "quant-linear-select: FALLBACK m=%d n=%d k=%d %s\n%!"
+              m n k (Ir.Dtype.to_string input_dtype)
+        in
         Error
           (Printf.sprintf
              "serving package has no linear kernel for %s -> %s (m=%d n=%d k=%d)"
@@ -225,8 +245,14 @@ let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
           Metal_native.kernel_entry ~name runtime ~operation:Kernel_abi.Operation.Linear
             ~input_dtype ~output_dtype
         with
-        | Ok entry -> Ok entry
-        | Error _ -> try_candidates rest)
+        | Ok entry ->
+            let () =
+              if Sys.getenv_opt "LLMOPT_TRACE_QUANT_LINEAR" = Some "1" then
+                Printf.eprintf "quant-linear-select: m=%d n=%d k=%d -> %s\n%!"
+                  m n k name
+            in
+            Ok entry
+        | Error _ -> try_candidates ~traced:(traced || override_down_x16) rest)
   in
   match candidates with
   | [] ->

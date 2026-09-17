@@ -118,6 +118,54 @@ column groups and reduction remainders; x4 requires N divisible by four.
    The earlier 6.70 GB archive / decode-time ratio is only a useful-byte
    estimate, not a measurement of traffic or a definitive roofline diagnosis.
 
+# Follow-up A/B: FFN-down x16 override on the full model
+
+After this experiment, `select_quant_linear_kernel`
+(`lib/metal_dispatch_common.ml`) gained an env-gated trace
+(`LLMOPT_TRACE_QUANT_LINEAR=1`, every quantized-Linear selection to stderr)
+and an opt-in candidate override (`LLMOPT_EXPERIMENTAL_Q4_DOWN_X16=1`) that
+reorders candidates to prefer `_x16` only for the exact shape
+Q4_0 m=1 n=3840 k=15360, with silent fallback when the package lacks the
+entry. Default behavior is unchanged (no env vars set).
+
+Verified on the saved exp-0173 package on Apple M4 Pro:
+
+- **Selection is real.** With the override, the trace shows 96 decode
+  selections of `llmopt_q4_0_linear_f16_x16` for the down shape per 256-token
+  run (0 fallbacks); baseline arms resolve `_x8` 96 times. Prefill selections
+  (m=4 → `_m4`, m=37 → `_m32`) are untouched in both arms.
+- **Outputs are bit-identical.** All four 256-token runs emit one identical
+  completion sequence, matching the exp-0172 golden
+  (`100,45518,107,14947,135383,568,11124,568,147505,236789,...`); the 4-, 16-,
+  and 32-token pairs are likewise bit-identical across arms.
+- **Latency (pre-registered rule: keep only if both x16 medians beat both
+  baseline medians):**
+
+| 256-token run | TTFT | median inter-token | mean | tok/s |
+|---|---|---|---|---|
+| base1 | 3.708 s | 66.32 ms | 67.58 ms | 12.22 |
+| x16a | 3.094 s | 62.52 ms | 66.09 ms | 12.83 |
+| base2 | 3.162 s | 69.12 ms | 70.86 ms | 12.06 |
+| x16b | 2.790 s | 62.22 ms | 65.40 ms | 13.15 |
+
+Both x16 medians (~62.5 / 62.2 ms) beat both baseline medians
+(~66.3 / 69.1 ms): approximately 10%, consistent with the ~9% standalone
+tile measurement. An earlier short-pair sweep (4/16/32 tokens, receipts
+included) showed per-pair medians swinging 54-70 ms in both directions —
+too noisy to conclude from — which is why the larger interleaved protocol
+was run. Two 256-token runs per arm (510 inter-token gaps per arm) satisfy
+the sample requirement; interleaving base/x16/base/x16 cancels machine drift.
+
+Decision: the override stays **opt-in experimental only** (the
+`LLMOPT_EXPERIMENTAL_*` precedent), not a default. A model-shape special
+case in the generic costed selector remains out of scope without a
+mechanism-level explanation (no counters were collected). The trace hook is
+harmless when unset and is the verification instrument for any future tile
+change.
+
+Receipts: `bench/results/q4-down-x16-2026-09-18/` (four 256-token runs with
+selection traces, six short-pair runs).
+
 # Reproduction
 
 From the repository root on a Metal-capable Mac with the saved package:
