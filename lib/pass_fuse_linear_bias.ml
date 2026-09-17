@@ -525,9 +525,27 @@ let fuse_quant_qkv graph =
                  in
                  if valid_weights then
                    Some
-                     ( q_node, k_node', v_node', m, k, n_q, n_k, n_v,
-                       normalized, q_weight, k_weight, v_weight, k_out, v_out )
+                     (`Triplet
+                       ( q_node, k_node', v_node', m, k, n_q, n_k, n_v,
+                         normalized, q_weight, k_weight, v_weight, k_out, v_out ))
                  else None
+               else None
+           | [ first ] ->
+               let (k_node', _, n_k, _, k_out, _, k_weight) = first in
+               let q_quant = Ir.Value.dtype q_weight in
+               let k_quant = Ir.Value.dtype k_weight in
+               let first_is_k = feeds_rotary_math 0 k_out in
+               let q_rotary = feeds_rotary_math 0 q_out in
+               if
+                 n_q > n_k && q_rotary && first_is_k
+                 && q_quant = k_quant
+                 && (q_quant = Ir.Dtype.Quant Ir.Dtype.Q4_0
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Q5_0)
+               then
+                 Some
+                   (`Pair
+                     ( q_node, k_node', m, k, n_q, n_k,
+                       normalized, q_weight, k_weight, k_out ))
                else None
            | _ -> None)
   in
@@ -535,24 +553,41 @@ let fuse_quant_qkv graph =
   else
     let eliminated =
       List.fold_left
-        (fun set (_, k_node, v_node, _, _, _, _, _, _, _, _, _, _, _) ->
-          set |> Node_id_set.add (Ir.node_id k_node)
-          |> Node_id_set.add (Ir.node_id v_node))
+        (fun set group ->
+          match group with
+          | `Triplet (_, k_node, v_node, _, _, _, _, _, _, _, _, _, _, _) ->
+              set |> Node_id_set.add (Ir.node_id k_node)
+              |> Node_id_set.add (Ir.node_id v_node)
+          | `Pair (_, k_node, _, _, _, _, _, _, _, _) ->
+              set |> Node_id_set.add (Ir.node_id k_node))
         Node_id_set.empty fused_groups
     in
     let replacements =
       List.fold_left
-        (fun map
-             ( q_node, _, _, m, k, n_q, n_k, n_v, normalized, q_weight,
-               k_weight, v_weight, k_out, v_out ) ->
-          let fused =
-            Ir.node_replace q_node
-              ~op:
-                (Ir.Op.Quant_qkv_linear
-                   { m; k; n_q; n_k; n_v; extra_outputs = [ k_out; v_out ] })
-              ~inputs:[ normalized; q_weight; k_weight; v_weight ]
-          in
-          Node_id_map.add (Ir.node_id q_node) fused map)
+        (fun map group ->
+          match group with
+          | `Triplet
+              ( q_node, _, _, m, k, n_q, n_k, n_v, normalized, q_weight,
+                k_weight, v_weight, k_out, v_out ) ->
+              let fused =
+                Ir.node_replace q_node
+                  ~op:
+                    (Ir.Op.Quant_qkv_linear
+                       { m; k; n_q; n_k; n_v; extra_outputs = [ k_out; v_out ] })
+                  ~inputs:[ normalized; q_weight; k_weight; v_weight ]
+              in
+              Node_id_map.add (Ir.node_id q_node) fused map
+          | `Pair
+              ( q_node, _, m, k, n_q, n_k, normalized, q_weight,
+                k_weight, k_out ) ->
+              let fused =
+                Ir.node_replace q_node
+                  ~op:
+                    (Ir.Op.Quant_qkv_linear
+                       { m; k; n_q; n_k; n_v = 0; extra_outputs = [ k_out ] })
+                  ~inputs:[ normalized; q_weight; k_weight ]
+              in
+              Node_id_map.add (Ir.node_id q_node) fused map)
         Node_id_map.empty fused_groups
     in
     nodes

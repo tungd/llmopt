@@ -4,7 +4,130 @@ open Test_support
    shared-cache/paged/prompt-lookup), memory plans, runtime schedule
    execution, and scan recovery through the public Serving_schedule API. *)
 
+(* Exercise the no-V ABI through real schedule execution, including partial
+   column/row tiles. Dyadic inputs keep both reduction orders exactly comparable. *)
+let test_quant_qk_device () =
+  if Sys.command "xcrun -f metal >/dev/null 2>&1" <> 0 then
+    print_endline "[SKIP] QK-only Metal parity: offline Metal compiler unavailable"
+  else
+    let run quant m =
+      let k, n_q, n_k = 64, 19, 11 in
+      let graph = Ir.Graph.create () in
+      let input name shape dtype =
+        tensor_input graph ~name ~source:Ir.Input_source.Runtime ~shape ~dtype
+      in
+      let x = input "x" [ m; k ] Ir.Dtype.Float16 in
+      let qw = input "qw" [ n_q; k ] (Ir.Dtype.Quant quant) in
+      let kw = input "kw" [ n_k; k ] (Ir.Dtype.Quant quant) in
+      let projection weight n name =
+        let output = Ir.Graph.fresh_tensor_value graph
+            ~shape:(Tensor_shape.of_ints_exn [ m; n ]) ~dtype:Ir.Dtype.Float16 in
+        Ir.Graph.append graph
+          ~op:(Ir.Op.Linear { m; n; k; bias = false })
+          ~inputs:[ x; weight ] ~output:(Some output);
+        Ir.Graph.add_output graph ~name output;
+        output
+      in
+      let q = projection qw n_q "q" in
+      let key = projection kw n_k "k" in
+      let fused =
+        Ir.Graph.nodes graph
+        |> List.filter_map (fun node ->
+             match Ir.node_output node with
+             | Some output when Ir.Value.equal output key -> None
+             | Some output when Ir.Value.equal output q ->
+                 Some (Ir.node_replace node
+                   ~op:(Ir.Op.Quant_qkv_linear
+                     { m; k; n_q; n_k; n_v = 0; extra_outputs = [ key ] })
+                   ~inputs:[ x; qw; kw ])
+             | _ -> Some node)
+        |> Ir.Graph.with_nodes graph
+      in
+      let x_bytes = Bytes.make (m * k * 2) '\000' in
+      for row = 0 to m - 1 do
+        for col = 0 to k - 1 do
+          Bytes.set_uint16_le x_bytes (2 * (row * k + col))
+            (if (row + col) mod 3 = 0 then 0xb800 else 0x3400)
+        done
+      done;
+      let weights n seed =
+        let block_bytes, quant_offset =
+          match quant with
+          | Ir.Dtype.Q4_0 -> 18, 2
+          | Ir.Dtype.Q5_0 -> 22, 6
+          | _ -> fail "QK fixture only supports Q4_0 and Q5_0"
+        in
+        let bytes = Bytes.make (n * (k / 32) * block_bytes) '\000' in
+        for block = 0 to n * (k / 32) - 1 do
+          let offset = block * block_bytes in
+          Bytes.set_uint16_le bytes offset 0x3000; (* scale 1/8 *)
+          if quant = Ir.Dtype.Q5_0 then
+            Bytes.set_int32_le bytes (offset + 2)
+              (if block mod 2 = 0 then 0x5a5a5a5al else 0xa5a5a5a5l);
+          for i = 0 to 15 do
+            let low = (block + i + seed) mod 16 in
+            let high = (3 * block + 5 * i + seed) mod 16 in
+            Bytes.set_uint8 bytes (offset + quant_offset + i) (low lor (high lsl 4))
+          done
+        done;
+        bytes
+      in
+      let inputs = [ "x", x_bytes; "qw", weights n_q 1; "kw", weights n_k 7 ] in
+      let execute graph =
+        let schedule = Serving_schedule.of_graph graph |> expect_ok
+          |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok in
+        let program = Metal.lower graph |> expect_ok in
+        let dir = Filename.temp_file "llmopt-qk-" "" in
+        Sys.remove dir;
+        Unix.mkdir dir 0o700;
+        let path name = Filename.concat dir name in
+        Fun.protect
+          ~finally:(fun () ->
+            List.iter (fun name -> Sys.remove (path name)) (Array.to_list (Sys.readdir dir));
+            Unix.rmdir dir)
+          (fun () ->
+            let channel = open_out (path "kernel.metal") in
+            Fun.protect ~finally:(fun () -> close_out channel)
+              (fun () -> output_string channel (Metal.Program.source program));
+            expect (Sys.command (Printf.sprintf
+              "xcrun metal -c %s -o %s && xcrun metallib %s -o %s"
+              (Filename.quote (path "kernel.metal")) (Filename.quote (path "kernel.air"))
+              (Filename.quote (path "kernel.air")) (Filename.quote (path "kernel.metallib"))) = 0)
+              "QK parity fixture compiles";
+            let files = Serving_package.Files.create
+                ~metal_library:(Serving_package.Artifact.create "kernel.metallib" |> expect_ok) in
+            let package = Serving_package.compiled_graph ~files
+                ~kernels:(Metal.Program.kernels program) ~schedule
+                ~cache:Serving_package.Cache.default () |> expect_ok in
+            let runtime = Metal_runtime.load_package ~root:dir package |> expect_ok in
+            let inputs = List.map (fun (name, bytes) ->
+              name, (Metal_runtime.Buffer.of_bytes ~runtime bytes |> expect_ok)) inputs in
+            let execution = Metal_runtime.with_execution_batch runtime (fun batch ->
+              Metal_runtime.encode_schedule batch ~schedule ~inputs) |> expect_ok in
+            let output name =
+              Metal_runtime.Execution.output execution ~name
+              |> Option.to_result ~none:("missing QK output " ^ name) |> expect_ok
+              |> Metal_runtime.Buffer.contents |> expect_ok in
+            (output "q", output "k", Metal_runtime.Execution.kernels execution))
+      in
+      let reference_q, reference_k, _ = execute graph in
+      let actual_q, actual_k, kernels = execute fused in
+      expect (Bytes.length actual_q = m * n_q * 2 && Bytes.length actual_k = m * n_k * 2)
+        "QK-only execution preserves both output extents";
+      expect (Bytes.equal actual_q reference_q && Bytes.equal actual_k reference_k)
+        (Printf.sprintf "QK-only bit-exact separate-projection parity (%s, m=%d)"
+          (Ir.Dtype.to_string (Ir.Dtype.Quant quant)) m);
+      expect (List.length kernels = 1 &&
+        List.exists (fun name -> contains_substring name "qkv_linear") kernels)
+        "QK-only executes one fused projection kernel";
+      Printf.printf "[PASS] QK-only on-device parity %s m=%d (Q=%d, K=%d)\n%!"
+        (Ir.Dtype.to_string (Ir.Dtype.Quant quant)) m n_q n_k
+    in
+    List.iter (fun quant -> List.iter (run quant) [ 1; 2; 4; 16; 33 ])
+      [ Ir.Dtype.Q4_0; Ir.Dtype.Q5_0 ]
+
 let run () =
+  test_quant_qk_device ();
 
   let generalized_attention_graph = Ir.Graph.create () in
   let generalized_input name shape dtype =
@@ -1301,6 +1424,80 @@ let run () =
     (contains_substring (Metal.Program.source q4_qkv_program)
        "kernel void llmopt_q4_0_qkv_linear_f16_m32")
     "Metal lowering emits the all-Q4_0 QKV m32 batched kernel";
+
+  let q4_qk_graph = Ir.Graph.create () in
+  let q4_qk_fresh shape =
+    Ir.Graph.fresh_tensor_value q4_qk_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let q4_qk_input =
+    tensor_input q4_qk_graph ~name:"q4_qk_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 576 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let q4_qk_q_weight =
+    tensor_input q4_qk_graph ~name:"q4_qk_q_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_qk_q_weight" })
+      ~shape:[ 576; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_qk_k_weight =
+    tensor_input q4_qk_graph ~name:"q4_qk_k_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "q4_qk_k_weight" })
+      ~shape:[ 192; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)
+  in
+  let q4_qk_q_out = q4_qk_fresh [ 1; 1; 9; 64 ] in
+  let q4_qk_k_out = q4_qk_fresh [ 1; 1; 3; 64 ] in
+  Ir.Graph.append q4_qk_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 576; k = 576; bias = false })
+    ~inputs:[ q4_qk_input; q4_qk_q_weight ] ~output:(Some q4_qk_q_out);
+  Ir.Graph.append q4_qk_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 192; k = 576; bias = false })
+    ~inputs:[ q4_qk_input; q4_qk_k_weight ] ~output:(Some q4_qk_k_out);
+  let q4_qk_cos =
+    tensor_input q4_qk_graph ~name:"q4_qk_cosine" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let q4_qk_sin =
+    tensor_input q4_qk_graph ~name:"q4_qk_sine" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let q4_qk_rot_q = q4_qk_fresh [ 1; 9; 1; 64 ] in
+  let q4_qk_rot_k = q4_qk_fresh [ 1; 3; 1; 64 ] in
+  Ir.Graph.append q4_qk_graph
+    ~op:
+      (Ir.Op.Rotary_qk
+         { q_heads = 9; k_heads = 3; width = 64; half_dimension = 32;
+           extra_outputs = [ q4_qk_rot_k ] })
+    ~inputs:[ q4_qk_q_out; q4_qk_k_out; q4_qk_cos; q4_qk_sin ] ~output:(Some q4_qk_rot_q);
+  Ir.Graph.add_output q4_qk_graph ~name:"q" q4_qk_rot_q;
+  Ir.Graph.add_output q4_qk_graph ~name:"k" q4_qk_rot_k;
+  let q4_qk_fused = Pass_fuse_linear_bias.fuse_quant_qkv q4_qk_graph in
+  expect
+    (Ir.Graph.nodes q4_qk_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Quant_qkv_linear
+                 { m = 1; k = 576; n_q = 576; n_k = 192; n_v = 0;
+                   extra_outputs = [ k ] },
+               [ input; q; k_w ] ) ->
+               Ir.Value.equal input q4_qk_input
+               && Ir.Value.equal q q4_qk_q_weight
+               && Ir.Value.equal k_w q4_qk_k_weight
+               && Ir.Value.equal k q4_qk_k_out
+           | _ -> false))
+    "dual QK topology fuses into Quant_qkv_linear with n_v = 0";
+  let q4_qk_schedule =
+    q4_qk_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands q4_qk_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Quant_qkv_linear { n_q = 576; n_k = 192; n_v = 0; _ } ->
+               true
+           | _ -> false))
+    "dual QK Quant_qkv_linear survives schedule serialization and validation";
 
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name

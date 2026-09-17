@@ -403,6 +403,9 @@ open Serving_schedule_core
         let* k_out = specialized_matrix_value substitutions ~rows:m ~columns:n_k k_out in
         let* v_out = specialized_matrix_value substitutions ~rows:m ~columns:n_v v_out in
         Ok [ k_out; v_out ]
+    | Ir.Op.Quant_qkv_linear { m; n_k; n_v = 0; _ }, [ k_out ] ->
+        let* k_out = specialized_matrix_value substitutions ~rows:m ~columns:n_k k_out in
+        Ok [ k_out ]
     | Ir.Op.Quant_qkv_linear { m; n_k; n_v; _ }, [ k_out; v_out ] ->
         let* k_out = specialized_matrix_value substitutions ~rows:m ~columns:n_k k_out in
         let* v_out = specialized_matrix_value substitutions ~rows:m ~columns:n_v v_out in

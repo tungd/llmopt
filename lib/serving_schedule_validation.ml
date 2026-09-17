@@ -154,6 +154,19 @@ let quant_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output
       && Tensor_shape.numel (Ir.Value.logical_shape v_out) = m * n_v
       && dimensions qw = [ n_q; k ] && dimensions kw = [ n_k; k ]
       && dimensions vw = [ n_v; k ]
+  | [ input; qw; kw ], [ k_out ] when n_v = 0 ->
+      m > 0 && k > 0 && n_q > 0 && n_k > 0
+      && k mod 32 = 0 && f16 input && f16 output && f16 k_out
+      && (match Ir.Value.dtype qw with
+          | Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q4_0
+          | Ir.Dtype.Quant Ir.Dtype.Q5_0 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q5_0
+          | _ -> false)
+      && Tensor_shape.numel (Ir.Value.logical_shape input) = m * k
+      && Tensor_shape.numel (Ir.Value.logical_shape output) = m * n_q
+      && Tensor_shape.numel (Ir.Value.logical_shape k_out) = m * n_k
+      && dimensions qw = [ n_q; k ] && dimensions kw = [ n_k; k ]
   | _ -> false
 
 let same_value_metadata left right =

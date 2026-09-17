@@ -404,7 +404,7 @@ let q4_0_qkv_source =
   in
   q4_0_qkv_base_source ^ "\n" ^ generated
 
-let q5_0_qkv_source = {|
+let q5_0_qkv_homogeneous_source = {|
 kernel void llmopt_q5_0_qkv_linear_f16(
     device const half* input [[buffer(0)]],
     device const block_q5_0* q_weight [[buffer(1)]],
@@ -529,6 +529,9 @@ kernel void llmopt_q5_0_qkv_linear_f16_llama_mv(
   }
 }
 
+|}
+
+let q5_0_qkv_mixed_source = {|
 kernel void llmopt_q5_0_qkv_linear_vq8_f16(
     device const half* input [[buffer(0)]],
     device const block_q5_0* q_weight [[buffer(1)]],
@@ -689,7 +692,7 @@ let q4_0_qkv_entries =
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16 ]
 
-let q5_0_qkv_entries =
+let q5_0_qkv_homogeneous_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q5_0_qkv_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
@@ -697,8 +700,10 @@ let q5_0_qkv_entries =
     kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
       ~name:"llmopt_q5_0_qkv_linear_f16_llama_mv"
       ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16 ]
+
+let q5_0_qkv_mixed_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q5_0_qkv_linear_vq8_f16"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
@@ -706,6 +711,9 @@ let q5_0_qkv_entries =
       ~name:"llmopt_q5_0_qkv_linear_vq8_f16_llama_mv"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16 ]
+
+let q5_0_qkv_source = q5_0_qkv_homogeneous_source ^ q5_0_qkv_mixed_source
+let q5_0_qkv_entries = q5_0_qkv_homogeneous_entries @ q5_0_qkv_mixed_entries
 
 let quant_qkv_entries = q4_0_qkv_entries @ q5_0_qkv_entries
 let quant_qkv_source = quant_qkv_params_source ^ q4_0_qkv_source ^ q5_0_qkv_source

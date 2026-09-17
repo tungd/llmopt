@@ -213,23 +213,35 @@ let dispatch_quant_qkv_linear_command (context : Metal_execution_state.context)
     state ~m ~k ~n_q ~n_k ~n_v ~extra_outputs values output =
   let batch = context.batch in
   let runtime = context.runtime in
-  let* input_value, q_weight_value, k_weight_value, v_weight_value =
+  let* input_value, q_weight_value, k_weight_value, v_weight_value_opt =
     match values with
-    | [ input; qw; kw; vw ] -> Ok (input, qw, kw, vw)
+    | [ input; qw; kw; vw ] -> Ok (input, qw, kw, Some vw)
+    | [ input; qw; kw ] when n_v = 0 -> Ok (input, qw, kw, None)
     | _ -> Error "quantized QKV linear command has inconsistent inputs"
   in
   let* input = Metal_execution_state.find_value state input_value in
   let* q_weight = Metal_execution_state.find_value state q_weight_value in
   let* k_weight = Metal_execution_state.find_value state k_weight_value in
-  let* v_weight = Metal_execution_state.find_value state v_weight_value in
+  (* Keep the fixed QKV kernel ABI. With n_v = 0 no V groups are dispatched,
+     so the unused V slots may alias K without allocating dummy buffers. *)
+  let* v_weight =
+    match v_weight_value_opt with
+    | Some v_weight_value -> Metal_execution_state.find_value state v_weight_value
+    | None -> Ok k_weight
+  in
   let* q_output_buffer = Metal_execution_state.workspace_buffer state output in
-  let* k_output_value, v_output_value =
-    match extra_outputs with
-    | [ k_output; v_output ] -> Ok (k_output, v_output)
-    | _ -> Error "quantized QKV linear command requires K and V outputs"
+  let* k_output_value, v_output_value_opt =
+    match extra_outputs, n_v with
+    | [ k_output; v_output ], _ -> Ok (k_output, Some v_output)
+    | [ k_output ], 0 -> Ok (k_output, None)
+    | _ -> Error "quantized QKV linear command requires K and V outputs (or K output when n_v = 0)"
   in
   let* k_output_buffer = Metal_execution_state.workspace_buffer state k_output_value in
-  let* v_output_buffer = Metal_execution_state.workspace_buffer state v_output_value in
+  let* v_output_buffer =
+    match v_output_value_opt with
+    | Some v_output_value -> Metal_execution_state.workspace_buffer state v_output_value
+    | None -> Ok k_output_buffer
+  in
   let* parameters = Parameters.u32s [ m; k; n_q; n_k; n_v ] in
   let experimental_llama_mv =
     Sys.getenv_opt "LLMOPT_EXPERIMENTAL_QKV_LLAMA_MV" = Some "1"
@@ -238,7 +250,11 @@ let dispatch_quant_qkv_linear_command (context : Metal_execution_state.context)
     Sys.getenv_opt "LLMOPT_EXPERIMENTAL_MIXED_QKV_LLAMA_MV" = Some "1"
   in
   let q_dtype = Ir.Value.dtype q_weight_value in
-  let v_dtype = Ir.Value.dtype v_weight_value in
+  let v_dtype =
+    match v_weight_value_opt with
+    | Some vw -> Ir.Value.dtype vw
+    | None -> q_dtype
+  in
   let* name =
     Quant_qkv_tactic.kernel_name ~q_dtype ~experimental_llama_mv
       ~experimental_mixed_llama_mv ~m ~v_dtype
@@ -292,7 +308,12 @@ let dispatch_quant_qkv_linear_command (context : Metal_execution_state.context)
   in
   let state = Metal_execution_state.bind_value state output q_output_buffer in
   let state = Metal_execution_state.bind_value state k_output_value k_output_buffer in
-  let state = Metal_execution_state.bind_value state v_output_value v_output_buffer in
+  let state =
+    match v_output_value_opt with
+    | Some v_output_value ->
+        Metal_execution_state.bind_value state v_output_value v_output_buffer
+    | None -> state
+  in
   Ok (state, [ kernel ])
 
 let dispatch_w4a16_lm_head_argmax_command (context : Metal_execution_state.context)

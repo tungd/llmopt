@@ -423,11 +423,19 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     else
       quant_qkv_params_source
       ^ (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_source else "")
-      ^ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then q5_0_qkv_source else "")
+      ^ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then
+           Metal_quant_qkv_source.q5_0_qkv_homogeneous_source
+           ^ (if List.mem Ir.Dtype.Q8_0 quant_types then
+                Metal_quant_qkv_source.q5_0_qkv_mixed_source else "")
+         else "")
   in
   let quant_qkv_entries =
     (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_entries else [])
-    @ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then q5_0_qkv_entries else [])
+    @ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then
+         Metal_quant_qkv_source.q5_0_qkv_homogeneous_entries
+         @ (if List.mem Ir.Dtype.Q8_0 quant_types then
+              Metal_quant_qkv_source.q5_0_qkv_mixed_entries else [])
+       else [])
   in
   let quant_add_tactics =
     quant_linear_add_tactics ~target graph @ region_quant_add_tactics
