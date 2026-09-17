@@ -123,3 +123,5 @@ recompiled with the QK change; these numbers diagnose the existing package.
 
 The 4 generated tokens `100, 45518, 107, 14947` match the exp-0173 golden
 prefix. See [prior full-model result](exp-0173-gemma4-uoc-g4p12-2026-09-14.md).
+
+Follow-up: [bounded tile and stream measurements](exp-0175-q4-decode-tile-bandwidth-2026-09-18.md) reject blanket column-tile widening; FFN-down x16 remains a candidate, with production selection unchanged.

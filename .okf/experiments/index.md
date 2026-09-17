@@ -1,5 +1,7 @@
 # Experiments
 
+* [Bounded Q4 decode tile bandwidth](exp-0175-q4-decode-tile-bandwidth-2026-09-18.md) - two exact-parity x4/x8/x16 sweeps show shape-dependent wins; production selection unchanged.
+
 * [QK-only device parity, microbenchmark, and decode kernel breakdown](exp-0174-qk-only-device-parity-2026-09-18.md) - ten Q4/Q5 on-device parity cases, Q5 source-dependency fix, Gemma-shape microbenchmark, and the 79.8 ms serial decode breakdown locating 70% of GPU time in quantized projections.
 
 * [Unified compiler Gemma 4 repair and queue-collapse diagnosis](exp-0139-unified-compiler-gemma4-repair-2026-09-02.md) - constructive Q4_0/GELU coverage, AOT queue deltas, direct-command repair, widened native fixtures, F32 Gemma constants, and the unmatched generation-policy boundary.
