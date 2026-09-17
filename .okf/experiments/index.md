@@ -1,5 +1,7 @@
 # Experiments
 
+* [QK-only device parity, microbenchmark, and decode kernel breakdown](exp-0174-qk-only-device-parity-2026-09-18.md) - ten Q4/Q5 on-device parity cases, Q5 source-dependency fix, Gemma-shape microbenchmark, and the 79.8 ms serial decode breakdown locating 70% of GPU time in quantized projections.
+
 * [Unified compiler Gemma 4 repair and queue-collapse diagnosis](exp-0139-unified-compiler-gemma4-repair-2026-09-02.md) - constructive Q4_0/GELU coverage, AOT queue deltas, direct-command repair, widened native fixtures, F32 Gemma constants, and the unmatched generation-policy boundary.
 * [Constructive RMSNorm and RoPE Gemma execution](exp-0142-constructive-rms-rope-gemma4-2026-09-03.md) - 337 primitive regions per entrypoint execute from assignment bindings and select token 100 on the pinned prompt.
 * [Length-invariant decode execution and schema-generated block-quant Metal](exp-0145-static-decode-and-schema-metal-2026-09-03.md) - fixture-proven memory-plan serialization, dynamic-uniform dispatch reuse, pipeline preload, schema-generated Linear source, and completed 128-token Gemma execution at 5.22 tok/s.

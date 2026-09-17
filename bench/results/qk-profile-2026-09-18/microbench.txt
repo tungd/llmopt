@@ -1,0 +1,6 @@
+QK_BENCH separate Q4_0 m=1 k=576 nq=576 nk=192 median_us=154.02 p10_us=132.80 p90_us=507.12
+QK_BENCH fused Q4_0 m=1 k=576 nq=576 nk=192 median_us=132.80 p10_us=113.96 p90_us=315.19
+[PASS] QK-only on-device parity Q4_0 m=1 (Q=576, K=192)
+QK_BENCH separate Q5_0 m=1 k=576 nq=576 nk=192 median_us=152.11 p10_us=132.08 p90_us=231.03
+QK_BENCH fused Q5_0 m=1 k=576 nq=576 nk=192 median_us=159.03 p10_us=113.96 p90_us=431.06
+[PASS] QK-only on-device parity Q5_0 m=1 (Q=576, K=192)

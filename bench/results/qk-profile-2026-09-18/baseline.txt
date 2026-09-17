@@ -1,0 +1,8 @@
+Command: _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --max-new-tokens 4 --token-capacity 128 --checkpoint-capacity 8
+LLMOPT_PROFILE_BREAKDOWN=unset
+Preflight: The system has 25769803776 (1572864 pages with a page size of 16384).
+System-wide memory free percentage: 47%
+
+STOP: free=24%, elapsed=6.0s
+
+Exit: -15; minimum observed free memory: 24%

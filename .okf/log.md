@@ -1,5 +1,8 @@
 # Update Log
 
+## 2026-09-18
+* **QK-only fusion verification**: [exp-0174](experiments/exp-0174-qk-only-device-parity-2026-09-18.md) records ten passing on-device Q4/Q5 parity cases and the homogeneous-Q5 MSL source-dependency fix. OCaml and 79 Python tests pass; full build is blocked by an unrelated Webs interface mismatch. Two Gemma attempts were stopped by the 25% memory guard; the later profiled run completed and shows quantized projections at ~70% of the 79.8 ms decode GPU budget.
+
 ## 2026-09-14
 * **Gemma 4 12B QAT on-device execution with Unified Optimizing Compiler (exp-0173)**: Executed full-model Gemma 4 (12B QAT UD-Q4_K_XL) compiled with the Unified Optimizing Compiler (G4P12 typed contraction-group algebra):
   - **Zero Bespoke Kernels & 51% Command Slashing**: Slashed Metal dispatches from 4,617 down to 2,260 commands per decode step (-51.0% commands eliminated), emitting 109 parametric kernels via typed contraction-group algebra and `Applicative_expr` IR with zero handwritten bespoke kernels.

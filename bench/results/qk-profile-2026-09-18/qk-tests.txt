@@ -1,0 +1,19 @@
+Command: ninja -f ninja.build ocaml-test
+Exit: 0
+Device: Apple M4 Pro
+Fixture: k=64, Q columns=19, K columns=11; signed dyadic activations and varied Q4/Q5 packed weights.
+Oracle: byte equality against separate Q and K Linear execution; one fused kernel dispatched.
+[PASS] QK-only on-device parity Q4_0 m=1 (Q=19, K=11)
+[PASS] QK-only on-device parity Q4_0 m=2 (Q=19, K=11)
+[PASS] QK-only on-device parity Q4_0 m=4 (Q=19, K=11)
+[PASS] QK-only on-device parity Q4_0 m=16 (Q=19, K=11)
+[PASS] QK-only on-device parity Q4_0 m=33 (Q=19, K=11)
+[PASS] QK-only on-device parity Q5_0 m=1 (Q=19, K=11)
+[PASS] QK-only on-device parity Q5_0 m=2 (Q=19, K=11)
+[PASS] QK-only on-device parity Q5_0 m=4 (Q=19, K=11)
+[PASS] QK-only on-device parity Q5_0 m=16 (Q=19, K=11)
+[PASS] QK-only on-device parity Q5_0 m=33 (Q=19, K=11)
+
+Python: ninja -f ninja.build test; exit 0; 79 tests passed.
+Full build: ninja -f ninja.build all test; exit 2; Webs interface mismatch between _build/ocaml/webs_iomux.cmi and installed webs.cmi.
+Benchmark executable: ninja -f ninja.build _build/bin/llmopt-bench-tokens; exit 0.
