@@ -1,0 +1,17 @@
+device=Apple M4 Pro source=_artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14/decode/kernel.metal
+m=1 threads_per_group=256 warmups=3 samples=11 tile_order=rotating
+GPU timestamps: one dispatch, excludes CPU validation and preceding 256MiB blit-fill cache perturbation.
+Synthetic Q4_0: dyadic x and scale; full CPU integer-dot oracle; every timed output checked bit-exact.
+GBps = packed weight bytes / GPU seconds, NOT measured DRAM traffic. No full-model speedup claim.
+n=   68 k=   96 tile=x 4 groups=  3 weight_bytes=    3672 median_us=    4.33 min_us=    3.88 max_us=    7.92 GBps=   0.85 parity=PASS(68/68)
+n=   68 k=   96 tile=x 8 groups=  2 weight_bytes=    3672 median_us=    6.37 min_us=    5.46 max_us=  173.38 GBps=   0.58 parity=PASS(68/68)
+n=   68 k=   96 tile=x16 groups=  1 weight_bytes=    3672 median_us=    9.50 min_us=    8.46 max_us=   43.13 GBps=   0.39 parity=PASS(68/68)
+n= 3840 k= 4096 tile=x 4 groups=120 weight_bytes= 8847360 median_us=   85.50 min_us=   66.92 max_us=  178.63 GBps= 103.48 parity=PASS(3840/3840)
+n= 3840 k= 4096 tile=x 8 groups= 60 weight_bytes= 8847360 median_us=   92.50 min_us=   90.71 max_us=  109.71 GBps=  95.65 parity=PASS(3840/3840)
+n= 3840 k= 4096 tile=x16 groups= 30 weight_bytes= 8847360 median_us=   89.25 min_us=   84.88 max_us=  111.88 GBps=  99.13 parity=PASS(3840/3840)
+n=15360 k= 3840 tile=x 4 groups=480 weight_bytes=33177600 median_us=  245.04 min_us=  233.75 max_us=  359.87 GBps= 135.40 parity=PASS(15360/15360)
+n=15360 k= 3840 tile=x 8 groups=240 weight_bytes=33177600 median_us=  236.50 min_us=  228.75 max_us=  253.13 GBps= 140.29 parity=PASS(15360/15360)
+n=15360 k= 3840 tile=x16 groups=120 weight_bytes=33177600 median_us=  265.50 min_us=  238.62 max_us=  270.79 GBps= 124.96 parity=PASS(15360/15360)
+n= 3840 k=15360 tile=x 4 groups=120 weight_bytes=33177600 median_us=  261.29 min_us=  257.08 max_us=  389.37 GBps= 126.98 parity=PASS(3840/3840)
+n= 3840 k=15360 tile=x 8 groups= 60 weight_bytes=33177600 median_us=  282.75 min_us=  266.79 max_us=  321.13 GBps= 117.34 parity=PASS(3840/3840)
+n= 3840 k=15360 tile=x16 groups= 30 weight_bytes=33177600 median_us=  257.79 min_us=  224.37 max_us=  278.42 GBps= 128.70 parity=PASS(3840/3840)
