@@ -483,9 +483,7 @@ let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
   let* () =
     match cache, cache_pack with
     | Some cache, Some pack_fn ->
-        let cache_batch =
-          { Cache.cache; commands = batch.commands; resources = []; dispatches = 0 }
-        in
+        let cache_batch = Cache.retained_batch cache batch.commands in
         let* () = pack_fn execution cache_batch in
         batch.resources <- cache_batch.resources @ batch.resources;
         Ok ()

@@ -93,6 +93,39 @@ let exercise_cache runtime format =
   let key_destination = destination (Bytes.length key_bytes) in
   let value_destination = destination (Bytes.length value_bytes) in
   let checkpoint_destination = destination (Bytes.length checkpoint_bytes) in
+  let async_key_values = Array.sub key_values 0 64 in
+  let async_key_bytes = f16_bytes async_key_values in
+  let async_key_source = buffer async_key_bytes in
+  let async_key_destination = destination (Bytes.length async_key_bytes) in
+  let async_slot = Kv_cache.reserve_tokens ownership 1 |> expect_kv in
+  let async_other_slot =
+    if Kv_cache.Slot.to_int async_slot.(0) = 0 then 1 else 0
+  in
+  let rec verify_async_pack count =
+    if count = 0 then Ok ()
+    else
+      let* _ =
+        Metal_runtime.Cache.with_batch_async cache (fun batch ->
+            Metal_runtime.Cache.batch_pack_attention batch ~layer:0
+              ~kind:Metal_runtime.Cache.Attention.Key ~slots:async_slot
+              ~source:async_key_source)
+      in
+      let* () =
+        Metal_runtime.Cache.update_pack_slot cache
+          (Kv_cache.Slot.of_int async_other_slot)
+      in
+      let* _ =
+        Metal_runtime.Cache.with_batch cache (fun batch ->
+            Metal_runtime.Cache.batch_unpack_attention batch ~layer:0
+              ~kind:Metal_runtime.Cache.Attention.Key ~slots:async_slot
+              ~destination:async_key_destination)
+      in
+      expect_buffer
+        "async attention cache pack remains bound to its submitted slot"
+        async_key_bytes async_key_destination;
+      verify_async_pack (count - 1)
+  in
+  verify_async_pack 16 |> expect_ok;
   let kernels =
     Metal_runtime.Cache.with_batch cache (fun batch ->
         let* pack_key =

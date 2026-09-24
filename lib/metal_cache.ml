@@ -49,13 +49,29 @@ type batch = {
   commands : Batch.t;
   mutable resources : Buffer.t list;
   mutable dispatches : int;
+  pack_slots_scratch : Buffer.t;
 }
 
 let release_batch_resources batch = batch.resources <- []
 
+(* Retained decode batches use the cache-owned scratch because
+   [update_pack_slot] mutates it before the retained plan executes. An async
+   batch cannot share that storage: its command may still be in flight when
+   decode updates the next slot. *)
+let make_batch cache commands pack_slots_scratch =
+  {
+    cache;
+    commands;
+    resources = [ pack_slots_scratch ];
+    dispatches = 0;
+    pack_slots_scratch;
+  }
+
+let retained_batch cache commands = make_batch cache commands cache.pack_slots_scratch
+
 let with_batch cache operation =
   let* commands = Batch.create cache.runtime in
-  let batch = { cache; commands; resources = []; dispatches = 0 } in
+  let batch = retained_batch cache commands in
   match operation batch with
   | Error message ->
       ignore (Batch.abort commands);
@@ -75,8 +91,12 @@ let with_batch cache operation =
       raise exception_value
 
 let with_batch_async cache operation =
+  let* pack_slots_scratch =
+    Buffer.create ~runtime:cache.runtime
+      ~bytes:(max 32768 (Kv_cache.Config.token_capacity cache.config * 4))
+  in
   let* commands = Batch.create cache.runtime in
-  let batch = { cache; commands; resources = []; dispatches = 0 } in
+  let batch = make_batch cache commands pack_slots_scratch in
   match operation batch with
   | Error message ->
       ignore (Batch.abort commands);
@@ -244,7 +264,7 @@ let validate_layer layer count label =
 let group_size format =
   Kv_cache.Format.group_size format |> Option.value ~default:1
 
-let slots_buffer ?(pack = false) cache slots =
+let slots_buffer ?batch ?(pack = false) cache slots =
   let count = Array.length slots in
   if count = 0 then Error "physical attention cache requires at least one slot"
   else
@@ -255,7 +275,11 @@ let slots_buffer ?(pack = false) cache slots =
            count capacity)
     else
       let scratch =
-        if pack then cache.pack_slots_scratch else cache.slots_scratch
+        if pack then
+          match batch with
+          | Some batch -> batch.pack_slots_scratch
+          | None -> cache.pack_slots_scratch
+        else cache.slots_scratch
       in
       let int_slots = Array.map Kv_cache.Slot.to_int slots in
       let* () = Buffer.set_u32_array scratch ~offset:0 int_slots in
@@ -372,7 +396,7 @@ let attention ?batch cache ~pack ~layer ~kind ~slots ~source_items
     exact_buffer_length buffer expected_bytes
       (if pack then "attention source" else "attention destination")
   in
-  let* slots_buffer = slots_buffer ~pack cache slots in
+  let* slots_buffer = slots_buffer ?batch ~pack cache slots in
   let* parameters =
     attention_parameters cache ~layer ~kind ~items ~source_items
       ~source_offset
@@ -471,7 +495,7 @@ let batch_pack_attention_pair_slice batch ~layer ~slots ~source_items
       let* () =
         exact_buffer_length value_source expected_bytes "attention value source"
       in
-      let* slots_buffer = slots_buffer ~pack:true cache slots in
+      let* slots_buffer = slots_buffer ~batch ~pack:true cache slots in
       let* parameters =
         attention_pair_parameters cache ~layer ~items ~source_items
           ~source_offset
@@ -589,6 +613,6 @@ let q8_attention_inputs cache ~slots =
     [ Serving_schedule.Sequence.q8_attention_pool_input, cache.token_pool;
       Serving_schedule.Sequence.q8_attention_slots_input, slots ]
 
-let update_pack_slot cache slot =
+let update_pack_slot (cache : t) slot =
   Buffer.set_u32_array cache.pack_slots_scratch ~offset:0
     [| Kv_cache.Slot.to_int slot |]

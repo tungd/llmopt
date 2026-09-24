@@ -78,14 +78,7 @@ let with_execution_batch runtime operation =
       raise exception_value
 
 let encode_cache execution_batch cache operation =
-  let batch =
-    {
-      Metal_cache.cache;
-      commands = execution_batch.Execution_batch.commands;
-      resources = [];
-      dispatches = 0;
-    }
-  in
+  let batch = Metal_cache.retained_batch cache execution_batch.Execution_batch.commands in
   let retain_resources () =
     execution_batch.resources <- batch.resources @ execution_batch.resources
   in

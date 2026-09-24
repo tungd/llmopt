@@ -9,12 +9,15 @@ type batch = {
   commands : Metal_native.Batch.t;
   mutable resources : Metal_native.Buffer.t list;
   mutable dispatches : int;
+  pack_slots_scratch : Metal_native.Buffer.t;
 }
 
 val create : runtime:Metal_native.runtime -> config:Kv_cache.Config.t -> (t, string) result
 val format : t -> Kv_cache.Format.t
 val token_pool_bytes : t -> int
 val checkpoint_pool_bytes : t -> int
+
+val retained_batch : t -> Metal_native.Batch.t -> batch
 
 val with_batch :
   t -> (batch -> ('a, string) result) -> ('a, string) result
