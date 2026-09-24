@@ -40,6 +40,71 @@ TPOT. Both endpoints receive the same trace and pinned output counts. The SSE
 interface records timing and visible output; it does not expose cross-runtime
 token IDs.
 
+## Model-adoption matrix
+
+The receipt-first adoption matrix records the work needed to add a model to the
+captured compiler/runtime path. Unknown values remain `null`; the matrix does
+not infer implementation cost from a benchmark result.
+
+Validate and summarize the checked-in matrix:
+
+```sh
+python3 bench/model_adoption_matrix.py
+```
+
+The source matrix is `results/model-adoption-matrix.json`. Each row should add
+new receipts and update the following dimensions when they are measured:
+
+- FX/IR node and opaque-command counts;
+- new primitive semantics, fusion strategies, and backend tactics;
+- first correct-token time and output-parity boundary;
+- TTFT, TPOT, throughput, and a protocol-matched llama.cpp ratio.
+
+The planned cohort is deliberately a control set rather than a performance
+set. Add a model only when its asset, graph capture, and comparison protocol are
+available.
+
+## Compiler-coverage receipts
+
+Audit an optimization receipt and, when available, its package directory to
+make primitive coverage, fusion boundaries, backend tactics, and AOT queue facts
+explicit:
+
+```sh
+python3 bench/audit_coverage_receipts.py /path/to/engine
+```
+
+The audit is read-only. It reports only facts present in the receipt and
+package-check output; it never infers that an absent primitive or tactic is
+covered. Pass `--package-check ""` to audit receipts without invoking the
+package checker.
+
+## Projection cost-model evidence
+
+The Q4 projection tile probe retains measured x4/x8/x16 timings, while the
+compiler currently uses an analytic cost model to rank those tactics. Join the
+receipts without changing the selector:
+
+```sh
+python3 bench/analyze_projection_cost_model.py \
+  --output bench/results/projection-cost-model-2026-09-23.json
+```
+
+The report mirrors the current `Kernel_abi.Linear_tactic` assumptions for Q4_0
+single-row projections and records workgroups, weight/activation traffic,
+register pressure, occupancy, bandwidth utilization, predicted latency, and
+observed median latency. It is a comparison aid, not a learned predictor. The
+current receipt shows the model choosing x8 for the measured FFN-down shape
+(`m=1, n=3840, k=15360`) while the two-run synthetic median chooses x16 by
+about 1.10x. That disagreement is evidence for a future calibration study; it
+does not justify changing production selection. The opt-in
+`LLMOPT_EXPERIMENTAL_Q4_DOWN_X16=1` override remains unchanged.
+
+The source probe and its two receipts are under
+`results/q4-tiles-2026-09-18/`; the full-model A/B and exact-output evidence
+are under `results/q4-down-x16-2026-09-18/`. Useful GB/s in these files is a
+packed-byte rate, not hardware DRAM traffic.
+
 ## LLMOpt capture and reference probes
 
 Use Python 3.13 and build through Ninja:

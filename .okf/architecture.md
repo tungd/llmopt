@@ -4,7 +4,7 @@ title: 'Dynamo/FX Compiler with an OCaml Metal Serving Runtime'
 description: 'A model-neutral Ahead-Of-Time (AOT) compilation and serving architecture: PyTorch Dynamo captures FX graphs, OCaml effect-driven passes lower and fuse megakernels against GGUF/UD weights, and the zero-JIT native runtime hosts continuous batching, radix prefix caching, and SIMD stochastic sampling on Apple Silicon.'
 tags: [architecture, pytorch, fx, ocaml, metal, gemma, qwen, smollm, lfm, gguf, unsloth, continuous-batching, radix-cache, megakernels, aot]
 status: stable
-generated: { by: 'process:antigravity', at: '2026-09-14T11:20:00+07:00' }
+generated: { by: 'autoagent/union-alpha', at: '2026-09-23T18:40:27Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -50,10 +50,10 @@ sources:
     title: Static interval-graph liveness memory planner
   - id: local-serving-package
     resource: /lib/serving_package.ml
-    title: Versioned serving-package representation (ABI v25)
+    title: Versioned serving-package representation (ABI v27)
   - id: local-serving-schedule
     resource: /lib/serving_schedule.ml
-    title: Binary typed command schedule facade (ABI v27)
+    title: Binary typed command schedule facade (format v29)
   - id: local-serving-schedule-types
     resource: /lib/serving_schedule_types.ml
     title: Schedule command, stage, and tensor input types
@@ -110,7 +110,7 @@ sources:
     title: Objective-C Metal and ARM NEON SIMD runtime bindings
   - id: local-model-program
     resource: /lib/model_program.ml
-    title: Root execution contract (ABI v2)
+    title: Root execution contract (ABI v7)
   - id: local-model-linker
     resource: /lib/model_program_linker.ml
     title: Model-neutral captured-package linker
@@ -161,7 +161,7 @@ sources:
 
 1. **Topology Authority in PyTorch/Dynamo**: Graph structure is acquired directly from standard PyTorch model code using `torch.compile(backend="llmopt")`. No architecture-specific forks or hardcoded model templates exist in the compiler pipeline.
 2. **Model-Neutral AOT Solidification**: All operator fusions, memory allocations, tensor dequantizations, shape specializations, and execution schedules are computed offline. The serving engine requires zero JIT compilation, zero dynamic memory allocation on the hot path, and zero Python execution during serving.
-3. **Fewest-Hops Whole-Block Megakernels**: Fusing multiple layers and operations into SRAM-resident megakernels eliminates intermediate round-trips to DRAM, matching or exceeding hand-tuned C++ engines like `llama.cpp` while retaining full compiler generalizability.
+3. **Fewest-Hops Whole-Block Megakernels**: Fusing multiple layers and operations into SRAM-resident megakernels eliminates intermediate round-trips to DRAM and targets a narrow performance envelope against hand-tuned runtimes such as `llama.cpp`; scope and protocol remain explicit per measurement.
 4. **Hardware-Aware Specialization**: Code generation and dispatch policies adapt to probed microarchitectural parameters (SIMD lanes, threadgroup SRAM capacity, cache line sizes, and roofline knees).
 
 ```
@@ -177,7 +177,7 @@ sources:
    │  - Quantized Linear Residuals      - Recurrence/Scan Recovery│
    │  - DAG Co-Scheduling Antichains    - Shared Tactic Registry │
    └──────────────────────────────┬──────────────────────────────┘
-                                  │ Solidified Package (`package.llmopt` ABI v25, `schedule.llmopt` v27)
+                                  │ Solidified Package (`package.llmopt` ABI v27, `schedule.llmopt` format v29)
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
    │             Root Model Program Contract (`model.llmopt`)    │
@@ -319,8 +319,8 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
 
 ## 3.6. Serving Engine, Cache Hierarchy, and Speculative Primitives
 
-* **Model Program ABI v3 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
-  - Encapsulates compiled prefill schedules, decode schedules, state plans, tokenizer metadata, and chat templates into a self-contained root artifact (`model.llmopt`). ABI v3 records storage format, KV-head count, and head dimension per attention layer and continues to read uniform ABI-v2 programs.
+* **Model Program ABI v7 ([`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml))**:
+  - Encapsulates compiled prefill schedules, decode schedules, state plans, tokenizer metadata, generation metadata, optional MTP metadata, and optional prompt-lookup verification metadata into a self-contained root artifact (`model.llmopt`). ABI v7 is the current writer/reader contract; earlier ABI references in historical experiment receipts remain historical.
   - The Q8 physical cache stores heterogeneous key/value regions through explicit logical offsets. The cache pack/unpack and paged-attention kernels consume those offsets, so 64-, 256-, and 512-wide attention heads do not alter the generic cache contract.
 * **Serving Engine & Contract Validation ([`lib/serving_engine.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine.ml), [`lib/serving_engine_contract.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_engine_contract.ml))**:
   - `Serving_engine_contract` owns head, attention, and recurrent bindings, input/output metadata checks, and package validation for prefill and decode phases.
@@ -371,9 +371,9 @@ separate claims; no row generalizes those properties to every benchmark run.[^sl
 | Contract / File Format | Identifier / Magic | Current Version | Authority Module |
 |---|---|---|---|
 | **Binary Transport** | `LLMOPTFX` | Version 2 | [`lib/capture.ml`](file:///Users/tung/Projects/std23/llmopt/lib/capture.ml), [`python/llmopt_backend/fx_graph.py`](file:///Users/tung/Projects/std23/llmopt/python/llmopt_backend/fx_graph.py) |
-| **Serving Package** | `LLMOPTPKG` | ABI Version 25 | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml) |
-| **Serving Schedule** | `LLMOPTSCHED` | Version 27 | [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml) (backed by `lib/serving_schedule_core.ml` and `lib/serving_schedule_codec.ml`) |
-| **Model Program** | `LLMOPTMP` | ABI Version 2 | [`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml) |
+| **Serving Package** | `LLMOPTPK` | ABI Version 27 | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml) |
+| **Serving Schedule** | `LLMOSCH` | Format Version 29 | [`lib/serving_schedule_codec.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule_codec.ml) (facade: [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml)) |
+| **Model Program** | `LLMOPT-MODEL` | ABI Version 7 | [`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml) |
 | **Binary Weight Archive** | `LLMOPTWA` | Version 1 | [`lib/weight_archive.ml`](file:///Users/tung/Projects/std23/llmopt/lib/weight_archive.ml) |
 | **Native GGUF Ingestion** | `GGUF` | v2 / v3 | [`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml) |
 

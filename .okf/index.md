@@ -15,6 +15,7 @@ configuration.
 
 ## Orientation
 
+* Current status and next priorities: see `CURRENT_STATUS.md` in the repository root.
 * [Architecture](architecture.md) - current Dynamo/FX to OCaml planning pipeline.
 * [Complete OCaml serving goal](goal-serving-runtime.md) - requirement-by-requirement end state and evidence map.
 * [Probe models](probe-models.md) - model coverage without product defaults.

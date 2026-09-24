@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "purpose": "Measure the work required to adopt a model through the captured compiler and native serving runtime without fabricating unknown implementation costs.",
+  "target": {
+    "backend": "Metal",
+    "device": "Apple M4 Pro",
+    "llama_cpp_envelope": {
+      "lower_ratio": 0.9,
+      "upper_ratio": 1.1
+    }
+  },
+  "measurement_rules": [
+    "A row may use null when the receipt does not establish a value.",
+    "Performance ratios use llmopt / llama.cpp and preserve the receipt protocol.",
+    "A command-count reduction is not a latency claim.",
+    "Argmax preservation is not full-output or full-logit parity."
+  ],
+  "models": [
+    {
+      "id": "smollm2-135m",
+      "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "family": "SmolLM2",
+      "asset": {
+        "source": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "quantization": "Q4_K_M",
+        "kv_cache": "LLMOpt paged Q8 group-64 in matched sustained trace; llama.cpp F16 baseline"
+      },
+      "coverage": {
+        "fx_nodes": null,
+        "opaque_commands": 0,
+        "commands": 1054,
+        "dispatches": 340,
+        "first_token_seconds": null,
+        "new_primitive_concepts": null,
+        "new_fusion_strategies": null,
+        "new_backend_tactics": null
+      },
+      "correctness": {
+        "output_parity": "argmax-preserved",
+        "note": "Slice 31 preserves captured row argmax IDs. The matched sustained campaign explicitly does not establish cross-runtime output parity and diverges at the first generated token."
+      },
+      "performance": [
+        {
+          "metric": "tokens_per_second",
+          "status": "historical",
+          "llmopt": 376.06589,
+          "llamacpp": 389.8,
+          "ratio": 0.964766264751,
+          "protocol": "matched-token sustained trace, 28 prompt IDs, 512 generated tokens, same-campaign llama.cpp and LLMOpt runs"
+        },
+        {
+          "metric": "tokens_per_second",
+          "status": "historical",
+          "llmopt": 413.437096,
+          "llamacpp": 387.1,
+          "ratio": 1.068036931026,
+          "protocol": "matched-token sustained trace, 28 prompt IDs, 1024 generated tokens, same-campaign llama.cpp and LLMOpt runs"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "slice31",
+          "resource": "repository: bench/results/compiler-generalization-slice-31-2026-08-30.json",
+          "claim": "Package command/dispatch counts, zero opaque commands, and captured argmax preservation."
+        },
+        {
+          "id": "matched-sustained",
+          "resource": "repository: bench/results/smollm-slice31-llamacpp-matched-trace-probe-2026-09-01.json",
+          "claim": "Matched-token sustained throughput and explicit non-parity boundary."
+        }
+      ]
+    },
+    {
+      "id": "qwen3.5-0.8b",
+      "model": "unsloth/Qwen3.5-0.8B",
+      "family": "Qwen3.5 hybrid stateful scan",
+      "asset": {
+        "source": "unsloth/Qwen3.5-0.8B",
+        "quantization": "UD-Q4_K_XL",
+        "kv_cache": null
+      },
+      "coverage": {
+        "fx_nodes": null,
+        "opaque_commands": 0,
+        "commands": 1655,
+        "dispatches": 702,
+        "first_token_seconds": null,
+        "new_primitive_concepts": null,
+        "new_fusion_strategies": null,
+        "new_backend_tactics": null
+      },
+      "correctness": {
+        "output_parity": "argmax-preserved",
+        "note": "The slice 31 receipt reports deterministic finite outputs and preserved row argmax IDs; it is not a universal model-quality claim."
+      },
+      "performance": [
+        {
+          "metric": "median_latency_ms",
+          "status": "historical",
+          "llmopt": 7.966518,
+          "llamacpp": 7.95377,
+          "ratio": 1.001602762,
+          "protocol": "Slice 31 campaign median of LLMOpt campaign medians over llama.cpp campaign means, m=2, generation disabled"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "slice31",
+          "resource": "repository: bench/results/compiler-generalization-slice-31-2026-08-30.json",
+          "claim": "Package command/dispatch counts, zero opaque commands, output validation, and paired latency."
+        }
+      ]
+    },
+    {
+      "id": "gemma4-e2b",
+      "model": "unsloth/gemma-4-E2B-it",
+      "family": "Gemma 4 transformer",
+      "asset": {
+        "source": "unsloth/gemma-4-E2B-it",
+        "quantization": "UD-Q4_K_XL",
+        "kv_cache": null
+      },
+      "coverage": {
+        "fx_nodes": null,
+        "opaque_commands": 0,
+        "commands": 2414,
+        "dispatches": 786,
+        "first_token_seconds": null,
+        "new_primitive_concepts": null,
+        "new_fusion_strategies": null,
+        "new_backend_tactics": null
+      },
+      "correctness": {
+        "output_parity": "exact",
+        "note": "The slice 31 receipt reports byte-exact Gemma output and preserved argmax rows for this probe; the claim remains scoped to the captured asset and protocol."
+      },
+      "performance": [
+        {
+          "metric": "median_latency_ms",
+          "status": "historical",
+          "llmopt": 18.554449,
+          "llamacpp": 17.499137,
+          "ratio": 1.0603065168,
+          "protocol": "Slice 31 campaign median of LLMOpt campaign medians over llama.cpp campaign means, m=2, generation disabled"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "slice31",
+          "resource": "repository: bench/results/compiler-generalization-slice-31-2026-08-30.json",
+          "claim": "Package command/dispatch counts, zero opaque commands, byte-exact output scope, and paired latency."
+        }
+      ]
+    },
+    {
+      "id": "lfm25-350m",
+      "model": "LiquidAI/LFM2.5-350M",
+      "family": "LFM hybrid convolution/attention",
+      "asset": {
+        "source": "LiquidAI/LFM2.5-350M-GGUF",
+        "quantization": "LLMOpt W4A16; llama.cpp Q4_0",
+        "kv_cache": "LLMOpt KVQ8"
+      },
+      "coverage": {
+        "fx_nodes": null,
+        "opaque_commands": null,
+        "commands": null,
+        "dispatches": null,
+        "first_token_seconds": null,
+        "new_primitive_concepts": null,
+        "new_fusion_strategies": null,
+        "new_backend_tactics": null
+      },
+      "correctness": {
+        "output_parity": "not-measured",
+        "note": "The retained HTTP receipt compares visible text and does not expose cross-runtime token IDs; it must not be promoted to token parity."
+      },
+      "performance": [
+        {
+          "metric": "median_tpot_ms",
+          "status": "historical",
+          "llmopt": 3.954229,
+          "llamacpp": 2.917958333758482,
+          "ratio": 1.3551355254983193,
+          "protocol": "racebench HTTP trace, four scored requests, 80 cached prompt tokens in the LLMOpt side, W4A16/KVQ8 versus llama.cpp Q4_0"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "restored-http",
+          "resource": "repository: bench/results/lfm25-350m-w4a16-kvq8-restored-vs-llama-cpp-q4-2026-08-27.json",
+          "claim": "Visible-text racebench timing, ERS, TTFT, TPOT, and the precision/cache protocol."
+        }
+      ]
+    },
+    {
+      "id": "gemma4-12b-uoc",
+      "model": "unsloth/gemma-4-12B-it-qat",
+      "family": "Gemma 4 12B transformer with MTP capture",
+      "asset": {
+        "source": "unsloth/gemma-4-12B-it-qat-GGUF",
+        "quantization": "UD-Q4_K_XL",
+        "kv_cache": "Q8 physical cache in the UOC artifact"
+      },
+      "coverage": {
+        "fx_nodes": null,
+        "opaque_commands": null,
+        "commands": 2260,
+        "dispatches": null,
+        "first_token_seconds": 3.41465,
+        "new_primitive_concepts": null,
+        "new_fusion_strategies": null,
+        "new_backend_tactics": null
+      },
+      "correctness": {
+        "output_parity": "partial",
+        "note": "The UOC receipt matches the first 111 generated tokens and then diverges from the legacy golden sequence at token 111; a top-k probe identifies token 32404 as the model-faithful candidate. This is not full exact-output parity."
+      },
+      "performance": [
+        {
+          "metric": "tokens_per_second",
+          "status": "historical",
+          "llmopt": 8.713608,
+          "llamacpp": 27.94,
+          "ratio": 0.311868575519,
+          "protocol": "37-token prompt, 128 generated tokens, Apple M4 Pro, pinned llama.cpp sequential receipt"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "exp0173",
+          "resource": "repository: bench/results/uoc-gemma4-performance-exp0173-2026-09-14.txt",
+          "claim": "UOC command count, on-device timing, first-token parity boundary, and comparison with the pinned llama.cpp receipt."
+        },
+        {
+          "id": "lowerings",
+          "resource": "repository: bench/results/gemma4-mtp-lowering-probe-2026-08-31.json",
+          "claim": "Historical target/assistant lowering counts and zero opaque commands for the earlier meta-graph-only probe; not substituted for the later UOC opaque count."
+        }
+      ]
+    }
+  ],
+  "next_cohort": [
+    {
+      "id": "qwen3-0.6b",
+      "status": "planned",
+      "reason": "Standard transformer control for QK-norm, attention layout, and partial-RoPE coverage."
+    },
+    {
+      "id": "gemma3-270m",
+      "status": "planned",
+      "reason": "Exercises sliding-window attention, logit softcap, and tied-embedding handling."
+    },
+    {
+      "id": "phi-4-mini",
+      "status": "planned",
+      "reason": "Exercises partial RoPE and a different transformer family without selecting for performance."
+    },
+    {
+      "id": "small-moe",
+      "status": "planned",
+      "reason": "Exercises data-dependent routing and identifies whether a new execution boundary is required."
+    }
+  ]
+}

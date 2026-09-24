@@ -1,10 +1,10 @@
 ---
 type: Research Goal
 title: 'Graph-Captured GGUF/UD Serving Across Model Families'
-description: 'Track the architecture-neutral trajectory from PyTorch Dynamo FX capture through GGUF/UD tensor ingestion, AOT megakernel fusions, zero-JIT Metal dispatch, and continuous batching serving under Model Program ABI v2.'
+description: 'Track the architecture-neutral trajectory from PyTorch Dynamo FX capture through GGUF/UD tensor ingestion, AOT megakernel fusions, zero-JIT Metal dispatch, and continuous batching serving under Model Program ABI v7.'
 tags: [goal, compiler, pytorch, fx, gguf, unsloth, metal, serving, continuous-batching, megakernels]
 status: stable
-generated: { by: 'codex/gpt-5', at: '2026-09-01T17:17:48+07:00' }
+generated: { by: 'autoagent/union-alpha', at: '2026-09-23T18:40:27Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -14,7 +14,7 @@ sources:
     title: OCaml FX compiler entry point
   - id: model-program
     resource: /lib/model_program.ml
-    title: Model Program ABI v2
+    title: Model Program ABI v7
   - id: graph-decision
     resource: /decisions/model-program-boundary.md
     title: Graph authority and Model Program decision
@@ -26,10 +26,10 @@ sources:
     title: Fewest-Hops Whole-Block Megakernel Compiler
   - id: package
     resource: /lib/serving_package.ml
-    title: Native serving package (ABI v25)
+    title: Native serving package (ABI v27)
   - id: schedule
-    resource: /lib/serving_schedule.ml
-    title: Native serving schedule (ABI v27)
+    resource: /lib/serving_schedule_codec.ml
+    title: Native serving schedule codec (format v29)
   - id: runtime
     resource: /lib/metal_runtime.ml
     title: Native OCaml Metal runtime
@@ -54,12 +54,12 @@ sources:
   - id: server
     resource: /bin/serve.ml
     title: Generic HTTP serving entry point
-  - id: full-model-parity
+  - id: full-model-comparison
     resource: /experiments/exp-0101-gguf-full-model-comparison-2026-08-29.md
-    title: Captured full-model GGUF comparison
+    title: Historical captured full-model GGUF comparison
   - id: slice-31-receipt
     resource: /bench/results/compiler-generalization-slice-31-2026-08-30.json
-    title: Slice 31 cross-model benchmark receipt
+    title: Historical cross-model benchmark receipt
   - id: smollm-matched-sustained
     resource: /bench/results/smollm-slice31-llamacpp-matched-trace-probe-2026-09-01.json
     title: SmolLM2 matched-token sustained LLMOpt and llama.cpp comparison
@@ -73,116 +73,93 @@ sources:
 
 # 1. Objective
 
-Build an optimizing LLM compiler and zero-JIT serving system whose frontend is PyTorch `torch.compile` / Dynamo FX and whose execution data plane is OCaml plus Metal on Apple Silicon unified memory:
+Build an optimizing LLM compiler and zero-JIT serving system whose frontend is
+PyTorch `torch.compile` / Dynamo FX and whose execution data plane is OCaml plus
+Metal on Apple Silicon unified memory:
 
-1. **Topology Authority in Captured Graphs**: PyTorch FX capture defines graph topology, operation semantics, and tensor dataflow. The compiler and serving runtime contain zero model-family switches, zero hardcoded layer loops, and zero dispatch on GGUF `general.architecture` strings.
-2. **First-Class GGUF & Unsloth Dynamic (UD) Quantization**: Ingest real-world quantized model distributions directly from memory-mapped GGUF files (`Q4_0`, `Q8_0`, `Q5_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`), specializing dequantizers and linear kernels at compile time.
-3. **Fewest-Hops SRAM Megakernels**: Eliminate DRAM round-trips by fusing multi-operator subgraphs (SwiGLU, RMSNorm-RoPE, rotary QK, ShortConv-SiLU, Linear-residuals, and stateful triangular recurrences) into SRAM-resident SIMD dispatches.
-4. **Zero-Overhead Serving Runtime**: Host continuous batching with age-weighted SRPT queueing, compressed radix prefix caching, precompiled AOT Metal command lists, and sub-20µs ARM NEON SIMD stochastic sampling under the unified `model.llmopt` (ABI v2) contract.
+1. **Topology Authority in Captured Graphs**: PyTorch FX capture defines graph
+   topology, operation semantics, and tensor dataflow. The compiler and serving
+   runtime contain no model-family selectors or hardcoded layer loops.
+2. **First-Class GGUF & Unsloth Dynamic Quantization**: Ingest real quantized
+   model distributions from GGUF files and specialize dequantization and linear
+   tactics at compile time.
+3. **Fewest-Hops SRAM Megakernels**: Fuse pointwise, normalization, attention,
+   recurrent, and contraction work where legality and target cost permit it,
+   without creating a model-specific kernel zoo.
+4. **Zero-Overhead Serving Runtime**: Host continuous batching, radix prefix
+   caching, precompiled AOT Metal command lists, and ARM NEON sampling under
+   the unified `model.llmopt` ABI v7 contract.
 
----
+# 2. Current Implementation and Evidence
 
-# 2. Comprehensive Evidence & Implementation Map
+| Area | Current state | Evidence boundary |
+|---|---|---|
+| FX capture | Implemented | Binary `graph.llmopt` transport and Python capture tests pass |
+| OCaml IR and dependency analysis | Implemented | `Ir`, `Compute_plan`, constructive regions, and separate antichain stages are exercised by the test suite |
+| Typed contraction groups | Implemented | Single-slot, multi-slot, and multi-export groups have algebraic, schedule, and Metal device coverage |
+| Model Program contract | Implemented | ABI v7 is linked by the pipeline, cache, server, checks, and MTP/prompt-lookup metadata |
+| GGUF and block-quant ingestion | Implemented for the documented formats | Evidence is scoped to tested model assets, shapes, and quant layouts |
+| Metal runtime | Implemented for the current backend | Vulkan is a separate experimental probe, not a second full-model backend |
+| Cache and queue | Implemented primitives and serving paths | Multi-tenant saturation evidence is not yet a universal claim |
+| Sampling and HTTP server | Implemented | Parameterized sampling and OpenAI-compatible streaming code are tested |
+| Cross-model performance | Scoped probe evidence | Small-model rows are historical measurements; the Gemma 4 12B UOC result is not within the requested llama.cpp envelope |
+| Unsupported FX fallback | Not established | Unknown operations currently remain a hard executable/coverage boundary |
 
-| Area / Concern | Required Capability | Implementation Evidence | State |
-|---|---|---|---|
-| **FX Graph Capture** | Acquire topology, static parameters, and shape metadata from `torch.compile` | `llmopt_backend` intercepts Dynamo `GraphModule`, preserves shapes/dtypes from `val` / `tensor_meta`, and extracts static bindings | **Implemented** |
-| **Binary Transport** | Zero-copy, lossless inter-process compiler transport | Python and OCaml communicate via `graph.llmopt` with `LLMOPTFX` v2 binary encoding; JSON is diagnostic only | **Implemented** |
-| **Model Program Contract** | Self-contained execution contract joining prefill, decode, state plans, and chat specs | `model.llmopt` (ABI v2) links packages, declares recurrent/KV state dimensions, tokenizer archive, and chat boundaries | **Implemented** |
-| **Architecture Neutrality** | Graph transforms and code emission depend only on tensor geometry and IR topology | Zero model-name or architecture-ID dispatch across compiler passes, tactic selectors, and runtime kernels | **Implemented** |
-| **GGUF Direct Ingestion** | Zero-copy mmap tensor loading from standard GGUF files | `lib/gguf.ml` parses GGUF v2/v3 metadata, creates aligned `MTLBuffer` views directly, resolving aliases | **Implemented** |
-| **Quantization Coverage** | Compile-time specialized dequantization across Block-32 and Superblock-256 | Bit-exact dequantizers and linear kernels for `Q4_0`, `Q8_0`, `Q5_0`, `Q4_K`, `Q5_K`, `Q6_K`, and `IQ4_XS` | **Implemented** |
-| **SwiGLU / Gated Linear** | Fuse gate/up projections and activation products without DRAM intermediates | `Pass_fuse_swiglu_ffn` fuses dual-projections across W4, Q4_K, Q5_K, Q5_0, and IQ4_XS layouts | **Implemented** |
-| **Rotary & RMSNorm Fusion** | Fuse normalization and trigonometric rotation without materialized intermediates | Constructive assignment tactics select RMSNorm and RMSNorm-RoPE dependency slices and dispatch SIMD kernels directly | **Implemented** |
-| **Quantized Linear Residuals** | Fuse block-quantized Linear and residual add into single dispatch | `Pass_fuse_linear_bias` fuses `Linear_add` across all supported quant formats, removing 48–60 dispatches | **Implemented** |
-| **ShortConv-SiLU Fusion** | Fuse depthwise conv, token trim, SiLU, and transpositions | Constructive assignment slicing selects the dependency region and executes one token-major SIMD operation | **Implemented** |
-| **Recurrence / Scan Recovery** | Recover stateful triangular recurrences and unrolled scan regions from IR | `Kernel_ir.Scan` models carried recurrence state; padded gated-delta assignment regions lower directly to SIMD Metal | **Implemented** |
-| **DAG Co-Scheduling** | Identify ready antichains in dependency DAG for concurrent execution | `Pass_co_schedule` places barriers and emits `MTLDispatchTypeConcurrent` stages | **Implemented** |
-| **Tactic Selection** | Centralized registry for shape/dtype/layout-aware kernel tactics | `Kernel_abi` resolves multi-token ($M=2$) and multi-column ($N=2$) weight-reuse tactics across layouts | **Implemented** |
-| **Memory Planning** | Deterministic static interval-graph liveness workspace allocation | `Serving_memory_plan` computes 256-byte aligned offsets in one retained Metal buffer; zero dynamic runtime malloc | **Implemented** |
-| **Zero-JIT Runtime** | Direct execution of versioned package schedules without JIT overhead | `Serving_package` (ABI v25) and `Serving_schedule` (ABI v27) execute via precompiled direct `Metal_runtime` dispatch lists with current dynamic parameters | **Implemented** |
-| **Prefix Caching** | Tree-structured prefix reuse with LRU eviction and hybrid checkpoints | `Radix_cache` and `Serving_cache` manage physical token pools and recurrent state checkpoints | **Implemented** |
-| **Continuous Batching** | Age-weighted SRPT queue prioritizing decode steps over prefills | `Serving_queue` minimizes TTFT and TPOT variance under concurrent load | **Implemented** |
-| **NEON SIMD Sampling** | Sub-20µs single-pass streaming min-heap stochastic sampling | `lib/sampling.ml` and `native/ocaml_metal_stubs.m` support temperature, top-k, top-p, min-p, and seeded PRNG | **Implemented** |
-| **Async Streaming Server** | Non-blocking OpenAI-compatible HTTP/SSE endpoint | `bin/serve.ml` embeds `Webs_iomux` event loop on `Iomux.Poll`, streaming tokens with low latency | **Implemented** |
-| **Cross-Model Parity** | Match or outperform `llama.cpp` within target ratio $[0.90\text{x}, 1.10\text{x}]$ | Verified on Apple M4 Pro for SmolLM2 (0.99x), Qwen3.5 (1.00x), Gemma-4-E2B (1.02x), and LFM2.5 (0.95x) | **Verified** |
+The current typed-assignment transition is recorded in
+[Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](/decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md).
+The live implementation is stronger than the historical transition notes: typed
+multi-slot and multi-export contraction groups now reach Metal emission and
+runtime dispatch.
 
----
+# 3. Historical Milestones
 
-## Active unified-compiler transition
+The project has completed the major compiler and serving slices that led to
+the current state. Historical receipts remain evidence of the changes that
+introduced each capability:
 
-The current table records the executable operator/pass baseline; it does not
-claim that the ad hoc fusion passes or monolithic Metal emitter have already
-been retired. The approved successor is
-[Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](/decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md): one modeled assignment/dependency/effect system produces legal fusion regions and independent antichain stages, target hardware probes feed cost selection, block-quant schemas retain target-aware SIMD tactics, and the chosen dispatch/dependency graph becomes an AOT GPU command queue.
+- GGUF ingestion, quant dequantization, layout provenance, and block-quant
+  linear tactics.
+- Gated Linear, RMSNorm, rotary QK, ShortConv, recurrence recovery, and DAG
+  co-scheduling passes.
+- Binary FX transport, typed IR, model-linked packages, tokenizer/chat assets,
+  physical cache state, radix caching, and continuous queue primitives.
+- AOT package and schedule formats, static liveness memory planning, direct
+  Metal dispatch, and parameterized sampling.
+- The large-file modular refactor and typed-contraction-group round, including
+  broad block-quant codegen and multi-export execution.
+- The Gemma 4 12B UOC path, whose latest recorded package reduces decode
+  commands substantially and executes on device; the FFN-down x16 result remains
+  opt-in and experimental.
 
-The Gemma 4 12B transition and repair receipts separate compiler-path coverage,
-AOT queue structure, runtime correction, same-GGUF output comparison, and
-measured timing. The repair is recorded in
-[exp-0139](experiments/exp-0139-unified-compiler-gemma4-repair-2026-09-02.md).
+Historical experiment files retain the ABI values, benchmark protocol, and
+claims that were true at the time of the experiment. They are not rewritten by
+this goal document.
 
----
+# 4. Current Evidence Boundary
 
-# 3. Completed Milestones (Slices 1 to 32)
+Performance and correctness claims must be read per receipt. In particular:
 
-Across 32 iterative compiler and runtime slices, the repository transitioned from a single-model prototype to a generalizable multi-architecture engine:
+- A matching argmax token is not a full-logit parity claim.
+- A command-count reduction is not a latency improvement by itself.
+- A single-device probe is not a general model-adoption result.
+- A llama.cpp comparison is valid only when model asset, token protocol,
+  precision, harness, and measurement scope match.
+- Gemma 4 12B UOC execution is not the same claim as arbitrary-model support.
+- The `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16` override remains disabled by default.
 
-1. **Slices 1–10 (GGUF Ingestion & Megakernel Primitives)**: Built GGUF v2/v3 parsers, Superblock-256 dequantizers, attention head specialization ($h256/h512$), and semantic Linear region recovery.
-2. **Slices 11–20 (Recurrence Recovery & Core Fusions)**: Recovered stateful triangular recurrences and zero-state gated-delta expansions in Qwen3.5; added wide-row RMSNorm, single-consumer activation products, and `Gated_linear` passes.
-3. **Slices 21–25 (Tactic Registry & Weight Reuse)**: Implemented multi-token ($M=2$) and multi-column ($N=2$) weight-reuse tactics across dense F32, Q4_K, and Q5_K; centralized policy into `Kernel_abi`; added steady-state package execution.
-4. **Slices 26–31 (Final Layout & Residual Fusions)**: Added relational ShortConv-SiLU fusion, sliced L2 normalization, attention-linked rotary QK fusion, Q5_0 gated linears, token-major attention value absorption, and quantized Linear-residual (`Linear_add`) fusions.
-5. **Slice 32 (Hardware and speculative primitives, corrected)**: Accelerated Superblock-256 (`Q4_K`, `Q5_K`, `Q6_K`) unpack sequences using native `metal::extract_bits`; implemented 4-way SIMDgroup intra-threadgroup Split-K reductions for wide Linear layers; registered speculative tree-mask attention kernels with compact bitmask topologies; and added tested speculative slot reservation, partial commit, and rollback metadata primitives.
-6. **Slice 33 (Gemma 4 12B QAT & MTP Compiler Lowering and Medusa Primitives)**:
-   - Eliminated opaque lowering fallbacks across all 48 Gemma layers by implementing native SDPA lowering (3-input unmasked and 4-input Float16 additive masked), 0-dim empty placeholder cache identity detection, and inference dropout passthrough. Verified 0 opaque commands in `bench/results/gemma4-mtp-lowering-probe-2026-08-31.json`.
-   - Pinned and verified `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` (6.72 GB) and `mtp-gemma-4-12B-it.gguf` (0.25 GB) under Model Program ABI v4.
-   - Measured official `llama.cpp` baseline on Apple M4 Pro (31.14 tok/s sequential vs 18.55 tok/s MTP with 67.15% acceptance in `bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json`).
-   - Implemented `Serving_engine.Medusa` tree mask generation and candidate prefix acceptance module with comprehensive unit tests.
-   - *Retraction*: Unverified end-to-end sustained generation throughput claims for Medusa in LLMOpt are retracted; end-to-end runtime execution requires full Model Program linking.
+The live status and implementation order are maintained in
+`CURRENT_STATUS.md` at the repository root.
 
----
+# 5. Agreed Next Horizons
 
-# 4. Current Operational Baseline
-
-The latest measured baseline across the probe suite on Apple M4 Pro (16 cores, 273 GB/s bandwidth) confirms full empirical parity with `llama.cpp` under the user-declared target envelope ($0.90\text{x} \le \text{Ratio} \le 1.10\text{x}$):
-
-```
-   Model                          LLMOpt Latency      llama.cpp Latency   Speedup Ratio    Parity & Argmax
-  ────────────────────────────── ─────────────────── ─────────────────── ───────────────  ─────────────────
-   SmolLM2-135M-Instruct           3.4214 ms           3.1178 ms             1.0974x       Bit-exact argmax
-   Qwen3.5-0.8B (Hybrid)           8.1384 ms           8.0930 ms             1.0056x       Bit-exact argmax
-   Gemma-4-E2B-it                 19.4005 ms          18.8907 ms             1.0270x       Bit-exact argmax
-   LFM2.5-350M (Turn 1 TTFT)      18.2000 ms          19.1000 ms             0.9529x       Bit-exact tokens
-```
-
-All models compile to zero-opaque schedules, execute with single-workspace memory planning, and produce deterministic finite logits.
-
-The later matched-token sustained SmolLM2 campaign uses the same 28 prompt IDs
-and counterbalances 512- and 1,024-token generation. LLMOpt measures
-`376.065890/413.437096 tok/s` versus llama.cpp `389.8/387.1 tok/s`, ratios of
-`0.964766x/1.068037x`; both observations are inside the existing user-declared
-`0.90x` to `1.10x` performance envelope. This is performance parity evidence,
-not output parity: the decoded streams differ from the first generated token,
-and the compared KV paths are LLMOpt paged Q8 versus llama.cpp default F16.
-
-A separate matched Q8-KV campaign measured LLMOpt at
-`301.159736/321.751415 tok/s` versus llama.cpp at `278.4/286.3 tok/s` for
-512/1,024 tokens, so LLMOpt was `1.081752x/1.123826x` faster in that campaign.
-Both runtimes slowed materially versus the immediately preceding campaign while
-reproducing their exact prior output hashes. The same-campaign ratio is valid;
-the cross-campaign Q8-versus-F16 delta does not isolate KV precision.
-
----
-
-# 5. Next Research & Implementation Horizons
-
-With single-pass forward parity, megakernel compilation, and Medusa tree speculative acceleration established, the subsequent engineering priorities are:
-
-1. **Multi-Turn Stateful Cached Decode across GGUF Models**:
-   - Extend the `use_cache=true` dynamic schedule specialization from LFM2.5 to multi-head transformer architectures (SmolLM2, Gemma) and hybrid stateful models (Qwen3.5).
-   - Bind paged attention pools and recurrent state slots directly into the Model Program ABI v4 execution graph.
-2. **Radix Prefix Caching for Multi-Head GQA**:
-   - Generalize the radix tree coordinator to manage arbitrary query/key head ratios ($H_q / H_{kv}$) and dimension layouts without manual configuration.
-3. **Continuous Batching Multi-Tenant Serving Sweeps**:
-   - Conduct end-to-end load tests using `Serving_queue` SRPT priority scheduling under concurrent Poisson request distributions, measuring TTFT, TPOT, and ERS under saturated system load.
-4. **Dynamic Sequence-Bucket AOT Pre-Compilation**:
-   - Solidify prefill execution buckets ($M \in \{64, 128, 256, 512, 1024, 2048\}$) into retained precompiled command lists. An ICB may be selected only for a bucket whose buffers, dimensions, dynamic parameters, and barriers are valid for that exact specialization.
+1. Keep the primary `ninja -f ninja.build all` and `test` gates green and make
+   recovery from installed-interface changes less dependent on manual cleanup.
+2. Measure adoption cost for each new model: opaque nodes, new primitives,
+   new fusion strategies, new backend tactics, first correct token, parity
+   boundary, and same-harness llama.cpp ratio.
+3. Keep primitive semantics, fusion strategies, and backend tactics explicitly
+   separate; report unsupported FX nodes with actionable diagnostics.
+4. Continue quantized-projection bandwidth work, especially gated and FFN-down
+   shapes, and feed measured relationships into the cost model.
+5. Keep ROCm/HIP and other backend portability work deferred until the current
+   compiler contract, adoption evidence, and Metal measurement path are stable.

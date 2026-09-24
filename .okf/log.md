@@ -1,5 +1,10 @@
 # Update Log
 
+## 2026-09-23
+* **Current status and build evidence**: Added `CURRENT_STATUS.md` at the repository root recording the agreed implementation order and evidence boundary. The stale generated `webs_iomux`/serve interfaces were removed and both `ninja -f ninja.build all` and `ninja -f ninja.build test` pass on the current environment.
+* **Live source alignment**: Updated the current architecture and serving-goal documents to source-derived Model Program ABI 7, Serving Package ABI 27, and Serving Schedule format 29. Historical experiment receipts remain historical.
+* **Projection cost-model evidence**: Added a read-only Q4 x4/x8/x16 receipt analyzer and focused tests. The current analytic model predicts x8 for the measured FFN-down shape, while the saved two-run synthetic median selects x16 by about 1.10x; production selection and the x16 override remain unchanged.
+
 ## 2026-09-18
 * **QK-only fusion verification**: [exp-0174](experiments/exp-0174-qk-only-device-parity-2026-09-18.md) records ten passing on-device Q4/Q5 parity cases and the homogeneous-Q5 MSL source-dependency fix. OCaml and 79 Python tests pass; full build is blocked by an unrelated Webs interface mismatch. Two Gemma attempts were stopped by the 25% memory guard; the later profiled run completed and shows quantized projections at ~70% of the 79.8 ms decode GPU budget.
 * **Bounded projection measurements**: [exp-0175](experiments/exp-0175-q4-decode-tile-bandwidth-2026-09-18.md) preserves the stream-read probe and existing-Q4-tile sweeps with full synthetic CPU-reference parity, then A/B tests an opt-in FFN-down x16 override on the full model: bit-identical 256-token outputs and both x16 medians (~62 ms) beating both baseline medians (~66-69 ms). Selection traces prove the dispatched kernel; the override stays env-gated experimental.
