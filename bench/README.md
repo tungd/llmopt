@@ -40,6 +40,21 @@ TPOT. Both endpoints receive the same trace and pinned output counts. The SSE
 interface records timing and visible output; it does not expose cross-runtime
 token IDs.
 
+## Python environment and tests
+
+Use the checked-in `uv` project and Python 3.13 environment for the Python
+suite and capture helpers:
+
+```sh
+uv sync --project python --extra torch --extra test
+PYTHONPATH=python:bench uv run --project python --extra torch --extra test -- \
+  python -m unittest discover -s python/tests -v
+```
+
+`python/uv.lock` records the resolved environment. The repository's
+`PYTHONPATH` is intentional because benchmark helper modules are imported by
+path from the test suite.
+
 ## Model-adoption matrix
 
 The receipt-first adoption matrix records the work needed to add a model to the

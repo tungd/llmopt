@@ -11,7 +11,13 @@ dependencies = []
 
 [project.optional-dependencies]
 torch = ["torch>=2.9"]
-test = ["pytest>=8"]
+test = [
+  "gguf>=0.19",
+  "huggingface-hub>=1.0",
+  "numpy>=2.0",
+  "pytest>=8",
+  "transformers>=5.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
