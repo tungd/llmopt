@@ -316,6 +316,23 @@ module Linear_tactic = struct
     let cost candidate = candidate.cost
   end
 
+  module Q4_decode_streaming = struct
+    (* The Q4_0 decode kernels stream one independent packed weight row per
+       output column.  Register pressure is a launch/occupancy constraint, but
+       it is not a direct multiplier on the device memory-bandwidth ceiling.
+       Model only the grid ramp-up here; keeping these terms separate avoids
+       turning a high-register x16 tile into an artificial 2x bandwidth loss. *)
+    let bandwidth_utilization ~(target : Target_hardware.t) ~workgroups =
+      if workgroups <= 0 then 0.0
+      else
+        let waves_per_core =
+          float_of_int workgroups
+          /. float_of_int target.execution.gpu_cores
+        in
+        min 1.0
+          (waves_per_core /. target.execution.concurrency_saturation_waves)
+  end
+
   module Selection = struct
     type t = {
       chosen : Candidate.t;
@@ -811,8 +828,18 @@ module Linear_tactic = struct
                         (float_of_int target.execution.nominal_registers_per_thread
                         /. float_of_int (max 1 registers))
                     in
+                    let is_q4_0_single_row_decode =
+                      problem.storage
+                      = Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_0
+                      && activation_reuse >= 4
+                    in
                     let bw_util =
-                      if workgroups >= target.execution.gpu_cores then
+                      if is_q4_0_single_row_decode
+                         && workgroups >= target.execution.gpu_cores
+                      then
+                        Q4_decode_streaming.bandwidth_utilization
+                          ~target ~workgroups
+                      else if workgroups >= target.execution.gpu_cores then
                         let waves_per_core =
                           float_of_int workgroups
                           /. float_of_int target.execution.gpu_cores

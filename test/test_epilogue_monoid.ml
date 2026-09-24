@@ -874,12 +874,14 @@ let run () =
     "  [PASS] Q4_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (04d-A2 emission oracle)\n%!";
 
   (* x8/x4 Q4_0 bases never had a legacy twin.  Graph-level Linear-add on
-     them (m=1 with n a multiple of 4/8 selects the x8/x4 tile) used to
-     crash Metal.lower with an Invalid_argument raised by the retired text-
-     patcher's extract_kernel; since 04d-A2 it is a clean loud Error telling
-     the user the node must be served by the Linear_epilogue digest route. *)
+     them (m=1 with n a multiple of 8 but not 16 selects the x8 tile) used
+     to crash Metal.lower with an Invalid_argument raised by the retired
+     text-patcher's extract_kernel; since 04d-A2 it is a clean loud Error
+     telling the user the node must be served by the Linear_epilogue digest
+     route.  The fixture deliberately uses a large x8-only width so the
+     calibrated selector cannot choose x16. *)
   (match
-     lower_linear_add_result ~quant:Ir.Dtype.Q4_0 ~m:1 ~n:32 ~k:32
+     lower_linear_add_result ~quant:Ir.Dtype.Q4_0 ~m:1 ~n:3848 ~k:32
        ~tag:"q4_0_linear_add_x8"
    with
   | Ok _ ->
@@ -888,7 +890,7 @@ let run () =
       if not (contains message "has no legacy _add twin") then
         failwith ("Q4_0 x8 graph-level Linear-add error changed: " ^ message));
   Printf.printf
-    "  [PASS] Q4_0 x8/x4 graph-level Linear-add fails loudly with the digest-route hint (04d-A2)\n%!";
+    "  [PASS] Q4_0 x8 graph-level Linear-add fails loudly with the digest-route hint (04d-A2)\n%!";
 
   (* G4P12-05-1: the Q8_0 generic/m2 _add twins are re-homed the same way
      (Metal_block_codegen block32 twin templates, parametric-style with the

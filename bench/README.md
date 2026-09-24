@@ -82,28 +82,34 @@ package checker.
 ## Projection cost-model evidence
 
 The Q4 projection tile probe retains measured x4/x8/x16 timings, while the
-compiler currently uses an analytic cost model to rank those tactics. Join the
-receipts without changing the selector:
+compiler uses an analytic cost model to rank those tactics. The current
+shape-gated calibration is checked against three preserved Apple M4 Pro runs:
 
 ```sh
 python3 bench/analyze_projection_cost_model.py \
-  --output bench/results/projection-cost-model-2026-09-23.json
+  bench/results/q4-tiles-calibration-2026-09-24/run1.txt \
+  bench/results/q4-tiles-calibration-2026-09-24/run2.txt \
+  bench/results/q4-tiles-calibration-2026-09-24/run3.txt \
+  --output bench/results/projection-cost-model-calibrated-2026-09-24.json
 ```
 
 The report mirrors the current `Kernel_abi.Linear_tactic` assumptions for Q4_0
 single-row projections and records workgroups, weight/activation traffic,
 register pressure, occupancy, bandwidth utilization, predicted latency, and
-observed median latency. It is a comparison aid, not a learned predictor. The
-current receipt shows the model choosing x8 for the measured FFN-down shape
-(`m=1, n=3840, k=15360`) while the two-run synthetic median chooses x16 by
-about 1.10x. That disagreement is evidence for a future calibration study; it
-does not justify changing production selection. The opt-in
-`LLMOPT_EXPERIMENTAL_Q4_DOWN_X16=1` override remains unchanged.
+observed median latency. The calibrated selector matches the observed winner
+for all eight measured shapes: it chooses x16 for sufficiently gridded
+projections and retains x4 for the tiny partial-width tail. The older
+`projection-cost-model-2026-09-23.json` and its x8/x16 mismatch are retained
+as historical pre-calibration evidence.
 
-The source probe and its two receipts are under
-`results/q4-tiles-2026-09-18/`; the full-model A/B and exact-output evidence
-are under `results/q4-down-x16-2026-09-18/`. Useful GB/s in these files is a
-packed-byte rate, not hardware DRAM traffic.
+The calibration is an analytic selector update, not a universal tile claim.
+The preserved probe runs, source SHA, and report are under
+`results/q4-tiles-calibration-2026-09-24/` and
+`results/projection-cost-model-calibrated-2026-09-24.json`. The earlier
+full-model x16 A/B and exact-output evidence remains under
+`results/q4-down-x16-2026-09-18/`; the default-selector full-model A/B has
+not been rerun in this slice. Useful GB/s in these files is a packed-byte rate,
+not hardware DRAM traffic.
 
 ## LLMOpt capture and reference probes
 

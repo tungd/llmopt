@@ -1,9 +1,12 @@
 # Update Log
 
+## 2026-09-24
+* **Calibrated Q4 projection selector**: Added `Q4_decode_streaming` to the OCaml cost model and mirrored the same legality and grid-ramp terms in the Python analyzer. The selector now prefers x16 for sufficiently gridded Q4_0 single-row decode projections, while retaining the original bandwidth assumption for small grids; the x8-only and x4-only admission fixtures remain covered. Three preserved M4 Pro probe runs (`bench/results/q4-tiles-calibration-2026-09-24/`) and the calibrated report (`bench/results/projection-cost-model-calibrated-2026-09-24.json`) match all eight measured shape winners. The full OCaml/device suite passes; a default-selector full-model A/B is still pending.
+
 ## 2026-09-23
 * **Current status and build evidence**: Added `CURRENT_STATUS.md` at the repository root recording the agreed implementation order and evidence boundary. The stale generated `webs_iomux`/serve interfaces were removed and both `ninja -f ninja.build all` and `ninja -f ninja.build test` pass on the current environment.
 * **Live source alignment**: Updated the current architecture and serving-goal documents to source-derived Model Program ABI 7, Serving Package ABI 27, and Serving Schedule format 29. Historical experiment receipts remain historical.
-* **Projection cost-model evidence**: Added a read-only Q4 x4/x8/x16 receipt analyzer and focused tests. The current analytic model predicts x8 for the measured FFN-down shape, while the saved two-run synthetic median selects x16 by about 1.10x; production selection and the x16 override remain unchanged.
+* **Projection cost-model evidence**: Added a read-only Q4 x4/x8/x16 receipt analyzer and focused tests. The current analytic model predicted x8 for the measured FFN-down shape, while the saved two-run synthetic median selected x16 by about 1.10x; this is retained as pre-calibration evidence.
 
 ## 2026-09-18
 * **QK-only fusion verification**: [exp-0174](experiments/exp-0174-qk-only-device-parity-2026-09-18.md) records ten passing on-device Q4/Q5 parity cases and the homogeneous-Q5 MSL source-dependency fix. OCaml and 79 Python tests pass; full build is blocked by an unrelated Webs interface mismatch. Two Gemma attempts were stopped by the 25% memory guard; the later profiled run completed and shows quantized projections at ~70% of the 79.8 ms decode GPU budget.

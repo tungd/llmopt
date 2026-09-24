@@ -22,6 +22,11 @@ DEFAULT_RECEIPTS = [
     REPO_ROOT / "bench/results/q4-tiles-2026-09-18/tiles-run1.txt",
     REPO_ROOT / "bench/results/q4-tiles-2026-09-18/tiles-run2.txt",
 ]
+CALIBRATION_RECEIPTS = [
+    REPO_ROOT / "bench/results/q4-tiles-calibration-2026-09-24/run1.txt",
+    REPO_ROOT / "bench/results/q4-tiles-calibration-2026-09-24/run2.txt",
+    REPO_ROOT / "bench/results/q4-tiles-calibration-2026-09-24/run3.txt",
+]
 DEFAULT_SOURCE_SHA = REPO_ROOT / "bench/results/q4-tiles-2026-09-18/source.sha256"
 
 MEASUREMENT_PATTERN = re.compile(
@@ -194,7 +199,15 @@ def _predict_candidate(
         1.0,
         target["nominal_registers_per_thread"] / max(1, registers_per_thread),
     )
-    if workgroups >= target["gpu_cores"]:
+    if activation_reuse >= 4 and workgroups >= target["gpu_cores"]:
+        # Q4_0 single-row decode streams independent packed weight rows;
+        # register pressure constrains occupancy, not the memory-bandwidth
+        # ceiling. Model only grid ramp-up for these column tiles.
+        waves_per_core = workgroups / target["gpu_cores"]
+        bandwidth_utilization = min(
+            1.0, waves_per_core / target["concurrency_saturation_waves"]
+        )
+    elif workgroups >= target["gpu_cores"]:
         waves_per_core = workgroups / target["gpu_cores"]
         saturation_waves = target["concurrency_saturation_waves"] / max(
             1e-6, occupancy_factor
@@ -234,8 +247,13 @@ def _predict_candidate(
 
 
 def _predict_shape(n: int, k: int) -> list[dict[str, Any]]:
+    # Match the production registry: x4/x8/x16 are admitted only for output
+    # widths divisible by the corresponding column tile.  The probe may still
+    # execute partial x8/x16 groups, but those are not selector candidates.
     predictions = [
-        _predict_candidate(n, k, tile) for tile in sorted(TILES)
+        _predict_candidate(n, k, tile)
+        for tile in sorted(TILES)
+        if n % tile == 0
     ]
     return sorted(predictions, key=lambda item: (item["total_us"], item["name"]))
 
@@ -333,7 +351,7 @@ def analyze(
             "candidate_registration_source": "lib/kernel_abi.ml",
             "q4_0_block_elements": Q4_0_BLOCK_ELEMENTS,
             "q4_0_storage_bytes": Q4_0_STORAGE_BYTES,
-            "selection_changes": False,
+            "selection_changes": True,
         },
         "receipts": [_path_label(path) for path in receipt_paths],
         "shapes": shapes,

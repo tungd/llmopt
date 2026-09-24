@@ -245,6 +245,7 @@ The compiler pipeline ([`bin/fx_compile.ml`](file:///Users/tung/Projects/std23/l
    - Padded zero-state gated-delta regions execute directly from their serialized assignment bindings.
 4. **Target-costed kernel selection ([`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml))**:
    - Chooses shape, dtype, storage-layout, and target-specific tactics from the hardware-probe profile.
+   - Q4_0 single-row decode tiles use a separate streaming bandwidth-ramp policy: for sufficiently gridded launches, register pressure affects occupancy facts but does not directly discount the memory-bandwidth ceiling; small grids retain the conservative bandwidth model.
    - Covered fused regions retain primitive source graphs and provide executable boundary values directly to Metal lowering and runtime dispatch.
 5. **DAG Concurrency & Antichain Co-Scheduling ([`Pass_co_schedule`](file:///Users/tung/Projects/std23/llmopt/lib/pass_co_schedule.ml), [`lib/dag_analysis.ml`](file:///Users/tung/Projects/std23/llmopt/lib/dag_analysis.ml))**:
    - Analyzes SSA dependency DAGs and computes ready antichains of independent operations (e.g., parallel Q/K/V projections or parallel layer components).

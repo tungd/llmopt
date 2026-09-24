@@ -1,0 +1,29 @@
+device=Apple M4 Pro source=_artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14/decode/kernel.metal
+m=1 threads_per_group=256 warmups=3 samples=11 tile_order=rotating
+GPU timestamps: one dispatch, excludes CPU validation and preceding 256MiB blit-fill cache perturbation.
+Synthetic Q4_0: dyadic x and scale; full CPU integer-dot oracle; every timed output checked bit-exact.
+GBps = packed weight bytes / GPU seconds, NOT measured DRAM traffic. No full-model speedup claim.
+n=   68 k=   96 tile=x 4 groups=  3 weight_bytes=    3672 median_us=   12.71 min_us=   10.25 max_us=   14.42 GBps=   0.29 parity=PASS(68/68)
+n=   68 k=   96 tile=x 8 groups=  2 weight_bytes=    3672 median_us=   16.50 min_us=   13.75 max_us=  133.62 GBps=   0.22 parity=PASS(68/68)
+n=   68 k=   96 tile=x16 groups=  1 weight_bytes=    3672 median_us=   25.08 min_us=   20.00 max_us=   26.17 GBps=   0.15 parity=PASS(68/68)
+n= 3840 k= 2048 tile=x 4 groups=120 weight_bytes= 4423680 median_us=  122.50 min_us=  120.79 max_us=  132.87 GBps=  36.11 parity=PASS(3840/3840)
+n= 3840 k= 2048 tile=x 8 groups= 60 weight_bytes= 4423680 median_us=  123.25 min_us=  120.25 max_us=  124.13 GBps=  35.89 parity=PASS(3840/3840)
+n= 3840 k= 2048 tile=x16 groups= 30 weight_bytes= 4423680 median_us=  115.67 min_us=  112.92 max_us=  237.17 GBps=  38.25 parity=PASS(3840/3840)
+n= 3840 k= 4096 tile=x 4 groups=120 weight_bytes= 8847360 median_us=  235.96 min_us=  230.33 max_us= 1328.96 GBps=  37.50 parity=PASS(3840/3840)
+n= 3840 k= 4096 tile=x 8 groups= 60 weight_bytes= 8847360 median_us=  232.92 min_us=  229.50 max_us=  250.92 GBps=  37.99 parity=PASS(3840/3840)
+n= 3840 k= 4096 tile=x16 groups= 30 weight_bytes= 8847360 median_us=  218.75 min_us=  211.25 max_us=  374.75 GBps=  40.45 parity=PASS(3840/3840)
+n= 3840 k= 8192 tile=x 4 groups=120 weight_bytes=17694720 median_us=  454.67 min_us=  452.87 max_us=  479.88 GBps=  38.92 parity=PASS(3840/3840)
+n= 3840 k= 8192 tile=x 8 groups= 60 weight_bytes=17694720 median_us=  447.21 min_us=  443.54 max_us=  464.50 GBps=  39.57 parity=PASS(3840/3840)
+n= 3840 k= 8192 tile=x16 groups= 30 weight_bytes=17694720 median_us=  407.88 min_us=  402.96 max_us=  455.13 GBps=  43.38 parity=PASS(3840/3840)
+n=15360 k= 2048 tile=x 4 groups=480 weight_bytes=17694720 median_us=  406.75 min_us=  406.00 max_us=  407.88 GBps=  43.50 parity=PASS(15360/15360)
+n=15360 k= 2048 tile=x 8 groups=240 weight_bytes=17694720 median_us=  393.75 min_us=  392.92 max_us=  395.50 GBps=  44.94 parity=PASS(15360/15360)
+n=15360 k= 2048 tile=x16 groups=120 weight_bytes=17694720 median_us=  383.62 min_us=  377.75 max_us=  388.63 GBps=  46.13 parity=PASS(15360/15360)
+n=15360 k= 3840 tile=x 4 groups=480 weight_bytes=33177600 median_us=  751.17 min_us=  750.17 max_us=  814.54 GBps=  44.17 parity=PASS(15360/15360)
+n=15360 k= 3840 tile=x 8 groups=240 weight_bytes=33177600 median_us=  719.87 min_us=  718.50 max_us=  722.46 GBps=  46.09 parity=PASS(15360/15360)
+n=15360 k= 3840 tile=x16 groups=120 weight_bytes=33177600 median_us=  689.33 min_us=  680.25 max_us=  718.25 GBps=  48.13 parity=PASS(15360/15360)
+n=15360 k= 4096 tile=x 4 groups=480 weight_bytes=35389440 median_us=  796.17 min_us=  795.00 max_us=  933.58 GBps=  44.45 parity=PASS(15360/15360)
+n=15360 k= 4096 tile=x 8 groups=240 weight_bytes=35389440 median_us=  770.46 min_us=  768.25 max_us=  987.50 GBps=  45.93 parity=PASS(15360/15360)
+n=15360 k= 4096 tile=x16 groups=120 weight_bytes=35389440 median_us=  748.25 min_us=  728.00 max_us=  756.58 GBps=  47.30 parity=PASS(15360/15360)
+n= 3840 k=15360 tile=x 4 groups=120 weight_bytes=33177600 median_us=  848.50 min_us=  843.13 max_us=  865.79 GBps=  39.10 parity=PASS(3840/3840)
+n= 3840 k=15360 tile=x 8 groups= 60 weight_bytes=33177600 median_us=  827.87 min_us=  825.87 max_us=  834.29 GBps=  40.08 parity=PASS(3840/3840)
+n= 3840 k=15360 tile=x16 groups= 30 weight_bytes=33177600 median_us=  750.63 min_us=  743.17 max_us=  759.62 GBps=  44.20 parity=PASS(3840/3840)

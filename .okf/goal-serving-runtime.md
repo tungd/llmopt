@@ -4,7 +4,7 @@ title: 'Graph-Captured GGUF/UD Serving Across Model Families'
 description: 'Track the architecture-neutral trajectory from PyTorch Dynamo FX capture through GGUF/UD tensor ingestion, AOT megakernel fusions, zero-JIT Metal dispatch, and continuous batching serving under Model Program ABI v7.'
 tags: [goal, compiler, pytorch, fx, gguf, unsloth, metal, serving, continuous-batching, megakernels]
 status: stable
-generated: { by: 'autoagent/union-alpha', at: '2026-09-23T18:40:27Z' }
+generated: { by: 'autoagent/union-alpha', at: '2026-09-24T05:37:07Z' }
 sources:
   - id: frontend
     resource: /python/llmopt_backend/__init__.py
@@ -145,7 +145,9 @@ Performance and correctness claims must be read per receipt. In particular:
 - A llama.cpp comparison is valid only when model asset, token protocol,
   precision, harness, and measurement scope match.
 - Gemma 4 12B UOC execution is not the same claim as arbitrary-model support.
-- The `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16` override remains disabled by default.
+- The explicit `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16` override remains disabled by
+  default, although the calibrated selector may choose x16 for measured decode
+  shapes; a default-selector full-model A/B has not been rerun.
 
 The live status and implementation order are maintained in
 `CURRENT_STATUS.md` at the repository root.

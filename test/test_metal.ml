@@ -207,7 +207,7 @@ let run () =
                && Kernel_abi.Entry.output_dtype entry = Ir.Dtype.Float16
                && Kernel_abi.Entry.threadgroup entry = (256, 1, 1)))
         (Printf.sprintf "Metal lowering registers the %s digest kernel ABI entry" tile))
-    [ ("x8", 4096); ("x4", 4092) ];
+    [ ("x16", 4096); ("x4", 4092) ];
   print_endline "llmopt Q4_0 x4 digest emission and lower admission passed";
 
   (* G4P12-04c-2: the m16 tile widens digest admission to batched rows.  The
@@ -612,14 +612,14 @@ let run () =
     Metal.Program.kernels chain_program |> List.map Kernel_abi.Entry.name
   in
   let chain_digest =
-    List.find_opt (fun name -> contains_substring name "_x8_") chain_kernels
+    List.find_opt (fun name -> contains_substring name "_x16_") chain_kernels
   in
   let chain_source = Metal.Program.source chain_program in
   expect
-    (List.mem "llmopt_q4_0_linear_f16_x8" chain_kernels
+    (List.mem "llmopt_q4_0_linear_f16_x16" chain_kernels
     && Option.is_some chain_digest
-    && not (List.mem "llmopt_q4_0_linear_f16_x8_add" chain_kernels))
-    "G4P10-04d chain lowering registers plain and digest Q4_0 x8 kernels";
+    && not (List.mem "llmopt_q4_0_linear_f16_x16_add" chain_kernels))
+    "G4P10-04d chain lowering registers plain and digest Q4_0 x16 kernels";
   expect
     (contains_substring chain_source
        "device const half* buf_0 [[buffer(2)]]"
@@ -718,14 +718,14 @@ let run () =
     Metal.Program.kernels yy_program |> List.map Kernel_abi.Entry.name
   in
   let yy_digest =
-    List.find_opt (fun name -> contains_substring name "_x8_") yy_kernels
+    List.find_opt (fun name -> contains_substring name "_x16_") yy_kernels
   in
   let yy_source = Metal.Program.source yy_program in
   expect
-    (List.mem "llmopt_q4_0_linear_f16_x8" yy_kernels
+    (List.mem "llmopt_q4_0_linear_f16_x16" yy_kernels
     && Option.is_some yy_digest
-    && not (List.mem "llmopt_q4_0_linear_f16_x8_add" yy_kernels))
-    "G4P12-02 y*y lowering registers plain and digest Q4_0 x8 kernels";
+    && not (List.mem "llmopt_q4_0_linear_f16_x16_add" yy_kernels))
+    "G4P12-02 y*y lowering registers plain and digest Q4_0 x16 kernels";
   expect
     (contains_substring yy_source
        ",\n    device half* output [[buffer(2)]],\n    constant \

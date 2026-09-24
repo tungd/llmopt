@@ -38,7 +38,9 @@ live contract when they disagree with source or this note.
 - Q4_0/Q5_0 device parity, multi-export device execution, and broad block-quant
   coverage.
 - The recorded Gemma 4 12B UOC package reduces decode commands and executes on
-  device; the x16 FFN-down result remains opt-in and experimental.
+  device. The calibrated Q4_0 selector now prefers x16 for sufficiently gridded
+  single-row decode projections; the prior full-model x16 A/B remains explicit
+  opt-in evidence, and the default-selector full-model A/B has not been rerun.
 
 ### Not established as a general claim
 
@@ -120,16 +122,21 @@ streaming, not dispatch count. Measure gated, plain, QKV, and FFN-down shapes;
 compare x4/x8/x16; record useful bandwidth, register pressure, and access-pattern
 hypotheses; and feed confirmed relationships into the cost model.
 
-The current `bench/analyze_projection_cost_model.py` report joins the saved
-x4/x8/x16 tile receipts with the current analytic selector assumptions. It
-shows a concrete unresolved mismatch: the model ranks x8 first for the
-measured FFN-down shape (`m=1, n=3840, k=15360`), while the two-run synthetic
-median ranks x16 first by about 1.10x. The full-model A/B receipt independently
-shows the same direction with exact output preservation. This is a calibration
-target, not evidence for a blanket tile-widening rule.
+The current `bench/analyze_projection_cost_model.py` report joins three
+preserved calibration runs with the current analytic selector assumptions. It
+matches the observed winner for all eight measured shapes: x16 wins the seven
+sufficiently gridded large shapes, while x4 wins the tiny partial-width tail.
+The selector applies the Q4_0 single-row streaming correction only when the
+launch has at least one workgroup per GPU core; smaller grids retain the
+original bandwidth assumption.
 
-Keep `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16=1` opt-in until a general cost-model
-explanation and a fresh matched full-model receipt justify default selection.
+The earlier full-model A/B independently measured x16 on the exact FFN-down
+shape with bit-identical output and roughly 10% lower median inter-token time,
+but it used the explicit `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16=1` override. The
+calibrated default selector has not yet been rerun on the full model, so no
+full-model default-selector speedup is claimed yet. Keep the environment
+override as an explicit compatibility/reproduction path while running that
+matched A/B.
 
 ### 6. Defer ROCm/backend portability
 

@@ -1,0 +1,919 @@
+{
+  "analysis": "q4_0_m1_projection_tile_cost_model",
+  "ffn_down_evidence": {
+    "k": 15360,
+    "model_winner": 16,
+    "n": 3840,
+    "observed_winner": 16,
+    "winner_match": true,
+    "x16_median_us": 750.37,
+    "x16_vs_x8_speedup": 1.1032823806921919,
+    "x8_median_us": 827.87
+  },
+  "model": {
+    "candidate_registration_source": "lib/kernel_abi.ml",
+    "name": "Kernel_abi.Linear_tactic.select_costed",
+    "q4_0_block_elements": 32,
+    "q4_0_storage_bytes": 18,
+    "selection_changes": true,
+    "source": "lib/kernel_abi.ml"
+  },
+  "receipts": [
+    "bench/results/q4-tiles-calibration-2026-09-24/run1.txt",
+    "bench/results/q4-tiles-calibration-2026-09-24/run2.txt",
+    "bench/results/q4-tiles-calibration-2026-09-24/run3.txt"
+  ],
+  "schema_version": 1,
+  "shapes": [
+    {
+      "k": 96,
+      "model_order": [
+        4
+      ],
+      "model_winner": 4,
+      "n": 68,
+      "observed": [
+        {
+          "max_us": 14.42,
+          "median_us": 10.63,
+          "min_us": 10.12,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 0.35
+        },
+        {
+          "max_us": 133.62,
+          "median_us": 14.0,
+          "min_us": 13.13,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 0.26
+        },
+        {
+          "max_us": 71.75,
+          "median_us": 21.21,
+          "min_us": 20.0,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 0.17
+        }
+      ],
+      "observed_order": [
+        4,
+        8,
+        16
+      ],
+      "observed_winner": 4,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 3264.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 0.0037236363636363634,
+          "core_utilization": 0.1875,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 13056.0,
+          "memory_bytes": 7072.0,
+          "memory_us": 0.025904761904761906,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 136.0,
+          "registers_per_thread": 20,
+          "roofline_us": 0.025904761904761906,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 6.525904761904762,
+          "weight_traffic_bytes": 3672.0,
+          "workgroups": 3
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    },
+    {
+      "k": 2048,
+      "model_order": [
+        16,
+        8,
+        4
+      ],
+      "model_winner": 16,
+      "n": 3840,
+      "observed": [
+        {
+          "max_us": 237.17,
+          "median_us": 115.67,
+          "min_us": 112.92,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 38.25
+        },
+        {
+          "max_us": 124.37,
+          "median_us": 121.88,
+          "min_us": 119.33,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 36.3
+        },
+        {
+          "max_us": 310.17,
+          "median_us": 122.5,
+          "min_us": 120.21,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 36.11
+        }
+      ],
+      "observed_order": [
+        16,
+        8,
+        4
+      ],
+      "observed_winner": 16,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 983040.0,
+          "bandwidth_utilization": 0.9375,
+          "compute_us": 0.8411037433155081,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 255.9375,
+          "flops": 15728640.0,
+          "memory_bytes": 5414400.0,
+          "memory_us": 21.155164835164836,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "occupancy_factor": 0.5714285714285714,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 56,
+          "roofline_us": 21.155164835164836,
+          "threadgroup_threads": 256,
+          "tile": 16,
+          "total_us": 27.655164835164832,
+          "weight_traffic_bytes": 4423680.0,
+          "workgroups": 30
+        },
+        {
+          "activation_traffic_bytes": 1966080.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 0.8411037433155081,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 15728640.0,
+          "memory_bytes": 6397440.0,
+          "memory_us": 23.433846153846154,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 32,
+          "roofline_us": 23.433846153846154,
+          "threadgroup_threads": 256,
+          "tile": 8,
+          "total_us": 29.933846153846154,
+          "weight_traffic_bytes": 4423680.0,
+          "workgroups": 60
+        },
+        {
+          "activation_traffic_bytes": 3932160.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 0.8411037433155081,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 15728640.0,
+          "memory_bytes": 8363520.0,
+          "memory_us": 30.635604395604393,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 20,
+          "roofline_us": 30.635604395604393,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 37.135604395604396,
+          "weight_traffic_bytes": 4423680.0,
+          "workgroups": 120
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    },
+    {
+      "k": 4096,
+      "model_order": [
+        16,
+        8,
+        4
+      ],
+      "model_winner": 16,
+      "n": 3840,
+      "observed": [
+        {
+          "max_us": 374.75,
+          "median_us": 213.42,
+          "min_us": 208.12,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 41.46
+        },
+        {
+          "max_us": 250.92,
+          "median_us": 231.83,
+          "min_us": 226.88,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 38.16
+        },
+        {
+          "max_us": 1328.96,
+          "median_us": 234.0,
+          "min_us": 230.25,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 37.81
+        }
+      ],
+      "observed_order": [
+        16,
+        8,
+        4
+      ],
+      "observed_winner": 16,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 1966080.0,
+          "bandwidth_utilization": 0.9375,
+          "compute_us": 1.6822074866310162,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 255.9375,
+          "flops": 31457280.0,
+          "memory_bytes": 10821120.0,
+          "memory_us": 42.28032234432234,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "occupancy_factor": 0.5714285714285714,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 56,
+          "roofline_us": 42.28032234432234,
+          "threadgroup_threads": 256,
+          "tile": 16,
+          "total_us": 48.78032234432235,
+          "weight_traffic_bytes": 8847360.0,
+          "workgroups": 30
+        },
+        {
+          "activation_traffic_bytes": 3932160.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 1.6822074866310162,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 31457280.0,
+          "memory_bytes": 12787200.0,
+          "memory_us": 46.83956043956044,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 32,
+          "roofline_us": 46.83956043956044,
+          "threadgroup_threads": 256,
+          "tile": 8,
+          "total_us": 53.339560439560444,
+          "weight_traffic_bytes": 8847360.0,
+          "workgroups": 60
+        },
+        {
+          "activation_traffic_bytes": 7864320.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 1.6822074866310162,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 31457280.0,
+          "memory_bytes": 16719360.0,
+          "memory_us": 61.24307692307693,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 20,
+          "roofline_us": 61.24307692307693,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 67.74307692307693,
+          "weight_traffic_bytes": 8847360.0,
+          "workgroups": 120
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    },
+    {
+      "k": 8192,
+      "model_order": [
+        16,
+        8,
+        4
+      ],
+      "model_winner": 16,
+      "n": 3840,
+      "observed": [
+        {
+          "max_us": 455.13,
+          "median_us": 408.42,
+          "min_us": 401.5,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 43.33
+        },
+        {
+          "max_us": 464.5,
+          "median_us": 447.5,
+          "min_us": 443.54,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 39.54
+        },
+        {
+          "max_us": 479.88,
+          "median_us": 454.67,
+          "min_us": 452.29,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 38.92
+        }
+      ],
+      "observed_order": [
+        16,
+        8,
+        4
+      ],
+      "observed_winner": 16,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 3932160.0,
+          "bandwidth_utilization": 0.9375,
+          "compute_us": 3.3644149732620323,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 255.9375,
+          "flops": 62914560.0,
+          "memory_bytes": 21634560.0,
+          "memory_us": 84.53063736263736,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "occupancy_factor": 0.5714285714285714,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 56,
+          "roofline_us": 84.53063736263736,
+          "threadgroup_threads": 256,
+          "tile": 16,
+          "total_us": 91.03063736263736,
+          "weight_traffic_bytes": 17694720.0,
+          "workgroups": 30
+        },
+        {
+          "activation_traffic_bytes": 7864320.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 3.3644149732620323,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 62914560.0,
+          "memory_bytes": 25566720.0,
+          "memory_us": 93.65098901098902,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 32,
+          "roofline_us": 93.65098901098902,
+          "threadgroup_threads": 256,
+          "tile": 8,
+          "total_us": 100.15098901098901,
+          "weight_traffic_bytes": 17694720.0,
+          "workgroups": 60
+        },
+        {
+          "activation_traffic_bytes": 15728640.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 3.3644149732620323,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 62914560.0,
+          "memory_bytes": 33431040.0,
+          "memory_us": 122.45802197802197,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 20,
+          "roofline_us": 122.45802197802197,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 128.95802197802197,
+          "weight_traffic_bytes": 17694720.0,
+          "workgroups": 120
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    },
+    {
+      "k": 15360,
+      "model_order": [
+        16,
+        8,
+        4
+      ],
+      "model_winner": 16,
+      "n": 3840,
+      "observed": [
+        {
+          "max_us": 864.88,
+          "median_us": 750.37,
+          "min_us": 743.17,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 44.21
+        },
+        {
+          "max_us": 1083.87,
+          "median_us": 827.87,
+          "min_us": 823.96,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 40.08
+        },
+        {
+          "max_us": 865.79,
+          "median_us": 847.38,
+          "min_us": 841.37,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 39.15
+        }
+      ],
+      "observed_order": [
+        16,
+        8,
+        4
+      ],
+      "observed_winner": 16,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 7372800.0,
+          "bandwidth_utilization": 0.9375,
+          "compute_us": 6.30827807486631,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 255.9375,
+          "flops": 117964800.0,
+          "memory_bytes": 40558080.0,
+          "memory_us": 158.46868864468865,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "occupancy_factor": 0.5714285714285714,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 56,
+          "roofline_us": 158.46868864468865,
+          "threadgroup_threads": 256,
+          "tile": 16,
+          "total_us": 164.96868864468865,
+          "weight_traffic_bytes": 33177600.0,
+          "workgroups": 30
+        },
+        {
+          "activation_traffic_bytes": 14745600.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.30827807486631,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 117964800.0,
+          "memory_bytes": 47930880.0,
+          "memory_us": 175.57098901098902,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 32,
+          "roofline_us": 175.57098901098902,
+          "threadgroup_threads": 256,
+          "tile": 8,
+          "total_us": 182.07098901098902,
+          "weight_traffic_bytes": 33177600.0,
+          "workgroups": 60
+        },
+        {
+          "activation_traffic_bytes": 29491200.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.30827807486631,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 117964800.0,
+          "memory_bytes": 62676480.0,
+          "memory_us": 229.58417582417582,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 7680.0,
+          "registers_per_thread": 20,
+          "roofline_us": 229.58417582417582,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 236.08417582417582,
+          "weight_traffic_bytes": 33177600.0,
+          "workgroups": 120
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    },
+    {
+      "k": 2048,
+      "model_order": [
+        16,
+        8,
+        4
+      ],
+      "model_winner": 16,
+      "n": 15360,
+      "observed": [
+        {
+          "max_us": 967.83,
+          "median_us": 383.96,
+          "min_us": 377.75,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 46.09
+        },
+        {
+          "max_us": 486.25,
+          "median_us": 394.37,
+          "min_us": 392.29,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 44.87
+        },
+        {
+          "max_us": 446.79,
+          "median_us": 407.33,
+          "min_us": 405.92,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 43.44
+        }
+      ],
+      "observed_order": [
+        16,
+        8,
+        4
+      ],
+      "observed_winner": 16,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 3932160.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 3.3644149732620323,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 62914560.0,
+          "memory_bytes": 21657600.0,
+          "memory_us": 79.33186813186812,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "occupancy_factor": 0.5714285714285714,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 56,
+          "roofline_us": 79.33186813186812,
+          "threadgroup_threads": 256,
+          "tile": 16,
+          "total_us": 85.83186813186812,
+          "weight_traffic_bytes": 17694720.0,
+          "workgroups": 120
+        },
+        {
+          "activation_traffic_bytes": 7864320.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 3.3644149732620323,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 62914560.0,
+          "memory_bytes": 25589760.0,
+          "memory_us": 93.73538461538462,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "occupancy_factor": 1.0,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 32,
+          "roofline_us": 93.73538461538462,
+          "threadgroup_threads": 256,
+          "tile": 8,
+          "total_us": 100.23538461538462,
+          "weight_traffic_bytes": 17694720.0,
+          "workgroups": 240
+        },
+        {
+          "activation_traffic_bytes": 15728640.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 3.3644149732620323,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 62914560.0,
+          "memory_bytes": 33454080.0,
+          "memory_us": 122.54241758241757,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 20,
+          "roofline_us": 122.54241758241757,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 129.04241758241756,
+          "weight_traffic_bytes": 17694720.0,
+          "workgroups": 480
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    },
+    {
+      "k": 3840,
+      "model_order": [
+        16,
+        8,
+        4
+      ],
+      "model_winner": 16,
+      "n": 15360,
+      "observed": [
+        {
+          "max_us": 902.38,
+          "median_us": 689.33,
+          "min_us": 680.25,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 48.13
+        },
+        {
+          "max_us": 857.67,
+          "median_us": 720.25,
+          "min_us": 718.5,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 46.06
+        },
+        {
+          "max_us": 814.54,
+          "median_us": 751.17,
+          "min_us": 749.42,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 44.17
+        }
+      ],
+      "observed_order": [
+        16,
+        8,
+        4
+      ],
+      "observed_winner": 16,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 7372800.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.30827807486631,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 117964800.0,
+          "memory_bytes": 40581120.0,
+          "memory_us": 148.6487912087912,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "occupancy_factor": 0.5714285714285714,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 56,
+          "roofline_us": 148.6487912087912,
+          "threadgroup_threads": 256,
+          "tile": 16,
+          "total_us": 155.14879120879118,
+          "weight_traffic_bytes": 33177600.0,
+          "workgroups": 120
+        },
+        {
+          "activation_traffic_bytes": 14745600.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.30827807486631,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 117964800.0,
+          "memory_bytes": 47953920.0,
+          "memory_us": 175.6553846153846,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "occupancy_factor": 1.0,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 32,
+          "roofline_us": 175.6553846153846,
+          "threadgroup_threads": 256,
+          "tile": 8,
+          "total_us": 182.1553846153846,
+          "weight_traffic_bytes": 33177600.0,
+          "workgroups": 240
+        },
+        {
+          "activation_traffic_bytes": 29491200.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.30827807486631,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 117964800.0,
+          "memory_bytes": 62699520.0,
+          "memory_us": 229.66857142857143,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 20,
+          "roofline_us": 229.66857142857143,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 236.16857142857143,
+          "weight_traffic_bytes": 33177600.0,
+          "workgroups": 480
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    },
+    {
+      "k": 4096,
+      "model_order": [
+        16,
+        8,
+        4
+      ],
+      "model_winner": 16,
+      "n": 15360,
+      "observed": [
+        {
+          "max_us": 863.12,
+          "median_us": 745.75,
+          "min_us": 712.0,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 16,
+          "useful_gbps": 47.45
+        },
+        {
+          "max_us": 987.5,
+          "median_us": 769.67,
+          "min_us": 766.5,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 8,
+          "useful_gbps": 45.98
+        },
+        {
+          "max_us": 943.21,
+          "median_us": 795.37,
+          "min_us": 716.0,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "parity": "PASS",
+          "samples": 3,
+          "tile": 4,
+          "useful_gbps": 44.49
+        }
+      ],
+      "observed_order": [
+        16,
+        8,
+        4
+      ],
+      "observed_winner": 16,
+      "predicted": [
+        {
+          "activation_traffic_bytes": 7864320.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.728829946524065,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 125829120.0,
+          "memory_bytes": 43284480.0,
+          "memory_us": 158.55120879120878,
+          "name": "llmopt_q4_0_linear_f16_x16",
+          "occupancy_factor": 0.5714285714285714,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 56,
+          "roofline_us": 158.55120879120878,
+          "threadgroup_threads": 256,
+          "tile": 16,
+          "total_us": 165.05120879120878,
+          "weight_traffic_bytes": 35389440.0,
+          "workgroups": 120
+        },
+        {
+          "activation_traffic_bytes": 15728640.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.728829946524065,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 125829120.0,
+          "memory_bytes": 51148800.0,
+          "memory_us": 187.35824175824175,
+          "name": "llmopt_q4_0_linear_f16_x8",
+          "occupancy_factor": 1.0,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 32,
+          "roofline_us": 187.35824175824175,
+          "threadgroup_threads": 256,
+          "tile": 8,
+          "total_us": 193.85824175824175,
+          "weight_traffic_bytes": 35389440.0,
+          "workgroups": 240
+        },
+        {
+          "activation_traffic_bytes": 31457280.0,
+          "bandwidth_utilization": 1.0,
+          "compute_us": 6.728829946524065,
+          "core_utilization": 1.0,
+          "dispatch_us": 6.5,
+          "effective_bandwidth_gbps": 273.0,
+          "flops": 125829120.0,
+          "memory_bytes": 66877440.0,
+          "memory_us": 244.9723076923077,
+          "name": "llmopt_q4_0_linear_f16_x4",
+          "occupancy_factor": 1.0,
+          "output_bytes": 30720.0,
+          "registers_per_thread": 20,
+          "roofline_us": 244.9723076923077,
+          "threadgroup_threads": 256,
+          "tile": 4,
+          "total_us": 251.4723076923077,
+          "weight_traffic_bytes": 35389440.0,
+          "workgroups": 480
+        }
+      ],
+      "status": "complete",
+      "winner_match": true
+    }
+  ],
+  "source_sha256": "151cede6aa87ee64636ac9ccec46197e933598e16ecc1038993f67a7e5d321ce",
+  "target": {
+    "concurrency_saturation_waves": 2.0,
+    "device_name": "Apple M4 Pro",
+    "dispatch_overhead_seconds": 6.5e-06,
+    "fp16_tflops": 18.7,
+    "gpu_cores": 16,
+    "max_registers_per_thread": 64,
+    "max_threads_per_threadgroup": 1024,
+    "memory_bandwidth_gbps": 273.0,
+    "nominal_registers_per_thread": 32,
+    "simd_lanes": 32,
+    "sram_capacity_bytes": 32768
+  }
+}
