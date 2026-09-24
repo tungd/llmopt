@@ -21,6 +21,9 @@ class AuditCoverageReceiptsTests(unittest.TestCase):
             self.assertGreater(observation["kernel_count"], 0)
             self.assertGreater(observation["lowering"]["unified_count"], 0)
             self.assertEqual(observation["coverage"]["uncovered_count"], 0)
+            self.assertGreater(observation["layers"]["primitive_semantics"]["count"], 0)
+            self.assertGreater(observation["layers"]["fusion_strategies"]["count"], 0)
+            self.assertGreater(observation["layers"]["backend_tactics"]["count"], 0)
             self.assertGreater(observation["aot_queue"]["stages"], 0)
 
     def test_nested_uncovered_and_boundary_data_are_preserved(self) -> None:
@@ -34,7 +37,13 @@ class AuditCoverageReceiptsTests(unittest.TestCase):
                             "decisions": [
                                 {
                                     "status": "cut",
-                                    "boundaries": [{"kind": "unsupported-operation"}],
+                                    "boundaries": [
+                                        {
+                                            "kind": "unsupported-operation",
+                                            "node": 17,
+                                            "operation": "embedding",
+                                        }
+                                    ],
                                 }
                             ],
                             "events": [{"kind": "gated-linear"}],
@@ -70,6 +79,18 @@ class AuditCoverageReceiptsTests(unittest.TestCase):
             self.assertEqual(
                 observation["coverage"]["boundary_kinds"],
                 {"unsupported-operation": 1},
+            )
+            self.assertEqual(
+                observation["coverage"]["unsupported_operations"],
+                [
+                    {
+                        "kind": "unsupported-operation",
+                        "source": None,
+                        "destination": None,
+                        "node": 17,
+                        "operation": "embedding",
+                    }
+                ],
             )
             self.assertEqual(
                 observation["aot_queue"],

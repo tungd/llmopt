@@ -372,6 +372,7 @@ module Op : sig
     | Opaque of {
         op : string;
         target : string;
+        reason : string;
         arguments : Argument.t list;
         keyword_arguments : (string * Argument.t) list;
       }

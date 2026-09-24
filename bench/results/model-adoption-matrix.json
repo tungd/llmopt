@@ -26,18 +26,24 @@
         "kv_cache": "LLMOpt paged Q8 group-64 in matched sustained trace; llama.cpp F16 baseline"
       },
       "coverage": {
-        "fx_nodes": null,
+        "fx_nodes": 2131,
         "opaque_commands": 0,
         "commands": 1054,
         "dispatches": 340,
         "first_token_seconds": null,
         "new_primitive_concepts": null,
         "new_fusion_strategies": null,
-        "new_backend_tactics": null
+        "new_backend_tactics": null,
+        "ir_nodes": 2461,
+        "first_correct_token_seconds": null,
+        "new_ir_operations": null,
+        "compiler_passes_changed": null,
+        "runtime_dispatch_cases_changed": null
       },
       "correctness": {
         "output_parity": "argmax-preserved",
-        "note": "Slice 31 preserves captured row argmax IDs. The matched sustained campaign explicitly does not establish cross-runtime output parity and diverges at the first generated token."
+        "note": "Slice 31 preserves captured row argmax IDs. The matched sustained campaign explicitly does not establish cross-runtime output parity and diverges at the first generated token.",
+        "exact_output_agreement": "not-measured"
       },
       "performance": [
         {
@@ -67,6 +73,11 @@
           "id": "matched-sustained",
           "resource": "repository: bench/results/smollm-slice31-llamacpp-matched-trace-probe-2026-09-01.json",
           "claim": "Matched-token sustained throughput and explicit non-parity boundary."
+        },
+        {
+          "id": "full-capture",
+          "resource": "repository: bench/results/gguf-full-model-comparison-2026-08-29.json",
+          "claim": "Full-capture FX and IR command counts, with the receipt boundary retained for this historical probe."
         }
       ]
     },
@@ -80,18 +91,24 @@
         "kv_cache": null
       },
       "coverage": {
-        "fx_nodes": null,
+        "fx_nodes": 14219,
         "opaque_commands": 0,
         "commands": 1655,
         "dispatches": 702,
         "first_token_seconds": null,
         "new_primitive_concepts": null,
         "new_fusion_strategies": null,
-        "new_backend_tactics": null
+        "new_backend_tactics": null,
+        "ir_nodes": 19176,
+        "first_correct_token_seconds": null,
+        "new_ir_operations": null,
+        "compiler_passes_changed": null,
+        "runtime_dispatch_cases_changed": null
       },
       "correctness": {
         "output_parity": "argmax-preserved",
-        "note": "The slice 31 receipt reports deterministic finite outputs and preserved row argmax IDs; it is not a universal model-quality claim."
+        "note": "The slice 31 receipt reports deterministic finite outputs and preserved row argmax IDs; it is not a universal model-quality claim.",
+        "exact_output_agreement": "not-measured"
       },
       "performance": [
         {
@@ -108,6 +125,11 @@
           "id": "slice31",
           "resource": "repository: bench/results/compiler-generalization-slice-31-2026-08-30.json",
           "claim": "Package command/dispatch counts, zero opaque commands, output validation, and paired latency."
+        },
+        {
+          "id": "full-capture",
+          "resource": "repository: bench/results/gguf-full-model-comparison-2026-08-29.json",
+          "claim": "Full-capture FX and IR command counts, with the receipt boundary retained for this historical probe."
         }
       ]
     },
@@ -121,18 +143,24 @@
         "kv_cache": null
       },
       "coverage": {
-        "fx_nodes": null,
+        "fx_nodes": 4399,
         "opaque_commands": 0,
         "commands": 2414,
         "dispatches": 786,
         "first_token_seconds": null,
         "new_primitive_concepts": null,
         "new_fusion_strategies": null,
-        "new_backend_tactics": null
+        "new_backend_tactics": null,
+        "ir_nodes": 7048,
+        "first_correct_token_seconds": null,
+        "new_ir_operations": null,
+        "compiler_passes_changed": null,
+        "runtime_dispatch_cases_changed": null
       },
       "correctness": {
         "output_parity": "exact",
-        "note": "The slice 31 receipt reports byte-exact Gemma output and preserved argmax rows for this probe; the claim remains scoped to the captured asset and protocol."
+        "note": "The slice 31 receipt reports byte-exact Gemma output and preserved argmax rows for this probe; the claim remains scoped to the captured asset and protocol.",
+        "exact_output_agreement": "exact"
       },
       "performance": [
         {
@@ -149,6 +177,11 @@
           "id": "slice31",
           "resource": "repository: bench/results/compiler-generalization-slice-31-2026-08-30.json",
           "claim": "Package command/dispatch counts, zero opaque commands, byte-exact output scope, and paired latency."
+        },
+        {
+          "id": "full-capture",
+          "resource": "repository: bench/results/gguf-full-model-comparison-2026-08-29.json",
+          "claim": "Full-capture FX and IR command counts, with the receipt boundary retained for this historical probe."
         }
       ]
     },
@@ -162,18 +195,24 @@
         "kv_cache": "LLMOpt KVQ8"
       },
       "coverage": {
-        "fx_nodes": null,
+        "fx_nodes": 1197,
         "opaque_commands": null,
-        "commands": null,
+        "commands": 497,
         "dispatches": null,
         "first_token_seconds": null,
         "new_primitive_concepts": null,
         "new_fusion_strategies": null,
-        "new_backend_tactics": null
+        "new_backend_tactics": null,
+        "ir_nodes": null,
+        "first_correct_token_seconds": null,
+        "new_ir_operations": null,
+        "compiler_passes_changed": null,
+        "runtime_dispatch_cases_changed": null
       },
       "correctness": {
         "output_parity": "not-measured",
-        "note": "The retained HTTP receipt compares visible text and does not expose cross-runtime token IDs; it must not be promoted to token parity."
+        "note": "The retained HTTP receipt compares visible text and does not expose cross-runtime token IDs; it must not be promoted to token parity.",
+        "exact_output_agreement": "not-measured"
       },
       "performance": [
         {
@@ -190,6 +229,11 @@
           "id": "restored-http",
           "resource": "repository: bench/results/lfm25-350m-w4a16-kvq8-restored-vs-llama-cpp-q4-2026-08-27.json",
           "claim": "Visible-text racebench timing, ERS, TTFT, TPOT, and the precision/cache protocol."
+        },
+        {
+          "id": "capture-pair",
+          "resource": "repository: _artifacts/lfm25-350m-w4a16-q8kv-prefill-decode/result.json",
+          "claim": "Captured LFM prefill/decode graph sizes and specialized decode command count; no full cross-runtime token-parity claim."
         }
       ]
     },
@@ -203,18 +247,24 @@
         "kv_cache": "Q8 physical cache in the UOC artifact"
       },
       "coverage": {
-        "fx_nodes": null,
-        "opaque_commands": null,
+        "fx_nodes": 6087,
+        "opaque_commands": 0,
         "commands": 2260,
         "dispatches": null,
         "first_token_seconds": 3.41465,
         "new_primitive_concepts": null,
         "new_fusion_strategies": null,
-        "new_backend_tactics": null
+        "new_backend_tactics": null,
+        "ir_nodes": 3492,
+        "first_correct_token_seconds": null,
+        "new_ir_operations": null,
+        "compiler_passes_changed": null,
+        "runtime_dispatch_cases_changed": null
       },
       "correctness": {
         "output_parity": "partial",
-        "note": "The UOC receipt matches the first 111 generated tokens and then diverges from the legacy golden sequence at token 111; a top-k probe identifies token 32404 as the model-faithful candidate. This is not full exact-output parity."
+        "note": "The UOC receipt matches the first 111 generated tokens and then diverges from the legacy golden sequence at token 111; a top-k probe identifies token 32404 as the model-faithful candidate. This is not full exact-output parity.",
+        "exact_output_agreement": "partial"
       },
       "performance": [
         {
@@ -236,6 +286,16 @@
           "id": "lowerings",
           "resource": "repository: bench/results/gemma4-mtp-lowering-probe-2026-08-31.json",
           "claim": "Historical target/assistant lowering counts and zero opaque commands for the earlier meta-graph-only probe; not substituted for the later UOC opaque count."
+        },
+        {
+          "id": "uoc-package",
+          "resource": "repository: _artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14",
+          "claim": "UOC package command and opaque-command observations from the preserved package directory."
+        },
+        {
+          "id": "selector-ab",
+          "resource": "repository: bench/results/q4-selector-ab-2026-09-24.json",
+          "claim": "Fresh 32-token default/x16 output agreement with x16 selected in both modes; 128-token divergence is retained as a correctness boundary and no speed claim is made."
         }
       ]
     }

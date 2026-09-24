@@ -75,6 +75,36 @@ def _boundary_counts(decisions: list[Any]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _unsupported_operations(decisions: list[Any]) -> list[dict[str, Any]]:
+    """Return actionable unsupported-operation boundaries without inferring fixes."""
+
+    operations: list[dict[str, Any]] = []
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            continue
+        boundaries = decision.get("boundaries", [])
+        if not isinstance(boundaries, list):
+            continue
+        for boundary in boundaries:
+            if not isinstance(boundary, dict):
+                continue
+            if boundary.get("kind") not in {
+                "unsupported-operation",
+                "unsupported-index-map",
+            }:
+                continue
+            operation = {
+                "kind": boundary.get("kind"),
+                "source": decision.get("source"),
+                "destination": decision.get("destination"),
+                "node": boundary.get("node"),
+            }
+            if "operation" in boundary:
+                operation["operation"] = boundary["operation"]
+            operations.append(operation)
+    return operations
+
+
 def _package_observation(directory: Path, checker: Path | None) -> dict[str, Any] | None:
     package = directory / "package.llmopt"
     if checker is None or not package.is_file() or not checker.is_file():
@@ -142,6 +172,10 @@ def audit_receipt(
 
     directory = receipt_path.parent
     package = _package_observation(directory, package_checker)
+    unsupported_operations = _unsupported_operations(decisions)
+    primitive_counter = _counter(primitive_operations)
+    event_counter = _counter(event_kinds)
+    tactic_counter = _counter(backend_tactics)
     return {
         "schema_version": 1,
         "receipt": str(receipt_path),
@@ -155,13 +189,28 @@ def audit_receipt(
             "legacy_invocation_count": lowering.get("legacy-invocation-count"),
             "legacy_rewrite_count": lowering.get("legacy-rewrite-count"),
         },
+        "layers": {
+            "primitive_semantics": {
+                "operations": primitive_counter,
+                "count": len(primitive_operations),
+            },
+            "fusion_strategies": {
+                "events": event_counter,
+                "count": len(events),
+            },
+            "backend_tactics": {
+                "tactics": tactic_counter,
+                "count": len(backend_tactics),
+            },
+        },
         "coverage": {
             "uncovered_count": len(uncovered),
             "uncovered_reasons": _counter(uncovered_reasons),
             "boundary_kinds": _boundary_counts(decisions),
-            "event_kinds": _counter(event_kinds),
-            "primitive_operations": _counter(primitive_operations),
-            "backend_tactics": _counter(backend_tactics),
+            "unsupported_operations": unsupported_operations,
+            "event_kinds": event_counter,
+            "primitive_operations": primitive_counter,
+            "backend_tactics": tactic_counter,
         },
         "aot_queue": {
             "stages": len(_list(queue.get("stages", []), "aot-queue.stages")),

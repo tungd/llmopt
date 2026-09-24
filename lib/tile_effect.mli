@@ -57,6 +57,7 @@ type primitive = {
 type opaque = {
   op : string;
   target : string;
+  reason : string;
   arguments : Ir.Argument.t list;
   keyword_arguments : (string * Ir.Argument.t) list;
   inputs : Ir.Value.t list;

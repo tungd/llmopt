@@ -14,7 +14,13 @@ class ModelAdoptionMatrixTests(unittest.TestCase):
         self.assertEqual(validate_matrix(matrix), [])
         self.assertEqual(len(matrix["models"]), 5)
         self.assertEqual(len(matrix["next_cohort"]), 4)
+        self.assertEqual(matrix["models"][0]["coverage"]["fx_nodes"], 2131)
+        self.assertEqual(matrix["models"][0]["coverage"]["ir_nodes"], 2461)
         self.assertIsNone(matrix["models"][0]["coverage"]["new_backend_tactics"])
+        self.assertEqual(
+            matrix["models"][2]["correctness"]["exact_output_agreement"],
+            "exact",
+        )
 
     def test_unknown_measurements_are_allowed_but_invalid_ratio_is_not(self) -> None:
         matrix = load_matrix(DEFAULT_MATRIX)

@@ -105,11 +105,14 @@ as historical pre-calibration evidence.
 The calibration is an analytic selector update, not a universal tile claim.
 The preserved probe runs, source SHA, and report are under
 `results/q4-tiles-calibration-2026-09-24/` and
-`results/projection-cost-model-calibrated-2026-09-24.json`. The earlier
-full-model x16 A/B and exact-output evidence remains under
-`results/q4-down-x16-2026-09-18/`; the default-selector full-model A/B has
-not been rerun in this slice. Useful GB/s in these files is a packed-byte rate,
-not hardware DRAM traffic.
+`results/projection-cost-model-calibrated-2026-09-24.json`. The fresh compact selector receipt is
+`results/q4-selector-ab-2026-09-24.json`: a matched 32-token default/x16
+comparison selected x16 in both modes and produced identical output, while the
+fresh 128-token comparison diverged at completion index 6. The 32-token timing
+difference is not treated as a speedup claim, and the 128-token divergence
+blocks default-selector full-model equivalence. The explicit x16 environment
+override remains experimental and reproduction-only. Useful GB/s in these files
+is a packed-byte rate, not hardware DRAM traffic.
 
 ## LLMOpt capture and reference probes
 

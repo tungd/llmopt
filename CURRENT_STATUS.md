@@ -39,8 +39,10 @@ live contract when they disagree with source or this note.
   coverage.
 - The recorded Gemma 4 12B UOC package reduces decode commands and executes on
   device. The calibrated Q4_0 selector now prefers x16 for sufficiently gridded
-  single-row decode projections; the prior full-model x16 A/B remains explicit
-  opt-in evidence, and the default-selector full-model A/B has not been rerun.
+  single-row decode projections. A fresh matched 32-token default/x16 A/B
+  dispatched x16 and produced identical output; a fresh 128-token comparison
+  diverged at token 6, so no default-selector full-model speed or equivalence
+  claim is made.
 
 ### Not established as a general claim
 
@@ -49,36 +51,38 @@ live contract when they disagree with source or this note.
 - ROCm/HIP or another full-model backend works.
 - The current Gemma 4 12B workload is within the requested llama.cpp envelope.
 
-The normal build path has been restored after removing stale generated Webs
-interfaces that predated an installed `webs.cmi` update. `ninja -f ninja.build
-all` and `ninja -f ninja.build test` both pass on the current environment.
+The normal build path now tracks installed Webs/Iomux interface files through
+an `ocaml-package-interfaces.stamp` Ninja edge, and the vendored Webs/serve
+artifacts depend on that stamp. `ninja -f ninja.build all` and
+`ninja -f ninja.build test` both pass on the current environment.
 
 ## Agreed next priorities
 
 ### 1. Restore reproducible build evidence
 
-The primary build gate is now restored. The earlier `ninja -f ninja.build all`
-failure was caused by generated `webs_iomux` interfaces from September 6 being
-compared with an installed `webs.cmi` changed on September 18. After removing
-only those generated Webs/serve artifacts, both commands pass on the current
-environment:
+The primary build gate is restored and the recovery path is now declarative.
+`ninja.build` snapshots the installed `webs` and `iomux` `.cmi`/`.cmti` files
+into `_build/ocaml/ocaml-package-interfaces.stamp`; the vendored Webs artifacts
+consume that stamp, so an installed-interface change invalidates the generated
+Webs/serve path without deleting unrelated artifacts. A focused Python test
+pins the dependency edges and the interface-file coverage.
 
 ```sh
 ninja -f ninja.build all
 ninja -f ninja.build test
 ```
 
-The build graph does not currently track installed package interface changes;
-future work should make this class of stale generated interface easier to
-recover without relying on manual artifact deletion. This slice is complete;
-the durable note is `CURRENT_STATUS.md` in the repository root.
+This slice is complete; the durable note is `CURRENT_STATUS.md` in the
+repository root.
 
 ### 2. Align current documentation with live source
 
-Update current architecture/status documents to use the source authority for
-ABI values, execution paths, supported/probe status, and known limitations.
-Do not rewrite historical experiment receipts as if they were rerun. Validate
-the knowledge bundle after maintenance edits.
+Current architecture/status documents now use the source authority for ABI
+values, execution paths, supported/probe status, and known limitations. The
+Serving Schedule format remains **29** for compatibility; new reason-bearing
+opaque records use an additive opcode while legacy opaque records remain
+readable. Historical experiment receipts remain historical. The knowledge
+bundle is validated after maintenance edits.
 
 Current source values must be checked from source, not copied from old notes:
 Model Program ABI, Serving Package ABI, Serving Schedule format, and FX
@@ -86,7 +90,11 @@ transport version.
 
 ### 3. Measure model-adoption cost
 
-Create a repeatable adoption matrix and cohort workflow. For each model, record:
+The checked-in matrix now records five model rows and a four-model planned
+cohort. It separates graph/IR and opaque-command counts from new IR concepts,
+fusion strategies, backend tactics, compiler/runtime case changes, first-token
+timing, and exact-output agreement. Unknown adoption costs remain `null`.
+For each model, record:
 
 - graph node count and unsupported/opaque count;
 - new IR/primitive concepts required;
@@ -102,6 +110,11 @@ not only how fast its final kernel is.
 
 ### 4. Make primitive coverage and fusion coverage explicit
 
+The coverage auditor now reports separate `primitive_semantics`,
+`fusion_strategies`, and `backend_tactics` layers plus actionable
+`unsupported-operation`/`unsupported-index-map` records. FX lowering carries
+its reason into `Ir.Op.Opaque`, and the additive reason-bearing schedule
+opcode preserves that reason without invalidating legacy format-29 packages.
 Keep megakernel fusion, but separate the concepts:
 
 - primitive semantics: operands, shapes, dtypes, effects, state;
@@ -130,13 +143,14 @@ The selector applies the Q4_0 single-row streaming correction only when the
 launch has at least one workgroup per GPU core; smaller grids retain the
 original bandwidth assumption.
 
-The earlier full-model A/B independently measured x16 on the exact FFN-down
-shape with bit-identical output and roughly 10% lower median inter-token time,
-but it used the explicit `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16=1` override. The
-calibrated default selector has not yet been rerun on the full model, so no
-full-model default-selector speedup is claimed yet. Keep the environment
-override as an explicit compatibility/reproduction path while running that
-matched A/B.
+The fresh compact receipt `bench/results/q4-selector-ab-2026-09-24.json`
+records two matched 32-token runs: both default and explicit x16 selected
+`llmopt_q4_0_linear_f16_x16` for the target shape and produced the same output
+hash. Their timings are observations only, not a selector speedup claim. The
+fresh 128-token comparison diverged at completion index 6, so it remains a
+correctness boundary and no default-selector full-model speed or equivalence
+claim is made. The historical explicit-override A/B remains separate
+evidence; keep the environment override experimental and reproduction-only.
 
 ### 6. Defer ROCm/backend portability
 

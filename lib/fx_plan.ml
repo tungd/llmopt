@@ -394,7 +394,14 @@ let plan fx_graph =
   let lower () =
     let lower_node node =
       let name = Fx.Node.name node in
-      let lower_opaque inputs =
+      let lower_opaque ?reason inputs =
+        let reason =
+          Option.value reason
+            ~default:
+              (Printf.sprintf
+                 "FX node %s (%s) is not covered by typed native lowering"
+                 name (Fx.Node.target node))
+        in
         match
           arguments_for env (Fx.Node.arguments node),
           keyword_arguments_for env (Fx.Node.keyword_arguments node)
@@ -407,6 +414,7 @@ let plan fx_graph =
                 {
                   op = Fx.Node.op node;
                   target = Fx.Node.target node;
+                  reason;
                   arguments;
                   keyword_arguments;
                   inputs;
@@ -427,7 +435,7 @@ let plan fx_graph =
       let lower_or_opaque inputs result =
         match result with
         | Ok _ -> bind_primitive result
-        | Error _ -> lower_opaque inputs
+        | Error reason -> lower_opaque ~reason inputs
       in
       let lower_pointwise_binary operator inputs =
         let* operands = pointwise_operands_for env node inputs in

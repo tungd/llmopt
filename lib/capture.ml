@@ -162,6 +162,7 @@ let run thunk =
               {
                 op;
                 target;
+                reason;
                 arguments;
                 keyword_arguments;
                 inputs;
@@ -177,7 +178,7 @@ let run thunk =
                   Ir.Graph.append state.graph
                     ~op:
                       (Ir.Op.Opaque
-                         { op; target; arguments; keyword_arguments })
+                         { op; target; reason; arguments; keyword_arguments })
                     ~inputs
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)

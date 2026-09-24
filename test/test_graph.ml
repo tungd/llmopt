@@ -630,6 +630,7 @@ let run () =
     ~op:
       (Ir.Op.Opaque
          { op = "opaque"; target = "test";
+           reason = "opaque fixture";
            arguments = [ Ir.Argument.Value opaque_input ]; keyword_arguments = [] })
     ~inputs:[ opaque_input ] ~output:(Some opaque_value);
   let opaque_output = uoc03_value opaque_graph [ 1; 4 ] Ir.Dtype.Float16 in

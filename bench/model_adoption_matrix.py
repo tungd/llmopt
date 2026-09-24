@@ -118,19 +118,24 @@ def validate_matrix(matrix: Any) -> list[str]:
             else:
                 for key in (
                     "fx_nodes",
+                    "ir_nodes",
                     "opaque_commands",
                     "commands",
                     "dispatches",
                     "first_token_seconds",
+                    "first_correct_token_seconds",
                 ):
                     if key in coverage and not _nonnegative_or_none(coverage[key]):
                         errors.append(
                             f"{prefix}.coverage.{key} must be a non-negative number or null"
                         )
                 for key in (
+                    "new_ir_operations",
                     "new_primitive_concepts",
                     "new_fusion_strategies",
                     "new_backend_tactics",
+                    "compiler_passes_changed",
+                    "runtime_dispatch_cases_changed",
                 ):
                     value = coverage.get(key)
                     if value is not None and (
@@ -147,6 +152,10 @@ def validate_matrix(matrix: Any) -> list[str]:
                 if correctness.get("output_parity") not in _PARITY:
                     errors.append(
                         f"{prefix}.correctness.output_parity must be one of {sorted(_PARITY)}"
+                    )
+                if correctness.get("exact_output_agreement") not in _PARITY:
+                    errors.append(
+                        f"{prefix}.correctness.exact_output_agreement must be one of {sorted(_PARITY)}"
                     )
                 if not isinstance(correctness.get("note"), str) or not correctness["note"]:
                     errors.append(f"{prefix}.correctness.note must be a non-empty string")

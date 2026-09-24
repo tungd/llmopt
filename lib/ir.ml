@@ -730,6 +730,7 @@ module Op = struct
     | Opaque of {
         op : string;
         target : string;
+        reason : string;
         arguments : Argument.t list;
         keyword_arguments : (string * Argument.t) list;
       }
@@ -794,9 +795,9 @@ module Op = struct
   let map_values f = function
     | Primitive (Primitive.Pointwise operation) ->
         Primitive (Primitive.Pointwise (Pointwise.map_values f operation))
-    | Opaque { op; target; arguments; keyword_arguments } ->
+    | Opaque { op; target; reason; arguments; keyword_arguments } ->
         Opaque
-          { op; target;
+          { op; target; reason;
             arguments = List.map (Argument.map_values f) arguments;
             keyword_arguments =
               List.map
@@ -844,7 +845,8 @@ module Op = struct
         "short-conv-step-fused(" ^ Short_conv_step.to_string config ^ ")"
     | Short_conv_prefill config -> Short_conv_prefill.to_string config
     | Primitive primitive -> Primitive.to_string primitive
-    | Opaque { op; target; _ } -> Printf.sprintf "opaque(%s,%s)" op target
+    | Opaque { op; target; reason; _ } ->
+        Printf.sprintf "opaque(%s,%s; %s)" op target reason
     | Output { name } -> Printf.sprintf "output(%s)" name
     | Barrier_create { id; name } -> Printf.sprintf "barrier-create(%d,%s)" id name
     | Barrier_arrive id -> Printf.sprintf "barrier-arrive(%d)" id

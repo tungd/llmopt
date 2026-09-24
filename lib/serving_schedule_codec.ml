@@ -1309,10 +1309,12 @@ let write_op writer = function
   | Ir.Op.Primitive primitive ->
       Binary.Writer.u8 writer 15;
       write_primitive writer primitive
-  | Ir.Op.Opaque { op; target; arguments; keyword_arguments } ->
-      Binary.Writer.u8 writer 8;
+  | Ir.Op.Opaque { op; target; reason; arguments; keyword_arguments } ->
+      Binary.Writer.u8 writer
+        (if String.trim reason = "" then 8 else 43);
       Binary.Writer.string writer op;
       Binary.Writer.string writer target;
+      if String.trim reason <> "" then Binary.Writer.string writer reason;
       write_arguments writer arguments;
       write_named_arguments writer keyword_arguments
   | Ir.Op.Output { name } ->
@@ -1454,7 +1456,17 @@ let read_op values reader =
       let* target = Binary.Reader.string reader in
       let* arguments = read_arguments ~depth:0 values reader in
       let* keyword_arguments = read_named_arguments values reader in
-      Ok (Ir.Op.Opaque { op; target; arguments; keyword_arguments })
+      Ok
+        (Ir.Op.Opaque
+           { op; target; reason = "legacy opaque operation (diagnostic unavailable)";
+             arguments; keyword_arguments })
+  | 43 ->
+      let* op = Binary.Reader.string reader in
+      let* target = Binary.Reader.string reader in
+      let* reason = Binary.Reader.string reader in
+      let* arguments = read_arguments ~depth:0 values reader in
+      let* keyword_arguments = read_named_arguments values reader in
+      Ok (Ir.Op.Opaque { op; target; reason; arguments; keyword_arguments })
   | 9 -> Binary.Reader.string reader |> Result.map (fun name -> Ir.Op.Output { name })
   | 10 ->
       let* id = Binary.Reader.i64 reader in

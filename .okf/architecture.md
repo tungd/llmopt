@@ -53,7 +53,7 @@ sources:
     title: Versioned serving-package representation (ABI v27)
   - id: local-serving-schedule
     resource: /lib/serving_schedule.ml
-    title: Binary typed command schedule facade (format v29)
+    title: Binary typed command schedule facade (format v29; additive diagnostic opaque opcode)
   - id: local-serving-schedule-types
     resource: /lib/serving_schedule_types.ml
     title: Schedule command, stage, and tensor input types

@@ -129,6 +129,41 @@ let test_quant_qk_device () =
 let run () =
   test_quant_qk_device ();
 
+  let opaque_diagnostic_graph = Ir.Graph.create () in
+  let opaque_diagnostic_input =
+    tensor_input opaque_diagnostic_graph ~name:"opaque-diagnostic-input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 4 ] ~dtype:Ir.Dtype.Float16
+  in
+  let opaque_diagnostic_output =
+    Ir.Graph.fresh_tensor_value opaque_diagnostic_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 1; 4 ]) ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append opaque_diagnostic_graph
+    ~op:
+      (Ir.Op.Opaque
+         { op = "call_function";
+           target = "torch.unsupported";
+           reason = "unsupported FX operation: torch.unsupported";
+           arguments = [ Ir.Argument.Value opaque_diagnostic_input ];
+           keyword_arguments = [] })
+    ~inputs:[ opaque_diagnostic_input ] ~output:(Some opaque_diagnostic_output);
+  Ir.Graph.add_output opaque_diagnostic_graph ~name:"opaque-diagnostic-output"
+    opaque_diagnostic_output;
+  let opaque_diagnostic_schedule =
+    Serving_schedule.of_graph opaque_diagnostic_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  let opaque_diagnostic_commands = Serving_schedule.commands opaque_diagnostic_schedule in
+  expect
+    (List.exists
+       (fun command ->
+         match Serving_schedule.Command.op command with
+         | Ir.Op.Opaque { reason; _ } ->
+             reason = "unsupported FX operation: torch.unsupported"
+         | _ -> false)
+       opaque_diagnostic_commands)
+    "Schedule round-trip preserves the unsupported FX operation reason";
+
   let generalized_attention_graph = Ir.Graph.create () in
   let generalized_input name shape dtype =
     tensor_input generalized_attention_graph ~name

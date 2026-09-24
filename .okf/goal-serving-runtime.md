@@ -29,7 +29,7 @@ sources:
     title: Native serving package (ABI v27)
   - id: schedule
     resource: /lib/serving_schedule_codec.ml
-    title: Native serving schedule codec (format v29)
+    title: Native serving schedule codec (format v29; additive diagnostic opaque opcode)
   - id: runtime
     resource: /lib/metal_runtime.ml
     title: Native OCaml Metal runtime
@@ -146,8 +146,9 @@ Performance and correctness claims must be read per receipt. In particular:
   precision, harness, and measurement scope match.
 - Gemma 4 12B UOC execution is not the same claim as arbitrary-model support.
 - The explicit `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16` override remains disabled by
-  default, although the calibrated selector may choose x16 for measured decode
-  shapes; a default-selector full-model A/B has not been rerun.
+  default. The fresh compact 32-token A/B selected x16 in both modes and
+  matched output; the fresh 128-token comparison diverged at token 6, so no
+  default-selector full-model speed or equivalence claim is made.
 
 The live status and implementation order are maintained in
 `CURRENT_STATUS.md` at the repository root.
