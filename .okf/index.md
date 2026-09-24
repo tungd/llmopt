@@ -13,6 +13,12 @@ GGUF architecture identifier, defines executable topology. Q8-weight and FP16-KV
 evidence, not an available compiler, package, runtime, CLI, or benchmark
 configuration.
 
+The current product backend is Metal on Apple Silicon. ROCm/HIP and other
+full-model portability work are deferred until the Model Program/package/schedule
+contract, model-adoption matrix, unsupported-FX diagnostics, and matched Metal
+device evidence are stable. The Vulkan/MoltenVK receipt is an experimental probe,
+not evidence of a second supported serving backend.
+
 ## Orientation
 
 * Current status and next priorities: see `CURRENT_STATUS.md` in the repository root.

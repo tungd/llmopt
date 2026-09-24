@@ -4,7 +4,7 @@ title: 'Dynamo/FX Compiler with an OCaml Metal Serving Runtime'
 description: 'A model-neutral Ahead-Of-Time (AOT) compilation and serving architecture: PyTorch Dynamo captures FX graphs, OCaml effect-driven passes lower and fuse megakernels against GGUF/UD weights, and the zero-JIT native runtime hosts continuous batching, radix prefix caching, and SIMD stochastic sampling on Apple Silicon.'
 tags: [architecture, pytorch, fx, ocaml, metal, gemma, qwen, smollm, lfm, gguf, unsloth, continuous-batching, radix-cache, megakernels, aot]
 status: stable
-generated: { by: 'autoagent/union-alpha', at: '2026-09-23T18:40:27Z' }
+generated: { by: 'autoagent/union-alpha', at: '2026-09-24T05:55:16Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -194,7 +194,22 @@ sources:
    └─────────────────────────────────────────────────────────────┘
 ```
 
----
+## 1.1 Current Product Boundary and Backend Deferral
+
+The current product boundary is the model-neutral FX → OCaml AOT compiler and
+`model.llmopt` execution contract, with Metal as the only full-model execution
+backend. Metal is the current product path; Vulkan/MoltenVK is an experimental
+portability probe, not a second supported serving backend. ROCm/HIP is
+intentionally deferred rather than a parallel implementation target.
+
+The compiler/backend seam remains useful: primitive semantics, fusion
+strategies, and backend tactics are separate concerns, and the target profile
+is explicit. That seam is not evidence of backend portability. Before a
+ROCm/HIP backend is reconsidered, the current Metal path must have a stable
+Model Program/package/schedule contract, a repeatable model-adoption matrix,
+actionable unsupported-FX diagnostics, and matched device evidence for the
+compiler, runtime, and serving boundaries. A backend port must reproduce those
+contracts rather than introduce a model-specific runtime or schedule family.
 
 # 2. Subsystem Ownership & Layering
 

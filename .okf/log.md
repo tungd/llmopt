@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-09-24
+* **Backend product boundary**: Clarified in the current architecture and root index that Metal is the only full-model product backend. ROCm/HIP and other full-model portability work remain deferred until the Model Program/package/schedule contract, adoption matrix, unsupported-FX diagnostics, and matched Metal evidence are stable. The Vulkan/MoltenVK receipt remains an experimental probe rather than a second supported serving backend.
 * **Calibrated Q4 projection selector**: Added `Q4_decode_streaming` to the OCaml cost model and mirrored the same legality and grid-ramp terms in the Python analyzer. The selector now prefers x16 for sufficiently gridded Q4_0 single-row decode projections, while retaining the original bandwidth assumption for small grids; the x8-only and x4-only admission fixtures remain covered. Three preserved M4 Pro probe runs (`bench/results/q4-tiles-calibration-2026-09-24/`) and the calibrated report (`bench/results/projection-cost-model-calibrated-2026-09-24.json`) match all eight measured shape winners. The full OCaml/device suite passes; a default-selector full-model A/B is still pending.
 
 ## 2026-09-23
