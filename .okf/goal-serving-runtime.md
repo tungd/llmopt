@@ -146,9 +146,12 @@ Performance and correctness claims must be read per receipt. In particular:
   precision, harness, and measurement scope match.
 - Gemma 4 12B UOC execution is not the same claim as arbitrary-model support.
 - The explicit `LLMOPT_EXPERIMENTAL_Q4_DOWN_X16` override remains disabled by
-  default. The fresh compact 32-token A/B selected x16 in both modes and
-  matched output; the fresh 128-token comparison diverged at token 6, so no
-  default-selector full-model speed or equivalence claim is made.
+  default. The pre-cache-ownership-fix 32-token A/B selected x16 in both modes
+  and matched output; its 128-token comparison diverged at token 6 and remains
+  historical. After the cache ownership fix, fresh default and explicit-x16
+  128-token runs selected x16 96 times each and produced the same completion
+  hash, but still differ from the preserved exp-0172 golden stream at token 6;
+  no full-model golden-parity or selector-speed claim is made.
 
 The live status and implementation order are maintained in
 `CURRENT_STATUS.md` at the repository root.

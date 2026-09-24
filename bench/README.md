@@ -120,14 +120,18 @@ as historical pre-calibration evidence.
 The calibration is an analytic selector update, not a universal tile claim.
 The preserved probe runs, source SHA, and report are under
 `results/q4-tiles-calibration-2026-09-24/` and
-`results/projection-cost-model-calibrated-2026-09-24.json`. The fresh compact selector receipt is
-`results/q4-selector-ab-2026-09-24.json`: a matched 32-token default/x16
-comparison selected x16 in both modes and produced identical output, while the
-fresh 128-token comparison diverged at completion index 6. The 32-token timing
-difference is not treated as a speedup claim, and the 128-token divergence
-blocks default-selector full-model equivalence. The explicit x16 environment
-override remains experimental and reproduction-only. Useful GB/s in these files
-is a packed-byte rate, not hardware DRAM traffic.
+`results/projection-cost-model-calibrated-2026-09-24.json`. The pre-cache-ownership-fix
+compact selector receipt `results/q4-selector-ab-2026-09-24.json` remains
+historical: its 32-token default/x16 arms matched, while its 128-token
+comparison diverged at completion index 6. The post-fix receipt
+`results/q4-selector-cache-fix-2026-09-24.json` records fresh 128-token default
+and explicit-x16 runs that both selected x16 96 times and produced the same
+completion hash. That post-fix stream still differs from the preserved exp-0172
+golden stream at completion index 6, so it establishes corrected cache
+ownership and default/x16 agreement on the current artifact, not full-model
+golden parity or a selector speedup. The explicit x16 environment override
+remains experimental and reproduction-only. Useful GB/s in these files is a
+packed-byte rate, not hardware DRAM traffic.
 
 ## LLMOpt capture and reference probes
 

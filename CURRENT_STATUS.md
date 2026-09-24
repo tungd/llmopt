@@ -39,10 +39,10 @@ live contract when they disagree with source or this note.
   coverage.
 - The recorded Gemma 4 12B UOC package reduces decode commands and executes on
   device. The calibrated Q4_0 selector now prefers x16 for sufficiently gridded
-  single-row decode projections. A fresh matched 32-token default/x16 A/B
-  dispatched x16 and produced identical output; a fresh 128-token comparison
-  diverged at token 6, so no default-selector full-model speed or equivalence
-  claim is made.
+  single-row decode projections. A post-cache-ownership-fix 128-token default
+  and explicit-x16 run both selected x16 96 times and produced the same output
+  hash; that stream still differs from the preserved exp-0172 golden stream at
+  completion index 6, so no full-model golden-parity or speed claim is made.
 
 ### Not established as a general claim
 
@@ -143,14 +143,16 @@ The selector applies the Q4_0 single-row streaming correction only when the
 launch has at least one workgroup per GPU core; smaller grids retain the
 original bandwidth assumption.
 
-The fresh compact receipt `bench/results/q4-selector-ab-2026-09-24.json`
-records two matched 32-token runs: both default and explicit x16 selected
-`llmopt_q4_0_linear_f16_x16` for the target shape and produced the same output
-hash. Their timings are observations only, not a selector speedup claim. The
-fresh 128-token comparison diverged at completion index 6, so it remains a
-correctness boundary and no default-selector full-model speed or equivalence
-claim is made. The historical explicit-override A/B remains separate
-evidence; keep the environment override experimental and reproduction-only.
+The pre-cache-ownership-fix compact receipt
+`bench/results/q4-selector-ab-2026-09-24.json` remains historical evidence:
+its 32-token default/x16 arms matched, but its 128-token comparison diverged
+at completion index 6. After the cache ownership fix, the new receipt
+`bench/results/q4-selector-cache-fix-2026-09-24.json` records fresh 128-token
+default and explicit-x16 runs that both selected x16 96 times and produced the
+same output hash. The post-fix stream still differs from the preserved exp-0172
+golden stream at completion index 6, so this is a corrected cache-ownership
+result, not a full-model golden-parity or selector-speed claim. Keep the
+environment override experimental and reproduction-only.
 
 ### 6. Defer ROCm/backend portability
 
