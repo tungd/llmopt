@@ -277,8 +277,44 @@ let () =
   let empty_cq = expect_ok (Metal_runtime.Ring_queue.poll_completion ring) in
   if empty_cq <> None then fail "Ring_queue.poll_completion was not None";
   expect_ok (Metal_runtime.Ring_queue.destroy ring);
+  let decode_uniforms =
+    expect_ok (Metal_runtime.Decode_uniforms.create ~past_tokens:1)
+  in
+  let dispatches, prebaked_exec =
+    expect_ok
+      (Metal_runtime.bind_decode_plan ~decode_uniforms runtime
+         ~schedule:(Serving_package.schedule package)
+         ~inputs:[ "input", input ])
+  in
+  let token_buf = expect_ok (Metal_runtime.Buffer.create ~runtime ~bytes:8) in
+  let out_buf = expect_ok (Metal_runtime.Buffer.create ~runtime ~bytes:4) in
+  let plan =
+    expect_ok
+      (Metal_runtime.Prebaked.create ~runtime ~dispatches ~token_buffer:token_buf
+         ~output_buffer:out_buf)
+  in
+  let _ =
+    expect_ok
+      (Metal_runtime.Prebaked.execute plan ~token:42 ~past_tokens:0 ~checkpoint:0)
+  in
+  let prebaked_out =
+    match Metal_runtime.Execution.output prebaked_exec ~name:"w4a16_linear" with
+    | Some o -> o
+    | None -> fail "Prebaked plan did not produce w4a16_linear"
+  in
+  let prebaked_actual =
+    expect_ok (Metal_runtime.Buffer.contents prebaked_out) |> f16_values
+  in
+  Array.iteri
+    (fun index expected_value ->
+      if prebaked_actual.(index) <> expected_value then
+        fail
+          (Printf.sprintf
+             "Prebaked ICB execution mismatch at %d: expected=0x%04x actual=0x%04x"
+             index expected_value prebaked_actual.(index)))
+    expected_bits;
   Printf.printf
-    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\nschedule-dispatches: 2\nschedule-submissions: 1\nweight-format: w4a16-group-64\ncache-format: q8-group-64\nq8-vector-kernels: %s\ncache-dispatches: 6\ncache-submissions: 1\nq8-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\n"
+    "device: %s\nstage: %s\ndispatch: ocaml-metal-schedule\nkernel: %s\nschedule-dispatches: 2\nschedule-submissions: 1\nweight-format: w4a16-group-64\ncache-format: q8-group-64\nq8-vector-kernels: %s\ncache-dispatches: 6\ncache-submissions: 1\nq8-pools: %d token bytes, %d checkpoint bytes\nattention: exact\ncheckpoint: exact\nprebaked-icb: exact\n"
     (Metal_runtime.device_name runtime)
     (Serving_package.Stage.to_string (Serving_package.stage package))
     kernel q8_cache_kernels q8_token_bytes q8_checkpoint_bytes

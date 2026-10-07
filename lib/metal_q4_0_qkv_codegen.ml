@@ -71,119 +71,55 @@ kernel void llmopt_q4_0_qkv_linear_f16_x8(
   float accumulator6 = 0.0f;
   float accumulator7 = 0.0f;
 
-  const uint half_blocks = blocks >> 1u;
-  const uint l = lane & 15u;
-  const uint b_offset = lane >> 4u;
+  const uint cluster_blocks = (blocks + 7u) >> 3u;
+  const uint b_sub = lane >> 2u;
+  const uint t_in_b = lane & 3u;
+  const uint byte_offset = %du + (t_in_b << 2u);
 
-  for (uint b = 0u; b < half_blocks; ++b) {
-    const uint block_idx = (b << 1u) + b_offset;
-    const uint blk_byte_off = block_idx * %du;
-    device const uchar* blk0 = row_blocks0 + blk_byte_off;
-    device const uchar* blk1 = row_blocks1 + blk_byte_off;
-    device const uchar* blk2 = row_blocks2 + blk_byte_off;
-    device const uchar* blk3 = row_blocks3 + blk_byte_off;
-    device const uchar* blk4 = row_blocks4 + blk_byte_off;
-    device const uchar* blk5 = row_blocks5 + blk_byte_off;
-    device const uchar* blk6 = row_blocks6 + blk_byte_off;
-    device const uchar* blk7 = row_blocks7 + blk_byte_off;
+  for (uint c = 0u; c < cluster_blocks; ++c) {
+    const uint block_idx = (c << 3u) + b_sub;
+    if (block_idx < blocks) {
+      const uint blk_byte_off = block_idx * %du;
+      const uint l0 = t_in_b << 2u;
+      const uint k_idx = block_idx * %du + l0;
+      const float a0_lo = float(activation[k_idx]);
+      const float a0_hi = float(activation[k_idx + 16u]);
+      const float a1_lo = float(activation[k_idx + 1u]);
+      const float a1_hi = float(activation[k_idx + 17u]);
+      const float a2_lo = float(activation[k_idx + 2u]);
+      const float a2_hi = float(activation[k_idx + 18u]);
+      const float a3_lo = float(activation[k_idx + 3u]);
+      const float a3_hi = float(activation[k_idx + 19u]);
 
-    const half scale0 = *reinterpret_cast<device const half*>(blk0 + %du);
-    const half scale1 = *reinterpret_cast<device const half*>(blk1 + %du);
-    const half scale2 = *reinterpret_cast<device const half*>(blk2 + %du);
-    const half scale3 = *reinterpret_cast<device const half*>(blk3 + %du);
-    const half scale4 = *reinterpret_cast<device const half*>(blk4 + %du);
-    const half scale5 = *reinterpret_cast<device const half*>(blk5 + %du);
-    const half scale6 = *reinterpret_cast<device const half*>(blk6 + %du);
-    const half scale7 = *reinterpret_cast<device const half*>(blk7 + %du);
+      const float a_sum8 = float(%d) * (a0_lo + a0_hi + a1_lo + a1_hi + a2_lo + a2_hi + a3_lo + a3_hi);
 
-    const uchar packed0 = blk0[%du + l];
-    const uchar packed1 = blk1[%du + l];
-    const uchar packed2 = blk2[%du + l];
-    const uchar packed3 = blk3[%du + l];
-    const uchar packed4 = blk4[%du + l];
-    const uchar packed5 = blk5[%du + l];
-    const uchar packed6 = blk6[%du + l];
-    const uchar packed7 = blk7[%du + l];
+      #define ACC_ROW(r_blk, acc) \
+        { \
+          device const uchar* blk = r_blk + blk_byte_off; \
+          const float scale = float(*reinterpret_cast<device const half*>(blk + %du)); \
+          const ushort p_lo = *reinterpret_cast<device const ushort*>(blk + byte_offset); \
+          const ushort p_hi = *reinterpret_cast<device const ushort*>(blk + byte_offset + 2u); \
+          acc += scale * ( \
+              a0_lo * float(p_lo & 15u) + \
+              a0_hi * float((p_lo >> 4u) & 15u) + \
+              a1_lo * float((p_lo >> 8u) & 15u) + \
+              a1_hi * float((p_lo >> 12u) & 15u) + \
+              a2_lo * float(p_hi & 15u) + \
+              a2_hi * float((p_hi >> 4u) & 15u) + \
+              a3_lo * float((p_hi >> 8u) & 15u) + \
+              a3_hi * float((p_hi >> 12u) & 15u) - a_sum8); \
+        }
 
-    const uint k_idx = block_idx * %du + l;
-    const float a_low = float(activation[k_idx]);
-    const float a_high = float(activation[k_idx + 16u]);
-
-    const float q0_low = float(int(packed0 & 15u) - %d);
-    const float q0_high = float(int(packed0 >> 4u) - %d);
-    const float q1_low = float(int(packed1 & 15u) - %d);
-    const float q1_high = float(int(packed1 >> 4u) - %d);
-    const float q2_low = float(int(packed2 & 15u) - %d);
-    const float q2_high = float(int(packed2 >> 4u) - %d);
-    const float q3_low = float(int(packed3 & 15u) - %d);
-    const float q3_high = float(int(packed3 >> 4u) - %d);
-    const float q4_low = float(int(packed4 & 15u) - %d);
-    const float q4_high = float(int(packed4 >> 4u) - %d);
-    const float q5_low = float(int(packed5 & 15u) - %d);
-    const float q5_high = float(int(packed5 >> 4u) - %d);
-    const float q6_low = float(int(packed6 & 15u) - %d);
-    const float q6_high = float(int(packed6 >> 4u) - %d);
-    const float q7_low = float(int(packed7 & 15u) - %d);
-    const float q7_high = float(int(packed7 >> 4u) - %d);
-
-    accumulator0 += float(scale0) * (a_low * q0_low + a_high * q0_high);
-    accumulator1 += float(scale1) * (a_low * q1_low + a_high * q1_high);
-    accumulator2 += float(scale2) * (a_low * q2_low + a_high * q2_high);
-    accumulator3 += float(scale3) * (a_low * q3_low + a_high * q3_high);
-    accumulator4 += float(scale4) * (a_low * q4_low + a_high * q4_high);
-    accumulator5 += float(scale5) * (a_low * q5_low + a_high * q5_high);
-    accumulator6 += float(scale6) * (a_low * q6_low + a_high * q6_high);
-    accumulator7 += float(scale7) * (a_low * q7_low + a_high * q7_high);
-  }
-
-  if ((blocks & 1u) != 0u) {
-    const uint block_idx = blocks - 1u;
-    const uint blk_byte_off = block_idx * %du;
-    device const uchar* blk0 = row_blocks0 + blk_byte_off;
-    device const uchar* blk1 = row_blocks1 + blk_byte_off;
-    device const uchar* blk2 = row_blocks2 + blk_byte_off;
-    device const uchar* blk3 = row_blocks3 + blk_byte_off;
-    device const uchar* blk4 = row_blocks4 + blk_byte_off;
-    device const uchar* blk5 = row_blocks5 + blk_byte_off;
-    device const uchar* blk6 = row_blocks6 + blk_byte_off;
-    device const uchar* blk7 = row_blocks7 + blk_byte_off;
-
-    const half scale0 = *reinterpret_cast<device const half*>(blk0 + %du);
-    const half scale1 = *reinterpret_cast<device const half*>(blk1 + %du);
-    const half scale2 = *reinterpret_cast<device const half*>(blk2 + %du);
-    const half scale3 = *reinterpret_cast<device const half*>(blk3 + %du);
-    const half scale4 = *reinterpret_cast<device const half*>(blk4 + %du);
-    const half scale5 = *reinterpret_cast<device const half*>(blk5 + %du);
-    const half scale6 = *reinterpret_cast<device const half*>(blk6 + %du);
-    const half scale7 = *reinterpret_cast<device const half*>(blk7 + %du);
-
-    const uint8_t byte0 = (lane < 16u) ? blk0[%du + lane] : blk0[%du + lane - 16u];
-    const uint8_t byte1 = (lane < 16u) ? blk1[%du + lane] : blk1[%du + lane - 16u];
-    const uint8_t byte2 = (lane < 16u) ? blk2[%du + lane] : blk2[%du + lane - 16u];
-    const uint8_t byte3 = (lane < 16u) ? blk3[%du + lane] : blk3[%du + lane - 16u];
-    const uint8_t byte4 = (lane < 16u) ? blk4[%du + lane] : blk4[%du + lane - 16u];
-    const uint8_t byte5 = (lane < 16u) ? blk5[%du + lane] : blk5[%du + lane - 16u];
-    const uint8_t byte6 = (lane < 16u) ? blk6[%du + lane] : blk6[%du + lane - 16u];
-    const uint8_t byte7 = (lane < 16u) ? blk7[%du + lane] : blk7[%du + lane - 16u];
-
-    const int q0 = int((lane < 16u) ? (byte0 & 0x0Fu) : (byte0 >> 4)) - %d;
-    const int q1 = int((lane < 16u) ? (byte1 & 0x0Fu) : (byte1 >> 4)) - %d;
-    const int q2 = int((lane < 16u) ? (byte2 & 0x0Fu) : (byte2 >> 4)) - %d;
-    const int q3 = int((lane < 16u) ? (byte3 & 0x0Fu) : (byte3 >> 4)) - %d;
-    const int q4 = int((lane < 16u) ? (byte4 & 0x0Fu) : (byte4 >> 4)) - %d;
-    const int q5 = int((lane < 16u) ? (byte5 & 0x0Fu) : (byte5 >> 4)) - %d;
-    const int q6 = int((lane < 16u) ? (byte6 & 0x0Fu) : (byte6 >> 4)) - %d;
-    const int q7 = int((lane < 16u) ? (byte7 & 0x0Fu) : (byte7 >> 4)) - %d;
-
-    const float a = float(activation[block_idx * %du + lane]);
-    accumulator0 += float(scale0) * float(q0) * a;
-    accumulator1 += float(scale1) * float(q1) * a;
-    accumulator2 += float(scale2) * float(q2) * a;
-    accumulator3 += float(scale3) * float(q3) * a;
-    accumulator4 += float(scale4) * float(q4) * a;
-    accumulator5 += float(scale5) * float(q5) * a;
-    accumulator6 += float(scale6) * float(q6) * a;
-    accumulator7 += float(scale7) * float(q7) * a;
+      ACC_ROW(row_blocks0, accumulator0);
+      ACC_ROW(row_blocks1, accumulator1);
+      ACC_ROW(row_blocks2, accumulator2);
+      ACC_ROW(row_blocks3, accumulator3);
+      ACC_ROW(row_blocks4, accumulator4);
+      ACC_ROW(row_blocks5, accumulator5);
+      ACC_ROW(row_blocks6, accumulator6);
+      ACC_ROW(row_blocks7, accumulator7);
+      #undef ACC_ROW
+    }
   }
 
   accumulator0 = simd_sum(accumulator0);
@@ -208,23 +144,8 @@ kernel void llmopt_q4_0_qkv_linear_f16_x8(
   }
 }
 |}
-    block_elements block_bytes block_bytes
-    scale_offset scale_offset scale_offset scale_offset
-    scale_offset scale_offset scale_offset scale_offset
-    quant_offset quant_offset quant_offset quant_offset
-    quant_offset quant_offset quant_offset quant_offset
-    block_elements
-    zero zero zero zero zero zero zero zero
-    zero zero zero zero zero zero zero zero
-    block_bytes
-    scale_offset scale_offset scale_offset scale_offset
-    scale_offset scale_offset scale_offset scale_offset
-    quant_offset quant_offset quant_offset quant_offset
-    quant_offset quant_offset quant_offset quant_offset
-    quant_offset quant_offset quant_offset quant_offset
-    quant_offset quant_offset quant_offset quant_offset
-    zero zero zero zero zero zero zero zero
-    block_elements
+    block_elements block_bytes
+    quant_offset block_bytes block_elements zero scale_offset
 
 let emit_q4_0_qkv_linear_f16_x16 ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =

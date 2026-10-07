@@ -132,6 +132,10 @@ typedef struct {
   NSUInteger token_buffer_offset;
   id<MTLBuffer> output_buffer;
   NSUInteger output_buffer_offset;
+  id<MTLIndirectCommandBuffer> icb;
+  id<MTLBuffer> params_buffer;
+  id<MTLResource> *unique_resources;
+  NSUInteger unique_resource_count;
 } llmopt_prebaked_plan;
 
 static bool is_paged_attention_kernel(const char *name) {
@@ -349,6 +353,14 @@ static void finalize_prebaked(value v) {
       }
       free(plan->records);
     }
+    if (plan->unique_resources != NULL) {
+      for (NSUInteger i = 0; i < plan->unique_resource_count; i++) {
+        [plan->unique_resources[i] release];
+      }
+      free(plan->unique_resources);
+    }
+    [plan->params_buffer release];
+    [plan->icb release];
     [plan->queue release];
     [plan->token_buffer release];
     [plan->output_buffer release];
@@ -988,6 +1000,35 @@ pipeline_for_name(llmopt_metal_library *library, const char *kernel_name) {
     library->cache[library->cache_count].pipeline = pipeline;
     library->cache_count++;
   }
+  return pipeline;
+}
+
+static id<MTLComputePipelineState>
+pipeline_for_name_icb(llmopt_metal_library *library, const char *kernel_name) {
+  NSString *raw_name = [NSString stringWithUTF8String:kernel_name];
+  NSString *key = [@"icb:" stringByAppendingString:raw_name];
+  id<MTLComputePipelineState> pipeline = [library->pipelines objectForKey:key];
+  if (pipeline != nil) {
+    return pipeline;
+  }
+  id<MTLFunction> function = [library->library newFunctionWithName:raw_name];
+  if (function == nil) {
+    caml_failwith("Metal library does not contain the selected kernel");
+  }
+  NSError *pipeline_error = nil;
+  MTLComputePipelineDescriptor *pipe_desc = [[MTLComputePipelineDescriptor alloc] init];
+  pipe_desc.computeFunction = function;
+  pipe_desc.supportIndirectCommandBuffers = YES;
+  pipeline = [library->device newComputePipelineStateWithDescriptor:pipe_desc
+                                                            options:0
+                                                         reflection:nil
+                                                              error:&pipeline_error];
+  [pipe_desc release];
+  [function release];
+  if (pipeline == nil) {
+    fail_with_error("cannot create Metal compute pipeline for ICB", pipeline_error);
+  }
+  [library->pipelines setObject:pipeline forKey:key];
   return pipeline;
 }
 
@@ -1871,6 +1912,7 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     plan->output_buffer_offset = o_buf->offset;
   }
 
+  bool disable_icb = (getenv("LLMOPT_DISABLE_ICB") != NULL);
   for (mlsize_t i = 0; i < total; i++) {
     value item = Field(v_dispatches, i);
     const char *kname = String_val(Field(item, 0));
@@ -1890,7 +1932,11 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     if (plan->records[i].barrier_before) {
       plan->barrier_count += 1;
     }
-    plan->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
+    if (!disable_icb) {
+      plan->records[i].pipeline = [pipeline_for_name_icb(lib, kname) retain];
+    } else {
+      plan->records[i].pipeline = [pipeline_for_name(lib, kname) retain];
+    }
     plan->records[i].is_paged_attention = is_paged_attention_kernel(kname);
     plan->records[i].is_checkpoint_pack = (strcmp(kname, "llmopt_cache_pack_checkpoint_q8_simd") == 0);
 
@@ -1912,6 +1958,68 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     if (plen > 0 && plen <= 256) {
       memcpy(plan->records[i].parameters, Bytes_val(params), plen);
       plan->records[i].parameter_length = plen;
+    }
+  }
+
+  if (total > 0 && !disable_icb) {
+    plan->params_buffer = [lib->device newBufferWithLength:(total * 256)
+                                                   options:MTLResourceStorageModeShared];
+    if (plan->params_buffer != nil) {
+      uint8_t *params_base = (uint8_t *)[plan->params_buffer contents];
+      for (size_t i = 0; i < total; i++) {
+        if (plan->records[i].parameter_length > 0) {
+          memcpy(params_base + (i * 256), plan->records[i].parameters, plan->records[i].parameter_length);
+        }
+      }
+    }
+
+    MTLIndirectCommandBufferDescriptor *icb_desc = [[MTLIndirectCommandBufferDescriptor alloc] init];
+    icb_desc.commandTypes = MTLIndirectCommandTypeConcurrentDispatchThreads;
+    icb_desc.inheritBuffers = NO;
+    icb_desc.maxKernelBufferBindCount = 24;
+    plan->icb = [lib->device newIndirectCommandBufferWithDescriptor:icb_desc
+                                                    maxCommandCount:total
+                                                            options:MTLResourceStorageModeShared];
+    [icb_desc release];
+
+    if (plan->icb != nil) {
+      for (size_t i = 0; i < total; i++) {
+        llmopt_dispatch_record *r = &plan->records[i];
+        id<MTLIndirectComputeCommand> cmd = [plan->icb indirectComputeCommandAtIndex:i];
+        if (r->barrier_before) {
+          [cmd setBarrier];
+        }
+        [cmd setComputePipelineState:r->pipeline];
+        for (NSUInteger b = 0; b < r->buffer_count; b++) {
+          if (r->buffers[b] != nil) {
+            [cmd setKernelBuffer:r->buffers[b] offset:r->offsets[b] atIndex:b];
+          }
+        }
+        if (r->parameter_length > 0 && plan->params_buffer != nil) {
+          [cmd setKernelBuffer:plan->params_buffer offset:(i * 256) atIndex:r->buffer_count];
+        }
+        [cmd concurrentDispatchThreads:r->grid threadsPerThreadgroup:r->group];
+      }
+    }
+
+    NSMutableSet<id<MTLResource>> *res_set = [NSMutableSet set];
+    if (plan->token_buffer != nil) [res_set addObject:plan->token_buffer];
+    if (plan->output_buffer != nil) [res_set addObject:plan->output_buffer];
+    if (plan->params_buffer != nil) [res_set addObject:plan->params_buffer];
+    for (size_t i = 0; i < total; i++) {
+      for (NSUInteger b = 0; b < plan->records[i].buffer_count; b++) {
+        if (plan->records[i].buffers[b] != nil) {
+          [res_set addObject:plan->records[i].buffers[b]];
+        }
+      }
+    }
+    plan->unique_resource_count = [res_set count];
+    if (plan->unique_resource_count > 0) {
+      plan->unique_resources = calloc(plan->unique_resource_count, sizeof(id<MTLResource>));
+      NSUInteger u_idx = 0;
+      for (id<MTLResource> res in res_set) {
+        plan->unique_resources[u_idx++] = [res retain];
+      }
     }
   }
 
@@ -1960,6 +2068,31 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
     *ptr = token;
   }
 
+  if (plan->params_buffer != nil) {
+    uint8_t *params_base = (uint8_t *)[plan->params_buffer contents];
+    for (size_t i = 0; i < plan->record_count; i++) {
+      llmopt_dispatch_record *r = &plan->records[i];
+      if (r->is_paged_attention && r->parameter_length >= 16) {
+        *(uint32_t *)(params_base + (i * 256) + 12) = (uint32_t)past_tokens;
+        *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
+      }
+      if (r->is_checkpoint_pack && r->parameter_length >= 4) {
+        *(uint32_t *)(params_base + (i * 256) + 0) = (uint32_t)checkpoint;
+        *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
+      }
+    }
+  } else {
+    for (size_t i = 0; i < plan->record_count; i++) {
+      llmopt_dispatch_record *r = &plan->records[i];
+      if (r->is_paged_attention && r->parameter_length >= 16) {
+        *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
+      }
+      if (r->is_checkpoint_pack && r->parameter_length >= 4) {
+        *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
+      }
+    }
+  }
+
   const char *nan_check_env = getenv("LLMOPT_DEBUG_NAN_CHECK");
   if (nan_check_env != NULL && (past_tokens > 0 || getenv("LLMOPT_CHECK_PREFILL") != NULL)) {
     @autoreleasepool {
@@ -1982,12 +2115,6 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
                 withRange:NSMakeRange(0, r->buffer_count)];
         }
         if (r->parameter_length > 0) {
-          if (r->is_paged_attention && r->parameter_length >= 16) {
-            *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
-          }
-          if (r->is_checkpoint_pack && r->parameter_length >= 4) {
-            *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
-          }
           [enc setBytes:r->parameters length:r->parameter_length
                 atIndex:r->buffer_count];
         }
@@ -2060,12 +2187,6 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
                 withRange:NSMakeRange(0, r->buffer_count)];
         }
         if (r->parameter_length > 0) {
-          if (r->is_paged_attention && r->parameter_length >= 16) {
-            *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
-          }
-          if (r->is_checkpoint_pack && r->parameter_length >= 4) {
-            *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
-          }
           [enc setBytes:r->parameters length:r->parameter_length
                 atIndex:r->buffer_count];
         }
@@ -2122,31 +2243,36 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
     uint64_t started = mach_absolute_time();
     id<MTLCommandBuffer> cmd = [plan->queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-    id<MTLComputePipelineState> current_pipeline = nil;
-    for (size_t i = 0; i < plan->record_count; i++) {
-      llmopt_dispatch_record *r = &plan->records[i];
-      if (r->barrier_before && llmopt_enable_serial_barriers()) {
-        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+    if (plan->icb != nil && getenv("LLMOPT_DISABLE_ICB") == NULL) {
+      if (plan->unique_resource_count > 0) {
+        [enc useResources:plan->unique_resources
+                    count:plan->unique_resource_count
+                    usage:MTLResourceUsageRead | MTLResourceUsageWrite];
       }
-      if (r->pipeline != current_pipeline) {
-        [enc setComputePipelineState:r->pipeline];
-        current_pipeline = r->pipeline;
-      }
-      if (r->buffer_count > 0) {
-        [enc setBuffers:r->buffers offsets:r->offsets
-              withRange:NSMakeRange(0, r->buffer_count)];
-      }
-      if (r->parameter_length > 0) {
-        if (r->is_paged_attention && r->parameter_length >= 16) {
-          *(uint32_t *)(&r->parameters[12]) = (uint32_t)past_tokens;
+      [enc executeCommandsInBuffer:plan->icb
+                         withRange:NSMakeRange(0, plan->record_count)];
+    } else {
+      id<MTLComputePipelineState> current_pipeline = nil;
+      for (size_t i = 0; i < plan->record_count; i++) {
+        llmopt_dispatch_record *r = &plan->records[i];
+        if (r->barrier_before && llmopt_enable_serial_barriers()) {
+          [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
         }
-        if (r->is_checkpoint_pack && r->parameter_length >= 4) {
-          *(uint32_t *)(&r->parameters[0]) = (uint32_t)checkpoint;
+        if (r->pipeline != current_pipeline) {
+          [enc setComputePipelineState:r->pipeline];
+          current_pipeline = r->pipeline;
         }
-        [enc setBytes:r->parameters length:r->parameter_length
-              atIndex:r->buffer_count];
+        if (r->buffer_count > 0) {
+          [enc setBuffers:r->buffers offsets:r->offsets
+                withRange:NSMakeRange(0, r->buffer_count)];
+        }
+        if (r->parameter_length > 0) {
+          [enc setBytes:r->parameters length:r->parameter_length
+                atIndex:r->buffer_count];
+        }
+        [enc dispatchThreads:r->grid threadsPerThreadgroup:r->group];
       }
-      [enc dispatchThreads:r->grid threadsPerThreadgroup:r->group];
     }
 
     [enc endEncoding];
@@ -2163,7 +2289,8 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
           ((double)(finished - started) * (double)info.numer /
            (double)info.denom) * 1e-9;
       fprintf(stderr,
-              "llmopt-prebaked-profile: dispatches=%zu barriers=%zu gpu_ms=%.6f wait_ms=%.6f\n",
+              "llmopt-prebaked-profile: icb=%s dispatches=%zu barriers=%zu gpu_ms=%.6f wait_ms=%.6f\n",
+              (plan->icb != nil && getenv("LLMOPT_DISABLE_ICB") == NULL) ? "yes" : "no",
               plan->record_count, plan->barrier_count,
               gpu_seconds * 1000.0, wall_seconds * 1000.0);
     }

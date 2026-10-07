@@ -706,123 +706,68 @@ kernel void llmopt_q4_0_gated_linear_f16_x8(
   float up_acc0 = 0.0f, up_acc1 = 0.0f, up_acc2 = 0.0f, up_acc3 = 0.0f;
   float up_acc4 = 0.0f, up_acc5 = 0.0f, up_acc6 = 0.0f, up_acc7 = 0.0f;
 
-  const uint half_blocks = blocks >> 1u;
-  const uint l = lane & 15u;
-  const uint b_offset = lane >> 4u;
+  const uint cluster_blocks = (blocks + 7u) >> 3u;
+  const uint b_sub = lane >> 2u;
+  const uint t_in_b = lane & 3u;
+  const uint byte_offset = %du + (t_in_b << 2u);
 
-  for (uint b = 0u; b < half_blocks; ++b) {
-    const uint block_idx = (b << 1u) + b_offset;
-    const uint blk_byte_off = block_idx * %du;
+  for (uint c = 0u; c < cluster_blocks; ++c) {
+    const uint block_idx = (c << 3u) + b_sub;
+    if (block_idx < blocks) {
+      const uint blk_byte_off = block_idx * %du;
+      const uint l0 = t_in_b << 2u;
+      const uint k_idx = block_idx * %du + l0;
+      const float a0_lo = float(in_ptr[k_idx]);
+      const float a0_hi = float(in_ptr[k_idx + 16u]);
+      const float a1_lo = float(in_ptr[k_idx + 1u]);
+      const float a1_hi = float(in_ptr[k_idx + 17u]);
+      const float a2_lo = float(in_ptr[k_idx + 2u]);
+      const float a2_hi = float(in_ptr[k_idx + 18u]);
+      const float a3_lo = float(in_ptr[k_idx + 3u]);
+      const float a3_hi = float(in_ptr[k_idx + 19u]);
 
-    device const uchar* g_blk0 = gate_row0 + blk_byte_off;
-    device const uchar* g_blk1 = gate_row1 + blk_byte_off;
-    device const uchar* g_blk2 = gate_row2 + blk_byte_off;
-    device const uchar* g_blk3 = gate_row3 + blk_byte_off;
-    device const uchar* g_blk4 = gate_row4 + blk_byte_off;
-    device const uchar* g_blk5 = gate_row5 + blk_byte_off;
-    device const uchar* g_blk6 = gate_row6 + blk_byte_off;
-    device const uchar* g_blk7 = gate_row7 + blk_byte_off;
+      const float a_sum8 = float(%d) * (a0_lo + a0_hi + a1_lo + a1_hi + a2_lo + a2_hi + a3_lo + a3_hi);
 
-    device const uchar* u_blk0 = up_row0 + blk_byte_off;
-    device const uchar* u_blk1 = up_row1 + blk_byte_off;
-    device const uchar* u_blk2 = up_row2 + blk_byte_off;
-    device const uchar* u_blk3 = up_row3 + blk_byte_off;
-    device const uchar* u_blk4 = up_row4 + blk_byte_off;
-    device const uchar* u_blk5 = up_row5 + blk_byte_off;
-    device const uchar* u_blk6 = up_row6 + blk_byte_off;
-    device const uchar* u_blk7 = up_row7 + blk_byte_off;
+      #define ACC_ROW(g_row, u_row, g_acc, u_acc) \
+        { \
+          device const uchar* g_blk = g_row + blk_byte_off; \
+          device const uchar* u_blk = u_row + blk_byte_off; \
+          const float g_scale = float(*reinterpret_cast<device const half*>(g_blk + %du)); \
+          const float u_scale = float(*reinterpret_cast<device const half*>(u_blk + %du)); \
+          const ushort g_lo = *reinterpret_cast<device const ushort*>(g_blk + byte_offset); \
+          const ushort g_hi = *reinterpret_cast<device const ushort*>(g_blk + byte_offset + 2u); \
+          const ushort u_lo = *reinterpret_cast<device const ushort*>(u_blk + byte_offset); \
+          const ushort u_hi = *reinterpret_cast<device const ushort*>(u_blk + byte_offset + 2u); \
+          g_acc += g_scale * ( \
+              a0_lo * float(g_lo & 15u) + \
+              a0_hi * float((g_lo >> 4u) & 15u) + \
+              a1_lo * float((g_lo >> 8u) & 15u) + \
+              a1_hi * float((g_lo >> 12u) & 15u) + \
+              a2_lo * float(g_hi & 15u) + \
+              a2_hi * float((g_hi >> 4u) & 15u) + \
+              a3_lo * float((g_hi >> 8u) & 15u) + \
+              a3_hi * float((g_hi >> 12u) & 15u) - a_sum8); \
+          u_acc += u_scale * ( \
+              a0_lo * float(u_lo & 15u) + \
+              a0_hi * float((u_lo >> 4u) & 15u) + \
+              a1_lo * float((u_lo >> 8u) & 15u) + \
+              a1_hi * float((u_lo >> 12u) & 15u) + \
+              a2_lo * float(u_hi & 15u) + \
+              a2_hi * float((u_hi >> 4u) & 15u) + \
+              a3_lo * float((u_hi >> 8u) & 15u) + \
+              a3_hi * float((u_hi >> 12u) & 15u) - a_sum8); \
+        }
 
-    const half g_scale0 = *reinterpret_cast<device const half*>(g_blk0 + %du);
-    const half g_scale1 = *reinterpret_cast<device const half*>(g_blk1 + %du);
-    const half g_scale2 = *reinterpret_cast<device const half*>(g_blk2 + %du);
-    const half g_scale3 = *reinterpret_cast<device const half*>(g_blk3 + %du);
-    const half g_scale4 = *reinterpret_cast<device const half*>(g_blk4 + %du);
-    const half g_scale5 = *reinterpret_cast<device const half*>(g_blk5 + %du);
-    const half g_scale6 = *reinterpret_cast<device const half*>(g_blk6 + %du);
-    const half g_scale7 = *reinterpret_cast<device const half*>(g_blk7 + %du);
-
-    const half u_scale0 = *reinterpret_cast<device const half*>(u_blk0 + %du);
-    const half u_scale1 = *reinterpret_cast<device const half*>(u_blk1 + %du);
-    const half u_scale2 = *reinterpret_cast<device const half*>(u_blk2 + %du);
-    const half u_scale3 = *reinterpret_cast<device const half*>(u_blk3 + %du);
-    const half u_scale4 = *reinterpret_cast<device const half*>(u_blk4 + %du);
-    const half u_scale5 = *reinterpret_cast<device const half*>(u_blk5 + %du);
-    const half u_scale6 = *reinterpret_cast<device const half*>(u_blk6 + %du);
-    const half u_scale7 = *reinterpret_cast<device const half*>(u_blk7 + %du);
-
-    const uchar g_packed0 = g_blk0[%du + l];
-    const uchar g_packed1 = g_blk1[%du + l];
-    const uchar g_packed2 = g_blk2[%du + l];
-    const uchar g_packed3 = g_blk3[%du + l];
-    const uchar g_packed4 = g_blk4[%du + l];
-    const uchar g_packed5 = g_blk5[%du + l];
-    const uchar g_packed6 = g_blk6[%du + l];
-    const uchar g_packed7 = g_blk7[%du + l];
-
-    const uchar u_packed0 = u_blk0[%du + l];
-    const uchar u_packed1 = u_blk1[%du + l];
-    const uchar u_packed2 = u_blk2[%du + l];
-    const uchar u_packed3 = u_blk3[%du + l];
-    const uchar u_packed4 = u_blk4[%du + l];
-    const uchar u_packed5 = u_blk5[%du + l];
-    const uchar u_packed6 = u_blk6[%du + l];
-    const uchar u_packed7 = u_blk7[%du + l];
-
-    const uint k_idx = block_idx * %du + l;
-    const float a_low = float(in_ptr[k_idx]);
-    const float a_high = float(in_ptr[k_idx + 16u]);
-
-    const float g_q0_l = float(int(g_packed0 & 15u) - %d);
-    const float g_q0_h = float(int(g_packed0 >> 4u) - %d);
-    const float g_q1_l = float(int(g_packed1 & 15u) - %d);
-    const float g_q1_h = float(int(g_packed1 >> 4u) - %d);
-    const float g_q2_l = float(int(g_packed2 & 15u) - %d);
-    const float g_q2_h = float(int(g_packed2 >> 4u) - %d);
-    const float g_q3_l = float(int(g_packed3 & 15u) - %d);
-    const float g_q3_h = float(int(g_packed3 >> 4u) - %d);
-    const float g_q4_l = float(int(g_packed4 & 15u) - %d);
-    const float g_q4_h = float(int(g_packed4 >> 4u) - %d);
-    const float g_q5_l = float(int(g_packed5 & 15u) - %d);
-    const float g_q5_h = float(int(g_packed5 >> 4u) - %d);
-    const float g_q6_l = float(int(g_packed6 & 15u) - %d);
-    const float g_q6_h = float(int(g_packed6 >> 4u) - %d);
-    const float g_q7_l = float(int(g_packed7 & 15u) - %d);
-    const float g_q7_h = float(int(g_packed7 >> 4u) - %d);
-
-    const float u_q0_l = float(int(u_packed0 & 15u) - %d);
-    const float u_q0_h = float(int(u_packed0 >> 4u) - %d);
-    const float u_q1_l = float(int(u_packed1 & 15u) - %d);
-    const float u_q1_h = float(int(u_packed1 >> 4u) - %d);
-    const float u_q2_l = float(int(u_packed2 & 15u) - %d);
-    const float u_q2_h = float(int(u_packed2 >> 4u) - %d);
-    const float u_q3_l = float(int(u_packed3 & 15u) - %d);
-    const float u_q3_h = float(int(u_packed3 >> 4u) - %d);
-    const float u_q4_l = float(int(u_packed4 & 15u) - %d);
-    const float u_q4_h = float(int(u_packed4 >> 4u) - %d);
-    const float u_q5_l = float(int(u_packed5 & 15u) - %d);
-    const float u_q5_h = float(int(u_packed5 >> 4u) - %d);
-    const float u_q6_l = float(int(u_packed6 & 15u) - %d);
-    const float u_q6_h = float(int(u_packed6 >> 4u) - %d);
-    const float u_q7_l = float(int(u_packed7 & 15u) - %d);
-    const float u_q7_h = float(int(u_packed7 >> 4u) - %d);
-
-    gate_acc0 += float(g_scale0) * (a_low * g_q0_l + a_high * g_q0_h);
-    gate_acc1 += float(g_scale1) * (a_low * g_q1_l + a_high * g_q1_h);
-    gate_acc2 += float(g_scale2) * (a_low * g_q2_l + a_high * g_q2_h);
-    gate_acc3 += float(g_scale3) * (a_low * g_q3_l + a_high * g_q3_h);
-    gate_acc4 += float(g_scale4) * (a_low * g_q4_l + a_high * g_q4_h);
-    gate_acc5 += float(g_scale5) * (a_low * g_q5_l + a_high * g_q5_h);
-    gate_acc6 += float(g_scale6) * (a_low * g_q6_l + a_high * g_q6_h);
-    gate_acc7 += float(g_scale7) * (a_low * g_q7_l + a_high * g_q7_h);
-
-    up_acc0 += float(u_scale0) * (a_low * u_q0_l + a_high * u_q0_h);
-    up_acc1 += float(u_scale1) * (a_low * u_q1_l + a_high * u_q1_h);
-    up_acc2 += float(u_scale2) * (a_low * u_q2_l + a_high * u_q2_h);
-    up_acc3 += float(u_scale3) * (a_low * u_q3_l + a_high * u_q3_h);
-    up_acc4 += float(u_scale4) * (a_low * u_q4_l + a_high * u_q4_h);
-    up_acc5 += float(u_scale5) * (a_low * u_q5_l + a_high * u_q5_h);
-    up_acc6 += float(u_scale6) * (a_low * u_q6_l + a_high * u_q6_h);
-    up_acc7 += float(u_scale7) * (a_low * u_q7_l + a_high * u_q7_h);
+      ACC_ROW(gate_row0, up_row0, gate_acc0, up_acc0);
+      ACC_ROW(gate_row1, up_row1, gate_acc1, up_acc1);
+      ACC_ROW(gate_row2, up_row2, gate_acc2, up_acc2);
+      ACC_ROW(gate_row3, up_row3, gate_acc3, up_acc3);
+      ACC_ROW(gate_row4, up_row4, gate_acc4, up_acc4);
+      ACC_ROW(gate_row5, up_row5, gate_acc5, up_acc5);
+      ACC_ROW(gate_row6, up_row6, gate_acc6, up_acc6);
+      ACC_ROW(gate_row7, up_row7, gate_acc7, up_acc7);
+      #undef ACC_ROW
+    }
   }
 
   gate_acc0 = simd_sum(gate_acc0);
@@ -863,20 +808,9 @@ kernel void llmopt_q4_0_gated_linear_f16_x8(
   }
 }
 |}
-    block_elements block_bytes block_bytes
-    scale_offset scale_offset scale_offset scale_offset
-    scale_offset scale_offset scale_offset scale_offset
-    scale_offset scale_offset scale_offset scale_offset
-    scale_offset scale_offset scale_offset scale_offset
-    quant_offset quant_offset quant_offset quant_offset
-    quant_offset quant_offset quant_offset quant_offset
-    quant_offset quant_offset quant_offset quant_offset
-    quant_offset quant_offset quant_offset quant_offset
-    block_elements
-    zero zero zero zero zero zero zero zero
-    zero zero zero zero zero zero zero zero
-    zero zero zero zero zero zero zero zero
-    zero zero zero zero zero zero zero zero
+    block_elements block_bytes
+    quant_offset block_bytes block_elements zero
+    scale_offset scale_offset
 
 let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
     ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
@@ -930,50 +864,27 @@ let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
           s s s s s s s s)
     |> String.concat "\n"
   in
-  let block_loads =
+  let cluster_block_accs =
     List.init num_slots (fun s ->
-        let blks =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    device const uchar* blk_%d_%d = row_%d_%d + blk_byte_off;"
-                s j s j)
-          |> String.concat "\n"
-        in
-        let scales =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    const half scale_%d_%d = *reinterpret_cast<device const half*>(blk_%d_%d + %du);"
-                s j s j scale_offset)
-          |> String.concat "\n"
-        in
-        let packeds =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    const uchar packed_%d_%d = blk_%d_%d[%du + l];"
-                s j s j quant_offset)
-          |> String.concat "\n"
-        in
-        blks ^ "\n" ^ scales ^ "\n" ^ packeds)
-    |> String.concat "\n\n"
-  in
-  let block_accs =
-    List.init num_slots (fun s ->
-        let qs =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    const float q_%d_%d_l = float(int(packed_%d_%d & 15u) - %d);\n\
-                \    const float q_%d_%d_h = float(int(packed_%d_%d >> 4u) - %d);"
-                s j s j zero s j s j zero)
-          |> String.concat "\n"
-        in
-        let accs =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    acc%d_%d += float(scale_%d_%d) * (a_low * q_%d_%d_l + a_high * q_%d_%d_h);"
-                s j s j s j s j)
-          |> String.concat "\n"
-        in
-        qs ^ "\n" ^ accs)
+        List.init 8 (fun j ->
+            Printf.sprintf
+              "      {\n\
+              \        device const uchar* blk = row_%d_%d + blk_byte_off;\n\
+              \        const float scale = float(*reinterpret_cast<device const half*>(blk + %du));\n\
+              \        const ushort p_lo = *reinterpret_cast<device const ushort*>(blk + byte_offset);\n\
+              \        const ushort p_hi = *reinterpret_cast<device const ushort*>(blk + byte_offset + 2u);\n\
+              \        acc%d_%d += scale * (\n\
+              \            a0_lo * float(p_lo & 15u) +\n\
+              \            a0_hi * float((p_lo >> 4u) & 15u) +\n\
+              \            a1_lo * float((p_lo >> 8u) & 15u) +\n\
+              \            a1_hi * float((p_lo >> 12u) & 15u) +\n\
+              \            a2_lo * float(p_hi & 15u) +\n\
+              \            a2_hi * float((p_hi >> 4u) & 15u) +\n\
+              \            a3_lo * float((p_hi >> 8u) & 15u) +\n\
+              \            a3_hi * float((p_hi >> 12u) & 15u) - a_sum8);\n\
+              \      }"
+              s j scale_offset s j)
+        |> String.concat "\n")
     |> String.concat "\n\n"
   in
   let simd_sums =
@@ -1046,21 +957,30 @@ kernel void %s(
 
 %s
 
-  const uint half_blocks = blocks >> 1u;
-  const uint l = lane & 15u;
-  const uint b_offset = lane >> 4u;
+  const uint cluster_blocks = (blocks + 7u) >> 3u;
+  const uint b_sub = lane >> 2u;
+  const uint t_in_b = lane & 3u;
+  const uint byte_offset = %du + (t_in_b << 2u);
 
-  for (uint b = 0u; b < half_blocks; ++b) {
-    const uint block_idx = (b << 1u) + b_offset;
-    const uint blk_byte_off = block_idx * %du;
+  for (uint c = 0u; c < cluster_blocks; ++c) {
+    const uint block_idx = (c << 3u) + b_sub;
+    if (block_idx < blocks) {
+      const uint blk_byte_off = block_idx * %du;
+      const uint l0 = t_in_b << 2u;
+      const uint k_idx = block_idx * %du + l0;
+      const float a0_lo = float(in_ptr[k_idx]);
+      const float a0_hi = float(in_ptr[k_idx + 16u]);
+      const float a1_lo = float(in_ptr[k_idx + 1u]);
+      const float a1_hi = float(in_ptr[k_idx + 17u]);
+      const float a2_lo = float(in_ptr[k_idx + 2u]);
+      const float a2_hi = float(in_ptr[k_idx + 18u]);
+      const float a3_lo = float(in_ptr[k_idx + 3u]);
+      const float a3_hi = float(in_ptr[k_idx + 19u]);
+
+      const float a_sum8 = float(%d) * (a0_lo + a0_hi + a1_lo + a1_hi + a2_lo + a2_hi + a3_lo + a3_hi);
 
 %s
-
-    const uint k_idx = block_idx * %du + l;
-    const float a_low = float(in_ptr[k_idx]);
-    const float a_high = float(in_ptr[k_idx + 16u]);
-
-%s
+    }
   }
 
 %s
@@ -1072,8 +992,9 @@ kernel void %s(
 }
 |}
     name weight_buffers aux_buffers buf_idx_out buf_idx_params
-    block_elements block_bytes weight_bases accumulators block_bytes
-    block_loads block_elements block_accs simd_sums in_bufs writebacks
+    block_elements block_bytes weight_bases accumulators
+    quant_offset block_bytes block_elements zero cluster_block_accs
+    simd_sums in_bufs writebacks
 
 let emit_q4_0_multi_linear_f16_x16 ~name ~epilogue ?(num_slots = 2)
     ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
@@ -1388,50 +1309,27 @@ let emit_q4_0_multi_export_linear_f16_x8 ~name ~epilogues ?(num_slots = 2)
           s s s s s s s s)
     |> String.concat "\n"
   in
-  let block_loads =
+  let cluster_block_accs =
     List.init num_slots (fun s ->
-        let blks =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    device const uchar* blk_%d_%d = row_%d_%d + blk_byte_off;"
-                s j s j)
-          |> String.concat "\n"
-        in
-        let scales =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    const half scale_%d_%d = *reinterpret_cast<device const half*>(blk_%d_%d + %du);"
-                s j s j scale_offset)
-          |> String.concat "\n"
-        in
-        let packeds =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    const uchar packed_%d_%d = blk_%d_%d[%du + l];"
-                s j s j quant_offset)
-          |> String.concat "\n"
-        in
-        blks ^ "\n" ^ scales ^ "\n" ^ packeds)
-    |> String.concat "\n\n"
-  in
-  let block_accs =
-    List.init num_slots (fun s ->
-        let qs =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    const float q_%d_%d_l = float(int(packed_%d_%d & 15u) - %d);\n\
-                \    const float q_%d_%d_h = float(int(packed_%d_%d >> 4u) - %d);"
-                s j s j zero s j s j zero)
-          |> String.concat "\n"
-        in
-        let accs =
-          List.init 8 (fun j ->
-              Printf.sprintf
-                "    acc%d_%d += float(scale_%d_%d) * (a_low * q_%d_%d_l + a_high * q_%d_%d_h);"
-                s j s j s j s j)
-          |> String.concat "\n"
-        in
-        qs ^ "\n" ^ accs)
+        List.init 8 (fun j ->
+            Printf.sprintf
+              "      {\n\
+              \        device const uchar* blk = row_%d_%d + blk_byte_off;\n\
+              \        const float scale = float(*reinterpret_cast<device const half*>(blk + %du));\n\
+              \        const ushort p_lo = *reinterpret_cast<device const ushort*>(blk + byte_offset);\n\
+              \        const ushort p_hi = *reinterpret_cast<device const ushort*>(blk + byte_offset + 2u);\n\
+              \        acc%d_%d += scale * (\n\
+              \            a0_lo * float(p_lo & 15u) +\n\
+              \            a0_hi * float((p_lo >> 4u) & 15u) +\n\
+              \            a1_lo * float((p_lo >> 8u) & 15u) +\n\
+              \            a1_hi * float((p_lo >> 12u) & 15u) +\n\
+              \            a2_lo * float(p_hi & 15u) +\n\
+              \            a2_hi * float((p_hi >> 4u) & 15u) +\n\
+              \            a3_lo * float((p_hi >> 8u) & 15u) +\n\
+              \            a3_hi * float((p_hi >> 12u) & 15u) - a_sum8);\n\
+              \      }"
+              s j scale_offset s j)
+        |> String.concat "\n")
     |> String.concat "\n\n"
   in
   let simd_sums =
@@ -1514,21 +1412,30 @@ let emit_q4_0_multi_export_linear_f16_x8 ~name ~epilogues ?(num_slots = 2)
       "";
       accumulators;
       "";
-      "  const uint half_blocks = blocks >> 1u;";
-      "  const uint l = lane & 15u;";
-      "  const uint b_offset = lane >> 4u;";
+      "  const uint cluster_blocks = (blocks + 7u) >> 3u;";
+      "  const uint b_sub = lane >> 2u;";
+      "  const uint t_in_b = lane & 3u;";
+      Printf.sprintf "  const uint byte_offset = %du + (t_in_b << 2u);" quant_offset;
       "";
-      "  for (uint b = 0u; b < half_blocks; ++b) {";
-      "    const uint block_idx = (b << 1u) + b_offset;";
-      Printf.sprintf "    const uint blk_byte_off = block_idx * %du;" block_bytes;
+      "  for (uint c = 0u; c < cluster_blocks; ++c) {";
+      "    const uint block_idx = (c << 3u) + b_sub;";
+      "    if (block_idx < blocks) {";
+      Printf.sprintf "      const uint blk_byte_off = block_idx * %du;" block_bytes;
+      "      const uint l0 = t_in_b << 2u;";
+      Printf.sprintf "      const uint k_idx = block_idx * %du + l0;" block_elements;
+      "      const float a0_lo = float(in_ptr[k_idx]);";
+      "      const float a0_hi = float(in_ptr[k_idx + 16u]);";
+      "      const float a1_lo = float(in_ptr[k_idx + 1u]);";
+      "      const float a1_hi = float(in_ptr[k_idx + 17u]);";
+      "      const float a2_lo = float(in_ptr[k_idx + 2u]);";
+      "      const float a2_hi = float(in_ptr[k_idx + 18u]);";
+      "      const float a3_lo = float(in_ptr[k_idx + 3u]);";
+      "      const float a3_hi = float(in_ptr[k_idx + 19u]);";
       "";
-      block_loads;
+      Printf.sprintf "      const float a_sum8 = float(%d) * (a0_lo + a0_hi + a1_lo + a1_hi + a2_lo + a2_hi + a3_lo + a3_hi);" zero;
       "";
-      Printf.sprintf "    const uint k_idx = block_idx * %du + l;" block_elements;
-      "    const float a_low = float(in_ptr[k_idx]);";
-      "    const float a_high = float(in_ptr[k_idx + 16u]);";
-      "";
-      block_accs;
+      cluster_block_accs;
+      "    }";
       "  }";
       "";
       simd_sums;
