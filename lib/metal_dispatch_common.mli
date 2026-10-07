@@ -70,6 +70,7 @@ val validate_linear_shapes :
   (unit, string) result
 
 val select_quant_linear_kernel :
+  ?slots:int ->
   ?suffix:string ->
   Metal_native.runtime ->
   m:int ->

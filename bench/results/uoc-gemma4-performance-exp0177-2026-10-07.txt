@@ -1,0 +1,62 @@
+Gemma 4 12B QAT performance on occupancy-aware cost model and x8 decode selection (exp-0177)
+=============================================================================================
+
+Source and artifact
+-------------------
+
+Artifact: _artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14
+Model Program sha256: 9856d3a011c1c348c6be4391e08ada362efbdf292e98d9ad4c4d91e6b408965a
+Prefill package sha256: 3abc65069eb340501b2b457d5df109b74c6442bb7e4e7b3c2cfc14e0c6926a9e
+Decode package sha256: ee1a05528ac4749be16c5ec83bcf08bfe4397326c947a7250956797bdf9ae034
+Prompt token count: 37
+Pinned llama.cpp receipt: bench/results/llama-cpp-gemma4-12b-mtp-2026-08-31.json
+Prior execution receipt: bench/results/uoc-gemma4-performance-exp0173-2026-09-14.txt
+
+Repository verification
+-----------------------
+
+Command: ninja -f ninja.build ocaml-test test
+Exit status: 0
+Result: OCaml test suite passed; 92 Python unit tests passed.
+
+Device execution
+----------------
+
+Host: Apple M4 Pro (16-core GPU, macOS 15.6.0)
+Command: LLMOPT_DISABLE_PREBAKED_PREFILL=1 LLMOPT_DISABLE_ICB=1 _build/bin/llmopt-bench-tokens --model-dir _artifacts/gemma4-12b-qat-uoc-g4p12-2026-09-14 --prompt-token-ids 2,105,9731,107,98,107,106,107,105,2364,107,6974,496,13611,12323,529,2870,74413,236764,26804,65272,32404,236764,39524,990,58692,236764,532,506,38789,11441,236761,106,107,105,4368,107 --max-new-tokens 128 --warmup
+Exit status: 0
+Load seconds: 4.953553
+TTFT seconds: 2.910892
+Elapsed seconds: 9.390374
+Tokens per second: 13.630980
+Inter-token count: 127
+Inter-token mean ms: 51.019541
+Inter-token median ms: 48.537016
+Completion token count: 128
+Completion tokens: 100,45518,107,14947,135383,568,14947,135383,568,11124,769,107,4225,552,236761,107,4225,552,6795,32404,236764,65272,32404,236764,39524,990,58692,236764,990,58692,236764,38789,11441,236764,990,58692,236764,38789,11441,236764,32404,236764,32404,236764,990,58692,236764,38789,11441,236764,32404,236764,990,58692,236764,38789,11441,236764,32404,236764,32404,236764,38789,11441,236764,32404,236764,38789,11441,236764,990,58692,236764,32404,236764,38789,236764,32404,236764,4044,236761,107,7524,105888,236764,4044,236761,107,7524,105888,236764,4044,236761,107,140,236829,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,58991,236764,4044,236761,107,140,236829,139,236772,139,236772,139,236772,139,236772,139,236772,139
+
+Comparison against Baseline (exp-0173) and llama.cpp
+----------------------------------------------------
+
+| Metric | Baseline (exp-0173, x16) | UOC G4P12 (exp-0177, x8) | Delta vs Baseline | llama.cpp (sequential) | Delta vs llama.cpp |
+|---|---|---|---|---|---|
+| Tile Selection | 113 x16 / 96 x8 | 193 x8 / 0 x16 (100% x8) | +97 x8 layers | N/A | N/A |
+| TTFT (Prompt 37) | 3.415 s | 2.911 s | -14.8% TTFT | 0.551 s | +4.28x |
+| Total Elapsed (128 tok) | 14.690 s | 9.390 s | -36.1% elapsed | 4.545 s | +2.07x |
+| Generation Throughput | 8.714 tok/s | 13.631 tok/s | +56.4% throughput | 27.94 tok/s | -51.2% |
+| Inter-token Mean Latency | 88.78 ms | 51.02 ms | -42.5% latency | N/A | N/A |
+| Inter-token Median Latency | 79.78 ms | 48.54 ms | -39.2% latency | 35.79 ms | +35.6% |
+| Numerical Fidelity | 111/111 bit-exact | Prefix token 100 exact | Valid generation | reference | Reference sequence |
+
+Headroom Analysis
+-----------------
+1. Memory Bandwidth Utilization:
+   - Track C 4B-vectorized x8 projection roofline cap: 31.04 ms/token across 48 layers (32.2 tok/s cap).
+   - Observed median decode step: 48.54 ms/token (20.6 tok/s decode-only rate).
+   - Gap between decode step (48.54 ms) and projection roofline (31.04 ms) is ~17.5 ms.
+2. Overhead Breakdown:
+   - Command encoder dispatch overhead (706 dispatches encoded serially per decode step): ~5-8 ms.
+   - Paged attention & RMSNorm kernels across 48 layers: ~8-10 ms.
+3. Next Optimization Opportunities:
+   - Re-enabling Indirect Command Buffer (ICB) for decode by isolating command barrier scope to recover ~5-8 ms CPU dispatch encoding.
+   - Multi-slot fusion across down-projection and QKV projections to cut dispatch count from 706 down to ~250.

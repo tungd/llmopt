@@ -194,7 +194,7 @@ let validate_linear_shapes ~m ~n ~k input weight output =
     Error "linear output shape is inconsistent with m and n"
   else Ok ()
 
-let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
+let select_quant_linear_kernel ?(slots = 1) ?(suffix = "") runtime ~m ~n ~k ~output_dtype
     quant =
   let input_dtype = Ir.Dtype.Quant quant in
   let override_down_x16 =
@@ -203,7 +203,7 @@ let select_quant_linear_kernel ?(suffix = "") runtime ~m ~n ~k ~output_dtype
   in
   let candidates =
     match
-      Kernel_abi.Linear_tactic.select_costed ~target:Target_hardware.default ~m ~n ~k
+      Kernel_abi.Linear_tactic.select_costed_slots ~slots ~target:Target_hardware.default ~m ~n ~k
         ~input_dtype:Ir.Dtype.Float16
         ~storage:(Ir.Linear_storage.Block_quantized quant) ~output_dtype
     with

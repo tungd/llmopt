@@ -1149,7 +1149,7 @@ let run () =
   let metal_program = Metal.lower ~fusion_regions:[ me_sched_region ] graph |> expect_ok in
   let p_src = Metal.Program.source metal_program in
   let () =
-    expect (contains_substr p_src "kernel void llmopt_q4_0_linear_f16_x16" || contains_substr p_src "kernel void llmopt_q4_0_linear_f16_x8") "Metal program contains the specialized multi-export kernel";
+    expect (contains_substr p_src "kernel void llmopt_q4_0_linear_f16_x16" || contains_substr p_src "kernel void llmopt_q4_0_linear_f16_x8" || contains_substr p_src "kernel void llmopt_q4_0_linear_f16_x4") "Metal program contains the specialized multi-export kernel";
     Printf.printf "  [PASS] multi-export schedule, memory plan, and dispatch assignment\n%!"
   in
 
@@ -1263,7 +1263,7 @@ let run () =
     let executed_kernels = Metal_runtime.Execution.kernels execution in
     let () =
       expect
-        (List.exists (fun k -> contains_substr k "llmopt_q4_0_linear_f16_x16" || contains_substr k "llmopt_q4_0_linear_f16_x8") executed_kernels)
+        (List.exists (fun k -> contains_substr k "llmopt_q4_0_linear_f16_x16" || contains_substr k "llmopt_q4_0_linear_f16_x8" || contains_substr k "llmopt_q4_0_linear_f16_x4") executed_kernels)
         "multi-export contraction group kernel was executed by GPU"
     in
 

@@ -579,7 +579,8 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
             match first.storage with
             | Ir.Linear_storage.Block_quantized quant -> (
                 match
-                  select_quant_linear_kernel runtime ~m:first.m
+                  let slots = List.length contractions in
+                  select_quant_linear_kernel ~slots runtime ~m:first.m
                     ~n:first.n ~k:first.k
                     ~output_dtype:(Ir.Value.dtype output) quant
                 with
@@ -769,7 +770,8 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
           match first.storage with
           | Ir.Linear_storage.Block_quantized quant -> (
               match
-                select_quant_linear_kernel runtime ~m:first.m
+                let slots = List.length contractions in
+                select_quant_linear_kernel ~slots runtime ~m:first.m
                   ~n:first.n ~k:first.k
                   ~output_dtype:(Ir.Value.dtype (List.hd outputs)) quant
               with
