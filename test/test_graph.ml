@@ -37,9 +37,6 @@ let run () =
   expect (String.length w4_silu_msl > 100) "w4_silu_msl emits valid length";
   expect (String.sub w4_silu_msl 0 11 = "kernel void") "w4_silu_msl starts with kernel void";
 
-  let q4_res_msl = Metal.emit_parametric_q4_k_linear ~name:"test_q4_res" ~epilogue:(Epilogue.residual_add ~residual:v_res) in
-  expect (String.length q4_res_msl > 100) "q4_res_msl emits valid length";
-
   (* 9. Pass_fuse_epilogues Graph Rewrite Verification *)
   let g = Ir.Graph.create () in
   let x = Ir.Graph.fresh_tensor_value g ~shape:(Tensor_shape.of_ints_exn [ 1; 64 ]) ~dtype:Ir.Dtype.Float16 in
@@ -338,7 +335,7 @@ let run () =
   in
   let linear_add_weight =
     uoc03_input linear_add_graph "linear-add-weight" [ 128; 64 ]
-      (Ir.Dtype.Quant Ir.Dtype.Q4_K)
+      (Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
   in
   let linear_add_value =
     uoc03_value linear_add_graph [ 1; 128 ] Ir.Dtype.Float16
@@ -379,7 +376,7 @@ let run () =
        (fun assignment ->
          match uoc03_assignment_operation assignment,
                Constructive_lowering.Assignment.primitive assignment with
-         | Ir.Op.Linear _, Kernel_region.Primitive.Linear { storage = Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K; _ } ->
+         | Ir.Op.Linear _, Kernel_region.Primitive.Linear { storage = Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine4; _ } ->
              true
          | _ -> false)
        (Constructive_lowering.Analysis.assignments linear_add_analysis))
@@ -551,9 +548,9 @@ let run () =
      an antichain of singleton fusion regions. *)
   let qkv_graph = Ir.Graph.create () in
   let qkv_input = uoc03_input qkv_graph "qkv-input" [ 1; 576 ] Ir.Dtype.Float16 in
-  let q_weight = uoc03_input qkv_graph "q-weight" [ 576; 576 ] (Ir.Dtype.Quant Ir.Dtype.Q5_0) in
-  let k_weight = uoc03_input qkv_graph "k-weight" [ 192; 576 ] (Ir.Dtype.Quant Ir.Dtype.Q5_0) in
-  let v_weight = uoc03_input qkv_graph "v-weight" [ 192; 576 ] (Ir.Dtype.Quant Ir.Dtype.Q5_0) in
+  let q_weight = uoc03_input qkv_graph "q-weight" [ 576; 576 ] (Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4) in
+  let k_weight = uoc03_input qkv_graph "k-weight" [ 192; 576 ] (Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4) in
+  let v_weight = uoc03_input qkv_graph "v-weight" [ 192; 576 ] (Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4) in
   let q_value = uoc03_value qkv_graph [ 1; 576 ] Ir.Dtype.Float16 in
   let k_value = uoc03_value qkv_graph [ 1; 192 ] Ir.Dtype.Float16 in
   let v_value = uoc03_value qkv_graph [ 1; 192 ] Ir.Dtype.Float16 in
@@ -828,7 +825,7 @@ let run () =
               =
               [ Kernel_region.Primitive.linear ~m:1 ~n:128 ~k:64 ~bias:false
                   ~storage:
-                    (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K);
+                    (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine4);
                 Kernel_region.Primitive.binary Kernel_region.Primitive.Add ]
        | _ -> false)
     && Passes.Optimization.legacy_fallbacks uoc05_quant_optimization = []
@@ -1624,7 +1621,7 @@ let run () =
   let q4_m2_weight =
     tensor_input q4_m2_graph ~name:"q4_m2_weight"
       ~source:(Ir.Input_source.Tensor_store { key = "q4_m2_weight" })
-      ~shape:[ 64; 256 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_K)
+      ~shape:[ 64; 256 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
   in
   let q4_m2_output =
     Ir.Graph.fresh_tensor_value q4_m2_graph

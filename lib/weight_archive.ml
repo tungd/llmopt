@@ -14,6 +14,8 @@ module Dtype = struct
     | Q5_0
     | Q4_0
     | IQ4_XS
+    | Tile32_Affine4
+    | Tile32_Affine8
 
   type t =
     | F32
@@ -42,6 +44,25 @@ module Dtype = struct
     | U8 -> "U8"
     | Quant q -> quant_to_string q
 
+  let to_tag = function
+    | F32 -> 0
+    | F16 -> 1
+    | BF16 -> 2
+    | I64 -> 3
+    | I32 -> 4
+    | I8 -> 5
+    | Bool -> 6
+    | U8 -> 7
+    | Quant Q8_0 -> 8
+    | Quant Q4_K -> 9
+    | Quant Q5_K -> 10
+    | Quant Q6_K -> 11
+    | Quant Q5_0 -> 12
+    | Quant Q4_0 -> 13
+    | Quant IQ4_XS -> 14
+    | Quant Tile32_Affine4 -> 15
+    | Quant Tile32_Affine8 -> 16
+
   let of_tag = function
     | 0 -> Ok F32
     | 1 -> Ok F16
@@ -58,6 +79,8 @@ module Dtype = struct
     | 12 -> Ok (Quant Q5_0)
     | 13 -> Ok (Quant Q4_0)
     | 14 -> Ok (Quant IQ4_XS)
+    | 15 -> Ok (Quant Tile32_Affine4)
+    | 16 -> Ok (Quant Tile32_Affine8)
     | tag -> Error (Printf.sprintf "unknown weight-archive dtype tag: %d" tag)
 
   let byte_width = function

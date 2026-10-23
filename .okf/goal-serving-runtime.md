@@ -21,6 +21,9 @@ sources:
   - id: quant-decision
     resource: /decisions/gguf-unsloth-dynamic-quantization.md
     title: GGUF and Unsloth Dynamic quantization decision
+  - id: canonical-tile32-affine
+    resource: /decisions/canonical-tile32-affine-and-hadamard-attention-rotation.md
+    title: Canonical Tile32_Affine Weight & KV Format and In-Register Hadamard Attention Rotation
   - id: fewest-hops
     resource: /decisions/fewest-hops-megakernel-compiler.md
     title: Fewest-Hops Whole-Block Megakernel Compiler
@@ -167,5 +170,9 @@ The live status and implementation order are maintained in
    separate; report unsupported FX nodes with actionable diagnostics.
 4. Continue quantized-projection bandwidth work, especially gated and FFN-down
    shapes, and feed measured relationships into the cost model.
-5. Keep ROCm/HIP and other backend portability work deferred until the current
+5. Execute the mathematical reduction roadmap ([Canonical `Tile32_Affine` Weight & KV Format and In-Register Hadamard Attention Rotation](/decisions/canonical-tile32-affine-and-hadamard-attention-rotation.md)):
+   - Offline lossless transcoding from GGUF (`Q4_0`, `Q5_0`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`) to canonical SIMD-aligned `Tile32_Affine{4,8}` tiles.
+   - Unified parametric `Tile32_Affine` ($B \in \{4, 8\}$) contraction codegen across single-slot, multi-slot, and multi-export contraction groups.
+   - In-register 32-lane Fast Walsh-Hadamard Butterfly (`llmopt_simd_fwht32`) and unified `Tile32_Affine` KV cache packing/unpacking.
+6. Keep ROCm/HIP and other backend portability work deferred until the current
    compiler contract, adoption evidence, and Metal measurement path are stable.

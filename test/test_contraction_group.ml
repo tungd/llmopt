@@ -576,16 +576,18 @@ let run () =
     | Ok schema -> schema
     | Error err -> fail (Block_schema.Error.to_string err)
   in
-  let q8_0_schema =
+  let tile32_affine8_schema =
     match
-      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
+      Block_schema.of_storage
+        (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine8)
     with
     | Ok schema -> schema
     | Error err -> fail (Block_schema.Error.to_string err)
   in
-  let q4_k_schema =
+  let tile32_affine4_schema =
     match
-      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
+      Block_schema.of_storage
+        (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine4)
     with
     | Ok schema -> schema
     | Error err -> fail (Block_schema.Error.to_string err)
@@ -780,99 +782,87 @@ let run () =
     "three-slot multi-slot kernel compiles cleanly with xcrun metal";
   Printf.printf "  [PASS] three-slot parametric emission\n%!";
 
-  (* 5. Q8_0 two-slot SwiGLU kernel *)
-  let q8_swiglu_name =
+  (* 5. Tile32_Affine8 two-slot SwiGLU kernel *)
+  let a8_swiglu_name =
     Contraction_group.algebraic_kernel_name
-      ~base:"llmopt_q8_0_linear_f16" swiglu_epilogue
+      ~base:"llmopt_tile32_affine8_linear_f16_x8" swiglu_epilogue
   in
-  let q8_swiglu_src =
+  let a8_swiglu_src =
     expect_ok
-      (Metal_block_codegen.q8_0_multi_linear_kernel
-         ~name:q8_swiglu_name ~epilogue:swiglu_epilogue
-         ~target:Target_hardware.default q8_0_schema)
+      (Metal_block_codegen.tile32_affine_multi_linear_f16_x8_kernel
+         ~name:a8_swiglu_name ~epilogue:swiglu_epilogue
+         ~target:Target_hardware.default tile32_affine8_schema)
   in
-  let q8_linear_src =
+  let a8_linear_src =
     expect_ok
-      (Metal_block_codegen.linear_kernels ~target:Target_hardware.default q8_0_schema)
+      (Metal_block_codegen.linear_kernels ~target:Target_hardware.default tile32_affine8_schema)
   in
   expect
-    (contains_substr q8_swiglu_src ("kernel void " ^ q8_swiglu_name))
-    "q8_0 swiglu kernel name matches digest";
+    (contains_substr a8_swiglu_src ("kernel void " ^ a8_swiglu_name))
+    "tile32_affine8 swiglu kernel name matches digest";
   expect
-    (contains_substr q8_swiglu_src "device const uchar* weight_0 [[buffer(1)]]")
-    "q8_0 swiglu buffer 1 is weight_0";
+    (contains_substr a8_swiglu_src "device const uchar* weight_0 [[buffer(1)]]")
+    "tile32_affine8 swiglu buffer 1 is weight_0";
   expect
-    (contains_substr q8_swiglu_src "device const uchar* weight_1 [[buffer(2)]]")
-    "q8_0 swiglu buffer 2 is weight_1";
+    (contains_substr a8_swiglu_src "device const uchar* weight_1 [[buffer(2)]]")
+    "tile32_affine8 swiglu buffer 2 is weight_1";
   expect
-    (contains_substr q8_swiglu_src "device half* output [[buffer(3)]]")
-    "q8_0 swiglu buffer 3 is output";
+    (contains_substr a8_swiglu_src "device half* output [[buffer(3)]]")
+    "tile32_affine8 swiglu buffer 3 is output";
   expect
-    (contains_substr q8_swiglu_src "constant QuantLinearParams& params [[buffer(4)]]")
-    "q8_0 swiglu buffer 4 is params";
+    (contains_substr a8_swiglu_src "constant QuantLinearParams& params [[buffer(4)]]")
+    "tile32_affine8 swiglu buffer 4 is params";
   expect
-    (contains_substr q8_swiglu_src "llmopt_schema_q8_0_value(row_blocks_0")
-    "q8_0 swiglu calls llmopt_schema_q8_0_value for slot 0";
+    (contains_substr a8_swiglu_src "acc0_0 = simd_sum(acc0_0);")
+    "tile32_affine8 swiglu reduces slot 0";
   expect
-    (contains_substr q8_swiglu_src "llmopt_schema_q8_0_value(row_blocks_1")
-    "q8_0 swiglu calls llmopt_schema_q8_0_value for slot 1";
+    (contains_substr a8_swiglu_src "acc1_0 = simd_sum(acc1_0);")
+    "tile32_affine8 swiglu reduces slot 1";
   expect
-    (contains_substr q8_swiglu_src "acc0 = simd_sum(acc0);")
-    "q8_0 swiglu reduces slot 0";
-  expect
-    (contains_substr q8_swiglu_src "acc1 = simd_sum(acc1);")
-    "q8_0 swiglu reduces slot 1";
-  expect
-    (compile_msl_kernel (q8_linear_src ^ q8_swiglu_src))
-    "q8_0 swiglu kernel compiles cleanly with xcrun metal";
-  Printf.printf "  [PASS] Q8_0 two-slot SwiGLU parametric emission\n%!";
+    (compile_msl_kernel (a8_linear_src ^ a8_swiglu_src))
+    "tile32_affine8 swiglu kernel compiles cleanly with xcrun metal";
+  Printf.printf "  [PASS] Tile32_Affine8 two-slot SwiGLU parametric emission\n%!";
 
-  (* 6. Q4_K two-slot GeGLU + residual kernel *)
-  let q4_k_res_name =
+  (* 6. Tile32_Affine4 two-slot GeGLU + residual kernel *)
+  let a4_res_name =
     Contraction_group.algebraic_kernel_name
-      ~base:"llmopt_q4_k_linear_f16" geglu_res_epilogue
+      ~base:"llmopt_tile32_affine4_linear_f16_x8" geglu_res_epilogue
   in
-  let q4_k_res_src =
+  let a4_res_src =
     expect_ok
-      (Metal_block_codegen.q4_k_multi_linear_kernel
-         ~name:q4_k_res_name ~epilogue:geglu_res_epilogue
-         ~target:Target_hardware.default q4_k_schema)
+      (Metal_block_codegen.tile32_affine_multi_linear_f16_x8_kernel
+         ~name:a4_res_name ~epilogue:geglu_res_epilogue
+         ~target:Target_hardware.default tile32_affine4_schema)
   in
-  let q4_k_linear_src =
+  let a4_linear_src =
     expect_ok
-      (Metal_block_codegen.linear_kernels ~target:Target_hardware.default q4_k_schema)
+      (Metal_block_codegen.linear_kernels ~target:Target_hardware.default tile32_affine4_schema)
   in
   expect
-    (contains_substr q4_k_res_src ("kernel void " ^ q4_k_res_name))
-    "q4_k geglu residual kernel declaration matches";
+    (contains_substr a4_res_src ("kernel void " ^ a4_res_name))
+    "tile32_affine4 geglu residual kernel declaration matches";
   expect
-    (contains_substr q4_k_res_src "device const uchar* weight_0 [[buffer(1)]]")
-    "q4_k geglu residual has weight_0";
+    (contains_substr a4_res_src "device const uchar* weight_0 [[buffer(1)]]")
+    "tile32_affine4 geglu residual has weight_0";
   expect
-    (contains_substr q4_k_res_src "device const uchar* weight_1 [[buffer(2)]]")
-    "q4_k geglu residual has weight_1";
+    (contains_substr a4_res_src "device const uchar* weight_1 [[buffer(2)]]")
+    "tile32_affine4 geglu residual has weight_1";
   expect
-    (contains_substr q4_k_res_src "device const half* buf_0 [[buffer(3)]]")
-    "q4_k geglu residual has auxiliary buffer buf_0";
+    (contains_substr a4_res_src "device const half* buf_0 [[buffer(3)]]")
+    "tile32_affine4 geglu residual has auxiliary buffer buf_0";
   expect
-    (contains_substr q4_k_res_src "device half* output [[buffer(4)]]")
-    "q4_k geglu residual has output buffer 4";
+    (contains_substr a4_res_src "device half* output [[buffer(4)]]")
+    "tile32_affine4 geglu residual has output buffer 4";
   expect
-    (contains_substr q4_k_res_src "constant QuantLinearParams& params [[buffer(5)]]")
-    "q4_k geglu residual has params buffer 5";
+    (contains_substr a4_res_src "constant QuantLinearParams& params [[buffer(5)]]")
+    "tile32_affine4 geglu residual has params buffer 5";
   expect
-    (contains_substr q4_k_res_src "llmopt_schema_q4_k_value(packed_0")
-    "q4_k geglu residual calls llmopt_schema_q4_k_value for slot 0";
+    (contains_substr a4_res_src "in_buf_0[base_col]")
+    "tile32_affine4 geglu residual reads auxiliary residual buffer";
   expect
-    (contains_substr q4_k_res_src "llmopt_schema_q4_k_value(packed_1")
-    "q4_k geglu residual calls llmopt_schema_q4_k_value for slot 1";
-  expect
-    (contains_substr q4_k_res_src "in_buf_0[column]")
-    "q4_k geglu residual reads auxiliary residual buffer";
-  expect
-    (compile_msl_kernel (q4_k_linear_src ^ q4_k_res_src))
-    "q4_k geglu residual kernel compiles cleanly with xcrun metal";
-  Printf.printf "  [PASS] Q4_K two-slot GeGLU + residual superblock parametric emission\n%!";
+    (compile_msl_kernel (a4_linear_src ^ a4_res_src))
+    "tile32_affine4 geglu residual kernel compiles cleanly with xcrun metal";
+  Printf.printf "  [PASS] Tile32_Affine4 two-slot GeGLU + residual parametric emission\n%!";
 
   Printf.printf "G. G4P12-07: multi-export contraction group selection\n%!";
   (* Two-contraction, two-export region:
@@ -997,33 +987,33 @@ let run () =
 %!"
   in
 
-  let () = Printf.printf "I. Multi-export block32 & superblock kernel emission
+  let () = Printf.printf "I. Multi-export Tile32_Affine{4,8} kernel emission
 %!" in
-  let me_kernel_q8_name =
+  let me_kernel_a8_name =
     Contraction_group.algebraic_kernel_name
-      ~base:"llmopt_q8_0_multi_export_f16" me_epilogue_1
+      ~base:"llmopt_tile32_affine8_multi_export_f16" me_epilogue_1
   in
-  let me_q8_src =
+  let me_a8_src =
     expect_ok
-      (Metal_block_codegen.q8_0_multi_export_linear_kernel
-         ~name:me_kernel_q8_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
-         ~target:Target_hardware.default q8_0_schema)
+      (Metal_block_codegen.tile32_affine_multi_export_linear_f16_x8_kernel
+         ~name:me_kernel_a8_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
+         ~target:Target_hardware.default tile32_affine8_schema)
   in
-  let () = expect (compile_msl_kernel (q8_linear_src ^ me_q8_src)) "Q8_0 multi-export kernel compiles cleanly with xcrun metal" in
+  let () = expect (compile_msl_kernel (a8_linear_src ^ me_a8_src)) "Tile32_Affine8 multi-export kernel compiles cleanly with xcrun metal" in
 
-  let me_kernel_q4k_name =
+  let me_kernel_a4_name =
     Contraction_group.algebraic_kernel_name
-      ~base:"llmopt_q4_k_multi_export_f16" me_epilogue_1
+      ~base:"llmopt_tile32_affine4_multi_export_f16" me_epilogue_1
   in
-  let me_q4k_src =
+  let me_a4_src =
     expect_ok
-      (Metal_block_codegen.q4_k_multi_export_linear_kernel
-         ~name:me_kernel_q4k_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
-         ~target:Target_hardware.default q4_k_schema)
+      (Metal_block_codegen.tile32_affine_multi_export_linear_f16_x8_kernel
+         ~name:me_kernel_a4_name ~epilogues:[ me_epilogue_0; me_epilogue_1 ]
+         ~target:Target_hardware.default tile32_affine4_schema)
   in
   let () =
-    expect (compile_msl_kernel (q4_k_linear_src ^ me_q4k_src)) "Q4_K multi-export kernel compiles cleanly with xcrun metal";
-    Printf.printf "  [PASS] multi-export block32 & superblock kernel emission\n%!"
+    expect (compile_msl_kernel (a4_linear_src ^ me_a4_src)) "Tile32_Affine4 multi-export kernel compiles cleanly with xcrun metal";
+    Printf.printf "  [PASS] multi-export Tile32_Affine{4,8} kernel emission\n%!"
   in
 
   let () = Printf.printf "J. Multi-export schedule, memory plan, and dispatch assignment

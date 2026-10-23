@@ -43,6 +43,8 @@ let inspect_file path =
             | Weight_archive.Dtype.Quant Q5_K -> "Q5_K (Superblock-256)"
             | Weight_archive.Dtype.Quant Q6_K -> "Q6_K (Superblock-256)"
             | Weight_archive.Dtype.Quant IQ4_XS -> "IQ4_XS (Superblock-256)"
+            | Weight_archive.Dtype.Quant Tile32_Affine4 -> "Tile32_Affine4 (Block-32)"
+            | Weight_archive.Dtype.Quant Tile32_Affine8 -> "Tile32_Affine8 (Block-32)"
             | Weight_archive.Dtype.F16 -> "Float16 (F16)"
             | Weight_archive.Dtype.BF16 -> "Bfloat16 (BF16)"
             | Weight_archive.Dtype.F32 -> "Float32 (F32)"

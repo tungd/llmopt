@@ -7,6 +7,8 @@ module Dtype : sig
     | Q5_0
     | Q4_0
     | IQ4_XS
+    | Tile32_Affine4
+    | Tile32_Affine8
 
   type t =
     | F32
@@ -20,6 +22,7 @@ module Dtype : sig
     | Quant of quant_type
 
   val to_string : t -> string
+  val to_tag : t -> int
   val byte_width : t -> int
   val block_size : quant_type -> int
   val bytes_per_block : quant_type -> int

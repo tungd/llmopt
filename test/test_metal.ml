@@ -867,90 +867,90 @@ let run () =
      && contains_substring multi_source "constant QuantLinearParams& params [[buffer(4)]]")
     "multi-slot digest kernel source has correct buffer layout (1: w0, 2: w1, 3: out, 4: params)";
 
-  (* Negative path: verify that passing an unsupported quant (e.g. Q8_0) fails loudly *)
-  let q8_graph = Ir.Graph.create () in
-  let q8_x =
-    tensor_input q8_graph ~name:"q8-x"
+  (* Verify that Tile32_Affine8 multi-slot contraction group lowers to the x8 digest *)
+  let a8_graph = Ir.Graph.create () in
+  let a8_x =
+    tensor_input a8_graph ~name:"a8-x"
       ~source:Ir.Input_source.Runtime ~shape:[ 1; 3840 ]
       ~dtype:Ir.Dtype.Float16
   in
-  let q8_wg =
-    tensor_input q8_graph ~name:"q8-wg"
-      ~source:(Ir.Input_source.Tensor_store { key = "q8-wg" })
-      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
+  let a8_wg =
+    tensor_input a8_graph ~name:"a8-wg"
+      ~source:(Ir.Input_source.Tensor_store { key = "a8-wg" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8)
   in
-  let q8_wu =
-    tensor_input q8_graph ~name:"q8-wu"
-      ~source:(Ir.Input_source.Tensor_store { key = "q8-wu" })
-      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q8_0)
+  let a8_wu =
+    tensor_input a8_graph ~name:"a8-wu"
+      ~source:(Ir.Input_source.Tensor_store { key = "a8-wu" })
+      ~shape:[ 4096; 3840 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8)
   in
-  let q8_g =
-    Ir.Graph.fresh_tensor_value q8_graph
+  let a8_g =
+    Ir.Graph.fresh_tensor_value a8_graph
       ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
       ~dtype:Ir.Dtype.Float16
   in
-  let q8_u =
-    Ir.Graph.fresh_tensor_value q8_graph
+  let a8_u =
+    Ir.Graph.fresh_tensor_value a8_graph
       ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
       ~dtype:Ir.Dtype.Float16
   in
-  let q8_a =
-    Ir.Graph.fresh_tensor_value q8_graph
+  let a8_a =
+    Ir.Graph.fresh_tensor_value a8_graph
       ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
       ~dtype:Ir.Dtype.Float16
   in
-  let q8_z =
-    Ir.Graph.fresh_tensor_value q8_graph
+  let a8_z =
+    Ir.Graph.fresh_tensor_value a8_graph
       ~shape:(Tensor_shape.of_ints_exn [ 1; 4096 ])
       ~dtype:Ir.Dtype.Float16
   in
-  Ir.Graph.append q8_graph
+  Ir.Graph.append a8_graph
     ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
-    ~inputs:[ q8_x; q8_wg ] ~output:(Some q8_g);
-  Ir.Graph.append q8_graph
+    ~inputs:[ a8_x; a8_wg ] ~output:(Some a8_g);
+  Ir.Graph.append a8_graph
     ~op:(Ir.Op.Linear { m = 1; n = 4096; k = 3840; bias = false })
-    ~inputs:[ q8_x; q8_wu ] ~output:(Some q8_u);
-  Ir.Graph.append q8_graph
+    ~inputs:[ a8_x; a8_wu ] ~output:(Some a8_u);
+  Ir.Graph.append a8_graph
     ~op:
       (Ir.Op.Primitive
          (Ir.Primitive.Pointwise
-            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, q8_g))))
-    ~inputs:[ q8_g ] ~output:(Some q8_a);
-  Ir.Graph.append q8_graph
+            (Ir.Pointwise.Unary (Ir.Pointwise.Silu, a8_g))))
+    ~inputs:[ a8_g ] ~output:(Some a8_a);
+  Ir.Graph.append a8_graph
     ~op:
       (Ir.Op.Primitive
          (Ir.Primitive.Pointwise
             (Ir.Pointwise.Binary
-               ( Ir.Pointwise.Add, Ir.Pointwise.Tensor q8_a,
-                 Ir.Pointwise.Tensor q8_u ))))
-    ~inputs:[ q8_a; q8_u ] ~output:(Some q8_z);
-  Ir.Graph.add_output q8_graph ~name:"q8-output" q8_z;
-  let q8_opt = Passes.optimize q8_graph |> expect_ok in
-  let q8_regions = Passes.Optimization.fusion_regions q8_opt in
-  let q8_epilogue =
+               ( Ir.Pointwise.Add, Ir.Pointwise.Tensor a8_a,
+                 Ir.Pointwise.Tensor a8_u ))))
+    ~inputs:[ a8_a; a8_u ] ~output:(Some a8_z);
+  Ir.Graph.add_output a8_graph ~name:"a8-output" a8_z;
+  let a8_opt = Passes.optimize a8_graph |> expect_ok in
+  let a8_regions = Passes.Optimization.fusion_regions a8_opt in
+  let a8_epilogue =
     Applicative_expr.Binop
       ( Applicative_expr.Add,
         Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
         Applicative_expr.Slot 1 )
   in
-  let q8_digest_name =
-    Contraction_group.algebraic_kernel_name ~base:"llmopt_q8_0_linear_f16"
-      q8_epilogue
+  let a8_digest_name =
+    Contraction_group.algebraic_kernel_name
+      ~base:"llmopt_tile32_affine8_linear_f16_x8" a8_epilogue
   in
-  let q8_program =
-    Metal.lower ~fusion_regions:q8_regions
-      (Passes.Optimization.execution_graph q8_opt)
+  let a8_program =
+    Metal.lower ~fusion_regions:a8_regions
+      (Passes.Optimization.execution_graph a8_opt)
     |> expect_ok
   in
-  let q8_source = Metal.Program.source q8_program in
+  let a8_source = Metal.Program.source a8_program in
   expect
-    (contains_substring q8_source q8_digest_name)
-    "q8 program source contains multi-linear contraction group kernel";
+    (contains_substring a8_source a8_digest_name)
+    "tile32_affine8 program source contains multi-linear contraction group kernel";
   expect
     (List.exists
-       (fun k -> Kernel_abi.Entry.name k = q8_digest_name)
-       (Metal.Program.kernels q8_program))
-    "q8 program registers multi-linear contraction group kernel entry";
+       (fun k -> Kernel_abi.Entry.name k = a8_digest_name)
+       (Metal.Program.kernels a8_program))
+    "tile32_affine8 program registers multi-linear contraction group kernel entry";
 
   print_endline "llmopt multi-slot contraction group lower proof passed";
 
@@ -1093,39 +1093,43 @@ let run () =
 
   print_endline "llmopt multi-export contraction group lower proof passed";
 
-  (* IQ4_XS multi-linear parametric emitter proof: verify iq4_xs_multi_linear_kernel
-     emits a valid multi-slot kernel using the schema value function. *)
-  let iq4_xs_schema =
-    match Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.IQ4_XS) with
+  (* Tile32_Affine4 multi-linear parametric emitter proof: verify
+     tile32_affine_multi_linear_f16_x8_kernel emits a valid 8-column cluster
+     multi-slot kernel. *)
+  let a4_schema =
+    match
+      Block_schema.of_storage
+        (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine4)
+    with
     | Ok schema -> schema
     | Error err -> fail (Block_schema.Error.to_string err)
   in
-  let iq4_swiglu_epilogue =
+  let a4_swiglu_epilogue =
     Applicative_expr.Binop
       ( Applicative_expr.Mul,
         Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
         Applicative_expr.Slot 1 )
   in
-  let iq4_kernel_name =
+  let a4_kernel_name =
     Contraction_group.algebraic_kernel_name
-      ~base:"llmopt_iq4_xs_linear_f16" iq4_swiglu_epilogue
+      ~base:"llmopt_tile32_affine4_linear_f16_x8" a4_swiglu_epilogue
   in
-  let iq4_xs_source =
-    Metal_block_codegen.iq4_xs_multi_linear_kernel
-      ~name:iq4_kernel_name ~epilogue:iq4_swiglu_epilogue
-      ~target:Target_hardware.default iq4_xs_schema
+  let a4_source =
+    Metal_block_codegen.tile32_affine_multi_linear_f16_x8_kernel
+      ~name:a4_kernel_name ~epilogue:a4_swiglu_epilogue
+      ~target:Target_hardware.default a4_schema
     |> expect_ok
   in
   expect
-    (contains_substring iq4_xs_source ("kernel void " ^ iq4_kernel_name))
-    "IQ4_XS multi-linear kernel has correct name";
+    (contains_substring a4_source ("kernel void " ^ a4_kernel_name))
+    "Tile32_Affine4 multi-linear kernel has correct name";
   expect
-    (contains_substring iq4_xs_source "device const uchar* weight_0 [[buffer(1)]]"
-     && contains_substring iq4_xs_source "device const uchar* weight_1 [[buffer(2)]]")
-    "IQ4_XS multi-linear kernel has weight_0 and weight_1 buffers";
+    (contains_substring a4_source "device const uchar* weight_0 [[buffer(1)]]"
+     && contains_substring a4_source "device const uchar* weight_1 [[buffer(2)]]")
+    "Tile32_Affine4 multi-linear kernel has weight_0 and weight_1 buffers";
   expect
-    (contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(packed_0"
-     && contains_substring iq4_xs_source "llmopt_schema_iq4_xs_value(packed_1")
-    "IQ4_XS multi-linear kernel uses schema value function for both projections";
+    (contains_substring a4_source "acc0_0 = simd_sum(acc0_0);"
+     && contains_substring a4_source "acc1_0 = simd_sum(acc1_0);")
+    "Tile32_Affine4 multi-linear kernel reduces 8-column accumulators for both slots";
 
-  print_endline "llmopt IQ4_XS multi-linear parametric emitter proof passed"
+  print_endline "llmopt Tile32_Affine4 multi-linear parametric emitter proof passed"

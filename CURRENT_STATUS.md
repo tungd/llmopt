@@ -32,6 +32,12 @@ live contract when they disagree with source or this note.
 - Constructive fusion-region analysis and separate concurrency stages.
 - Typed single-slot, multi-slot, and multi-export contraction groups.
 - Algebraic pointwise/epilogue expressions and block-quant schema codegen.
+- Canonical `Tile32_Affine` ($B \in \{4, 8\}$, 20-byte and 36-byte 4-byte-aligned
+  32-element blocks: $w_l = s \cdot q_l + b$) offline GGUF transcoding
+  (`Q4_0`, `Q5_0`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS` $\to$
+  `Tile32_Affine{4,8}`), unified parametric single-slot/multi-slot/multi-export
+  Metal codegen, and in-register 32-lane Fast Walsh-Hadamard (`llmopt_simd_fwht32`
+  via `simd_shuffle_xor`) attention rotation + KV cache packing/unpacking.
 - Model Program linking and use by pipeline, cache, server, and checks.
 - Native Metal execution, paged state paths, prefix caching, queue primitives,
   parameterized sampling, and an OpenAI-compatible server.

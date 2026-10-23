@@ -3,7 +3,8 @@ type: Decision
 title: 'Gemma 4 Round 7 Barrier-Free Decode GEMV, Double-Buffered Async Ring Queue, and Prefill GEMM Plan Caching'
 description: 'Architectural decision for Round 7 closing the performance gap to llama.cpp: (1) Eliminates threadgroup barriers and threadgroup SRAM staging in decode GEMV in favor of direct L1/L2 activation streaming; (2) Implements ping-pong double buffering in the asynchronous Ring_queue to eliminate token/output buffer data races and allow safe depth-2 overlapping; (3) Caches prefill execution plans for prompt token counts to slash TTFT.'
 tags: [decision, architecture, compiler, gemv, barrier-free, double-buffering, async, prefill, gemma4]
-status: accepted
+status: stable
+decision_status: approved
 generated: { by: antigravity/2.0, at: '2026-09-05T22:45:00+07:00' }
 sources:
   - id: decision-round6

@@ -1,6 +1,5 @@
-(** Metal parametric shader emitters: w4a16_linear, q4_k_linear, and the
-   simdgroup 8x8 matrix gemm, parameterized by epilogue text.  Split out
-   of metal.ml (LOOP item 6). *)
+(** Metal parametric shader emitters: w4a16_linear and the
+   simdgroup 8x8 matrix gemm, parameterized by epilogue text. *)
 
 let emit_parametric_w4a16_linear ~name ~epilogue =
   let epilogue_code = Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"col" epilogue in
@@ -36,50 +35,6 @@ let emit_parametric_w4a16_linear ~name ~epilogue =
    \  acc = simd_sum(acc);\n\
    \  if (lane == 0) {\n\
    \    output[row * params.n + col] = half(%s);\n\
-   \  }\n\
-   }\n" name epilogue_buffers epilogue_code
-
-let emit_parametric_q4_k_linear ~name ~epilogue =
-  let epilogue_code = Epilogue.emit_msl_writeback ~acc:"acc" ~idx:"col" epilogue in
-  let epilogue_buffers = Epilogue.msl_buffer_decls ~start_index:6 epilogue in
-  Printf.sprintf "kernel void %s(\n\
-   \    device const half* input [[buffer(0)]],\n\
-   \    device const block_q4_K* weight [[buffer(1)]],\n\
-   \    device half* output [[buffer(2)]],\n\
-   \    constant uint& num_superblocks [[buffer(3)]],\n\
-   \    constant uint& total_elements [[buffer(4)]],\n\
-   \    constant uint& has_bias [[buffer(5)]]%s,\n\
-   \    uint gid [[thread_position_in_grid]],\n\
-   \    uint lane [[thread_index_in_simdgroup]]) {\n\
-   \  const uint simd_idx = gid >> 5;\n\
-   \  if (simd_idx >= total_elements) return;\n\
-   \  const uint row = simd_idx / total_elements;\n\
-   \  const uint col = simd_idx - row * total_elements;\n\
-   \  device const block_q4_K* row_blocks = weight + col * num_superblocks;\n\
-   \  float acc = 0.0f;\n\
-   \  for (uint sb = 0; sb < num_superblocks; ++sb) {\n\
-   \    device const block_q4_K& b = row_blocks[sb];\n\
-   \    const float d = float(b.d);\n\
-   \    const float dmin = float(b.dmin);\n\
-   \    device const uchar* scales = b.scales;\n\
-   \    const uint sc_idx = lane >> 2;\n\
-   \    const uint sc_byte = scales[sc_idx];\n\
-   \    const float scale_val = float(sc_byte & 63u) * d;\n\
-   \    const float min_val = float(scales[sc_idx + 4] & 63u) * dmin;\n\
-   \    const uint q_idx = lane << 2;\n\
-   \    device const uchar* q = b.quants + q_idx;\n\
-   \    device const half* in_ptr = input + (sb << 8) + q_idx;\n\
-   \    for (uint i = 0; i < 4; ++i) {\n\
-   \      const uchar byte_val = q[i];\n\
-   \      const float q0 = float(byte_val & 15u);\n\
-   \      const float q1 = float(byte_val >> 4);\n\
-   \      acc += (q0 * scale_val - min_val) * float(in_ptr[i * 2]);\n\
-   \      acc += (q1 * scale_val - min_val) * float(in_ptr[i * 2 + 1]);\n\
-   \    }\n\
-   \  }\n\
-   \  acc = simd_sum(acc);\n\
-   \  if (lane == 0) {\n\
-   \    output[row * total_elements + col] = half(%s);\n\
    \  }\n\
    }\n" name epilogue_buffers epilogue_code
 

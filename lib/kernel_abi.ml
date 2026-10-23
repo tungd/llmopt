@@ -360,6 +360,8 @@ module Linear_tactic = struct
     | Ir.Dtype.Q5_0 -> "llmopt_q5_0_linear_f16"
     | Ir.Dtype.Q4_0 -> "llmopt_q4_0_linear_f16"
     | Ir.Dtype.IQ4_XS -> "llmopt_iq4_xs_linear_f16"
+    | Ir.Dtype.Tile32_Affine4 -> "llmopt_tile32_affine4_linear_f16"
+    | Ir.Dtype.Tile32_Affine8 -> "llmopt_tile32_affine8_linear_f16"
 
   let block_elements = Ir.Tensor_layout.block_elements
 
@@ -650,16 +652,18 @@ module Linear_tactic = struct
       [ Ir.Dtype.Q4_0 ]
     @ List.map paired_quant_registration
       [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
-        Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
+        Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS;
+        Ir.Dtype.Tile32_Affine4; Ir.Dtype.Tile32_Affine8 ]
     @ List.map eight_column_decode_quant_registration
-      [ Ir.Dtype.Q4_0 ]
+      [ Ir.Dtype.Q4_0; Ir.Dtype.Tile32_Affine4; Ir.Dtype.Tile32_Affine8 ]
     @ List.map sixteen_column_decode_quant_registration
       [ Ir.Dtype.Q4_0 ]
     @ List.map four_column_decode_quant_registration
       [ Ir.Dtype.Q4_0 ]
     @ List.map quant_registration
         [ Ir.Dtype.Q8_0; Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K;
-          Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS ]
+          Ir.Dtype.Q5_0; Ir.Dtype.Q4_0; Ir.Dtype.IQ4_XS;
+          Ir.Dtype.Tile32_Affine4; Ir.Dtype.Tile32_Affine8 ]
 
   let select_all ~supports_simd ~m ~n ~k ~input_dtype ~storage ~output_dtype =
     let problem =

@@ -4,6 +4,7 @@ title: 'Target GGUF and Unsloth Dynamic (UD) Quantization with AOT Code Speciali
 description: 'Adopt GGUF and Unsloth Dynamic (UD) quant schemes as the primary weight format, using AOT code specialization to bake dequantization parameters directly into specialized Metal megakernels with zero runtime dispatch penalty.'
 tags: [decision, quantization, gguf, unsloth, metal, compiler, dequantization, aot]
 status: stable
+decision_status: approved
 generated: { by: human:tung, at: '2026-08-29T01:53:30+07:00' }
 sources:
   - id: requested-direction
@@ -18,6 +19,9 @@ sources:
   - id: model-program
     resource: /lib/model_program.ml
     title: Model Program root execution contract
+  - id: canonical-tile32-affine
+    resource: /decisions/canonical-tile32-affine-and-hadamard-attention-rotation.md
+    title: Canonical Tile32_Affine Weight & KV Format and In-Register Hadamard Attention Rotation
 ---
 
 # Decision
@@ -79,3 +83,9 @@ The current `llmopt` quantization stack has three structural limitations:
 
 - **Tier 1 (Diagnostic)**: `UD-Q8_K_XL` (`Q8_0` + `F16`/`F32`). Near-lossless, isolates compiler optimizations from quantization errors.
 - **Tier 2 (High Efficiency)**: `UD-Q4_K_XL` (`Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS->Q5_K`). Validates maximum bandwidth efficiency on 1–3B models (`Qwen3-0.6B`, `Llama-3.2-1B`, `SmolLM2-135M`).
+
+# Evolution: Canonical `Tile32_Affine` Mathematical Reduction
+
+While GGUF and Unsloth Dynamic (`UD-Q4_K_XL`, `UD-Q8_K_XL`) remain the primary *offline distribution format*, maintaining 7 distinct GPU unpacking formats in the runtime Metal codegen (`Q4_0`, `Q5_0`, `Q8_0`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`) caused a $7 \times T$ kernel zoo explosion. As recorded in [Canonical `Tile32_Affine` Weight & KV Format and In-Register Hadamard Attention Rotation](canonical-tile32-affine-and-hadamard-attention-rotation.md)[^canonical-tile32-affine], all 7 GGUF formats admit a **lossless offline algebraic homomorphism** into two canonical 32-element SIMD-aligned affine tiles (`Tile32_Affine4` and `Tile32_Affine8`) that share the universal inner loop $\text{acc} \mathrel{+}= s \sum a_i q_i + b \sum a_i$.
+
+[^canonical-tile32-affine]: Canonical `Tile32_Affine` mathematical reduction and Hadamard attention rotation decision.

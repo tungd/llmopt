@@ -1245,11 +1245,167 @@ kernel void llmopt_attention_q8_paged_simd_h64_gqa3_split8(
     }
   }
 }
+
+inline float llmopt_simd_fwht32(float x, uint lane) {
+  #pragma unroll
+  for (ushort s = 1u; s < 32u; s <<= 1u) {
+    const float partner = simd_shuffle_xor(x, s);
+    x = ((lane & uint(s)) == 0u) ? (x + partner) : (partner - x);
+  }
+  return x * 0.17677669529663689f;
+}
+
+kernel void llmopt_cache_pack_attention_tile32_affine8_fwht_simd(
+    device const half* source [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device uchar* pool [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint tiles_per_head = params.head_dim >> 5u;
+  const uint segment_tiles = params.heads * tiles_per_head;
+  const uint logical_tile = gid >> 5u;
+  if (logical_tile >= params.items * segment_tiles) return;
+  const uint item = logical_tile / segment_tiles;
+  const uint local_tile = logical_tile - item * segment_tiles;
+  const uint head = local_tile / tiles_per_head;
+  const uint tile_in_head = local_tile - head * tiles_per_head;
+  const uint source_base =
+      (head * params.source_items + params.source_offset + item) * params.head_dim
+      + (tile_in_head << 5u);
+  const float x_rot = llmopt_simd_fwht32(float(source[source_base + lane]), lane);
+  const float v_min = simd_min(x_rot);
+  const float v_max = simd_max(x_rot);
+  const float range = max(0.0f, v_max - v_min);
+  const half stored_scale = half(range / 255.0f);
+  const half stored_min = half(v_min);
+  const float scale = float(stored_scale);
+  const float minimum = float(stored_min);
+  const uint slot_base = slots[item] * params.token_stride;
+  const uint tile_index = (params.segment_offset >> 5u) + local_tile;
+  device uchar* tile_ptr = pool + slot_base + tile_index * 36u;
+  if (lane == 0u) {
+    *reinterpret_cast<device half*>(tile_ptr + 0u) = stored_scale;
+    *reinterpret_cast<device half*>(tile_ptr + 2u) = stored_min;
+  }
+  const uint q = (scale > 1e-8f)
+      ? uint(clamp(int(rint((x_rot - minimum) / scale)), 0, 255))
+      : 0u;
+  tile_ptr[4u + lane] = uchar(q);
+}
+
+kernel void llmopt_cache_unpack_attention_tile32_affine8_fwht_simd(
+    device const uchar* pool [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device half* destination [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint tiles_per_head = params.head_dim >> 5u;
+  const uint segment_tiles = params.heads * tiles_per_head;
+  const uint logical_tile = gid >> 5u;
+  if (logical_tile >= params.items * segment_tiles) return;
+  const uint item = logical_tile / segment_tiles;
+  const uint local_tile = logical_tile - item * segment_tiles;
+  const uint head = local_tile / tiles_per_head;
+  const uint tile_in_head = local_tile - head * tiles_per_head;
+  const uint slot_base = slots[item] * params.token_stride;
+  const uint tile_index = (params.segment_offset >> 5u) + local_tile;
+  device const uchar* tile_ptr = pool + slot_base + tile_index * 36u;
+  const float scale = float(*reinterpret_cast<device const half*>(tile_ptr + 0u));
+  const float minimum = float(*reinterpret_cast<device const half*>(tile_ptr + 2u));
+  const float x_rot = scale * float(tile_ptr[4u + lane]) + minimum;
+  const float x_rec = llmopt_simd_fwht32(x_rot, lane);
+  const uint destination_index =
+      (head * params.items + item) * params.head_dim + (tile_in_head << 5u) + lane;
+  destination[destination_index] = half(x_rec);
+}
+
+kernel void llmopt_cache_pack_attention_tile32_affine4_fwht_simd(
+    device const half* source [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device uchar* pool [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint tiles_per_head = params.head_dim >> 5u;
+  const uint segment_tiles = params.heads * tiles_per_head;
+  const uint logical_tile = gid >> 5u;
+  if (logical_tile >= params.items * segment_tiles) return;
+  const uint item = logical_tile / segment_tiles;
+  const uint local_tile = logical_tile - item * segment_tiles;
+  const uint head = local_tile / tiles_per_head;
+  const uint tile_in_head = local_tile - head * tiles_per_head;
+  const uint source_base =
+      (head * params.source_items + params.source_offset + item) * params.head_dim
+      + (tile_in_head << 5u);
+  const float x_rot = llmopt_simd_fwht32(float(source[source_base + lane]), lane);
+  const float v_min = simd_min(x_rot);
+  const float v_max = simd_max(x_rot);
+  const float range = max(0.0f, v_max - v_min);
+  const half stored_scale = half(range / 15.0f);
+  const half stored_min = half(v_min);
+  const float scale = float(stored_scale);
+  const float minimum = float(stored_min);
+  const uint slot_base = slots[item] * params.token_stride;
+  const uint tile_index = (params.segment_offset >> 5u) + local_tile;
+  device uchar* tile_ptr = pool + slot_base + tile_index * 20u;
+  if (lane == 0u) {
+    *reinterpret_cast<device half*>(tile_ptr + 0u) = stored_scale;
+    *reinterpret_cast<device half*>(tile_ptr + 2u) = stored_min;
+  }
+  const uint q = (scale > 1e-8f)
+      ? uint(clamp(int(rint((x_rot - minimum) / scale)), 0, 15))
+      : 0u;
+  const uint q_hi = simd_shuffle_xor(q, 16u);
+  if (lane < 16u) {
+    tile_ptr[4u + lane] = uchar((q & 15u) | ((q_hi & 15u) << 4u));
+  }
+}
+
+kernel void llmopt_cache_unpack_attention_tile32_affine4_fwht_simd(
+    device const uchar* pool [[buffer(0)]],
+    device const uint* slots [[buffer(1)]],
+    device half* destination [[buffer(2)]],
+    constant AttentionCacheParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint tiles_per_head = params.head_dim >> 5u;
+  const uint segment_tiles = params.heads * tiles_per_head;
+  const uint logical_tile = gid >> 5u;
+  if (logical_tile >= params.items * segment_tiles) return;
+  const uint item = logical_tile / segment_tiles;
+  const uint local_tile = logical_tile - item * segment_tiles;
+  const uint head = local_tile / tiles_per_head;
+  const uint tile_in_head = local_tile - head * tiles_per_head;
+  const uint slot_base = slots[item] * params.token_stride;
+  const uint tile_index = (params.segment_offset >> 5u) + local_tile;
+  device const uchar* tile_ptr = pool + slot_base + tile_index * 20u;
+  const float scale = float(*reinterpret_cast<device const half*>(tile_ptr + 0u));
+  const float minimum = float(*reinterpret_cast<device const half*>(tile_ptr + 2u));
+  const uchar packed = tile_ptr[4u + (lane & 15u)];
+  const uint code = (lane < 16u) ? uint(packed & 15u) : uint(packed >> 4u);
+  const float x_rot = scale * float(code) + minimum;
+  const float x_rec = llmopt_simd_fwht32(x_rot, lane);
+  const uint destination_index =
+      (head * params.items + item) * params.head_dim + (tile_in_head << 5u) + lane;
+  destination[destination_index] = half(x_rec);
+}
 |}
 
 let cache_entry name input_dtype output_dtype =
   kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1) ~name
     ~operation:Kernel_abi.Operation.Cache ~input_dtype ~output_dtype
+
+let tile32_affine_fwht_cache_entries =
+  [ cache_entry "llmopt_cache_pack_attention_tile32_affine8_fwht_simd"
+      Ir.Dtype.Float16 Ir.Dtype.UInt8;
+    cache_entry "llmopt_cache_unpack_attention_tile32_affine8_fwht_simd"
+      Ir.Dtype.UInt8 Ir.Dtype.Float16;
+    cache_entry "llmopt_cache_pack_attention_tile32_affine4_fwht_simd"
+      Ir.Dtype.Float16 Ir.Dtype.UInt8;
+    cache_entry "llmopt_cache_unpack_attention_tile32_affine4_fwht_simd"
+      Ir.Dtype.UInt8 Ir.Dtype.Float16 ]
 
 let cache_entries =
   [ cache_entry "llmopt_cache_pack_attention_q8" Ir.Dtype.Float16

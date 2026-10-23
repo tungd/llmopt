@@ -3,7 +3,8 @@ type: Decision
 title: 'Applicative IR, Affine Coordinate Category, and Contraction Epilogue Monoid'
 description: 'Architectural decision establishing an algebraic compiler IR for llmopt: (1) Affine Coordinate Category (Index Monoid) eliminating movement nodes and phantom barriers by construction; (2) Free Pointwise Applicative Functor eliminating redundant identity casts and fusing elementwise trees via functor laws; (3) Contraction Epilogue Monoid folding downstream activations, normalizations, and residual adds directly into GEMV/GEMM accumulator register write-backs without bespoke kernels.'
 tags: [decision, architecture, compiler, ir, algebra, applicative, monoid, category-theory, fusion, metal, zero-bespoke-kernels]
-status: accepted
+status: stable
+decision_status: approved
 generated: { by: antigravity/2.0, at: '2026-09-05T23:55:00+07:00' }
 sources:
   - id: decision-round7

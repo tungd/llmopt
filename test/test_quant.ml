@@ -495,15 +495,19 @@ let run () =
     = Int64.to_int parsed_gguf.data_offset)
     "GGUF archive adds the data-section offset exactly once";
 
-  (* Block-32 Metal Dequantization & Shader Tests *)
-  let q8_0_src = Metal.emit_dequant_q8_0 () in
-  expect (String.length q8_0_src > 0) "q8_0 MSL shader emitted";
+  (* Block-32 Metal Dequantization & Canonical Tile32_Affine Shader Tests *)
+  let tile32_a4_src = Metal.emit_tile32_affine4 () in
+  expect (String.length tile32_a4_src > 0) "Tile32_Affine4 MSL shader emitted";
   expect
-    (contains_substring q8_0_src
-       "kernel void llmopt_q8_0_linear_f16_llama_mv")
-    "Q8_0 MSL declares the llama-style wide-output matrix-vector candidate";
-  let q5_0_src = Metal.emit_dequant_q5_0 () in
-  expect (String.length q5_0_src > 0) "q5_0 MSL shader emitted";
+    (contains_substring tile32_a4_src
+       "kernel void llmopt_tile32_affine4_linear_f16_x8")
+    "Tile32_Affine4 MSL declares the 8-column cluster contraction kernel";
+  let tile32_a8_src = Metal.emit_tile32_affine8 () in
+  expect (String.length tile32_a8_src > 0) "Tile32_Affine8 MSL shader emitted";
+  expect
+    (contains_substring tile32_a8_src
+       "kernel void llmopt_tile32_affine8_linear_f16_x8")
+    "Tile32_Affine8 MSL declares the 8-column cluster contraction kernel";
 
   let metal_available =
     Sys.command "xcrun -sdk macosx metal -v >/dev/null 2>&1" = 0
@@ -525,8 +529,10 @@ let run () =
       (try Sys.remove tmp_air with _ -> ());
       res
   in
-  expect (compile_msl_string q8_0_src) "q8_0 MSL compiles cleanly with xcrun metal";
-  expect (compile_msl_string q5_0_src) "q5_0 MSL compiles cleanly with xcrun metal";
+  expect (compile_msl_string tile32_a4_src)
+    "Tile32_Affine4 MSL compiles cleanly with xcrun metal";
+  expect (compile_msl_string tile32_a8_src)
+    "Tile32_Affine8 MSL compiles cleanly with xcrun metal";
   let q4_0_src = Metal.emit_dequant_q4_0 () in
   expect (compile_msl_string q4_0_src) "q4_0 MSL compiles cleanly with xcrun metal";
   expect
@@ -539,17 +545,23 @@ let run () =
     (contains_substring q4_0_src "kernel void llmopt_q4_0_gated_linear_f16_m4")
     "q4_0 MSL keeps the live llama gated m4 static";
 
-  (* Superblock-256 K-Quant Metal Dequantization & Shader Tests *)
-  let q4_k_src = Metal.emit_dequant_q4_k () in
-  expect (String.length q4_k_src > 0) "q4_k MSL shader emitted";
-  let q5_k_src = Metal.emit_dequant_q5_k () in
-  expect (String.length q5_k_src > 0) "q5_k MSL shader emitted";
-  let q6_k_src = Metal.emit_dequant_q6_k () in
-  expect (String.length q6_k_src > 0) "q6_k MSL shader emitted";
-
-  expect (compile_msl_string q4_k_src) "q4_k MSL compiles cleanly with xcrun metal";
-  expect (compile_msl_string q5_k_src) "q5_k MSL compiles cleanly with xcrun metal";
-  expect (compile_msl_string q6_k_src) "q6_k MSL compiles cleanly with xcrun metal";
+  (* Legacy GGUF formats are rejected at Metal codegen time *)
+  List.iter
+    (fun legacy_quant ->
+      expect
+        (Result.is_error
+           (Metal_quant_source.quant_source ~target:Target_hardware.default
+              legacy_quant))
+        (Printf.sprintf "legacy %s rejected by Metal_quant_source.quant_source"
+           (Ir.Dtype.quant_to_string legacy_quant)))
+    [
+      Ir.Dtype.Q8_0;
+      Ir.Dtype.Q5_0;
+      Ir.Dtype.Q4_K;
+      Ir.Dtype.Q5_K;
+      Ir.Dtype.Q6_K;
+      Ir.Dtype.IQ4_XS;
+    ];
 
   (* Build-Time Transcoder Tests (IQ4_XS -> Q5_K) *)
   let iq4_xs_buf = Bytes.make 136 '\000' in
@@ -655,4 +667,239 @@ let run () =
   check_gguf_if_exists qwen_path "qwen35" 300;
   check_gguf_if_exists llama_path "llama" 100;
   check_gguf_if_exists smol_path "llama" 200;
-  check_gguf_if_exists lfm_path "lfm2" 100
+  check_gguf_if_exists lfm_path "lfm2" 100;
+
+  (* 7. Canonical Tile32_Affine{4,8} Schema, Lossless GGUF Homomorphism,
+        Unified Parametric Contraction Codegen, and In-Register Hadamard KV Cache *)
+  let affine4_schema = Block_schema.tile32_affine_schema ~bits:4 |> expect_schema_ok in
+  let affine8_schema = Block_schema.tile32_affine_schema ~bits:8 |> expect_schema_ok in
+  expect
+    (Block_schema.block_elements affine4_schema = 32
+    && Block_schema.block_bytes affine4_schema = 20
+    && Block_schema.to_string affine4_schema = "Tile32_Affine4")
+    "Tile32_Affine4 schema is 32 elements / 20 bytes (4-byte aligned)";
+  expect
+    (Block_schema.block_elements affine8_schema = 32
+    && Block_schema.block_bytes affine8_schema = 36
+    && Block_schema.to_string affine8_schema = "Tile32_Affine8")
+    "Tile32_Affine8 schema is 32 elements / 36 bytes (4-byte aligned)";
+  (match Block_schema.tile32_affine_schema ~bits:6 with
+  | Error (Block_schema.Error.Invalid_groupwise_bits 6) -> ()
+  | _ -> fail "tile32_affine_schema rejects bit widths other than 4 or 8");
+
+  let q4_0_raw = Bytes.make 18 '\000' in
+  Bytes.set_uint16_le q4_0_raw 0 0x3C00; (* d = 1.0 *)
+  for i = 0 to 15 do
+    Bytes.set_uint8 q4_0_raw (2 + i) ((i land 15) lor (((15 - i) land 15) lsl 4))
+  done;
+
+  let assert_lossless_homomorphism label quant raw_bytes =
+    let gguf_floats =
+      Gguf.Transcode.dequantize_gguf quant raw_bytes |> Result.get_ok
+    in
+    let affine_floats =
+      match Gguf.Transcode.to_tile32_affine quant raw_bytes |> Result.get_ok with
+      | `Affine4 b ->
+          expect
+            (quant = Weight_archive.Dtype.Q4_0 || quant = Weight_archive.Dtype.Q4_K)
+            (label ^ " maps to Tile32_Affine4");
+          Gguf.Transcode.dequantize_tile32_affine4 b |> Result.get_ok
+      | `Affine8 b ->
+          expect
+            (quant <> Weight_archive.Dtype.Q4_0 && quant <> Weight_archive.Dtype.Q4_K)
+            (label ^ " maps to Tile32_Affine8");
+          Gguf.Transcode.dequantize_tile32_affine8 b |> Result.get_ok
+    in
+    expect
+      (Array.length gguf_floats = Array.length affine_floats)
+      (label ^ " preserves element count");
+    let max_diff = ref 0.0 in
+    for i = 0 to Array.length gguf_floats - 1 do
+      let diff = abs_float (gguf_floats.(i) -. affine_floats.(i)) in
+      if diff > !max_diff then max_diff := diff
+    done;
+    expect (!max_diff < 1e-6)
+      (Printf.sprintf "%s lossless Tile32_Affine homomorphism (max_diff=%g)"
+         label !max_diff)
+  in
+  assert_lossless_homomorphism "Q4_0" Weight_archive.Dtype.Q4_0 q4_0_raw;
+  assert_lossless_homomorphism "Q4_K" Weight_archive.Dtype.Q4_K q4_k_raw;
+  assert_lossless_homomorphism "Q8_0" Weight_archive.Dtype.Q8_0 q8_0_raw;
+  assert_lossless_homomorphism "Q5_0" Weight_archive.Dtype.Q5_0 q5_0_raw;
+  assert_lossless_homomorphism "Q5_K" Weight_archive.Dtype.Q5_K q5_k_raw;
+  assert_lossless_homomorphism "Q6_K" Weight_archive.Dtype.Q6_K q6_k_raw;
+  assert_lossless_homomorphism "IQ4_XS" Weight_archive.Dtype.IQ4_XS iq4_xs_buf;
+
+  (* Unified Parametric Tile32_Affine{4,8} Contraction Codegen & Metal Compilation *)
+  let target = Target_hardware.default in
+  let msl_preamble =
+    Metal_source_common.metal_header ^ Metal_quant_source.quant_common_source
+  in
+  let swiglu_epi =
+    Applicative_expr.Binop
+      ( Applicative_expr.Mul,
+        Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+        Applicative_expr.Slot 1 )
+  in
+  let export_epi_0 = Applicative_expr.Slot 0 in
+  let export_epi_1 =
+    Applicative_expr.Binop
+      (Applicative_expr.Add, Applicative_expr.Slot 0, Applicative_expr.Slot 1)
+  in
+  List.iter
+    (fun (label, schema) ->
+      let linear_src =
+        Metal_block_codegen.linear_kernels ~target schema |> Result.get_ok
+      in
+      let epi_src =
+        Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
+          ~name:("llmopt_" ^ label ^ "_silu_x8") ~epilogue:Epilogue.silu ~target
+          schema
+        |> Result.get_ok
+      in
+      let multi_src =
+        Metal_block_codegen.tile32_affine_multi_linear_f16_x8_kernel
+          ~name:("llmopt_" ^ label ^ "_swiglu_x8") ~epilogue:swiglu_epi
+          ~num_slots:2 ~target schema
+        |> Result.get_ok
+      in
+      let multi_export_src =
+        Metal_block_codegen.tile32_affine_multi_export_linear_f16_x8_kernel
+          ~name:("llmopt_" ^ label ^ "_multi_export_x8")
+          ~epilogues:[ export_epi_0; export_epi_1 ] ~num_slots:2 ~target schema
+        |> Result.get_ok
+      in
+      let combined_msl =
+        msl_preamble ^ linear_src ^ epi_src ^ multi_src ^ multi_export_src
+      in
+      expect
+        (compile_msl_string combined_msl)
+        (label ^ " unified parametric single/multi/multi-export MSL compiles cleanly with xcrun metal"))
+    [ ("tile32_affine4", affine4_schema); ("tile32_affine8", affine8_schema) ];
+
+  (* In-Register 32-Lane Fast Walsh-Hadamard Butterfly & Tile32_Affine KV Cache *)
+  let cache_msl =
+    Metal_source_common.metal_header ^ Metal_cache_source.cache_source
+  in
+  expect
+    (contains_substring cache_msl "inline float llmopt_simd_fwht32"
+    && contains_substring cache_msl
+         "kernel void llmopt_cache_pack_attention_tile32_affine8_fwht_simd"
+    && contains_substring cache_msl
+         "kernel void llmopt_cache_unpack_attention_tile32_affine8_fwht_simd"
+    && contains_substring cache_msl
+         "kernel void llmopt_cache_pack_attention_tile32_affine4_fwht_simd"
+    && contains_substring cache_msl
+         "kernel void llmopt_cache_unpack_attention_tile32_affine4_fwht_simd")
+    "cache_source declares llmopt_simd_fwht32 and Tile32_Affine{4,8} Hadamard KV kernels";
+  expect
+    (compile_msl_string cache_msl)
+    "cache_source with llmopt_simd_fwht32 and Tile32_Affine{4,8} KV kernels compiles cleanly with xcrun metal";
+
+  let q_vec = Array.init 32 (fun i -> sin (float_of_int (i + 1) *. 0.37)) in
+  let k_vec =
+    Array.init 32 (fun i ->
+        if i = 0 then 64.0 (* Massive attention key channel outlier *)
+        else 0.25 *. cos (float_of_int (i + 1) *. 0.53))
+  in
+  let q_rot = Gguf.Transcode.fwht32 q_vec |> Result.get_ok in
+  let k_rot = Gguf.Transcode.fwht32 k_vec |> Result.get_ok in
+  let k_inv = Gguf.Transcode.fwht32 k_rot |> Result.get_ok in
+  for i = 0 to 31 do
+    expect
+      (abs_float (k_inv.(i) -. k_vec.(i)) < 1e-5)
+      "fwht32 is self-inverse (H_32(H_32(x)) = x)"
+  done;
+  let dot a b =
+    let s = ref 0.0 in
+    for i = 0 to Array.length a - 1 do
+      s := !s +. (a.(i) *. b.(i))
+    done;
+    !s
+  in
+  let dot_orig = dot q_vec k_vec in
+  let dot_rot = dot q_rot k_rot in
+  expect
+    (abs_float (dot_orig -. dot_rot) < 1e-4)
+    "fwht32 is orthogonal and preserves attention inner product <H q, H k> = <q, k>";
+
+  (* Outlier-dispersion quantization test: Tile32_Affine4 with vs without fwht32 *)
+  let k_unrot_q4 =
+    Gguf.Transcode.quantize_tile32_affine4 k_vec
+    |> Result.get_ok |> Gguf.Transcode.dequantize_tile32_affine4 |> Result.get_ok
+  in
+  let k_rot_q4 =
+    Gguf.Transcode.quantize_tile32_affine4 k_rot
+    |> Result.get_ok |> Gguf.Transcode.dequantize_tile32_affine4 |> Result.get_ok
+    |> Gguf.Transcode.fwht32 |> Result.get_ok
+  in
+  let tail_rmse arr =
+    let sq = ref 0.0 in
+    for i = 1 to 31 do
+      let d = arr.(i) -. k_vec.(i) in
+      sq := !sq +. (d *. d)
+    done;
+    sqrt (!sq /. 31.0)
+  in
+  let rmse_unrot = tail_rmse k_unrot_q4 in
+  let rmse_rot = tail_rmse k_rot_q4 in
+  expect
+    (rmse_rot *. 5.0 < rmse_unrot)
+    (Printf.sprintf
+       "fwht32 Hadamard rotation disperses channel outliers for Tile32_Affine4 KV quantization (rmse_rot=%g vs rmse_unrot=%g)"
+       rmse_rot rmse_unrot);
+
+  (* End-to-End LLMOPTWT Archive Baking (GGUF -> Tile32_Affine{4,8}) *)
+  expect
+    (Weight_archive.Dtype.to_tag (Weight_archive.Dtype.Quant Tile32_Affine4) = 15
+    && Weight_archive.Dtype.to_tag (Weight_archive.Dtype.Quant Tile32_Affine8) = 16)
+    "Weight_archive.Dtype assigns tags 15 and 16 to Tile32_Affine4 and Tile32_Affine8";
+  let baked_q4, baked_q4_bytes =
+    Gguf.Transcode.bake_tensor_to_tile32_affine ~rotate_fwht32:true
+      ~prefer_4bit:true Weight_archive.Dtype.IQ4_XS iq4_xs_buf
+    |> Result.get_ok
+  in
+  expect
+    (baked_q4 = Weight_archive.Dtype.Tile32_Affine4
+    && Bytes.length baked_q4_bytes = 8 * Gguf.Transcode.tile32_affine4_block_bytes)
+    "bake_tensor_to_tile32_affine (~rotate_fwht32:true ~prefer_4bit:true) compacts 256-element IQ4_XS into 160-byte (5.00 bpw) Tile32_Affine4";
+
+  let tmp_gguf = Filename.temp_file "test_bake" ".gguf" in
+  let tmp_wt = Filename.temp_file "test_bake" ".weights.llmopt" in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Sys.remove tmp_gguf with _ -> ());
+      (try Sys.remove tmp_wt with _ -> ()))
+    (fun () ->
+      let full_gguf =
+        Bytes.make (Int64.to_int parsed_gguf.data_offset + 73728 + 107520) '\000'
+      in
+      Bytes.blit gguf_bytes 0 full_gguf 0 (Bytes.length gguf_bytes);
+      let oc = open_out_bin tmp_gguf in
+      output_bytes oc full_gguf;
+      close_out oc;
+      let baked_archive =
+        Gguf.write_tile32_affine_archive ~source_path:tmp_gguf
+          ~destination_path:tmp_wt ()
+        |> Result.get_ok
+      in
+      let baked_gate =
+        Weight_archive.find baked_archive "model.layers.0.mlp.gate.weight"
+        |> Option.get
+      in
+      let baked_down =
+        Weight_archive.find baked_archive "model.layers.0.mlp.down.weight"
+        |> Option.get
+      in
+      expect
+        (Weight_archive.Tensor.dtype baked_gate
+         = Weight_archive.Dtype.Quant Tile32_Affine4
+        && Weight_archive.Tensor.byte_length baked_gate
+           = (256 * 512 / 32) * Gguf.Transcode.tile32_affine4_block_bytes)
+        "write_tile32_affine_archive bakes Q4_K tensor into 256B-aligned Tile32_Affine4 (5.00 bpw) in LLMOPTWT";
+      expect
+        (Weight_archive.Tensor.dtype baked_down
+         = Weight_archive.Dtype.Quant Tile32_Affine8
+        && Weight_archive.Tensor.byte_length baked_down
+           = (512 * 256 / 32) * Gguf.Transcode.tile32_affine8_block_bytes)
+        "write_tile32_affine_archive bakes Q6_K tensor into 256B-aligned Tile32_Affine8 (9.00 bpw) in LLMOPTWT")

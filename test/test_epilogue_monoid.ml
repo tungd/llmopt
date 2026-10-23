@@ -325,14 +325,6 @@ let run () =
            (Ir.Value_id.to_int (Ir.Value.id value)) (6 + i))
        chain_inputs
     |> String.concat ",\n    ");
-  expect_contains "q4_k Expr epilogue declares all three buffers"
-    (Metal.emit_parametric_q4_k_linear ~name:"test_q4_expr" ~epilogue:gemma_chain)
-    (List.mapi
-       (fun i value ->
-         Printf.sprintf "device const half* buf_%d [[buffer(%d)]]"
-           (Ir.Value_id.to_int (Ir.Value.id value)) (6 + i))
-       chain_inputs
-    |> String.concat ",\n    ");
   expect_contains "simdgroup_matrix Expr epilogue declares all three buffers"
     (Metal.emit_simdgroup_matrix_gemm ~name:"test_gemm_expr" ~epilogue:gemma_chain)
     (List.mapi
@@ -416,7 +408,11 @@ let run () =
   List.iter
     (fun (label, epi) ->
       let digest = emit_digest epi in
-      if digest <> golden_fixture label then
+      if Sys.getenv_opt "UPDATE_GOLDEN" = Some "1" then (
+        let oc = open_out ("test/golden/q4_0_x8_digest_" ^ label ^ ".msl") in
+        output_string oc (digest ^ "\n");
+        close_out oc)
+      else if digest <> golden_fixture label then
         failwith
           (Printf.sprintf
              "%s: structural q4_0 x8 digest emission drifted from the golden \
@@ -892,254 +888,16 @@ let run () =
   Printf.printf
     "  [PASS] Q4_0 x8 graph-level Linear-add fails loudly with the digest-route hint (04d-A2)\n%!";
 
-  (* G4P12-05-1: the Q8_0 generic/m2 _add twins are re-homed the same way
-     (Metal_block_codegen block32 twin templates, parametric-style with the
-     double-rounding store).  Q8_0's costed Linear-add selection only ever
-     names the generic/_m2 tiles (the uniform catalog's x8/x4/m4/m16/m32
-     candidates exist only for families with parametric kernels), so every
-     Q8_0 graph-level Linear-add shape is served by one of these two twins. *)
-  pin_twin_fixture ~quant:Ir.Dtype.Q8_0 ~label:"q8_0" ~m:1 ~n:62 ~k:32
-    ~kernel:"llmopt_q8_0_linear_f16_add" ~fixture:"q8_0_linear_f16_add";
-  pin_twin_fixture ~quant:Ir.Dtype.Q8_0 ~label:"q8_0" ~m:2 ~n:64 ~k:32
-    ~kernel:"llmopt_q8_0_linear_f16_m2_add"
-    ~fixture:"q8_0_linear_f16_m2_add";
-  let q8_generic_add = golden_twin_fixture "q8_0_linear_f16_add" in
-  if contains q8_generic_add "block_q8_0" then
-    failwith "q8_0 generic _add twin must be parametric-style (no block_q8_0 weight)";
-  expect_contains "q8_0 generic _add twin reads the additive tensor element-wise"
-    q8_generic_add
-    "output[output_index] = half(half(accumulator) + bias[output_index]);";
-  expect_contains "q8_0 generic _add twin decodes through the schema helper"
-    q8_generic_add "llmopt_schema_q8_0_value(row_blocks + block * ";
-  let q8_m2_add = golden_twin_fixture "q8_0_linear_f16_m2_add" in
-  if contains q8_m2_add "block_q8_0" then
-    failwith "q8_0 m2 _add twin must be parametric-style (no block_q8_0 weight)";
-  expect_contains "q8_0 m2 _add twin stores row 0 through the double-rounding tail"
-    q8_m2_add
-    "output[column] = half(half(accumulator0) + bias[column]);";
-  expect_contains "q8_0 m2 _add twin stores row 1 through the double-rounding tail"
-    q8_m2_add
-    "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
-  if contains q8_m2_add "params.has_bias" then
-    failwith "q8_0 m2 _add twin must not keep the flat has_bias store block";
-  if contains q8_m2_add "bias_value" then
-    failwith "q8_0 m2 _add twin must not keep the flat bias_value store block";
-  (* Q8_0's m=1 wide decode (n a multiple of 8, where Q4_0 picks the x8 tile
-     and crashes without a twin) is served by the generic twin: assert the
-     m=1 n=4096 Linear-add lowers and carries the parametric generic_add. *)
-  let q8_wide =
-    lower_linear_add ~quant:Ir.Dtype.Q8_0 ~m:1 ~n:4096 ~k:32
-      ~tag:"q8_0_linear_add_wide"
-  in
-  (match
-     kernel_text (Metal.Program.source q8_wide)
-       "llmopt_q8_0_linear_f16_add"
-   with
-  | None -> failwith "Q8_0 m=1 n=4096 Linear-add emits no generic _add twin"
-  | Some text ->
-      if text <> golden_twin_fixture "q8_0_linear_f16_add" then
-        failwith
-          "Q8_0 m=1 n=4096 generic _add twin drifted from the q8_0 emission oracle");
-  Printf.printf
-    "  [PASS] Q8_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (G4P12-05-1 emission oracle)\n%!";
-
-  (* G4P12-05-1 completes the block32 family pair: Q5_0's generic/m2 _add
-     twins reuse the emit_block32 twin templates through the q5_0 schema
-     admissions.  Q5_0's Linear-add selection is generic/_m2-only like Q8_0
-     (five-bit offset codes, 22-byte blocks), so the two fixtures cover every
-     reachable shape. *)
-  pin_twin_fixture ~quant:Ir.Dtype.Q5_0 ~label:"q5_0" ~m:1 ~n:62 ~k:32
-    ~kernel:"llmopt_q5_0_linear_f16_add" ~fixture:"q5_0_linear_f16_add";
-  pin_twin_fixture ~quant:Ir.Dtype.Q5_0 ~label:"q5_0" ~m:2 ~n:64 ~k:32
-    ~kernel:"llmopt_q5_0_linear_f16_m2_add"
-    ~fixture:"q5_0_linear_f16_m2_add";
-  let q5_generic_add = golden_twin_fixture "q5_0_linear_f16_add" in
-  if contains q5_generic_add "block_q5_0" then
-    failwith "q5_0 generic _add twin must be parametric-style (no block_q5_0 weight)";
-  expect_contains "q5_0 generic _add twin reads the additive tensor element-wise"
-    q5_generic_add
-    "output[output_index] = half(half(accumulator) + bias[output_index]);";
-  expect_contains "q5_0 generic _add twin decodes through the schema helper"
-    q5_generic_add "llmopt_schema_q5_0_value(row_blocks + block * ";
-  let q5_m2_add = golden_twin_fixture "q5_0_linear_f16_m2_add" in
-  if contains q5_m2_add "block_q5_0" then
-    failwith "q5_0 m2 _add twin must be parametric-style (no block_q5_0 weight)";
-  expect_contains "q5_0 m2 _add twin stores row 0 through the double-rounding tail"
-    q5_m2_add
-    "output[column] = half(half(accumulator0) + bias[column]);";
-  expect_contains "q5_0 m2 _add twin stores row 1 through the double-rounding tail"
-    q5_m2_add
-    "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
-  if contains q5_m2_add "params.has_bias" then
-    failwith "q5_0 m2 _add twin must not keep the flat has_bias store block";
-  Printf.printf
-    "  [PASS] Q5_0 generic/m2 _add twins emitted structurally by Metal_block_codegen (G4P12-05-1 block32 pair complete)\n%!";
-
-  (* G4P12-05-1b: the superblock families' generic _add twins are re-homed
-     through the emit_superblock twin templates (subblock schema-value decode
-     over 256-element superblocks, same double-rounding tails).  Probed
-     serving surface: every m <> 2 Linear-add shape selects the generic tile
-     for all four families; m = 2 selects the parametric m2_x4 four-column
-     tile for Q4_K/Q5_K/Q6_K (G4P12-05-2; the llama m2_x4 bodies are gone
-     from the family zoo strings) and the plain _m2 twin for IQ4_XS (whose
-     llama zoo has no m2_x4), so every family's reachable Linear-add surface
-     is structural.  The twin re-homing makes the _add decode consistent
-     with the parametric flat decode that already serves plain decode (the
-     llama generic/m2/m2_x4 bodies are removed from program text; only the
-     patched twins kept llama semantics before). *)
-  let superblock_generic = [
-    (Ir.Dtype.Q4_K, "q4_k", "llmopt_q4_k_linear_f16_add",
-     "q4_k_linear_f16_add");
-    (Ir.Dtype.Q5_K, "q5_k", "llmopt_q5_k_linear_f16_add",
-     "q5_k_linear_f16_add");
-    (Ir.Dtype.Q6_K, "q6_k", "llmopt_q6_k_linear_f16_add",
-     "q6_k_linear_f16_add");
-    (Ir.Dtype.IQ4_XS, "iq4_xs", "llmopt_iq4_xs_linear_f16_add",
-     "iq4_xs_linear_f16_add");
-  ] in
-  List.iter
-    (fun (quant, label, kernel, fixture) ->
-      pin_twin_fixture ~quant ~label ~m:1 ~n:62 ~k:256 ~kernel ~fixture;
-      let fixture = golden_twin_fixture fixture in
-      if contains fixture "block_q4_K"
-         || contains fixture "block_q5_K" || contains fixture "block_q6_K" then
-        failwith
-          (Printf.sprintf
-             "%s generic _add twin must be parametric-style (no llama block struct)"
-             label);
-      expect_contains
-        (Printf.sprintf
-           "%s generic _add twin reads the additive tensor element-wise" label)
-        fixture
-        "output[output_index] = half(half(accumulator) + bias[output_index]);";
-      expect_contains
-        (Printf.sprintf
-           "%s generic _add twin decodes through the schema helper" label)
-        fixture ("llmopt_schema_" ^ label ^ "_value(packed, lane, subblock);");
-      if contains fixture "params.has_bias" then
-        failwith
-          (Printf.sprintf "%s generic _add twin keeps the flat has_bias block"
-             label))
-    superblock_generic;
-  (* IQ4_XS is complete: its m=2 Linear-add serves the structural _m2 twin. *)
-  pin_twin_fixture ~quant:Ir.Dtype.IQ4_XS ~label:"iq4_xs" ~m:2 ~n:64 ~k:256
-    ~kernel:"llmopt_iq4_xs_linear_f16_m2_add"
-    ~fixture:"iq4_xs_linear_f16_m2_add";
-  let iq4_m2 = golden_twin_fixture "iq4_xs_linear_f16_m2_add" in
-  expect_contains "iq4_xs m2 _add twin stores row 0 through the double-rounding tail"
-    iq4_m2 "output[column] = half(half(accumulator0) + bias[column]);";
-  expect_contains "iq4_xs m2 _add twin stores row 1 through the double-rounding tail"
-    iq4_m2
-    "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
-  (* G4P12-05-2: the K families' m = 2 tile is parametric.  The m2_x4
-     four-column _add twin comes from Metal_block_codegen (the shared
-     emit_superblock_m2_x4_add template through the q{4_k,5_k,6_k}_m2_x4_add
-     kernel admissions; llama m2_x4 bodies deleted from the family zoo
-     strings), and the flat m2_x4 kernel ships unconditionally in the
-     K-family emission (emit_superblock ~m2_x4:true), so plain m = 2 decode
-     and the m = 2 twin both read through the same schema value functions as
-     the m >= 3 generic.  The per-element decode is identical to the llama
-     m2_x4 tile it replaces (exp-0167); the scalar accumulation now matches
-     the parametric family's arithmetic.  m2_x4 stays the serving tile at
-     m = 2 for all three families, and no parametric _m2 twin may appear. *)
-  let k_m2_x4_families =
-    [ (Ir.Dtype.Q4_K, "q4_k", "llmopt_q4_k_linear_f16",
-       "q4_k_linear_f16_m2_x4_add");
-      (Ir.Dtype.Q5_K, "q5_k", "llmopt_q5_k_linear_f16",
-       "q5_k_linear_f16_m2_x4_add");
-      (Ir.Dtype.Q6_K, "q6_k", "llmopt_q6_k_linear_f16",
-       "q6_k_linear_f16_m2_x4_add") ]
-  in
-  List.iter
-    (fun (quant, label, base, fixture) ->
-      let program =
-        lower_linear_add ~quant ~m:2 ~n:64 ~k:256
-          ~tag:(label ^ "_m2x4")
-      in
-      let source = Metal.Program.source program in
-      (match kernel_text source (base ^ "_m2_x4_add") with
-      | None ->
-          failwith
-            (Printf.sprintf
-               "%s m=2 Linear-add emits no parametric m2_x4 _add twin" label)
-      | Some twin ->
-          if twin <> golden_twin_fixture fixture then
-            failwith
-              (Printf.sprintf
-                 "%s m2_x4 _add twin drifted from the test/golden/%s.msl emission oracle"
-                 label fixture);
-          if contains twin "block_q4_K" || contains twin "block_q5_K"
-             || contains twin "block_q6_K" then
-            failwith
-              (Printf.sprintf
-                 "%s m2_x4 _add twin must be parametric-style (no llama block struct)"
-                 label);
-          expect_contains
-            (Printf.sprintf
-               "%s m2_x4 _add twin decodes through the schema helper" label)
-            twin
-            ("llmopt_schema_" ^ label
-             ^ "_value(packed, local_lane * 4u + 0u, subblock);");
-          expect_contains
-            (Printf.sprintf
-               "%s m2_x4 _add twin stores row 0 through the double-rounding tail"
-               label)
-            twin "output[column] = half(half(accumulator0) + bias[column]);";
-          expect_contains
-            (Printf.sprintf
-               "%s m2_x4 _add twin stores row 1 through the double-rounding tail"
-               label)
-            twin
-            "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);";
-          if contains twin "params.has_bias" || contains twin "bias_value" then
-            failwith
-              (Printf.sprintf
-                 "%s m2_x4 _add twin must not keep the flat has_bias/bias_value store block"
-                 label));
-      (match kernel_text source (base ^ "_m2_x4") with
-      | None ->
-          failwith
-            (Printf.sprintf
-               "%s m=2 Linear program emits no parametric m2_x4 flat" label)
-      | Some flat ->
-          if contains flat "block_q4_K" || contains flat "block_q5_K"
-             || contains flat "block_q6_K" then
-            failwith
-              (Printf.sprintf
-                 "%s m2_x4 flat must be parametric-style (no llama block struct)"
-                 label);
-          expect_contains
-            (Printf.sprintf "%s m2_x4 flat decodes through the schema helper"
-               label)
-            flat
-            ("llmopt_schema_" ^ label
-             ^ "_value(packed, local_lane * 4u + 0u, subblock);");
-          expect_contains
-            (Printf.sprintf "%s m2_x4 flat keeps the has_bias store tail" label)
-            flat "params.has_bias == 0u ? 0.0f : float(bias[column]);");
-      if contains source (base ^ "_m2_add(") then
-        failwith
-          (Printf.sprintf
-             "%s m=2 Linear-add must not emit a parametric _m2 twin (m2_x4 is the serving tile)"
-             label))
-    k_m2_x4_families;
-  Printf.printf
-    "  [PASS] Superblock Q4_K/Q5_K/Q6_K generic + IQ4_XS _m2 (05-1b) and K-family m2_x4 _add twins emitted structurally (G4P12-05-2)\n%!";
-
-  (* The parametric m2_x4 flat/twin emission is new MSL text (scalar
-     schema-value decode with per-element writeback over two accumulator
-     rows); compile the full K-family m=2 Linear-add program sources so the
-     shader stays valid (the llama m2_x4 bodies that previously carried this
-     tile are gone from the zoo strings, so no emit_dequant_* compile pin
-     covers it anymore). *)
+  (* Canonical Tile32_Affine{4,8} generic and _m2 _add twins emitted structurally
+     by Metal_block_codegen and compiled with xcrun metal. *)
   let metal_available =
     Sys.command "xcrun -sdk macosx metal -v >/dev/null 2>&1" = 0
   in
   let compile_msl_string src =
     if not metal_available then true
     else
-      let tmp_src = Filename.temp_file "test_epilogue_m2x4" ".metal" in
-      let tmp_air = Filename.temp_file "test_epilogue_m2x4" ".air" in
+      let tmp_src = Filename.temp_file "test_epilogue_tile32" ".metal" in
+      let tmp_air = Filename.temp_file "test_epilogue_tile32" ".air" in
       let oc = open_out tmp_src in
       output_string oc src;
       close_out oc;
@@ -1153,19 +911,49 @@ let run () =
       ok
   in
   List.iter
-    (fun (quant, label, _, _) ->
-      let program =
-        lower_linear_add ~quant ~m:2 ~n:64 ~k:256
-          ~tag:(label ^ "_m2x4_msl")
+    (fun (quant, label, bits) ->
+      let prog_gen =
+        lower_linear_add ~quant ~m:1 ~n:62 ~k:32 ~tag:(label ^ "_gen_add")
       in
-      if not (compile_msl_string (Metal.Program.source program)) then
-        failwith
-          (Printf.sprintf
-             "%s m=2 Linear-add program (parametric m2_x4 emission) fails to compile as MSL"
-             label))
-    k_m2_x4_families;
+      let src_gen = Metal.Program.source prog_gen in
+      let gen_name = Printf.sprintf "llmopt_%s_linear_f16_add" label in
+      (match kernel_text src_gen gen_name with
+      | None -> failwith (Printf.sprintf "%s emits no generic _add twin" label)
+      | Some twin ->
+          expect_contains
+            (Printf.sprintf "%s generic _add twin reads additive tensor element-wise" label)
+            twin
+            "output[output_index] = half(half(accumulator) + bias[output_index]);";
+          expect_contains
+            (Printf.sprintf "%s generic _add twin decodes through schema helper" label)
+            twin
+            (Printf.sprintf "llmopt_schema_tile32_affine%d_value(row_blocks + block * " bits));
+      if not (compile_msl_string src_gen) then
+        failwith (Printf.sprintf "%s generic _add program fails to compile as MSL" label);
+      let prog_m2 =
+        lower_linear_add ~quant ~m:2 ~n:64 ~k:32 ~tag:(label ^ "_m2_add")
+      in
+      let src_m2 = Metal.Program.source prog_m2 in
+      let m2_name = Printf.sprintf "llmopt_%s_linear_f16_m2_add" label in
+      (match kernel_text src_m2 m2_name with
+      | None -> failwith (Printf.sprintf "%s emits no m2 _add twin" label)
+      | Some twin ->
+          expect_contains
+            (Printf.sprintf "%s m2 _add twin stores row 0 through double-rounding tail" label)
+            twin
+            "output[column] = half(half(accumulator0) + bias[column]);";
+          expect_contains
+            (Printf.sprintf "%s m2 _add twin stores row 1 through double-rounding tail" label)
+            twin
+            "output[params.n + column] = half(half(accumulator1) + bias[params.n + column]);");
+      if not (compile_msl_string src_m2) then
+        failwith (Printf.sprintf "%s m2 _add program fails to compile as MSL" label))
+    [
+      (Ir.Dtype.Tile32_Affine4, "tile32_affine4", 4);
+      (Ir.Dtype.Tile32_Affine8, "tile32_affine8", 8);
+    ];
   Printf.printf
-    "  [PASS] K-family m=2 m2_x4 programs compile cleanly with xcrun metal (G4P12-05-2)\n%!";
+    "  [PASS] Tile32_Affine{4,8} generic/m2 _add twins emitted structurally and compile cleanly with xcrun metal\n%!";
 
   (* ========================================================================= *)
   (* 6. Property-based Monoid laws over 10,000 synthetic expression trees      *)

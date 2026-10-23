@@ -2250,8 +2250,120 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
                     count:plan->unique_resource_count
                     usage:MTLResourceUsageRead | MTLResourceUsageWrite];
       }
-      [enc executeCommandsInBuffer:plan->icb
-                         withRange:NSMakeRange(0, plan->record_count)];
+      if (getenv("LLMOPT_DEBUG_ICB_STEP") != NULL) {
+        fprintf(stderr, "[DEBUG_ICB_STEP] Running %zu records step by step on ICB...\n", plan->record_count);
+        llmopt_dispatch_record *r0 = &plan->records[0];
+        fprintf(stderr, "[DEBUG_ICB_STEP] Record 0: kernel='%s', plen=%lu, bcount=%lu\n",
+                r0->kernel_name, (unsigned long)r0->parameter_length, (unsigned long)r0->buffer_count);
+        for (NSUInteger b = 0; b < r0->buffer_count; b++) {
+          fprintf(stderr, "  buf[%lu]: ptr=%p, offset=%lu, len=%lu\n",
+                  (unsigned long)b, (void *)r0->buffers[b], (unsigned long)r0->offsets[b], (unsigned long)r0->lengths[b]);
+        }
+        if (r0->buffer_count > 0 && r0->buffers[0] != nil) {
+          int64_t *tok_ptr = (int64_t *)((uint8_t *)[r0->buffers[0] contents] + r0->offsets[0]);
+          fprintf(stderr, "  token in buf[0]: %lld (0x%llx)\n", (long long)*tok_ptr, (unsigned long long)*tok_ptr);
+        }
+        if (r0->parameter_length > 0) {
+          fprintf(stderr, "  r0->parameters (%lu bytes):", (unsigned long)r0->parameter_length);
+          for (NSUInteger p = 0; p < r0->parameter_length; p++) {
+            fprintf(stderr, " %02x", ((uint8_t *)r0->parameters)[p]);
+          }
+          fprintf(stderr, "\n");
+        }
+        if (plan->params_buffer != nil) {
+          fprintf(stderr, "  params_buffer[0..%lu]:", (unsigned long)r0->parameter_length);
+          uint8_t *pb = (uint8_t *)[plan->params_buffer contents];
+          for (NSUInteger p = 0; p < r0->parameter_length; p++) {
+            fprintf(stderr, " %02x", pb[p]);
+          }
+          fprintf(stderr, "\n");
+        }
+        fprintf(stderr, "  grid=(%lu,%lu,%lu) group=(%lu,%lu,%lu)\n",
+                (unsigned long)r0->grid.width, (unsigned long)r0->grid.height, (unsigned long)r0->grid.depth,
+                (unsigned long)r0->group.width, (unsigned long)r0->group.height, (unsigned long)r0->group.depth);
+        // Test 3: Slice buffer test for ICB record 0
+        {
+          size_t page_size = getpagesize();
+          NSUInteger chunk_base = (r0->offsets[1] / page_size) * page_size;
+          NSUInteger rem_offset = r0->offsets[1] - chunk_base;
+          uint8_t *ptr = (uint8_t *)[r0->buffers[1] contents] + chunk_base;
+          NSUInteger slice_len = [r0->buffers[1] length] - chunk_base;
+          id<MTLBuffer> slice_buf = [plan->queue.device newBufferWithBytesNoCopy:ptr
+                                                                          length:slice_len
+                                                                         options:MTLResourceStorageModeShared
+                                                                     deallocator:nil];
+          id<MTLIndirectComputeCommand> icmd0 = [plan->icb indirectComputeCommandAtIndex:0];
+          [icmd0 setKernelBuffer:slice_buf offset:rem_offset atIndex:1];
+
+          id<MTLCommandBuffer> slice_cmd = [plan->queue commandBuffer];
+          id<MTLComputeCommandEncoder> slice_enc = [slice_cmd computeCommandEncoder];
+          [slice_enc useResource:slice_buf usage:MTLResourceUsageRead];
+          if (plan->unique_resource_count > 0) {
+            [slice_enc useResources:plan->unique_resources
+                              count:plan->unique_resource_count
+                              usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+          }
+          [slice_enc executeCommandsInBuffer:plan->icb withRange:NSMakeRange(0, 1)];
+          [slice_enc endEncoding];
+          [slice_cmd commit];
+          [slice_cmd waitUntilCompleted];
+          const _Float16 *f16_slice = (const _Float16 *)((const uint8_t *)[r0->buffers[2] contents] + r0->offsets[2]);
+          fprintf(stderr, "[DEBUG_ICB_STEP] ICB + SLICE BUF record 0 out[0..3]: %f %f %f %f\n",
+                  (float)f16_slice[0], (float)f16_slice[1], (float)f16_slice[2], (float)f16_slice[3]);
+          [slice_buf release];
+        }
+
+        for (size_t i = 0; i < plan->record_count; i++) {
+          llmopt_dispatch_record *r = &plan->records[i];
+          bool had_bad[16] = {false};
+          for (NSUInteger b = 0; b < r->buffer_count; b++) {
+            if (range_has_nan(r->kernel_name, r->buffers[b], r->offsets[b], r->lengths[b])) {
+              had_bad[b] = true;
+            }
+          }
+          id<MTLCommandBuffer> step_cmd = [plan->queue commandBuffer];
+          id<MTLComputeCommandEncoder> step_enc = [step_cmd computeCommandEncoder];
+          if (plan->unique_resource_count > 0) {
+            [step_enc useResources:plan->unique_resources
+                             count:plan->unique_resource_count
+                             usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+          }
+          [step_enc executeCommandsInBuffer:plan->icb withRange:NSMakeRange(i, 1)];
+          [step_enc endEncoding];
+          [step_cmd commit];
+          [step_cmd waitUntilCompleted];
+
+          if (i == 0) {
+            const _Float16 *f16_icb = (const _Float16 *)((const uint8_t *)[r->buffers[2] contents] + r->offsets[2]);
+            fprintf(stderr, "[DEBUG_ICB_STEP] ICB record 0 out[0..3]: %f %f %f %f\n",
+                    (float)f16_icb[0], (float)f16_icb[1], (float)f16_icb[2], (float)f16_icb[3]);
+          }
+
+          for (NSUInteger b = 0; b < r->buffer_count; b++) {
+            if (!had_bad[b] && range_has_nan(r->kernel_name, r->buffers[b], r->offsets[b], r->lengths[b])) {
+              fprintf(stderr, "\n==================================================\n");
+              fprintf(stderr, "[DEBUG_ICB_STEP] FIRST NaN PRODUCED AT RECORD %zu:\n", i);
+              fprintf(stderr, "  kernel: '%s'\n", r->kernel_name);
+              fprintf(stderr, "  buffer: %lu (offset=%lu, length=%lu)\n",
+                      (unsigned long)b, (unsigned long)r->offsets[b], (unsigned long)r->lengths[b]);
+              fprintf(stderr, "==================================================\n\n");
+              exit(1);
+            }
+          }
+        }
+      } else if (getenv("LLMOPT_ICB_STEP") != NULL) {
+        for (size_t i = 0; i < plan->record_count; i++) {
+          llmopt_dispatch_record *r = &plan->records[i];
+          if (r->barrier_before) {
+            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+          }
+          [enc executeCommandsInBuffer:plan->icb
+                             withRange:NSMakeRange(i, 1)];
+        }
+      } else {
+        [enc executeCommandsInBuffer:plan->icb
+                           withRange:NSMakeRange(0, plan->record_count)];
+      }
     } else {
       id<MTLComputePipelineState> current_pipeline = nil;
       for (size_t i = 0; i < plan->record_count; i++) {
@@ -2293,6 +2405,43 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
               (plan->icb != nil && getenv("LLMOPT_DISABLE_ICB") == NULL) ? "yes" : "no",
               plan->record_count, plan->barrier_count,
               gpu_seconds * 1000.0, wall_seconds * 1000.0);
+    }
+    if (getenv("LLMOPT_DEBUG_ICB") != NULL) {
+      llmopt_dispatch_record *r0 = &plan->records[0];
+      fprintf(stderr, "[DEBUG_ICB] Record 0: %s, token=%lld, buf_count=%lu\n",
+              r0->kernel_name, (long long)token, (unsigned long)r0->buffer_count);
+      for (NSUInteger b = 0; b < r0->buffer_count; b++) {
+        const _Float16 *f16 = (const _Float16 *)((const uint8_t *)[r0->buffers[b] contents] + r0->offsets[b]);
+        fprintf(stderr, "  r0 buf[%lu]: offset=%lu len=%lu [0..3]=%f %f %f %f\n",
+                b, r0->offsets[b], r0->lengths[b],
+                (float)f16[0], (float)f16[1], (float)f16[2], (float)f16[3]);
+      }
+      for (size_t i = 0; i < plan->record_count; i++) {
+        llmopt_dispatch_record *r = &plan->records[i];
+        for (NSUInteger b = 0; b < r->buffer_count; b++) {
+          if (r->buffers[b] != nil && r->lengths[b] >= 2) {
+            const _Float16 *f16 = (const _Float16 *)((const uint8_t *)[r->buffers[b] contents] + r->offsets[b]);
+            size_t count = r->lengths[b] / 2;
+            for (size_t k = 0; k < count && k < 1024; k++) {
+              if (isnan((float)f16[k])) {
+                fprintf(stderr, "[DEBUG_ICB] FIRST NAN at record %zu (%s), buf %lu, element %zu\n",
+                        i, r->kernel_name, b, k);
+                goto done_nan;
+              }
+            }
+          }
+        }
+      }
+      done_nan:;
+      llmopt_dispatch_record *r_last = &plan->records[plan->record_count - 1];
+      fprintf(stderr, "[DEBUG_ICB] Record last: %s, buf_count=%lu\n",
+              r_last->kernel_name, (unsigned long)r_last->buffer_count);
+      for (NSUInteger b = 0; b < r_last->buffer_count; b++) {
+        const _Float16 *f16 = (const _Float16 *)((const uint8_t *)[r_last->buffers[b] contents] + r_last->offsets[b]);
+        fprintf(stderr, "  r_last buf[%lu]: offset=%lu len=%lu [0..3]=%f %f %f %f\n",
+                b, r_last->offsets[b], r_last->lengths[b],
+                (float)f16[0], (float)f16[1], (float)f16[2], (float)f16[3]);
+      }
     }
     if (cmd.status != MTLCommandBufferStatusCompleted) {
       fail_with_error("Prebaked Metal batch failed", cmd.error);

@@ -2,7 +2,8 @@
 type: Decision
 title: 'Gemma 4 Round 6: Compiler DAG Fusion, Split-K Parameterized GEMV, and Bespoke Kernel Retirement'
 description: 'Establishes the architectural mandate to eliminate bespoke monolithic kernels, lower all linear projections through parameterized block codegen with Split-K concurrency, fuse elementwise activations and residual additions via compiler DAG passes, and absorb KV-cache packing to close the throughput gap to llama.cpp.'
-status: accepted
+status: stable
+decision_status: approved
 tags: [decision, compiler, dag-fusion, split-k, gemv, kv-cache, metal, gemma4]
 generated: { by: antigravity/2.0, at: '2026-09-05T06:50:00+07:00' }
 sources:

@@ -124,7 +124,7 @@ let test_quant_qk_device () =
         (Ir.Dtype.to_string (Ir.Dtype.Quant quant)) m n_q n_k
     in
     List.iter (fun quant -> List.iter (run quant) [ 1; 2; 4; 16; 33 ])
-      [ Ir.Dtype.Q4_0; Ir.Dtype.Q5_0 ]
+      [ Ir.Dtype.Q4_0 ]
 
 let run () =
   test_quant_qk_device ();
@@ -810,13 +810,11 @@ let run () =
     expect (contains_substring (Metal.Program.source program) marker)
       "block-quant Linear Metal is emitted constructively from the block schema"
   in
-  check_constructive_quant Ir.Dtype.Q8_0 32 "llmopt_schema_q8_0_value";
-  check_constructive_quant Ir.Dtype.Q5_0 32 "llmopt_schema_q5_0_value";
+  check_constructive_quant Ir.Dtype.Tile32_Affine4 32
+    "llmopt_schema_tile32_affine4_value";
+  check_constructive_quant Ir.Dtype.Tile32_Affine8 32
+    "llmopt_schema_tile32_affine8_value";
   check_constructive_quant Ir.Dtype.Q4_0 32 "llmopt_schema_q4_0_value";
-  check_constructive_quant Ir.Dtype.Q4_K 256 "llmopt_schema_q4_k_value";
-  check_constructive_quant Ir.Dtype.Q5_K 256 "llmopt_schema_q5_k_value";
-  check_constructive_quant Ir.Dtype.Q6_K 256 "llmopt_schema_q6_k_value";
-  check_constructive_quant Ir.Dtype.IQ4_XS 256 "llmopt_schema_iq4_xs_value";
   let q8_lm_head_tactic =
     Metal.Tactic.select_linear ~target:Target_hardware.default ~m:1 ~n:49152
       ~k:576 ~input_dtype:Ir.Dtype.Float16
@@ -925,7 +923,7 @@ let run () =
   let q4_m2_weight =
     tensor_input q4_m2_graph ~name:"q4_m2_weight"
       ~source:(Ir.Input_source.Tensor_store { key = "q4_m2_weight" })
-      ~shape:[ 64; 256 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_K)
+      ~shape:[ 64; 256 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
   in
   let q4_m2_output =
     Ir.Graph.fresh_tensor_value q4_m2_graph
@@ -941,22 +939,17 @@ let run () =
   in
   let q4_m2_expected =
     costed_quant_tactic ~target:Target_hardware.default ~m:2 ~n:64 ~k:256
-      Ir.Dtype.Q4_K
+      Ir.Dtype.Tile32_Affine4
   in
   expect
     (List.mem (Kernel_abi.Linear_tactic.name q4_m2_expected) q4_m2_kernel_names)
-    "Metal lowering declares the costed selected two-token Q4_K tactic";
+    "Metal lowering declares the costed selected two-token Tile32_Affine4 tactic";
   expect
-    (List.mem "llmopt_q4_k_linear_f16" q4_m2_kernel_names)
-    "Metal lowering retains the generic Q4_K Linear tactic for dynamic row specialization";
-  expect
-    (List.mem "llmopt_q4_k_linear_f16_llama_mv_add" q4_m2_kernel_names
-    && not (List.mem "llmopt_q6_k_linear_f16_llama_mv_add" q4_m2_kernel_names))
-    "Metal lowering declares only same-format experimental residual tactics";
+    (List.mem "llmopt_tile32_affine4_linear_f16" q4_m2_kernel_names
+    && List.mem "llmopt_tile32_affine4_linear_f16_m2" q4_m2_kernel_names)
+    "Metal lowering retains generic and m=2 Tile32_Affine4 Linear tactics for dynamic row specialization";
 
-  [ Ir.Dtype.Q8_0, 32; Ir.Dtype.Q4_K, 256; Ir.Dtype.Q5_K, 1024;
-    Ir.Dtype.Q6_K, 256; Ir.Dtype.Q5_0, 32; Ir.Dtype.Q4_0, 32;
-    Ir.Dtype.IQ4_XS, 256 ]
+  [ Ir.Dtype.Tile32_Affine4, 32; Ir.Dtype.Tile32_Affine8, 32; Ir.Dtype.Q4_0, 32 ]
   |> List.iter (fun (quant, k) ->
          let graph = Ir.Graph.create () in
          let input =
@@ -1096,18 +1089,9 @@ let run () =
                false
            | _ -> true))
     "single-token Q5_0 gated fusion removes all four producer dispatches";
-  let q5_gated_program = Metal.lower q5_gated_fused |> expect_ok in
   expect
-    (Metal.Program.kernels q5_gated_program
-    |> List.exists (fun entry ->
-           Kernel_abi.Entry.name entry = "llmopt_q5_0_gated_linear_f16"))
-    "Metal lowering declares the single-token Q5_0 gated kernel";
-  expect
-    (Metal.Program.kernels q5_gated_program
-    |> List.exists (fun entry ->
-           Kernel_abi.Entry.name entry
-           = "llmopt_q5_0_gated_linear_f16_llama_mv"))
-    "Metal lowering declares the experimental llama-style Q5_0 gated kernel";
+    (Result.is_error (Metal.lower q5_gated_fused))
+    "Metal lowering rejects un-transcoded Q5_0 gated Linear";
 
   let q4_gated_graph = Ir.Graph.create () in
   let q4_gated_fresh shape =
@@ -1348,19 +1332,9 @@ let run () =
                true
            | _ -> false))
     "mixed quantized QKV survives schedule serialization";
-  let qkv_program = Metal.lower qkv_fused |> expect_ok in
   expect
-    (contains_substring (Metal.Program.source qkv_program)
-       "kernel void llmopt_q5_0_qkv_linear_vq8_f16")
-    "Metal lowering emits the mixed Q5_0/Q8_0 QKV kernel";
-  expect
-    (contains_substring (Metal.Program.source qkv_program)
-       "kernel void llmopt_q5_0_qkv_linear_f16_llama_mv")
-    "Metal lowering emits the llama-style all-Q5_0 QKV kernel";
-  expect
-    (contains_substring (Metal.Program.source qkv_program)
-       "kernel void llmopt_q5_0_qkv_linear_vq8_f16_llama_mv")
-    "Metal lowering emits the llama-style mixed Q5_0/Q8_0 QKV kernel";
+    (Result.is_error (Metal.lower qkv_fused))
+    "Metal lowering rejects un-transcoded mixed Q5_0/Q8_0 QKV kernel";
 
   let q4_qkv_graph = Ir.Graph.create () in
   let q4_qkv_fresh shape =

@@ -703,6 +703,43 @@ let w4_decode ~group_elements =
   Logical_decode.make ~block_elements:group_elements
     ~subblock_elements:group_elements ~equation
 
+let tile32_affine_physical ~bits =
+  let quant_bytes = (32 * bits) / 8 in
+  let block_bytes = 4 + quant_bytes in
+  let bit_ranges =
+    if bits = 4 then
+      nibble_ranges ~field:Physical_layout.Field.Quantized ~bytes:quant_bytes
+        ~signedness:Physical_layout.Signedness.Unsigned
+    else
+      [ bit_range ~field:Physical_layout.Field.Quantized ~byte_offset:0
+          ~byte_stride:1 ~bit_offset:0 ~bit_width:8 ~count:32
+          ~signedness:Physical_layout.Signedness.Unsigned ]
+  in
+  Physical_layout.make ~block_elements:32 ~block_bytes ~storage_bytes:block_bytes
+    ~alignment:2
+    ~fields:
+      [ inline_field Physical_layout.Field.Block_scale 0 2
+          Physical_layout.Field.F16;
+        inline_field Physical_layout.Field.Block_minimum 2 2
+          Physical_layout.Field.F16;
+        inline_field Physical_layout.Field.Quantized 4 quant_bytes
+          Physical_layout.Field.U8 ]
+    ~bit_ranges
+
+let tile32_affine_decode ~bits =
+  let equation =
+    Logical_decode.Affine
+      { code_bits = bits;
+        code_signedness = Physical_layout.Signedness.Unsigned;
+        scale =
+          Logical_decode.Per_block
+            { field = Physical_layout.Field.Block_scale; bits = 16 };
+        minimum =
+          Logical_decode.Per_block
+            { field = Physical_layout.Field.Block_minimum; bits = 16 } }
+  in
+  Logical_decode.make ~block_elements:32 ~subblock_elements:32 ~equation
+
 let primitives ~decode ~backend =
   match backend, decode with
   | Target_tactic.Portable, _ -> [ Target_tactic.Primitive.Portable_scalar ]
@@ -773,6 +810,16 @@ let of_quant quant =
       make ~storage:(Ir.Linear_storage.Block_quantized quant)
         ~quant_type:(Some quant) ~physical:(iq4_xs_physical quant)
         ~logical:(iq4_xs_decode quant) ~decode:Target_tactic.Codebook
+  | Ir.Dtype.Tile32_Affine4 ->
+      make ~storage:(Ir.Linear_storage.Block_quantized quant)
+        ~quant_type:(Some quant) ~physical:(tile32_affine_physical ~bits:4)
+        ~logical:(tile32_affine_decode ~bits:4)
+        ~decode:Target_tactic.Packed_nibble
+  | Ir.Dtype.Tile32_Affine8 ->
+      make ~storage:(Ir.Linear_storage.Block_quantized quant)
+        ~quant_type:(Some quant) ~physical:(tile32_affine_physical ~bits:8)
+        ~logical:(tile32_affine_decode ~bits:8)
+        ~decode:Target_tactic.Direct_integer
 
 let of_storage storage =
   match storage with
@@ -788,6 +835,14 @@ let of_storage storage =
              ~physical:(w4_physical ~bits ~group_elements)
              ~logical:(w4_decode ~group_elements) ~decode:Target_tactic.Packed_nibble)
 
+let tile32_affine_schema ~bits =
+  if bits <> 4 && bits <> 8 then Error (Error.Invalid_groupwise_bits bits)
+  else
+    let quant =
+      if bits = 4 then Ir.Dtype.Tile32_Affine4 else Ir.Dtype.Tile32_Affine8
+    in
+    Ok (of_quant quant)
+
 let storage schema = schema.storage
 let quant_type schema = schema.quant_type
 let physical_layout schema = schema.physical
@@ -796,6 +851,8 @@ let target_tactics schema = schema.tactics
 let block_elements schema = Physical_layout.block_elements schema.physical
 let block_bytes schema = Physical_layout.block_bytes schema.physical
 let to_string schema =
-  match schema.quant_type with
-  | Some quant -> Ir.Dtype.quant_to_string quant
-  | None -> "W4A16-G64"
+  match schema.quant_type, Logical_decode.equation schema.logical with
+  | Some quant, _ -> Ir.Dtype.quant_to_string quant
+  | None, Logical_decode.Affine { code_bits; _ } ->
+      Printf.sprintf "Tile32_Affine%d" code_bits
+  | None, _ -> "W4A16-G64"

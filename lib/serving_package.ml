@@ -233,6 +233,8 @@ let dtype_tag = function
   | Ir.Dtype.Quant Q5_0 -> 12
   | Ir.Dtype.Quant Q4_0 -> 13
   | Ir.Dtype.Quant IQ4_XS -> 14
+  | Ir.Dtype.Quant Tile32_Affine4 -> 15
+  | Ir.Dtype.Quant Tile32_Affine8 -> 16
 
 let dtype_of_tag = function
   | 0 -> Ok Ir.Dtype.Float32
@@ -250,6 +252,8 @@ let dtype_of_tag = function
   | 12 -> Ok (Ir.Dtype.Quant Q5_0)
   | 13 -> Ok (Ir.Dtype.Quant Q4_0)
   | 14 -> Ok (Ir.Dtype.Quant IQ4_XS)
+  | 15 -> Ok (Ir.Dtype.Quant Tile32_Affine4)
+  | 16 -> Ok (Ir.Dtype.Quant Tile32_Affine8)
   | tag -> Error (Printf.sprintf "unknown kernel dtype tag: %d" tag)
 
 let write_kernel writer entry =

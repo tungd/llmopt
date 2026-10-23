@@ -40,6 +40,8 @@ _DTYPE_TO_TAG = {
     "Q5_0": 12,
     "Q4_0": 13,
     "IQ4_XS": 14,
+    "Tile32_Affine4": 15,
+    "Tile32_Affine8": 16,
 }
 _TAG_TO_DTYPE = {tag: dtype for dtype, tag in _DTYPE_TO_TAG.items()}
 

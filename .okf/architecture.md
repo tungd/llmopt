@@ -147,6 +147,9 @@ sources:
   - id: slice-31-receipt
     resource: /bench/results/compiler-generalization-slice-31-2026-08-30.json
     title: Slice 31 cross-model benchmark receipt
+  - id: canonical-tile32-affine
+    resource: /decisions/canonical-tile32-affine-and-hadamard-attention-rotation.md
+    title: Canonical Tile32_Affine Weight & KV Format and In-Register Hadamard Attention Rotation
   - id: sglang-radix-cache
     resource: https://github.com/sgl-project/sglang/blob/d1af3c89233c475fc1bf11939d86787e6cddd58c/python/sglang/srt/mem_cache/radix_cache.py
     title: SGLang RadixCache reference revision
@@ -312,6 +315,10 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   - **Groupwise W4**: Group-64 scales with 2-complement low-nibble packing.
 * **Hardware Bitfield Acceleration ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml))**: Replaced manual shift/mask sequences in Superblock-256 unpacking with native `metal::extract_bits(src, offset, count)` hardware bitfield extraction instructions across all quantized compute and embedding paths.
 * **Split-K Intra-Threadgroup Parallel Reductions ([`lib/metal.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal.ml), [`lib/kernel_abi.ml`](file:///Users/tung/Projects/std23/llmopt/lib/kernel_abi.ml))**: For wide reduction dimensions ($K \ge 4096$), partitions inner dimension across 4 SIMDgroups per column in 256-thread threadgroups, reducing partial sums across SIMD groups via threadgroup shared memory in deterministic FP32/FP16 order without global atomics.
+* **Canonical `Tile32_Affine` Mathematical Reduction & In-Register Walsh-Hadamard Attention Rotation ([`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml), [`lib/block_schema.ml`](file:///Users/tung/Projects/std23/llmopt/lib/block_schema.ml), [`lib/metal_block_codegen.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_block_codegen.ml), [`lib/metal_cache_source.ml`](file:///Users/tung/Projects/std23/llmopt/lib/metal_cache_source.ml))**:[^canonical-tile32-affine]
+  - **Lossless Offline GGUF $\to$ `Tile32_Affine` Transcoding**: Every GGUF block-32 (`Q4_0`, `Q5_0`, `Q8_0`) and superblock-256 (`Q4_K`, `Q5_K`, `Q6_K`, `IQ4_XS`) tensor is losslessly homomorphic to a 32-element SIMD-aligned affine tile $w_i = s \cdot q_i + b$ (`Tile32_Affine4` at 20 bytes / 32 elements for 4-bit formats, `Tile32_Affine8` at 36 bytes / 32 elements for 5/6/8-bit and non-linear LUT formats).
+  - **Unified Parametric Contraction Inner Loop**: Eliminates bitplane stitching, 6-bit scale unpacking, and LUT indirection from GPU contractions in favor of a single parametric $B \in \{4, 8\}$ affine accumulation loop $\text{acc} \mathrel{+}= s \sum_{i=0}^{31} a_i q_i + b \sum_{i=0}^{31} a_i$ compatible with single-slot, multi-slot, and multi-export contraction groups.
+  - **In-Register 32-Lane Fast Walsh-Hadamard Butterfly (`llmopt_simd_fwht32`)**: Applies a 5-step `simd_shuffle_xor` orthogonal and self-inverse butterfly ($\tilde{H}_{32} = \frac{1}{\sqrt{32}} H_{32}$) in registers prior to `Tile32_Affine` KV-cache quantization, dispersing channel outliers across all 32 SIMD lanes while preserving inner products ($\langle \tilde{H}_{32} q, \tilde{H}_{32} k \rangle = \langle q, k \rangle$).
 
 ## 3.5. Static Memory Liveness Planning & Runtime Dispatch
 
@@ -399,3 +406,4 @@ separate claims; no row generalizes those properties to every benchmark run.[^sl
 [^sglang-radix-cache]: SGLang `RadixCache`, pinned to revision `d1af3c89233c475fc1bf11939d86787e6cddd58c`.
 [^sglang-mamba-radix-cache]: SGLang `MambaRadixCache`, pinned to the same revision.
 [^slice-31-receipt]: Full-model multi-campaign receipt in `bench/results/compiler-generalization-slice-31-2026-08-30.json`.
+[^canonical-tile32-affine]: Canonical `Tile32_Affine` Weight & KV Format and In-Register Hadamard Attention Rotation decision (`decisions/canonical-tile32-affine-and-hadamard-attention-rotation.md`).

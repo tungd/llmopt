@@ -50,6 +50,8 @@ DTYPE_TAGS = {
     "Q5_0": 12,
     "Q4_0": 13,
     "IQ4_XS": 14,
+    "Tile32_Affine4": 15,
+    "Tile32_Affine8": 16,
 }
 SPECIAL_EMBED_SCALE = "llmopt.gemma4.embed_scale"
 SPECIAL_FULL_INV_FREQ = "llmopt.gemma4.full_attention_inv_freq"

@@ -28,77 +28,19 @@ let add_cache_kernels program =
 
 let quant_common_source = Metal_quant_source.quant_common_source
 
-let q8_0_source = Metal_q8_0_source.q8_0_source
-
-let q5_0_source = Metal_q5_0_source.q5_0_source
-
 let q4_0_source = Metal_q4_0_source.q4_0_source
 
 let quant_qkv_params_source = Metal_quant_qkv_source.quant_qkv_params_source
 let q4_0_qkv_source = Metal_quant_qkv_source.q4_0_qkv_source
-let q5_0_qkv_source = Metal_quant_qkv_source.q5_0_qkv_source
 let q4_0_qkv_entries = Metal_quant_qkv_source.q4_0_qkv_entries
-let q5_0_qkv_entries = Metal_quant_qkv_source.q5_0_qkv_entries
 let quant_qkv_entries = Metal_quant_qkv_source.quant_qkv_entries
 let quant_qkv_source = Metal_quant_qkv_source.quant_qkv_source
 
 let block32_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_dequant_q8_0"
-      ~operation:Kernel_abi.Operation.Cast
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_dequant_q5_0"
-      ~operation:Kernel_abi.Operation.Cast
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_dequant_q4_0"
       ~operation:Kernel_abi.Operation.Cast
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_0_linear_f16"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
-      ~name:"llmopt_q8_0_linear_f16_m1_r2_sg4"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
-      ~name:"llmopt_q8_0_linear_f16_llama_mv"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_0_linear_f16_m2"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_0_linear_f16_splitk"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q8_0_linear_f16_splitk_m2"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q8_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q5_0_linear_f16"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q5_0_linear_f16_m2"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
-      ~name:"llmopt_q5_0_gated_linear_f16"
-      ~operation:Kernel_abi.Operation.Gated_linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
-      ~name:"llmopt_q5_0_linear_f16_llama_mv_add"
-      ~operation:Kernel_abi.Operation.Linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
-    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
-      ~name:"llmopt_q5_0_gated_linear_f16_llama_mv"
-      ~operation:Kernel_abi.Operation.Gated_linear
-      ~input_dtype:(Ir.Dtype.Quant Q5_0) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
@@ -158,42 +100,55 @@ let block32_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_q4_0_gated_linear_f16_m32"
       ~operation:Kernel_abi.Operation.Gated_linear
-      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16 ]
+      ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_linear_f16_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_linear_f16_x8"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_linear_f16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_linear_f16_m2"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_linear_f16_x8"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16 ]
 
 let add_block32_kernels program =
+  let affine4_src =
+    match Metal_quant_source.quant_source ~target:Target_hardware.default Ir.Dtype.Tile32_Affine4 with
+    | Ok src -> src
+    | Error err -> failwith err
+  in
+  let affine8_src =
+    match Metal_quant_source.quant_source ~target:Target_hardware.default Ir.Dtype.Tile32_Affine8 with
+    | Ok src -> src
+    | Error err -> failwith err
+  in
   Program.make
     ~source:
-      (Program.source program ^ quant_common_source ^ q8_0_source ^ q5_0_source ^ q4_0_source)
+      (Program.source program ^ quant_common_source ^ q4_0_source ^ affine4_src ^ affine8_src)
     ~kernels:(Program.kernels program @ block32_entries)
 
 let metal_header = Metal_source_common.metal_header
 
-let emit_dequant_q8_0 = Metal_quant_source.emit_dequant_q8_0
-let emit_dequant_q5_0 = Metal_quant_source.emit_dequant_q5_0
 let emit_dequant_q4_0 = Metal_quant_source.emit_dequant_q4_0
-let q4_k_source = Metal_q4_k_source.q4_k_source
-
-let q5_k_source = Metal_q5_k_source.q5_k_source
-
-let q6_k_source = Metal_q6_k_source.q6_k_source
-
-let iq4_xs_source = Metal_iq4_xs_source.iq4_xs_source
-
+let emit_tile32_affine4 = Metal_quant_source.emit_tile32_affine4
+let emit_tile32_affine8 = Metal_quant_source.emit_tile32_affine8
 let extract_kernel = Metal_quant_source.extract_kernel
-let legacy_quant_source = Metal_quant_source.legacy_quant_source
 let quant_source = Metal_quant_source.quant_source
-let quant_linear_add_source = Metal_quant_source.quant_linear_add_source
-let kquant_entries = Metal_quant_source.kquant_entries
-
-let add_kquant_kernels program =
-  Program.make
-    ~source:
-      (Program.source program ^ quant_common_source ^ q4_k_source ^ q5_k_source ^ q6_k_source)
-    ~kernels:(Program.kernels program @ kquant_entries)
-
-let emit_dequant_q4_k = Metal_quant_source.emit_dequant_q4_k
-let emit_dequant_q5_k = Metal_quant_source.emit_dequant_q5_k
-let emit_dequant_q6_k = Metal_quant_source.emit_dequant_q6_k
 let linear_f16_source = Metal_tensor_source.linear_f16_source
 let linear_f16_entries = Metal_tensor_source.linear_f16_entries
 let linear_f16_bf16_source = Metal_tensor_source.linear_f16_bf16_source
@@ -323,19 +278,17 @@ let attention_tactic_entries tactics =
 let quant_tactic_entries ~quant_types tactics =
   let selected_names = List.map (fun (_, tactic) -> Tactic.name tactic) tactics in
   let generic_name = function
-    | Ir.Dtype.Q8_0 -> "llmopt_q8_0_linear_f16"
-    | Ir.Dtype.Q4_K -> "llmopt_q4_k_linear_f16"
-    | Ir.Dtype.Q5_K -> "llmopt_q5_k_linear_f16"
-    | Ir.Dtype.Q6_K -> "llmopt_q6_k_linear_f16"
-    | Ir.Dtype.Q5_0 -> "llmopt_q5_0_linear_f16"
+    | Ir.Dtype.Tile32_Affine4 -> "llmopt_tile32_affine4_linear_f16"
+    | Ir.Dtype.Tile32_Affine8 -> "llmopt_tile32_affine8_linear_f16"
     | Ir.Dtype.Q4_0 -> "llmopt_q4_0_linear_f16"
-    | Ir.Dtype.IQ4_XS -> "llmopt_iq4_xs_linear_f16"
+    | Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
+    | Ir.Dtype.Q5_0 | Ir.Dtype.IQ4_XS -> ""
   in
   let generic_names =
     tactics |> List.map (fun (quant, _) -> generic_name quant)
     |> List.sort_uniq String.compare
   in
-  block32_entries @ kquant_entries
+  block32_entries
   |> List.filter (fun entry ->
          match Kernel_abi.Entry.input_dtype entry with
          | Ir.Dtype.Quant quant when List.mem quant quant_types ->
@@ -348,11 +301,6 @@ let quant_tactic_entries ~quant_types tactics =
              || String.ends_with ~suffix:"_m16_add" (Kernel_abi.Entry.name entry)
              || String.ends_with ~suffix:"_m32" (Kernel_abi.Entry.name entry)
              || String.ends_with ~suffix:"_m32_add" (Kernel_abi.Entry.name entry)
-             || List.mem (Kernel_abi.Entry.name entry)
-                  [ "llmopt_q5_0_linear_f16_llama_mv_add";
-                    "llmopt_q8_0_linear_f16_llama_mv";
-                    "llmopt_q4_k_linear_f16_llama_mv_add";
-                    "llmopt_q6_k_linear_f16_llama_mv_add" ]
          | _ -> false)
 
 let quant_linear_add_entry (quant, tactic) =
@@ -423,19 +371,9 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     else
       quant_qkv_params_source
       ^ (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_source else "")
-      ^ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then
-           Metal_quant_qkv_source.q5_0_qkv_homogeneous_source
-           ^ (if List.mem Ir.Dtype.Q8_0 quant_types then
-                Metal_quant_qkv_source.q5_0_qkv_mixed_source else "")
-         else "")
   in
   let quant_qkv_entries =
-    (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_entries else [])
-    @ (if List.mem Ir.Dtype.Q5_0 quant_qkv_types then
-         Metal_quant_qkv_source.q5_0_qkv_homogeneous_entries
-         @ (if List.mem Ir.Dtype.Q8_0 quant_types then
-              Metal_quant_qkv_source.q5_0_qkv_mixed_entries else [])
-       else [])
+    if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_entries else []
   in
   let quant_add_tactics =
     quant_linear_add_tactics ~target graph @ region_quant_add_tactics
@@ -449,62 +387,22 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     | Ok schema -> schema
     | Error err -> failwith (Block_schema.Error.to_string err)
   in
-  let q8_0_twin_schema =
-    match
-      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q8_0)
-    with
-    | Ok schema -> schema
-    | Error err -> failwith (Block_schema.Error.to_string err)
-  in
-  let q5_0_twin_schema =
-    match
-      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q5_0)
-    with
-    | Ok schema -> schema
-    | Error err -> failwith (Block_schema.Error.to_string err)
-  in
-  let q4_k_twin_schema =
-    match
-      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q4_K)
-    with
-    | Ok schema -> schema
-    | Error err -> failwith (Block_schema.Error.to_string err)
-  in
-  let q5_k_twin_schema =
-    match
-      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q5_K)
-    with
-    | Ok schema -> schema
-    | Error err -> failwith (Block_schema.Error.to_string err)
-  in
-  let q6_k_twin_schema =
-    match
-      Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Q6_K)
-    with
-    | Ok schema -> schema
-    | Error err -> failwith (Block_schema.Error.to_string err)
-  in
-  let iq4_xs_twin_schema =
+  let tile32_affine4_schema =
     match
       Block_schema.of_storage
-        (Ir.Linear_storage.Block_quantized Ir.Dtype.IQ4_XS)
+        (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine4)
     with
     | Ok schema -> schema
     | Error err -> failwith (Block_schema.Error.to_string err)
   in
-  (* G4P12-04d-A2 + G4P12-05: the _add twins are all structural.  Q4_0/
-     Q8_0/Q5_0 and the superblock families' generic/_m2 twins (and IQ4_XS
-     _m2) plus the K families' m2_x4 twins (05-2) are emitted by
-     Metal_block_codegen (parametric-style, double-rounding store); the Q4_0
-     m4/m16/m32 twins ship in the unconditional q4_0_linear family text.
-     The superblock families serve the generic tile for every m <> 2
-     Linear-add shape and the m2_x4 four-column tile at m = 2 (parametric
-     since 05-2; llama m2_x4 bodies deleted); IQ4_XS serves the plain _m2
-     twin at m = 2.  Q4_0 x8/x4 bases never had twins and have no digest
-     route for graph-level Linear_add nodes, so they fail loudly with a
-     clear Error (the retired text-patcher raised Invalid_argument inside
-     extract_kernel instead).  The legacy shim below is the defensive
-     fallback only. *)
+  let tile32_affine8_schema =
+    match
+      Block_schema.of_storage
+        (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine8)
+    with
+    | Ok schema -> schema
+    | Error err -> failwith (Block_schema.Error.to_string err)
+  in
   let quant_add_source_result =
     quant_add_tactics
     |> List.fold_left
@@ -524,101 +422,51 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    q4_0_digest_schema
                in
                Ok (source ^ kernel)
-           | Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16" ->
+           | Ir.Dtype.Tile32_Affine4, "llmopt_tile32_affine4_linear_f16" ->
                let* kernel =
-                 Metal_block_codegen.q8_0_linear_add_kernel
-                   ~name:"llmopt_q8_0_linear_f16_add" ~target q8_0_twin_schema
+                 Metal_block_codegen.tile32_affine_linear_add_kernel
+                   ~name:"llmopt_tile32_affine4_linear_f16_add" ~target
+                   tile32_affine4_schema
                in
                Ok (source ^ kernel)
-           | Ir.Dtype.Q8_0, "llmopt_q8_0_linear_f16_m2" ->
+           | Ir.Dtype.Tile32_Affine4, "llmopt_tile32_affine4_linear_f16_m2" ->
                let* kernel =
-                 Metal_block_codegen.q8_0_m2_add_kernel
-                   ~name:"llmopt_q8_0_linear_f16_m2_add" ~target
-                   q8_0_twin_schema
+                 Metal_block_codegen.tile32_affine_m2_add_kernel
+                   ~name:"llmopt_tile32_affine4_linear_f16_m2_add" ~target
+                   tile32_affine4_schema
                in
                Ok (source ^ kernel)
-           | Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16" ->
+           | Ir.Dtype.Tile32_Affine8, "llmopt_tile32_affine8_linear_f16" ->
                let* kernel =
-                 Metal_block_codegen.q5_0_linear_add_kernel
-                   ~name:"llmopt_q5_0_linear_f16_add" ~target q5_0_twin_schema
+                 Metal_block_codegen.tile32_affine_linear_add_kernel
+                   ~name:"llmopt_tile32_affine8_linear_f16_add" ~target
+                   tile32_affine8_schema
                in
                Ok (source ^ kernel)
-           | Ir.Dtype.Q5_0, "llmopt_q5_0_linear_f16_m2" ->
+           | Ir.Dtype.Tile32_Affine8, "llmopt_tile32_affine8_linear_f16_m2" ->
                let* kernel =
-                 Metal_block_codegen.q5_0_m2_add_kernel
-                   ~name:"llmopt_q5_0_linear_f16_m2_add" ~target
-                   q5_0_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16" ->
-               let* kernel =
-                 Metal_block_codegen.q4_k_linear_add_kernel
-                   ~name:"llmopt_q4_k_linear_f16_add" ~target q4_k_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16" ->
-               let* kernel =
-                 Metal_block_codegen.q5_k_linear_add_kernel
-                   ~name:"llmopt_q5_k_linear_f16_add" ~target q5_k_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16" ->
-               let* kernel =
-                 Metal_block_codegen.q6_k_linear_add_kernel
-                   ~name:"llmopt_q6_k_linear_f16_add" ~target q6_k_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.IQ4_XS, "llmopt_iq4_xs_linear_f16" ->
-               let* kernel =
-                 Metal_block_codegen.iq4_xs_linear_add_kernel
-                   ~name:"llmopt_iq4_xs_linear_f16_add" ~target
-                   iq4_xs_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.IQ4_XS, "llmopt_iq4_xs_linear_f16_m2" ->
-               let* kernel =
-                 Metal_block_codegen.iq4_xs_m2_add_kernel
-                   ~name:"llmopt_iq4_xs_linear_f16_m2_add" ~target
-                   iq4_xs_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.Q4_K, "llmopt_q4_k_linear_f16_m2_x4" ->
-               let* kernel =
-                 Metal_block_codegen.q4_k_m2_x4_add_kernel
-                   ~name:"llmopt_q4_k_linear_f16_m2_x4_add" ~target
-                   q4_k_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.Q5_K, "llmopt_q5_k_linear_f16_m2_x4" ->
-               let* kernel =
-                 Metal_block_codegen.q5_k_m2_x4_add_kernel
-                   ~name:"llmopt_q5_k_linear_f16_m2_x4_add" ~target
-                   q5_k_twin_schema
-               in
-               Ok (source ^ kernel)
-           | Ir.Dtype.Q6_K, "llmopt_q6_k_linear_f16_m2_x4" ->
-               let* kernel =
-                 Metal_block_codegen.q6_k_m2_x4_add_kernel
-                   ~name:"llmopt_q6_k_linear_f16_m2_x4_add" ~target
-                   q6_k_twin_schema
+                 Metal_block_codegen.tile32_affine_m2_add_kernel
+                   ~name:"llmopt_tile32_affine8_linear_f16_m2_add" ~target
+                   tile32_affine8_schema
                in
                Ok (source ^ kernel)
            | Ir.Dtype.Q4_0, base
              when String.ends_with ~suffix:"_m4" base
                   || String.ends_with ~suffix:"_m16" base
                   || String.ends_with ~suffix:"_m32" base ->
-               (* the q4_0_linear zoo text already carries these twins
-                  unconditionally for every Q4_0 program *)
                Ok source
-           | Ir.Dtype.Q4_0, base ->
+           | (Ir.Dtype.Q4_0 | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8), base ->
                Error
                  (Printf.sprintf
-                    "Metal lower: Q4_0 graph-level Linear-add on the %s tile \
-                     has no legacy _add twin (x8/x4 twins never existed); \
-                     lower it as a fused Linear_epilogue region so the digest \
-                     route serves it"
-                    base)
-           | _ -> Ok (source ^ quant_linear_add_source ~target (quant, tactic)))
+                    "Metal lower: %s graph-level Linear-add on the %s tile \
+                     has no legacy _add twin; lower it as a fused \
+                     Linear_epilogue region so the digest route serves it"
+                    (Ir.Dtype.quant_to_string quant) base)
+           | _ ->
+               Error
+                 (Printf.sprintf
+                    "legacy GGUF format %s must be transcoded to Tile32_Affine{4,8} before Metal codegen"
+                    (Ir.Dtype.quant_to_string quant)))
          (Ok "")
   in
   let region_quant_digest_source_result =
@@ -644,22 +492,32 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            match quant, q4_0_digest_emitter base with
            | Ir.Dtype.Q4_0, Some emit ->
                let* kernel =
-                 (* The schema-level emitters, like the other parametric
-                    emitters, expect an already-canonicalized epilogue; the
-                    retired splice canonicalized internally, so canonicalize
-                    here to keep byte-identical output.  kernel_name is still
-                    derived from the tactic epilogue so the ABI entry name
-                    registered below agrees with the emitted kernel text. *)
                  emit ~name:kernel_name
                    ~epilogue:(Epilogue.canonicalize epilogue) ~target
                    q4_0_digest_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine4, _ when String.ends_with ~suffix:"_x8" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine4_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine8, _ when String.ends_with ~suffix:"_x8" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine8_schema
                in
                Ok (source ^ kernel)
            | _ ->
                Error
                  (Printf.sprintf
                     "Metal lower: digest epilogue emission is defined only for \
-                     Q4_0 x16/x8/x4/m16/m32 decode regions (got %s serving %s)"
+                     Tile32_Affine{4,8} x8 and Q4_0 x16/x8/x4/m16/m32 decode regions (got %s serving %s)"
                     (Ir.Dtype.quant_to_string quant) base))
          (Ok "")
   in
@@ -693,36 +551,22 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                  emit ~name:kernel_name ~num_slots
                    ~epilogue:canonical_epilogue
                    ~target q4_0_digest_schema
-             | Ir.Dtype.Q8_0 ->
-                 Metal_block_codegen.q8_0_multi_linear_kernel
+             | Ir.Dtype.Tile32_Affine4 ->
+                 Metal_block_codegen.tile32_affine_multi_linear_f16_x8_kernel
                    ~name:kernel_name ~num_slots
                    ~epilogue:canonical_epilogue
-                   ~target q8_0_twin_schema
-             | Ir.Dtype.Q5_0 ->
-                 Metal_block_codegen.q5_0_multi_linear_kernel
+                   ~target tile32_affine4_schema
+             | Ir.Dtype.Tile32_Affine8 ->
+                 Metal_block_codegen.tile32_affine_multi_linear_f16_x8_kernel
                    ~name:kernel_name ~num_slots
                    ~epilogue:canonical_epilogue
-                   ~target q5_0_twin_schema
-             | Ir.Dtype.Q4_K ->
-                 Metal_block_codegen.q4_k_multi_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogue:canonical_epilogue
-                   ~target q4_k_twin_schema
-             | Ir.Dtype.Q5_K ->
-                 Metal_block_codegen.q5_k_multi_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogue:canonical_epilogue
-                   ~target q5_k_twin_schema
-             | Ir.Dtype.Q6_K ->
-                 Metal_block_codegen.q6_k_multi_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogue:canonical_epilogue
-                   ~target q6_k_twin_schema
-             | Ir.Dtype.IQ4_XS ->
-                 Metal_block_codegen.iq4_xs_multi_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogue:canonical_epilogue
-                   ~target iq4_xs_twin_schema
+                   ~target tile32_affine8_schema
+             | Ir.Dtype.Q8_0 | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K
+             | Ir.Dtype.Q6_K | Ir.Dtype.IQ4_XS ->
+                 Error
+                   (Printf.sprintf
+                      "legacy GGUF format %s must be transcoded to Tile32_Affine{4,8} before Metal codegen"
+                      (Ir.Dtype.quant_to_string quant))
            in
            Ok (source ^ kernel))
          (Ok "")
@@ -744,7 +588,6 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            let base = Tactic.name tactic in
            let kernel_name =
              Contraction_group.algebraic_kernel_name ~base (List.hd epilogues)
-             (* TODO G4P12-07: use a proper multi-export digest name *)
            in
            let canonical_epilogues =
              List.map Applicative_expr.canonicalize epilogues
@@ -760,36 +603,22 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                  emit ~name:kernel_name ~num_slots
                    ~epilogues:canonical_epilogues
                    ~target q4_0_digest_schema
-             | Ir.Dtype.Q8_0 ->
-                 Metal_block_codegen.q8_0_multi_export_linear_kernel
+             | Ir.Dtype.Tile32_Affine4 ->
+                 Metal_block_codegen.tile32_affine_multi_export_linear_f16_x8_kernel
                    ~name:kernel_name ~num_slots
                    ~epilogues:canonical_epilogues
-                   ~target q8_0_twin_schema
-             | Ir.Dtype.Q5_0 ->
-                 Metal_block_codegen.q5_0_multi_export_linear_kernel
+                   ~target tile32_affine4_schema
+             | Ir.Dtype.Tile32_Affine8 ->
+                 Metal_block_codegen.tile32_affine_multi_export_linear_f16_x8_kernel
                    ~name:kernel_name ~num_slots
                    ~epilogues:canonical_epilogues
-                   ~target q5_0_twin_schema
-             | Ir.Dtype.Q4_K ->
-                 Metal_block_codegen.q4_k_multi_export_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogues:canonical_epilogues
-                   ~target q4_k_twin_schema
-             | Ir.Dtype.Q5_K ->
-                 Metal_block_codegen.q5_k_multi_export_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogues:canonical_epilogues
-                   ~target q5_k_twin_schema
-             | Ir.Dtype.Q6_K ->
-                 Metal_block_codegen.q6_k_multi_export_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogues:canonical_epilogues
-                   ~target q6_k_twin_schema
-             | Ir.Dtype.IQ4_XS ->
-                 Metal_block_codegen.iq4_xs_multi_export_linear_kernel
-                   ~name:kernel_name ~num_slots
-                   ~epilogues:canonical_epilogues
-                   ~target iq4_xs_twin_schema
+                   ~target tile32_affine8_schema
+             | Ir.Dtype.Q8_0 | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K
+             | Ir.Dtype.Q6_K | Ir.Dtype.IQ4_XS ->
+                 Error
+                   (Printf.sprintf
+                      "legacy GGUF format %s must be transcoded to Tile32_Affine{4,8} before Metal codegen"
+                      (Ir.Dtype.quant_to_string quant))
            in
            Ok (source ^ kernel))
          (Ok "")
@@ -946,5 +775,4 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
 let emit ?target graph = Result.map Program.source (lower ?target graph)
 
 let emit_parametric_w4a16_linear = Metal_parametric_codegen.emit_parametric_w4a16_linear
-let emit_parametric_q4_k_linear = Metal_parametric_codegen.emit_parametric_q4_k_linear
 let emit_simdgroup_matrix_gemm = Metal_parametric_codegen.emit_simdgroup_matrix_gemm

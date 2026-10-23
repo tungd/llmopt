@@ -976,7 +976,8 @@ type linear_info = {
 
 let supported_quant = function
   | Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
-  | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS -> true
+  | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS
+  | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8 -> true
 
 let linear_info assignment =
   match Ir.node_op (Assignment.source_node assignment),

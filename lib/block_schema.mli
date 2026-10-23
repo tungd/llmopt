@@ -183,6 +183,7 @@ end
 type t
 
 val of_storage : Ir.Linear_storage.layout -> (t, Error.t) result
+val tile32_affine_schema : bits:int -> (t, Error.t) result
 
 val storage : t -> Ir.Linear_storage.layout
 val quant_type : t -> Ir.Dtype.quant_type option

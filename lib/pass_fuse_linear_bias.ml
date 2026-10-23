@@ -67,7 +67,8 @@ let quant_linear_info node =
       (match Ir.Value.dtype weight with
       | Ir.Dtype.Quant
           (Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
-          | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS) ->
+          | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS
+          | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8) ->
           Some (m, n, k, output, input, weight)
       | _ -> None)
   | _ -> None

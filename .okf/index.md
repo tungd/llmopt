@@ -53,12 +53,18 @@ not evidence of a second supported serving backend.
 * [Parametric Epilogue Inlining and Hardware Prefill Tiling](decisions/parametric-epilogues-and-hardware-tiling.md) - algebraic epilogue fusion replacing 2,500 lines of AST matchers, plus bank-swizzled simdgroup_matrix staging for prefill GEMM.
 * [Constructive Assignment Lowering and AOT GPU Command-Queue Compilation](decisions/constructive-primitive-loop-lowering-and-gpu-queue-compilation.md) - one assignment/dependency/effect/cost model for separate fusion-region and antichain-stage formation, target-aware quant tactics, and AOT GPU queue solidification.
 * [Batched Prefill GEMM and Pipelined Queue Execution](decisions/gemma4-batched-prefill-and-pipelined-queue.md) - M-tiled prefill GEMM (M >= 4) eliminating redundant weight streaming, and pipelined depth-2 queue execution eliminating host-GPU driver bubbles while rejecting bespoke kernel-zoo proliferation.
+* [Applicative IR, Affine Coordinate Category, and Contraction Epilogue Monoid](decisions/applicative-ir-coordinate-category-and-epilogue-monoid.md) - algebraic coordinate morphisms, applicative pointwise trees, and epilogue monoid substitution.
+* [Reduction-Phase Semantics for RMSNorm/RoPE Within Typed Contraction Groups](decisions/reduction-phase-semantics-for-normalization.md) - explicit reduction-phase boundary and numerical contracts alongside typed contraction groups.
+* [Canonical Tile32_Affine Storage and In-Register Hadamard Attention Rotation](decisions/canonical-tile32-affine-and-hadamard-attention-rotation.md) - mathematical reduction of all GGUF block formats via lossless offline transcoding into `Tile32_Affine{4,8}` plus in-register Walsh-Hadamard butterfly rotation (`simd_fwht32`) for unified affine KV caching.
 
 ## Prior art
 
 * [TensorRT-LLM](prior-art/tensorrt-llm.md) - the same AOT-engine bet, industrialized: build-time measured autotuning, AOT shape profiles, and hand-written per-architecture hot kernels.
 * [Modular MAX and Mojo](prior-art/modular-max-mojo.md) - the same portability goal solved in the language: parametric kernel bodies specialized at compile time across CUDA, ROCm, and Metal.
 * [Ahrefs OCANNL & arrayjit](prior-art/ocannl-arrayjit.md) - loop-nest optimization, tiling, and multi-backend compiler analysis.
+* [Apple Core AI](prior-art/apple-coreai.md) - PyTorch-to-Apple-Silicon AOT export via proprietary IR and pre-conversion compression.
+* [CloudRift Emmy](prior-art/cloudrift-emmy.md) - Six-IR rewrite pipeline (`Torch` to `Tile IR` to `CUDA`), SP-MCTS schedule autotuning, and Rust runtime.
+* [EXL3, QuaRot, and SpinQuant](prior-art/exl3-quarot-hadamard.md) - Hadamard incoherence rotation and unified low-bit quantization analysis.
 
 ## Experiments and benchmarks
 

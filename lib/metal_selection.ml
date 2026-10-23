@@ -339,7 +339,8 @@ let has_quant_linear graph =
              Some output ) ->
              (match Ir.Value.dtype weight with
              | Ir.Dtype.Quant
-                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | IQ4_XS) ->
+                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | IQ4_XS
+                 | Tile32_Affine4 | Tile32_Affine8) ->
                  Ir.Value.dtype output = Ir.Dtype.Float16
              | _ -> false)
          | ( Ir.Op.Linear_add _,
@@ -347,7 +348,8 @@ let has_quant_linear graph =
              Some output ) ->
              (match Ir.Value.dtype weight with
              | Ir.Dtype.Quant
-                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | IQ4_XS) ->
+                 (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | IQ4_XS
+                 | Tile32_Affine4 | Tile32_Affine8) ->
                  Ir.Value.dtype output = Ir.Dtype.Float16
              | _ -> false)
          | ( Ir.Op.Gated_linear _,
@@ -393,6 +395,10 @@ let quant_linear_tactics ~target graph =
 
 let graph_quant_types graph =
   Ir.Graph.nodes graph
+  |> List.filter (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Primitive Ir.Primitive.Embedding -> false
+         | _ -> true)
   |> List.concat_map Ir.node_inputs
   |> List.filter_map (fun value ->
          match Ir.Value.dtype value with
@@ -435,15 +441,8 @@ let without_region_nodes graph regions =
 
 let quant_add_twin_servable (storage : Ir.Dtype.quant_type)
     (tactic : Tactic.t) =
-  (* A folded region's linear is served by the legacy textual _add twin only
-     when the static kernel zoo (legacy_quant_source) really contains the base
-     kernel the textual rename rewrites.  The Q4_0 x8/x4 decode kernels exist
-     only in the family source (quant_source), not in the static zoo, so
-     regions whose costed tactic is one of them have no legacy twin and must
-     instead be served by a digest-keyed emitter kernel; every other
-     quantization keeps its pre-existing twin handling untouched. *)
   match storage with
-  | Ir.Dtype.Q4_0 ->
+  | Ir.Dtype.Q4_0 | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8 ->
       let name = Tactic.name tactic in
       not
         (String.ends_with ~suffix:"_x16" name

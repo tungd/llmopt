@@ -65,8 +65,47 @@ val head_count_kv : t -> int option
 val chat_template : t -> string option
 
 module Transcode : sig
+  val tile32_affine4_block_bytes : int
+  val tile32_affine8_block_bytes : int
+
   val iq4_xs_to_q5_k : bytes -> (bytes, string) result
+
+  val q4_0_to_tile32_affine4 : bytes -> (bytes, string) result
+  val q4_k_to_tile32_affine4 : bytes -> (bytes, string) result
+  val q8_0_to_tile32_affine8 : bytes -> (bytes, string) result
+  val q5_0_to_tile32_affine8 : bytes -> (bytes, string) result
+  val q5_k_to_tile32_affine8 : bytes -> (bytes, string) result
+  val q6_k_to_tile32_affine8 : bytes -> (bytes, string) result
+  val iq4_xs_to_tile32_affine8 : bytes -> (bytes, string) result
+
+  val to_tile32_affine :
+    Weight_archive.Dtype.quant_type ->
+    bytes ->
+    ([ `Affine4 of bytes | `Affine8 of bytes ], string) result
+
+  val dequantize_tile32_affine4 : bytes -> (float array, string) result
+  val dequantize_tile32_affine8 : bytes -> (float array, string) result
+  val dequantize_gguf :
+    Weight_archive.Dtype.quant_type -> bytes -> (float array, string) result
+
+  val fwht32 : float array -> (float array, string) result
+  val quantize_tile32_affine8 : float array -> (bytes, string) result
+  val quantize_tile32_affine4 : float array -> (bytes, string) result
+
+  val bake_tensor_to_tile32_affine :
+    ?rotate_fwht32:bool ->
+    ?prefer_4bit:bool ->
+    Weight_archive.Dtype.quant_type ->
+    bytes ->
+    (Weight_archive.Dtype.quant_type * bytes, string) result
 end
 
 val to_weight_archive : t -> path:string -> (Weight_archive.t, string) result
 val of_file_as_archive : string -> (Weight_archive.t, string) result
+val write_tile32_affine_archive :
+  ?rotate_fwht32:bool ->
+  ?prefer_4bit:bool ->
+  source_path:string ->
+  destination_path:string ->
+  unit ->
+  (Weight_archive.t, string) result

@@ -68,14 +68,13 @@ let () =
   Printf.printf "  Device: %s\n\n%!" (device_name ctx);
   
   let metal_code =
-    "#include <metal_stdlib>\n#include <metal_matrix>\nusing namespace metal;\n"
-    ^ {|
-struct QuantBlock32Params { uint total_blocks; };
-struct QuantBlock256Params { uint total_superblocks; };
-struct QuantLinearParams { uint m; uint n; uint k; uint has_bias; };
-|}
-    ^ Metal.q8_0_source ^ Metal.q5_0_source ^ Metal.q4_0_source
-    ^ Metal.q4_k_source ^ Metal.q5_k_source ^ Metal.q6_k_source
+    Metal.emit_dequant_q4_0 ()
+    ^ (match Metal_quant_source.quant_source ~target:Target_hardware.default Ir.Dtype.Tile32_Affine4 with
+       | Ok s -> s
+       | Error e -> failwith e)
+    ^ (match Metal_quant_source.quant_source ~target:Target_hardware.default Ir.Dtype.Tile32_Affine8 with
+       | Ok s -> s
+       | Error e -> failwith e)
   in
   let tmp_metal = Filename.temp_file "llmopt_kernels" ".metal" in
   let tmp_metallib = Filename.temp_file "llmopt_kernels" ".metallib" in
@@ -92,9 +91,7 @@ struct QuantLinearParams { uint m; uint n; uint k; uint has_bias; };
   
   Printf.printf "  --- Individual Single-Projection GEMV Latencies ---\n";
   benchmark_quant_kernel ~ctx ~lib ~kernel_name:"llmopt_q4_0_linear_f16" ~k:1024 ~n:4608 ~bytes_per_row:(1024 / 32 * 18) ~quant_name:"Q4_0";
-  benchmark_quant_kernel ~ctx ~lib ~kernel_name:"llmopt_q4_k_linear_f16" ~k:1024 ~n:4608 ~bytes_per_row:(1024 / 256 * 144) ~quant_name:"Q4_K";
-  benchmark_quant_kernel ~ctx ~lib ~kernel_name:"llmopt_q5_k_linear_f16" ~k:1024 ~n:4608 ~bytes_per_row:(1024 / 256 * 176) ~quant_name:"Q5_K";
-  benchmark_quant_kernel ~ctx ~lib ~kernel_name:"llmopt_q6_k_linear_f16" ~k:1024 ~n:4608 ~bytes_per_row:(1024 / 256 * 210) ~quant_name:"Q6_K";
-  benchmark_quant_kernel ~ctx ~lib ~kernel_name:"llmopt_q8_0_linear_f16" ~k:1024 ~n:4608 ~bytes_per_row:(1024 / 32 * 34) ~quant_name:"Q8_0";
+  benchmark_quant_kernel ~ctx ~lib ~kernel_name:"llmopt_tile32_affine4_linear_f16" ~k:1024 ~n:4608 ~bytes_per_row:(1024 / 32 * 20) ~quant_name:"Tile32_A4";
+  benchmark_quant_kernel ~ctx ~lib ~kernel_name:"llmopt_tile32_affine8_linear_f16" ~k:1024 ~n:4608 ~bytes_per_row:(1024 / 32 * 36) ~quant_name:"Tile32_A8";
 
   Printf.printf "\n=================================================================\n%!"
