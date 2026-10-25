@@ -157,12 +157,60 @@ let linear_f16_f32_source =
   ^ "  }\n"
   ^ "}\n\n"
 
+  ^ "kernel void llmopt_linear_f16_f32_batched(\n"
+  ^ "    device const half* input [[buffer(0)]],\n"
+  ^ "    device const float* weight [[buffer(1)]],\n"
+  ^ "    device half* output [[buffer(2)]],\n"
+  ^ "    constant LinearF32WeightParams& params [[buffer(3)]],\n"
+  ^ "    uint gid [[thread_position_in_grid]],\n"
+  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
+  ^ "  const uint simd_idx = gid >> 5u;\n"
+  ^ "  const uint m_tiles = (params.m + 7u) >> 3u;\n"
+  ^ "  const uint total_simd = m_tiles * params.n;\n"
+  ^ "  if (simd_idx >= total_simd) return;\n"
+  ^ "  const uint m_tile = simd_idx / params.n;\n"
+  ^ "  const uint column = simd_idx - m_tile * params.n;\n"
+  ^ "  const uint row_base = m_tile << 3u;\n"
+  ^ "  const uint rows = min(8u, params.m - row_base);\n"
+  ^ "  const uint weight_base = column * params.k;\n"
+  ^ "  device const float4* w4 = (device const float4*)(weight + weight_base);\n"
+  ^ "  const uint k4 = params.k >> 2u;\n"
+  ^ "  float acc[8] = {0.0f};\n"
+  ^ "  device const half4* in_row[8];\n"
+  ^ "  #pragma unroll\n"
+  ^ "  for (uint r = 0u; r < 8u; ++r) {\n"
+  ^ "    in_row[r] = (device const half4*)(input + (row_base + (r < rows ? r : 0u)) * params.k);\n"
+  ^ "  }\n"
+  ^ "  for (uint idx = lane; idx < k4; idx += 32u) {\n"
+  ^ "    const float4 w = w4[idx];\n"
+  ^ "    #pragma unroll\n"
+  ^ "    for (uint r = 0u; r < 8u; ++r) {\n"
+  ^ "      if (r < rows) {\n"
+  ^ "        const half4 in_v = in_row[r][idx];\n"
+  ^ "        acc[r] += float(in_v.x) * w.x + float(in_v.y) * w.y + float(in_v.z) * w.z + float(in_v.w) * w.w;\n"
+  ^ "      }\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "  #pragma unroll\n"
+  ^ "  for (uint r = 0u; r < 8u; ++r) {\n"
+  ^ "    if (r < rows) {\n"
+  ^ "      const float val = simd_sum(acc[r]);\n"
+  ^ "      if (lane == 0u) {\n"
+  ^ "        output[(row_base + r) * params.n + column] = half(val);\n"
+  ^ "      }\n"
+  ^ "    }\n"
+  ^ "  }\n"
+  ^ "}\n\n"
+
 let linear_f16_f32_entries =
   [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_linear_f16_f32" ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_linear_f16_f32_m2_n2" ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_linear_f16_f32_batched" ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16 ]
 
 let replace_first ~needle ~replacement source =

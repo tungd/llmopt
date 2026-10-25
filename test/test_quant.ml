@@ -773,6 +773,12 @@ let run () =
           schema
         |> Result.get_ok
       in
+      let simd_epi_src =
+        Metal_block_codegen.tile32_affine_linear_f16_simd_kernel
+          ~name:("llmopt_" ^ label ^ "_simd_silu") ~epilogue:Epilogue.silu ~target
+          schema
+        |> Result.get_ok
+      in
       let multi_src =
         Metal_block_codegen.tile32_affine_multi_linear_f16_x8_kernel
           ~name:("llmopt_" ^ label ^ "_swiglu_x8") ~epilogue:swiglu_epi
@@ -786,11 +792,11 @@ let run () =
         |> Result.get_ok
       in
       let combined_msl =
-        msl_preamble ^ linear_src ^ qkv_src ^ epi_src ^ m16_epi_src ^ m32_epi_src ^ multi_src ^ multi_export_src
+        msl_preamble ^ linear_src ^ qkv_src ^ epi_src ^ m16_epi_src ^ m32_epi_src ^ simd_epi_src ^ multi_src ^ multi_export_src
       in
       expect
         (compile_msl_string combined_msl)
-        (label ^ " unified parametric single/m16/m32/qkv/multi/multi-export MSL compiles cleanly with xcrun metal"))
+        (label ^ " unified parametric single/m16/m32/simd/qkv/multi/multi-export MSL compiles cleanly with xcrun metal"))
     [ ("tile32_affine4", affine4_schema); ("tile32_affine8", affine8_schema) ];
 
   (* In-Register 32-Lane Fast Walsh-Hadamard Butterfly & Tile32_Affine KV Cache *)

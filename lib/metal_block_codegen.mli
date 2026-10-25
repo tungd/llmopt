@@ -132,6 +132,24 @@ val tile32_affine_linear_f16_m32_add_kernel :
   Block_schema.t ->
   (string, string) result
 
+val tile32_affine_linear_f16_simd_kernel :
+  ?name:string ->
+  ?epilogue:Epilogue.t ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val tile32_affine_linear_f16_simd_add_kernel :
+  name:string ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val tile32_affine_qkv_linear_f16_simd_kernel :
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
 val tile32_affine_qkv :
   target:Target_hardware.t ->
   Block_schema.t ->

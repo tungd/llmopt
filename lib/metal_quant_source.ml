@@ -142,6 +142,12 @@ struct MoeTopkParams {
   uint norm_topk_prob;
 };
 
+struct MoeSortParams {
+  uint tokens;
+  uint num_experts;
+  uint top_k;
+};
+
 struct MoeGateUpParams {
   uint tokens;
   uint top_k;
@@ -534,6 +540,372 @@ kernel void llmopt_tile32_affine8_moe_down_reduce_f16_x8(
     if (base_col + 7u < params.hidden_dim) out_p[7] = half(tot7);
   }
 }
+
+kernel void llmopt_moe_sort_and_bin(
+    device const uint* topk_indices [[buffer(0)]],
+    device uint* sorted_tokens [[buffer(1)]],
+    device uint* sorted_p [[buffer(2)]],
+    device uint* sorted_experts [[buffer(3)]],
+    device uint* expert_offsets [[buffer(4)]],
+    constant MoeSortParams& params [[buffer(5)]],
+    uint tid [[thread_index_in_threadgroup]]) {
+  threadgroup atomic_uint counts[64];
+  threadgroup uint offsets[65];
+  threadgroup atomic_uint write_pos[64];
+
+  const uint P = params.tokens * params.top_k;
+  const uint E = params.num_experts;
+
+  if (tid < 64) {
+    atomic_store_explicit(&counts[tid], 0, memory_order_relaxed);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  for (uint i = tid; i < P; i += 64) {
+    uint exp = topk_indices[i];
+    if (exp < E && exp < 64) {
+      atomic_fetch_add_explicit(&counts[exp], 1, memory_order_relaxed);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (tid < 32) {
+    uint c0 = atomic_load_explicit(&counts[tid], memory_order_relaxed);
+    uint c1 = atomic_load_explicit(&counts[tid + 32], memory_order_relaxed);
+    uint s0 = simd_prefix_exclusive_sum(c0);
+    uint tot0 = simd_sum(c0);
+    uint s1 = simd_prefix_exclusive_sum(c1) + tot0;
+    offsets[tid] = s0;
+    offsets[tid + 32] = s1;
+    if (tid == 31) offsets[64] = s1 + c1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (tid < 64) {
+    atomic_store_explicit(&write_pos[tid], offsets[tid], memory_order_relaxed);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  for (uint p = tid; p < P; p += 64) {
+    uint exp = topk_indices[p];
+    uint token = p / params.top_k;
+    if (exp < E && exp < 64) {
+      uint dst = atomic_fetch_add_explicit(&write_pos[exp], 1, memory_order_relaxed);
+      sorted_tokens[dst] = token;
+      sorted_p[dst] = p;
+      sorted_experts[dst] = exp;
+    }
+  }
+
+  if (tid < 64) {
+    expert_offsets[tid] = offsets[tid];
+  }
+  if (tid == 0) {
+    expert_offsets[64] = offsets[64];
+  }
+}
+
+kernel void llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted(
+    device const half* hidden_states [[buffer(0)]],
+    device const uint* sorted_tokens [[buffer(1)]],
+    device const uint* sorted_p [[buffer(2)]],
+    device const uint* sorted_experts [[buffer(3)]],
+    device const uchar* gate_weights [[buffer(4)]],
+    device const uchar* up_weights [[buffer(5)]],
+    device half* intermediate [[buffer(6)]],
+    constant MoeGateUpParams& params [[buffer(7)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint col_groups = (params.intermediate_dim + 7u) >> 3u;
+  const uint P = params.tokens * params.top_k;
+  if (simd_idx >= P * col_groups) return;
+
+  const uint idx = simd_idx / col_groups;
+  const uint group_idx = simd_idx - idx * col_groups;
+  const uint base_col = group_idx << 3u;
+  if (base_col >= params.intermediate_dim) return;
+
+  const uint p = sorted_p[idx];
+  const uint token = sorted_tokens[idx];
+  const uint expert = sorted_experts[idx];
+
+  const uint blocks = params.hidden_dim >> 5u;
+  const uint col_stride = blocks * 20u;
+  const uint expert_stride = params.intermediate_dim * col_stride;
+
+  device const uchar* gate_base = gate_weights + expert * expert_stride;
+  device const uchar* up_base = up_weights + expert * expert_stride;
+
+  device const uchar* gate_row0 = gate_base + min(base_col, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* gate_row1 = gate_base + min(base_col + 1u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* gate_row2 = gate_base + min(base_col + 2u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* gate_row3 = gate_base + min(base_col + 3u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* gate_row4 = gate_base + min(base_col + 4u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* gate_row5 = gate_base + min(base_col + 5u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* gate_row6 = gate_base + min(base_col + 6u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* gate_row7 = gate_base + min(base_col + 7u, params.intermediate_dim - 1u) * col_stride;
+
+  device const uchar* up_row0 = up_base + min(base_col, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* up_row1 = up_base + min(base_col + 1u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* up_row2 = up_base + min(base_col + 2u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* up_row3 = up_base + min(base_col + 3u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* up_row4 = up_base + min(base_col + 4u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* up_row5 = up_base + min(base_col + 5u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* up_row6 = up_base + min(base_col + 6u, params.intermediate_dim - 1u) * col_stride;
+  device const uchar* up_row7 = up_base + min(base_col + 7u, params.intermediate_dim - 1u) * col_stride;
+
+  device const half* activation = hidden_states + token * params.hidden_dim;
+
+  float acc_g0 = 0.0f, acc_g1 = 0.0f, acc_g2 = 0.0f, acc_g3 = 0.0f;
+  float acc_g4 = 0.0f, acc_g5 = 0.0f, acc_g6 = 0.0f, acc_g7 = 0.0f;
+  float acc_u0 = 0.0f, acc_u1 = 0.0f, acc_u2 = 0.0f, acc_u3 = 0.0f;
+  float acc_u4 = 0.0f, acc_u5 = 0.0f, acc_u6 = 0.0f, acc_u7 = 0.0f;
+
+  const uint cluster_blocks = (blocks + 7u) >> 3u;
+  const uint b_sub = lane >> 2u;
+  const uint t_in_b = lane & 3u;
+  const uint byte_offset = 4u + (t_in_b << 2u);
+
+  for (uint c = 0u; c < cluster_blocks; ++c) {
+    const uint block_idx = (c << 3u) + b_sub;
+    if (block_idx < blocks) {
+      const uint blk_byte_off = block_idx * 20u;
+      const uint l0 = t_in_b << 2u;
+      const uint k_idx = block_idx * 32u + l0;
+      const float a0_lo = float(activation[k_idx]);
+      const float a0_hi = float(activation[k_idx + 16u]);
+      const float a1_lo = float(activation[k_idx + 1u]);
+      const float a1_hi = float(activation[k_idx + 17u]);
+      const float a2_lo = float(activation[k_idx + 2u]);
+      const float a2_hi = float(activation[k_idx + 18u]);
+      const float a3_lo = float(activation[k_idx + 3u]);
+      const float a3_hi = float(activation[k_idx + 19u]);
+      const float a_sum = a0_lo + a0_hi + a1_lo + a1_hi + a2_lo + a2_hi + a3_lo + a3_hi;
+
+      #define DECODE_G(row_v, acc_v) { \
+        device const uchar* blk = row_v + blk_byte_off; \
+        const float sc = float(*reinterpret_cast<device const half*>(blk)); \
+        const float mn = float(*reinterpret_cast<device const half*>(blk + 2u)); \
+        const ushort p_lo = *reinterpret_cast<device const ushort*>(blk + byte_offset); \
+        const ushort p_hi = *reinterpret_cast<device const ushort*>(blk + byte_offset + 2u); \
+        acc_v += sc * ( \
+            a0_lo * float(p_lo & 15u) + \
+            a0_hi * float((p_lo >> 4u) & 15u) + \
+            a1_lo * float((p_lo >> 8u) & 15u) + \
+            a1_hi * float((p_lo >> 12u) & 15u) + \
+            a2_lo * float(p_hi & 15u) + \
+            a2_hi * float((p_hi >> 4u) & 15u) + \
+            a3_lo * float((p_hi >> 8u) & 15u) + \
+            a3_hi * float((p_hi >> 12u) & 15u)) + mn * a_sum; \
+      }
+
+      DECODE_G(gate_row0, acc_g0);
+      DECODE_G(gate_row1, acc_g1);
+      DECODE_G(gate_row2, acc_g2);
+      DECODE_G(gate_row3, acc_g3);
+      DECODE_G(gate_row4, acc_g4);
+      DECODE_G(gate_row5, acc_g5);
+      DECODE_G(gate_row6, acc_g6);
+      DECODE_G(gate_row7, acc_g7);
+
+      DECODE_G(up_row0, acc_u0);
+      DECODE_G(up_row1, acc_u1);
+      DECODE_G(up_row2, acc_u2);
+      DECODE_G(up_row3, acc_u3);
+      DECODE_G(up_row4, acc_u4);
+      DECODE_G(up_row5, acc_u5);
+      DECODE_G(up_row6, acc_u6);
+      DECODE_G(up_row7, acc_u7);
+      #undef DECODE_G
+    }
+  }
+
+  acc_g0 = simd_sum(acc_g0); acc_g1 = simd_sum(acc_g1);
+  acc_g2 = simd_sum(acc_g2); acc_g3 = simd_sum(acc_g3);
+  acc_g4 = simd_sum(acc_g4); acc_g5 = simd_sum(acc_g5);
+  acc_g6 = simd_sum(acc_g6); acc_g7 = simd_sum(acc_g7);
+
+  acc_u0 = simd_sum(acc_u0); acc_u1 = simd_sum(acc_u1);
+  acc_u2 = simd_sum(acc_u2); acc_u3 = simd_sum(acc_u3);
+  acc_u4 = simd_sum(acc_u4); acc_u5 = simd_sum(acc_u5);
+  acc_u6 = simd_sum(acc_u6); acc_u7 = simd_sum(acc_u7);
+
+  if (lane == 0u && base_col < params.intermediate_dim) {
+    device half* out_p = intermediate + p * params.intermediate_dim + base_col;
+    #define SWIGLU(g, u) ((g * (1.0f / (1.0f + metal::exp(-g)))) * u)
+    out_p[0] = half(SWIGLU(acc_g0, acc_u0));
+    if (base_col + 1u < params.intermediate_dim) out_p[1] = half(SWIGLU(acc_g1, acc_u1));
+    if (base_col + 2u < params.intermediate_dim) out_p[2] = half(SWIGLU(acc_g2, acc_u2));
+    if (base_col + 3u < params.intermediate_dim) out_p[3] = half(SWIGLU(acc_g3, acc_u3));
+    if (base_col + 4u < params.intermediate_dim) out_p[4] = half(SWIGLU(acc_g4, acc_u4));
+    if (base_col + 5u < params.intermediate_dim) out_p[5] = half(SWIGLU(acc_g5, acc_u5));
+    if (base_col + 6u < params.intermediate_dim) out_p[6] = half(SWIGLU(acc_g6, acc_u6));
+    if (base_col + 7u < params.intermediate_dim) out_p[7] = half(SWIGLU(acc_g7, acc_u7));
+    #undef SWIGLU
+  }
+}
+
+kernel void llmopt_tile32_affine8_moe_down_project_f16_sorted(
+    device const half* intermediate [[buffer(0)]],
+    device const uint* sorted_p [[buffer(1)]],
+    device const uint* sorted_experts [[buffer(2)]],
+    device const half* topk_weights [[buffer(3)]],
+    device const uchar* down_weights [[buffer(4)]],
+    device half* down_out [[buffer(5)]],
+    constant MoeDownParams& params [[buffer(6)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint col_groups = (params.hidden_dim + 7u) >> 3u;
+  const uint P = params.tokens * params.top_k;
+  if (simd_idx >= P * col_groups) return;
+
+  const uint idx = simd_idx / col_groups;
+  const uint group_idx = simd_idx - idx * col_groups;
+  const uint base_col = group_idx << 3u;
+  if (base_col >= params.hidden_dim) return;
+
+  const uint p = sorted_p[idx];
+  const uint expert = sorted_experts[idx];
+  const float w = float(topk_weights[p]);
+  if (w <= 0.0f) {
+    if (lane == 0u) {
+      device half* out_p = down_out + p * params.hidden_dim + base_col;
+      out_p[0] = 0.0h;
+      if (base_col + 1u < params.hidden_dim) out_p[1] = 0.0h;
+      if (base_col + 2u < params.hidden_dim) out_p[2] = 0.0h;
+      if (base_col + 3u < params.hidden_dim) out_p[3] = 0.0h;
+      if (base_col + 4u < params.hidden_dim) out_p[4] = 0.0h;
+      if (base_col + 5u < params.hidden_dim) out_p[5] = 0.0h;
+      if (base_col + 6u < params.hidden_dim) out_p[6] = 0.0h;
+      if (base_col + 7u < params.hidden_dim) out_p[7] = 0.0h;
+    }
+    return;
+  }
+
+  const uint blocks = params.intermediate_dim >> 5u;
+  const uint col_stride = blocks * 36u;
+  const uint expert_stride = params.hidden_dim * col_stride;
+
+  const uint cluster_blocks = (blocks + 3u) >> 2u;
+  const uint b_sub = lane >> 3u;
+  const uint t_in_b = lane & 7u;
+  const uint byte_offset = 4u + (t_in_b << 2u);
+
+  device const uchar* down_base = down_weights + expert * expert_stride;
+  device const uchar* d_row0 = down_base + min(base_col, params.hidden_dim - 1u) * col_stride;
+  device const uchar* d_row1 = down_base + min(base_col + 1u, params.hidden_dim - 1u) * col_stride;
+  device const uchar* d_row2 = down_base + min(base_col + 2u, params.hidden_dim - 1u) * col_stride;
+  device const uchar* d_row3 = down_base + min(base_col + 3u, params.hidden_dim - 1u) * col_stride;
+  device const uchar* d_row4 = down_base + min(base_col + 4u, params.hidden_dim - 1u) * col_stride;
+  device const uchar* d_row5 = down_base + min(base_col + 5u, params.hidden_dim - 1u) * col_stride;
+  device const uchar* d_row6 = down_base + min(base_col + 6u, params.hidden_dim - 1u) * col_stride;
+  device const uchar* d_row7 = down_base + min(base_col + 7u, params.hidden_dim - 1u) * col_stride;
+
+  device const half* in_act = intermediate + p * params.intermediate_dim;
+
+  float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+  float acc4 = 0.0f, acc5 = 0.0f, acc6 = 0.0f, acc7 = 0.0f;
+
+  for (uint c = 0u; c < cluster_blocks; ++c) {
+    const uint block_idx = (c << 2u) + b_sub;
+    if (block_idx < blocks) {
+      const uint blk_byte_off = block_idx * 36u;
+      const uint l0 = t_in_b << 2u;
+      const uint k_idx = block_idx * 32u + l0;
+      const float a0 = float(in_act[k_idx]);
+      const float a1 = float(in_act[k_idx + 1u]);
+      const float a2 = float(in_act[k_idx + 2u]);
+      const float a3 = float(in_act[k_idx + 3u]);
+      const float a_sum = a0 + a1 + a2 + a3;
+
+      #define DECODE_D(row_v, acc_v) { \
+        device const uchar* blk = row_v + blk_byte_off; \
+        const float sc = float(*reinterpret_cast<device const half*>(blk)); \
+        const float mn = float(*reinterpret_cast<device const half*>(blk + 2u)); \
+        const uchar4 q4 = *reinterpret_cast<device const uchar4*>(blk + byte_offset); \
+        acc_v += sc * ( \
+            a0 * float(q4.x) + \
+            a1 * float(q4.y) + \
+            a2 * float(q4.z) + \
+            a3 * float(q4.w)) + mn * a_sum; \
+      }
+
+      DECODE_D(d_row0, acc0);
+      DECODE_D(d_row1, acc1);
+      DECODE_D(d_row2, acc2);
+      DECODE_D(d_row3, acc3);
+      DECODE_D(d_row4, acc4);
+      DECODE_D(d_row5, acc5);
+      DECODE_D(d_row6, acc6);
+      DECODE_D(d_row7, acc7);
+      #undef DECODE_D
+    }
+  }
+
+  acc0 = simd_sum(acc0); acc1 = simd_sum(acc1);
+  acc2 = simd_sum(acc2); acc3 = simd_sum(acc3);
+  acc4 = simd_sum(acc4); acc5 = simd_sum(acc5);
+  acc6 = simd_sum(acc6); acc7 = simd_sum(acc7);
+
+  if (lane == 0u) {
+    device half* out_p = down_out + p * params.hidden_dim + base_col;
+    out_p[0] = half(acc0 * w);
+    if (base_col + 1u < params.hidden_dim) out_p[1] = half(acc1 * w);
+    if (base_col + 2u < params.hidden_dim) out_p[2] = half(acc2 * w);
+    if (base_col + 3u < params.hidden_dim) out_p[3] = half(acc3 * w);
+    if (base_col + 4u < params.hidden_dim) out_p[4] = half(acc4 * w);
+    if (base_col + 5u < params.hidden_dim) out_p[5] = half(acc5 * w);
+    if (base_col + 6u < params.hidden_dim) out_p[6] = half(acc6 * w);
+    if (base_col + 7u < params.hidden_dim) out_p[7] = half(acc7 * w);
+  }
+}
+
+kernel void llmopt_moe_down_token_reduce_f16(
+    device const half* down_out [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant MoeDownParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint col_groups = (params.hidden_dim + 7u) >> 3u;
+  if (simd_idx >= params.tokens * col_groups) return;
+
+  const uint token = simd_idx / col_groups;
+  const uint group_idx = simd_idx - token * col_groups;
+  const uint base_col = group_idx << 3u;
+  if (base_col >= params.hidden_dim) return;
+
+  if (lane == 0u) {
+    float tot0 = 0.0f, tot1 = 0.0f, tot2 = 0.0f, tot3 = 0.0f;
+    float tot4 = 0.0f, tot5 = 0.0f, tot6 = 0.0f, tot7 = 0.0f;
+    const uint base_p = token * params.top_k;
+    for (uint k = 0u; k < params.top_k; ++k) {
+      device const half* p_ptr = down_out + (base_p + k) * params.hidden_dim + base_col;
+      tot0 += float(p_ptr[0]);
+      if (base_col + 1u < params.hidden_dim) tot1 += float(p_ptr[1]);
+      if (base_col + 2u < params.hidden_dim) tot2 += float(p_ptr[2]);
+      if (base_col + 3u < params.hidden_dim) tot3 += float(p_ptr[3]);
+      if (base_col + 4u < params.hidden_dim) tot4 += float(p_ptr[4]);
+      if (base_col + 5u < params.hidden_dim) tot5 += float(p_ptr[5]);
+      if (base_col + 6u < params.hidden_dim) tot6 += float(p_ptr[6]);
+      if (base_col + 7u < params.hidden_dim) tot7 += float(p_ptr[7]);
+    }
+    device half* out_p = output + token * params.hidden_dim + base_col;
+    out_p[0] = half(tot0);
+    if (base_col + 1u < params.hidden_dim) out_p[1] = half(tot1);
+    if (base_col + 2u < params.hidden_dim) out_p[2] = half(tot2);
+    if (base_col + 3u < params.hidden_dim) out_p[3] = half(tot3);
+    if (base_col + 4u < params.hidden_dim) out_p[4] = half(tot4);
+    if (base_col + 5u < params.hidden_dim) out_p[5] = half(tot5);
+    if (base_col + 6u < params.hidden_dim) out_p[6] = half(tot6);
+    if (base_col + 7u < params.hidden_dim) out_p[7] = half(tot7);
+  }
+}
 |}
 
 let moe_entries =
@@ -552,6 +924,22 @@ let moe_entries =
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_tile32_affine8_moe_down_reduce_f16_x8"
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(64, 1, 1)
+      ~name:"llmopt_moe_sort_and_bin"
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted"
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_moe_down_project_f16_sorted"
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_moe_down_token_reduce_f16"
       ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;
   ]

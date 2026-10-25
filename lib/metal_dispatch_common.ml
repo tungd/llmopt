@@ -14,16 +14,12 @@ module Quant_qkv_tactic = struct
         Ok "llmopt_q4_0_qkv_linear_f16_m4"
     | Ir.Dtype.Quant Ir.Dtype.Q4_0, Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
         Ok "llmopt_q4_0_qkv_linear_f16_x8"
-    | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4, Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4 when m >= 32 ->
-        Ok "llmopt_tile32_affine4_qkv_linear_f16_m32"
     | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4, Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4 when m >= 16 ->
-        Ok "llmopt_tile32_affine4_qkv_linear_f16_m16"
+        Ok "llmopt_tile32_affine4_qkv_linear_f16_simd"
     | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4, Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4 ->
         Ok "llmopt_tile32_affine4_qkv_linear_f16_x8"
-    | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8, Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8 when m >= 32 ->
-        Ok "llmopt_tile32_affine8_qkv_linear_f16_m32"
     | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8, Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8 when m >= 16 ->
-        Ok "llmopt_tile32_affine8_qkv_linear_f16_m16"
+        Ok "llmopt_tile32_affine8_qkv_linear_f16_simd"
     | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8, Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8 ->
         Ok "llmopt_tile32_affine8_qkv_linear_f16_x8"
     | Ir.Dtype.Quant Ir.Dtype.Q5_0, Ir.Dtype.Quant Ir.Dtype.Q5_0

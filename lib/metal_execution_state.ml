@@ -35,6 +35,11 @@ module Execution_batch = struct
     mutable moe_topk_indices : Buffer.t option;
     mutable moe_topk_weights : Buffer.t option;
     mutable moe_intermediate : Buffer.t option;
+    mutable moe_sorted_tokens : Buffer.t option;
+    mutable moe_sorted_p : Buffer.t option;
+    mutable moe_sorted_experts : Buffer.t option;
+    mutable moe_expert_offsets : Buffer.t option;
+    mutable moe_down_out : Buffer.t option;
   }
 end
 
@@ -54,6 +59,11 @@ let with_execution_batch runtime operation =
       moe_topk_indices = None;
       moe_topk_weights = None;
       moe_intermediate = None;
+      moe_sorted_tokens = None;
+      moe_sorted_p = None;
+      moe_sorted_experts = None;
+      moe_expert_offsets = None;
+      moe_down_out = None;
     }
   in
   let release_resources () = batch.resources <- [] in

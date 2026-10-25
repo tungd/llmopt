@@ -45,20 +45,6 @@ let dispatch_moe_swiglu_ffn_command (context : Metal_execution_state.context)
       ~input_dtype:(Ir.Value.dtype router_logits_val)
       ~output_dtype:Ir.Dtype.Float16
   in
-  let* gate_up_entry =
-    Metal_native.kernel_entry
-      ~name:"llmopt_tile32_affine4_moe_gate_up_swiglu_f16_x8" runtime
-      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-      ~input_dtype:Ir.Dtype.Float16
-      ~output_dtype:Ir.Dtype.Float16
-  in
-  let* down_entry =
-    Metal_native.kernel_entry
-      ~name:"llmopt_tile32_affine8_moe_down_reduce_f16_x8" runtime
-      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-      ~input_dtype:Ir.Dtype.Float16
-      ~output_dtype:Ir.Dtype.Float16
-  in
   let* topk_indices =
     match execution_batch.Execution_batch.moe_topk_indices with
     | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
@@ -109,24 +95,150 @@ let dispatch_moe_swiglu_ffn_command (context : Metal_execution_state.context)
       ~buffers:[ router_logits; topk_indices; topk_weights ]
       ~parameters:topk_params ~grid:(m * 32, 1, 1)
   in
-  let gate_up_col_groups = (intermediate_dim + 7) / 8 in
-  let gate_up_simdgroups = m * top_k * gate_up_col_groups in
-  let gate_up_threads = ((gate_up_simdgroups * 32 + 255) / 256) * 256 in
-  let* gate_up_kernel =
-    Metal_native.dispatch ~batch runtime gate_up_entry
-      ~buffers:[ hidden_states; topk_indices; gate_exps; up_exps; intermediate ]
-      ~parameters:gate_up_params ~grid:(gate_up_threads, 1, 1)
-  in
-  let down_col_groups = (hidden_dim + 7) / 8 in
-  let down_simdgroups = m * down_col_groups in
-  let down_threads = ((down_simdgroups * 32 + 255) / 256) * 256 in
-  let* down_kernel =
-    Metal_native.dispatch ~batch runtime down_entry
-      ~buffers:[ intermediate; topk_indices; topk_weights; down_exps; output_buffer ]
-      ~parameters:down_params ~grid:(down_threads, 1, 1)
-  in
-  let state = Metal_execution_state.bind_value state output output_buffer in
-  Ok (state, [ topk_kernel; gate_up_kernel; down_kernel ])
+  if m = 1 then
+    let* gate_up_entry =
+      Metal_native.kernel_entry
+        ~name:"llmopt_tile32_affine4_moe_gate_up_swiglu_f16_x8" runtime
+        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+        ~input_dtype:Ir.Dtype.Float16
+        ~output_dtype:Ir.Dtype.Float16
+    in
+    let* down_entry =
+      Metal_native.kernel_entry
+        ~name:"llmopt_tile32_affine8_moe_down_reduce_f16_x8" runtime
+        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+        ~input_dtype:Ir.Dtype.Float16
+        ~output_dtype:Ir.Dtype.Float16
+    in
+    let gate_up_col_groups = (intermediate_dim + 7) / 8 in
+    let gate_up_simdgroups = m * top_k * gate_up_col_groups in
+    let gate_up_threads = ((gate_up_simdgroups * 32 + 255) / 256) * 256 in
+    let* gate_up_kernel =
+      Metal_native.dispatch ~batch runtime gate_up_entry
+        ~buffers:[ hidden_states; topk_indices; gate_exps; up_exps; intermediate ]
+        ~parameters:gate_up_params ~grid:(gate_up_threads, 1, 1)
+    in
+    let down_col_groups = (hidden_dim + 7) / 8 in
+    let down_simdgroups = m * down_col_groups in
+    let down_threads = ((down_simdgroups * 32 + 255) / 256) * 256 in
+    let* down_kernel =
+      Metal_native.dispatch ~batch runtime down_entry
+        ~buffers:[ intermediate; topk_indices; topk_weights; down_exps; output_buffer ]
+        ~parameters:down_params ~grid:(down_threads, 1, 1)
+    in
+    let state = Metal_execution_state.bind_value state output output_buffer in
+    Ok (state, [ topk_kernel; gate_up_kernel; down_kernel ])
+  else
+    let* sort_entry =
+      Metal_native.kernel_entry ~name:"llmopt_moe_sort_and_bin" runtime
+        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+        ~input_dtype:Ir.Dtype.Float16
+        ~output_dtype:Ir.Dtype.Float16
+    in
+    let* gate_up_sorted_entry =
+      Metal_native.kernel_entry
+        ~name:"llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted" runtime
+        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+        ~input_dtype:Ir.Dtype.Float16
+        ~output_dtype:Ir.Dtype.Float16
+    in
+    let* down_sorted_entry =
+      Metal_native.kernel_entry
+        ~name:"llmopt_tile32_affine8_moe_down_project_f16_sorted" runtime
+        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+        ~input_dtype:Ir.Dtype.Float16
+        ~output_dtype:Ir.Dtype.Float16
+    in
+    let* down_reduce_entry =
+      Metal_native.kernel_entry
+        ~name:"llmopt_moe_down_token_reduce_f16" runtime
+        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+        ~input_dtype:Ir.Dtype.Float16
+        ~output_dtype:Ir.Dtype.Float16
+    in
+    let* sorted_tokens =
+      match execution_batch.Execution_batch.moe_sorted_tokens with
+      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
+      | _ ->
+          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
+          execution_batch.Execution_batch.moe_sorted_tokens <- Some buf;
+          execution_batch.Execution_batch.resources <-
+            buf :: execution_batch.Execution_batch.resources;
+          Ok buf
+    in
+    let* sorted_p =
+      match execution_batch.Execution_batch.moe_sorted_p with
+      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
+      | _ ->
+          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
+          execution_batch.Execution_batch.moe_sorted_p <- Some buf;
+          execution_batch.Execution_batch.resources <-
+            buf :: execution_batch.Execution_batch.resources;
+          Ok buf
+    in
+    let* sorted_experts =
+      match execution_batch.Execution_batch.moe_sorted_experts with
+      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
+      | _ ->
+          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
+          execution_batch.Execution_batch.moe_sorted_experts <- Some buf;
+          execution_batch.Execution_batch.resources <-
+            buf :: execution_batch.Execution_batch.resources;
+          Ok buf
+    in
+    let* expert_offsets =
+      match execution_batch.Execution_batch.moe_expert_offsets with
+      | Some buf when Metal_native.Buffer.byte_length buf >= 65 * 4 -> Ok buf
+      | _ ->
+          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(65 * 4) in
+          execution_batch.Execution_batch.moe_expert_offsets <- Some buf;
+          execution_batch.Execution_batch.resources <-
+            buf :: execution_batch.Execution_batch.resources;
+          Ok buf
+    in
+    let* down_out =
+      match execution_batch.Execution_batch.moe_down_out with
+      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * hidden_dim * 2 -> Ok buf
+      | _ ->
+          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * hidden_dim * 2) in
+          execution_batch.Execution_batch.moe_down_out <- Some buf;
+          execution_batch.Execution_batch.resources <-
+            buf :: execution_batch.Execution_batch.resources;
+          Ok buf
+    in
+    let* sort_params =
+      Parameters.moe_sort ~tokens:m ~num_experts:n_experts ~top_k ()
+    in
+    let* sort_kernel =
+      Metal_native.dispatch ~batch runtime sort_entry
+        ~buffers:[ topk_indices; sorted_tokens; sorted_p; sorted_experts; expert_offsets ]
+        ~parameters:sort_params ~grid:(64, 1, 1)
+    in
+    let gate_up_col_groups = (intermediate_dim + 7) / 8 in
+    let gate_up_simdgroups = m * top_k * gate_up_col_groups in
+    let gate_up_threads = ((gate_up_simdgroups * 32 + 255) / 256) * 256 in
+    let* gate_up_kernel =
+      Metal_native.dispatch ~batch runtime gate_up_sorted_entry
+        ~buffers:[ hidden_states; sorted_tokens; sorted_p; sorted_experts; gate_exps; up_exps; intermediate ]
+        ~parameters:gate_up_params ~grid:(gate_up_threads, 1, 1)
+    in
+    let down_col_groups = (hidden_dim + 7) / 8 in
+    let down_simdgroups = m * top_k * down_col_groups in
+    let down_threads = ((down_simdgroups * 32 + 255) / 256) * 256 in
+    let* down_kernel =
+      Metal_native.dispatch ~batch runtime down_sorted_entry
+        ~buffers:[ intermediate; sorted_p; sorted_experts; topk_weights; down_exps; down_out ]
+        ~parameters:down_params ~grid:(down_threads, 1, 1)
+    in
+    let reduce_simdgroups = m * down_col_groups in
+    let reduce_threads = ((reduce_simdgroups * 32 + 255) / 256) * 256 in
+    let* reduce_kernel =
+      Metal_native.dispatch ~batch runtime down_reduce_entry
+        ~buffers:[ down_out; output_buffer ]
+        ~parameters:down_params ~grid:(reduce_threads, 1, 1)
+    in
+    let state = Metal_execution_state.bind_value state output output_buffer in
+    Ok (state, [ topk_kernel; sort_kernel; gate_up_kernel; down_kernel; reduce_kernel ])
 
 let dispatch_w4a16_swiglu_ffn_command (context : Metal_execution_state.context)
     state ~m ~n ~k ~epsilon values output =
@@ -395,6 +507,12 @@ let dispatch_quant_qkv_linear_command (context : Metal_execution_state.context)
       if groups > max_int / 128 then
         Error "llama-style Q5_0 QKV grid overflows"
       else Ok (groups * 128)
+    else if String.ends_with ~suffix:"_simd" name then
+      let m_tiles = (m + 15) / 16 in
+      let q_tiles = (n_q + 15) / 16 in
+      let k_tiles = (n_k + 15) / 16 in
+      let v_tiles = (n_v + 15) / 16 in
+      linear_f16_grid (m_tiles * (q_tiles + k_tiles + v_tiles))
     else if String.ends_with ~suffix:"_m32" name then
       let m_tiles = (m + 31) / 32 in
       linear_f16_grid (m_tiles * (n_q + n_k + n_v) * 2)
@@ -633,15 +751,25 @@ let dispatch_linear (context : Metal_execution_state.context) state ~m ~n ~k
         ~grid:(grid_x, 1, 1)
   | Ir.Dtype.Float16, Ir.Dtype.Float32, Ir.Dtype.Float16, None ->
       let* parameters = Parameters.u32s [ m; n; k ] in
-      let name, columns =
-        if m = 2 then "llmopt_linear_f16_f32_m2_n2", (n + 1) / 2
-        else "llmopt_linear_f16_f32", n
-      in
-      let* grid_x = linear_f16_grid columns in
-      dispatch_output ~name ~batch:context.batch context.runtime state
-        output ~operation:Kernel_abi.Operation.Linear
-        ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
-        ~grid:(grid_x, 1, 1)
+      if m > 2 then
+        let m_tiles = (m + 7) / 8 in
+        let total_simd = m_tiles * n in
+        let grid_x = ((total_simd * 32 + 255) / 256) * 256 in
+        dispatch_output ~name:"llmopt_linear_f16_f32_batched"
+          ~batch:context.batch context.runtime state output
+          ~operation:Kernel_abi.Operation.Linear
+          ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
+          ~grid:(grid_x, 1, 1)
+      else
+        let name, columns =
+          if m = 2 then "llmopt_linear_f16_f32_m2_n2", (n + 1) / 2
+          else "llmopt_linear_f16_f32", n
+        in
+        let* grid_x = linear_f16_grid columns in
+        dispatch_output ~name ~batch:context.batch context.runtime state
+          output ~operation:Kernel_abi.Operation.Linear
+          ~input_dtype:Ir.Dtype.Float16 ~buffers ~parameters
+          ~grid:(grid_x, 1, 1)
   | Ir.Dtype.Float32, Ir.Dtype.Float32, Ir.Dtype.Float32, _ ->
       let* parameters = Parameters.u32s [ m; n; k ] in
       let* grid_x = round_up n 16 in

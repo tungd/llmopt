@@ -128,6 +128,10 @@ let block32_entries =
       ~name:"llmopt_tile32_affine4_linear_f16_m32"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_tile32_affine4_linear_f16_simd"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_tile32_affine8_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
@@ -146,6 +150,10 @@ let block32_entries =
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_tile32_affine8_linear_f16_m32"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_tile32_affine8_linear_f16_simd"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16 ]
 
@@ -432,6 +440,9 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    ( Ir.Dtype.Tile32_Affine4,
                      { Tactic.name = "llmopt_tile32_affine4_linear_f16_m32";
                        threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine4,
+                     { Tactic.name = "llmopt_tile32_affine4_linear_f16_simd";
+                       threadgroup = (32, 1, 1) } );
                  ]
              | Ir.Dtype.Tile32_Affine8 ->
                  [
@@ -450,6 +461,9 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    ( Ir.Dtype.Tile32_Affine8,
                      { Tactic.name = "llmopt_tile32_affine8_linear_f16_m32";
                        threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine8,
+                     { Tactic.name = "llmopt_tile32_affine8_linear_f16_simd";
+                       threadgroup = (32, 1, 1) } );
                  ]
              | _ -> [])
     in
@@ -544,7 +558,8 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            | (Ir.Dtype.Q4_0 | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8), base
              when String.ends_with ~suffix:"_m4" base
                   || String.ends_with ~suffix:"_m16" base
-                  || String.ends_with ~suffix:"_m32" base ->
+                  || String.ends_with ~suffix:"_m32" base
+                  || String.ends_with ~suffix:"_simd" base ->
                Ok source
            | (Ir.Dtype.Q4_0 | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8), base ->
                Error
@@ -612,6 +627,14 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    tile32_affine4_schema
                in
                Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine4, _ when String.ends_with ~suffix:"_simd" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_simd_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine4_schema
+               in
+               Ok (source ^ kernel)
            | Ir.Dtype.Tile32_Affine8, _ when String.ends_with ~suffix:"_x8" base ->
                let* kernel =
                  Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
@@ -631,6 +654,14 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
            | Ir.Dtype.Tile32_Affine8, _ when String.ends_with ~suffix:"_m32" base ->
                let* kernel =
                  Metal_block_codegen.tile32_affine_linear_f16_m32_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine8_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine8, _ when String.ends_with ~suffix:"_simd" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_simd_kernel
                    ~name:kernel_name
                    ~epilogue:(Epilogue.canonicalize epilogue) ~target
                    tile32_affine8_schema

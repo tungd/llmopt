@@ -1620,16 +1620,16 @@ let run () =
        ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:16
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
     |> expect_ok
-    = "llmopt_tile32_affine4_qkv_linear_f16_m16")
-    "batched prefill (m=16) Tile32_Affine4 QKV selects the m16 batched kernel";
+    = "llmopt_tile32_affine4_qkv_linear_f16_simd")
+    "batched prefill (m=16) Tile32_Affine4 QKV selects the simd hardware matrix kernel";
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
        ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
        ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:32
        ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
     |> expect_ok
-    = "llmopt_tile32_affine4_qkv_linear_f16_m32")
-    "prompt prefill (m=32) Tile32_Affine4 QKV selects the m32 batched kernel";
+    = "llmopt_tile32_affine4_qkv_linear_f16_simd")
+    "prompt prefill (m=32) Tile32_Affine4 QKV selects the simd hardware matrix kernel";
 
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name

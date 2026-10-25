@@ -1132,4 +1132,93 @@ let run () =
      && contains_substring a4_source "acc1_0 = simd_sum(acc1_0);")
     "Tile32_Affine4 multi-linear kernel reduces 8-column accumulators for both slots";
 
-  print_endline "llmopt Tile32_Affine4 multi-linear parametric emitter proof passed"
+  print_endline "llmopt Tile32_Affine4 multi-linear parametric emitter proof passed";
+
+  (* Batched MoE token routing lowering proof *)
+  let moe_graph = Ir.Graph.create () in
+  let moe_hs =
+    tensor_input moe_graph ~name:"moe_hs" ~source:Ir.Input_source.Runtime
+      ~shape:[ 16; 2048 ] ~dtype:Ir.Dtype.Float16
+  in
+  let moe_rl =
+    tensor_input moe_graph ~name:"moe_rl" ~source:Ir.Input_source.Runtime
+      ~shape:[ 16; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let moe_ge =
+    tensor_input moe_graph ~name:"moe_ge"
+      ~source:(Ir.Input_source.Tensor_store { key = "moe_ge" })
+      ~shape:[ 64; 1408; 2048 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+  in
+  let moe_ue =
+    tensor_input moe_graph ~name:"moe_ue"
+      ~source:(Ir.Input_source.Tensor_store { key = "moe_ue" })
+      ~shape:[ 64; 1408; 2048 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+  in
+  let moe_de =
+    tensor_input moe_graph ~name:"moe_de"
+      ~source:(Ir.Input_source.Tensor_store { key = "moe_de" })
+      ~shape:[ 64; 2048; 1408 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8)
+  in
+  let moe_out =
+    Ir.Graph.fresh_tensor_value moe_graph
+      ~shape:(Tensor_shape.of_ints_exn [ 16; 2048 ])
+      ~dtype:Ir.Dtype.Float16
+  in
+  Ir.Graph.append moe_graph
+    ~op:
+      (Ir.Op.Moe_swiglu_ffn
+         {
+           m = 16;
+           n_experts = 64;
+           top_k = 8;
+           hidden_dim = 2048;
+           intermediate_dim = 1408;
+           norm_topk_prob = true;
+         })
+    ~inputs:[ moe_hs; moe_rl; moe_ge; moe_ue; moe_de ]
+    ~output:(Some moe_out);
+  Ir.Graph.add_output moe_graph ~name:"moe_out" moe_out;
+  let moe_program = Metal.lower moe_graph |> expect_ok in
+  let moe_src = Metal.Program.source moe_program in
+  expect
+    (contains_substring moe_src "kernel void llmopt_moe_sort_and_bin")
+    "Metal lowering emits llmopt_moe_sort_and_bin";
+  expect
+    (contains_substring moe_src
+       "kernel void llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted")
+    "Metal lowering emits llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted";
+  expect
+    (contains_substring moe_src
+       "kernel void llmopt_tile32_affine8_moe_down_project_f16_sorted")
+    "Metal lowering emits llmopt_tile32_affine8_moe_down_project_f16_sorted";
+  expect
+    (contains_substring moe_src
+       "kernel void llmopt_moe_down_token_reduce_f16")
+    "Metal lowering emits llmopt_moe_down_token_reduce_f16";
+  let moe_kernels = Metal.Program.kernels moe_program in
+  expect
+    (List.exists
+       (fun k -> Kernel_abi.Entry.name k = "llmopt_moe_sort_and_bin")
+       moe_kernels)
+    "Package ABI declares llmopt_moe_sort_and_bin";
+  expect
+    (List.exists
+       (fun k ->
+         Kernel_abi.Entry.name k
+         = "llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted")
+       moe_kernels)
+    "Package ABI declares llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted";
+  expect
+    (List.exists
+       (fun k ->
+         Kernel_abi.Entry.name k
+         = "llmopt_tile32_affine8_moe_down_project_f16_sorted")
+       moe_kernels)
+    "Package ABI declares llmopt_tile32_affine8_moe_down_project_f16_sorted";
+  expect
+    (List.exists
+       (fun k ->
+         Kernel_abi.Entry.name k = "llmopt_moe_down_token_reduce_f16")
+       moe_kernels)
+    "Package ABI declares llmopt_moe_down_token_reduce_f16";
+  print_endline "llmopt batched sorted MoE lowering and ABI proof passed"

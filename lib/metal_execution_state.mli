@@ -29,6 +29,11 @@ module Execution_batch : sig
     mutable moe_topk_indices : Buffer.t option;
     mutable moe_topk_weights : Buffer.t option;
     mutable moe_intermediate : Buffer.t option;
+    mutable moe_sorted_tokens : Buffer.t option;
+    mutable moe_sorted_p : Buffer.t option;
+    mutable moe_sorted_experts : Buffer.t option;
+    mutable moe_expert_offsets : Buffer.t option;
+    mutable moe_down_out : Buffer.t option;
   }
 end
 

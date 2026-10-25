@@ -452,6 +452,10 @@ let tile32_affine4_qkv_entries =
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_tile32_affine4_qkv_linear_f16_m32"
       ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_tile32_affine4_qkv_linear_f16_simd"
+      ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16 ]
 
 let tile32_affine8_qkv_source =
@@ -475,6 +479,10 @@ let tile32_affine8_qkv_entries =
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_tile32_affine8_qkv_linear_f16_m32"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+      ~name:"llmopt_tile32_affine8_qkv_linear_f16_simd"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16 ]
 

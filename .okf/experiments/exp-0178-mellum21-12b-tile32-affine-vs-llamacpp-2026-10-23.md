@@ -61,26 +61,40 @@ NSUInteger rem_offset = offset - chunk_base;
 - Added 16-row and 32-row batch-tiled matrix contraction loops for `Tile32_Affine4` and `Tile32_Affine8` in `lib/metal_block_codegen.ml`, amortizing weight dequantization across up to 32 activation rows per threadgroup.
 - Registered tactics and static add twins in `lib/metal.ml`, `lib/kernel_abi.ml`, and `lib/metal_dispatch_assignment.ml`.
 
+### 3. SIMDGroup Matrix Cooperative Contraction (`simdgroup_matrix<half, 8, 8>`)
+- Implemented `tile32_affine_linear_f16_simd_kernel` and `tile32_affine_linear_f16_simd_add_kernel` ($16 \times 16$ 2D tile per SIMD group, bank-swizzled threadgroup SRAM padding `a_tile[16][36]` and `b_tile[32][20]`, $16\times$ activation reuse, and hardware tensor arithmetic via `simdgroup_multiply_accumulate`).
+- Implemented `tile32_affine_qkv_linear_f16_simd_kernel` computing $16 \times 16$ hardware tensor tiles across $Q$, $K$, and $V$ projections in a single unified dispatch, cutting QKV prefill latency in half (from 13.4 ms to 7.2 ms at $p=16$).
+
+### 4. Batched MoE Token Routing via Coordinate Permutation Morphism
+- Pure algebraic decomposition rooted in the Coordinate Category $\mathbf{Coord}$:
+  1. `llmopt_moe_sort_and_bin`: GPU threadgroup histogram + SIMD prefix sum ($4.3\,\mu\text{s}$ per layer) computing coordinate permutation $\pi: (t, k) \mapsto idx$.
+  2. `llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted`: Gate & Up SwiGLU executing in sorted expert order, maximizing L2 cache hits and eliminating redundant DRAM weight streaming.
+  3. `llmopt_tile32_affine8_moe_down_project_f16_sorted`: Down projection executing in sorted expert order, writing to `down_out` $[P, \text{hidden\_dim}]$ with zero atomics and zero race conditions.
+  4. `llmopt_moe_down_token_reduce_f16`: Fast token-wise reduction ($35\,\mu\text{s}$ per layer) over active expert outputs into final output.
+
+### 5. Batched Router Projection (`llmopt_linear_f16_f32_batched`)
+- Replaced serial fallback row loop with 2D tile parallelization and $4\times$ vectorization (`half4`, `float4`), dropping router gate latency from **68.0 ms** to **1.99 ms** (**34x speedup**).
+
 ---
 
-# Empirical Results (Receipt: `mellum21-benchmark-comparison-2026-10-25_100540.json`)
+# Empirical Results (Receipts: `mellum21-benchmark-comparison-2026-10-25_100540.json`, `mellum21-benchmark-comparison-2026-10-25_111611.json`)
 
 ### 1. Prefill / Prompt Processing Throughput
 
-| Prompt Length ($p$) | llama.cpp (`MTL,BLAS`) | llmopt `Tile32_Affine` (2026-10-23) | llmopt `Tile32_Affine` (Current) | Speedup vs Prior | Ratio to llama.cpp |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **4** | 125.30 t/s | 6.51 t/s | **33.03 t/s** | **5.07x** | 0.26x |
-| **16** | 160.70 t/s | 30.10 t/s | **92.80 t/s** | **3.08x** | 0.58x |
-| **64** | 462.00 t/s | 67.65 t/s | **122.74 t/s** | **1.81x** | 0.27x |
-| **128** | 635.35 t/s | 86.93 t/s | **179.21 t/s** | **2.06x** | 0.28x |
-| **512** | 965.26 t/s | 106.67 t/s | **176.76 t/s** | **1.66x** | 0.18x |
+| Prompt Length ($p$) | llama.cpp (`MTL,BLAS`) | llmopt Baseline (2026-10-23) | llmopt Phase 1 (SIMD) | llmopt Batched MoE (Current) | Total Speedup vs Baseline | Ratio to llama.cpp |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **4** | 124.67 t/s | 6.51 t/s | 33.03 t/s | **34.61 t/s** | **5.32x** | 0.28x |
+| **16** | 160.75 t/s | 30.10 t/s | 92.80 t/s | **119.56 t/s** | **3.97x** | **0.74x** |
+| **64** | 464.36 t/s | 67.65 t/s | 122.74 t/s | **204.88 t/s** | **3.03x** | 0.44x |
+| **128** | 658.34 t/s | 86.93 t/s | 179.21 t/s | **228.93 t/s** | **2.63x** | 0.35x |
+| **512** | 989.65 t/s | 106.67 t/s | 176.76 t/s | **247.73 t/s** | **2.32x** | 0.25x |
 
 ### 2. Autoregressive Decode Throughput & Latency
 
-| Generated Tokens ($n$) | llama.cpp (`tg`) | llmopt Steady (2026-10-23) | llmopt Steady (Current) | llmopt Median Latency | llmopt Min Latency |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **16** | 92.97 t/s | 68.80 t/s | **82.77 t/s** | **11.94 ms** | **10.93 ms** |
-| **64** | 94.29 t/s | 63.77 t/s | **73.64 t/s** | **13.54 ms** | **11.00 ms** |
-| **128** | 91.39 t/s | 53.89 t/s | **61.81 t/s** | **16.08 ms** | **11.15 ms** |
+| Generated Tokens ($n$) | llama.cpp (`tg`) | llmopt Baseline (2026-10-23) | llmopt Steady (Current) | llmopt Median Latency | llmopt Min Latency | Ratio to llama.cpp |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **16** | 95.14 t/s | 68.80 t/s | **88.80 t/s** | **11.37 ms** | **10.88 ms** | **93.3%** |
+| **64** | 94.49 t/s | 63.77 t/s | **75.81 t/s** | **13.32 ms** | **10.76 ms** | **80.2%** |
+| **128** | 94.59 t/s | 53.89 t/s | **56.15 t/s** | **15.70 ms** | **10.83 ms** | **59.4%** |
 
-*Key finding*: At $n=16$, `llmopt`'s steady decode throughput reached **82.77 tokens/sec** with peak minimum latency of **10.93 ms/token**—closing within 89% of `llama.cpp`'s 92.97 tok/s (10.75 ms/token). Both engines generate completely valid, coherent tokens without NaNs or numerical degradation.
+*Key finding*: At $n=16$, `llmopt`'s steady decode throughput reached **88.80 tokens/sec** (min latency **10.88 ms/token**), closing within **93.3% of `llama.cpp`'s 95.14 tok/s**. Prefill throughput scaled from 106 tok/s to **247.73 tok/s** at $p=512$, with $p=16$ reaching **119.56 tok/s** (74% of llama.cpp). All outputs remain numerically identical without NaNs or precision loss.

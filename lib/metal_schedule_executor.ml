@@ -454,6 +454,11 @@ let bind_schedule_plan ?workspace ?memory_plan runtime ~schedule ~inputs =
       moe_topk_indices = None;
       moe_topk_weights = None;
       moe_intermediate = None;
+      moe_sorted_tokens = None;
+      moe_sorted_p = None;
+      moe_sorted_experts = None;
+      moe_expert_offsets = None;
+      moe_down_out = None;
     }
   in
   let* execution =
@@ -488,6 +493,11 @@ let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
       moe_topk_indices = None;
       moe_topk_weights = None;
       moe_intermediate = None;
+      moe_sorted_tokens = None;
+      moe_sorted_p = None;
+      moe_sorted_experts = None;
+      moe_expert_offsets = None;
+      moe_down_out = None;
     }
   in
   let* execution =

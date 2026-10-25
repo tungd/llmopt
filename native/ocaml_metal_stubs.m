@@ -2267,7 +2267,7 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
         }
       }
     }
-  } else if (getenv("LLMOPT_PROFILE_BREAKDOWN") != NULL && past_tokens > 0) {
+  } else if (getenv("LLMOPT_PROFILE_BREAKDOWN") != NULL) {
     @autoreleasepool {
       typedef struct {
         char name[128];

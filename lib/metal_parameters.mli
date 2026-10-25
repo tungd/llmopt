@@ -191,6 +191,13 @@ val moe_topk :
   unit ->
   (bytes, string) result
 
+val moe_sort :
+  tokens:int ->
+  num_experts:int ->
+  top_k:int ->
+  unit ->
+  (bytes, string) result
+
 val moe_gate_up :
   tokens:int ->
   top_k:int ->
