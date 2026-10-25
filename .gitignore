@@ -7,3 +7,4 @@ _artifacts/
 *.metallib
 __pycache__/
 tags
+target-hardware.json

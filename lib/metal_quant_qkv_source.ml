@@ -430,5 +430,53 @@ let q4_0_qkv_entries =
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Q4_0) ~output_dtype:Ir.Dtype.Float16 ]
 
+let tile32_affine4_qkv_source =
+  let schema =
+    match Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine4) with
+    | Ok s -> s
+    | Error err -> failwith (Block_schema.Error.to_string err)
+  in
+  match Metal_block_codegen.qkv_kernels ~target:Target_hardware.default schema with
+  | Ok s -> s
+  | Error err -> failwith err
+
+let tile32_affine4_qkv_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_qkv_linear_f16_x8"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_qkv_linear_f16_m16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_qkv_linear_f16_m32"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16 ]
+
+let tile32_affine8_qkv_source =
+  let schema =
+    match Block_schema.of_storage (Ir.Linear_storage.Block_quantized Ir.Dtype.Tile32_Affine8) with
+    | Ok s -> s
+    | Error err -> failwith (Block_schema.Error.to_string err)
+  in
+  match Metal_block_codegen.qkv_kernels ~target:Target_hardware.default schema with
+  | Ok s -> s
+  | Error err -> failwith err
+
+let tile32_affine8_qkv_entries =
+  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_qkv_linear_f16_x8"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_qkv_linear_f16_m16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_qkv_linear_f16_m32"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16 ]
+
 let quant_qkv_entries = q4_0_qkv_entries
 let quant_qkv_source = quant_qkv_params_source ^ q4_0_qkv_source

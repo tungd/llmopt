@@ -769,6 +769,14 @@ module Op = struct
         extra_outputs : Value.t list;
       }
     | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
+    | Moe_swiglu_ffn of {
+        m : int;
+        n_experts : int;
+        top_k : int;
+        hidden_dim : int;
+        intermediate_dim : int;
+        norm_topk_prob : bool;
+      }
     | Rms_rope_qk of {
         q_heads : int;
         k_heads : int;
@@ -876,6 +884,9 @@ module Op = struct
     | W4a16_swiglu_ffn { m; n; k; epsilon } ->
         Printf.sprintf "w4a16-swiglu-ffn-g64[%dx%dx%d,eps=%.9g]" m n k
           epsilon
+    | Moe_swiglu_ffn { m; n_experts; top_k; hidden_dim; intermediate_dim; norm_topk_prob } ->
+        Printf.sprintf "moe-swiglu-ffn(m=%d,experts=%d,top_k=%d,hidden=%d,intermediate=%d,norm=%b)"
+          m n_experts top_k hidden_dim intermediate_dim norm_topk_prob
     | W4a16_lm_head_argmax { m; n; k; epsilon; extra_outputs } ->
         Printf.sprintf "w4a16-lm-head-argmax%s[%dx%dx%d,eps=%.9g]"
           (if extra_outputs = [] then "" else "+logits-output") m n k

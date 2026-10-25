@@ -32,6 +32,9 @@ module Execution_batch = struct
     mutable swiglu_normalized : Buffer.t option;
     mutable swiglu_product : Buffer.t option;
     mutable candidates_buffer : Buffer.t option;
+    mutable moe_topk_indices : Buffer.t option;
+    mutable moe_topk_weights : Buffer.t option;
+    mutable moe_intermediate : Buffer.t option;
   }
 end
 
@@ -48,6 +51,9 @@ let with_execution_batch runtime operation =
       swiglu_normalized = None;
       swiglu_product = None;
       candidates_buffer = None;
+      moe_topk_indices = None;
+      moe_topk_weights = None;
+      moe_intermediate = None;
     }
   in
   let release_resources () = batch.resources <- [] in

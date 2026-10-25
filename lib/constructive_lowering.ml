@@ -252,6 +252,15 @@ let binary_operands_match inputs operation =
           && Ir.Value.equal right declared_left)
   | _ -> false
 
+let is_float32_broadcastable_weight main_val weight_val =
+  Tensor_shape.numel (Ir.Value.logical_shape weight_val) = 1
+  || match
+       Tensor_shape.dimensions (Ir.Value.logical_shape weight_val),
+       List.rev (Tensor_shape.dimensions (Ir.Value.logical_shape main_val))
+     with
+     | [ w ], last_dim :: _ -> w = last_dim
+     | _ -> false
+
 let binary_metadata_compatible node inputs output =
   match inputs with
   | [ left; right ]
@@ -269,10 +278,10 @@ let binary_metadata_compatible node inputs output =
              || (Ir.Value.dtype output = Ir.Dtype.Float16
                  && ((Ir.Value.dtype left = Ir.Dtype.Float16
                       && Ir.Value.dtype right = Ir.Dtype.Float32
-                      && Tensor_shape.numel (Ir.Value.logical_shape right) = 1)
+                      && is_float32_broadcastable_weight left right)
                      || (Ir.Value.dtype left = Ir.Dtype.Float32
                          && Ir.Value.dtype right = Ir.Dtype.Float16
-                         && Tensor_shape.numel (Ir.Value.logical_shape left) = 1)))) ->
+                         && is_float32_broadcastable_weight right left)))) ->
       Ok ()
   | [ left; right ]
     when (match
@@ -1122,7 +1131,7 @@ type event_match = {
 let ordered_subset assignments predicate =
   List.filter predicate assignments
 
-let gated_match ~target ~graph ~decisions assignments =
+let gated_matches ~target ~graph ~decisions assignments =
   let muls = ordered_subset assignments (fun assignment ->
       Option.is_some (mul_info assignment))
   in
@@ -1197,9 +1206,14 @@ let gated_match ~target ~graph ~decisions assignments =
         | Some result -> Some result
         | None -> try_orientation right left
   in
-  List.find_map try_match muls
+  List.filter_map try_match muls
 
-let linear_add_match ~decisions assignments =
+let gated_match ~target ~graph ~decisions assignments =
+  match gated_matches ~target ~graph ~decisions assignments with
+  | first :: _ -> Some first
+  | [] -> None
+
+let linear_add_matches ~decisions assignments =
   let adds = ordered_subset assignments (fun assignment ->
       Option.is_some (add_info assignment))
   in
@@ -1261,7 +1275,12 @@ let linear_add_match ~decisions assignments =
         | Some result -> Some result
         | None -> try_linear left right
   in
-  List.find_map try_add adds
+  List.filter_map try_add adds
+
+let linear_add_match ~decisions assignments =
+  match linear_add_matches ~decisions assignments with
+  | first :: _ -> Some first
+  | [] -> None
 
 let covered_linear_operation = function
   | Ir.Op.Linear { bias = false; _ } -> Some Lowering.Kind.Linear_add
@@ -1744,8 +1763,8 @@ let lower analysis =
     |> List.filter (fun region ->
            not (List.for_all (fun a -> Node_set.mem (assignment_id a) claimed)
                   (Region.assignments region)))
-    |> List.filter_map (fun region ->
-           gated_match ~target ~graph ~decisions (Region.assignments region))
+    |> List.concat_map (fun region ->
+           gated_matches ~target ~graph ~decisions (Region.assignments region))
   in
   let claimed, gated_events =
     List.fold_left
@@ -1778,8 +1797,8 @@ let lower analysis =
     |> List.filter (fun region ->
            not (List.for_all (fun a -> Node_set.mem (assignment_id a) claimed)
                   (Region.assignments region)))
-    |> List.filter_map (fun region ->
-           linear_add_match ~decisions (Region.assignments region))
+    |> List.concat_map (fun region ->
+           linear_add_matches ~decisions (Region.assignments region))
   in
   let claimed, linear_events, overlap_uncovered =
     List.fold_left

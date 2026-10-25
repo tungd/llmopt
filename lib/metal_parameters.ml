@@ -430,3 +430,12 @@ let batched_matmul ~lhs_shape ~rhs_shape ~output_shape =
         @ pad output_batch @ pad lhs_batch @ pad rhs_batch
       in
       u32s values
+
+let moe_topk ~tokens ~num_experts ~top_k ~norm_topk_prob () =
+  u32s [ tokens; num_experts; top_k; (if norm_topk_prob then 1 else 0) ]
+
+let moe_gate_up ~tokens ~top_k ~hidden_dim ~intermediate_dim () =
+  u32s [ tokens; top_k; hidden_dim; intermediate_dim ]
+
+let moe_down ~tokens ~top_k ~hidden_dim ~intermediate_dim () =
+  u32s [ tokens; top_k; hidden_dim; intermediate_dim ]

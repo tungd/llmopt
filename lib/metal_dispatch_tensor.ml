@@ -437,6 +437,8 @@ let dispatch_embedding (context : Metal_execution_state.context) state ~indices
   let* name =
     match Ir.Value.dtype weight with
     | Ir.Dtype.Float16 -> Ok "llmopt_embedding_f16"
+    | Ir.Dtype.Quant Tile32_Affine4 -> Ok "llmopt_embedding_tile32_affine4"
+    | Ir.Dtype.Quant Tile32_Affine8 -> Ok "llmopt_embedding_tile32_affine8"
     | Ir.Dtype.Quant Q8_0 -> Ok "llmopt_embedding_q8_0"
     | Ir.Dtype.Quant Q4_K -> Ok "llmopt_embedding_q4_k"
     | Ir.Dtype.Quant Q5_K -> Ok "llmopt_embedding_q5_k"

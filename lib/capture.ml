@@ -118,6 +118,49 @@ let run thunk =
                     ~inputs:(input :: weight :: scale :: Option.to_list bias)
                     ~output:(Some output);
                   Effect.Deep.continue continuation output)
+          | Tile_effect.Moe_swiglu_ffn
+              {
+                hidden_states;
+                router_logits;
+                gate_exps;
+                up_exps;
+                down_exps;
+                m;
+                n_experts;
+                top_k;
+                hidden_dim;
+                intermediate_dim;
+                norm_topk_prob;
+                shape;
+                logical_shape;
+              } ->
+              Some
+                (fun (continuation : (a, _) Effect.Deep.continuation) ->
+                  let output =
+                    fresh_tensor_value state.graph ~shape ~logical_shape
+                      ~dtype:Ir.Dtype.Float16
+                  in
+                  Ir.Graph.append state.graph
+                    ~op:
+                      (Ir.Op.Moe_swiglu_ffn
+                         {
+                           m;
+                           n_experts;
+                           top_k;
+                           hidden_dim;
+                           intermediate_dim;
+                           norm_topk_prob;
+                         })
+                    ~inputs:
+                      [
+                        hidden_states;
+                        router_logits;
+                        gate_exps;
+                        up_exps;
+                        down_exps;
+                      ]
+                    ~output:(Some output);
+                  Effect.Deep.continue continuation output)
           | Tile_effect.Add { lhs; rhs; shape; logical_shape; broadcast } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->

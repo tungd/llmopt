@@ -319,7 +319,18 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
             in
             let base_name = Kernel_abi.Entry.name tactic_entry in
             let digest_columns =
-              if quant <> Ir.Dtype.Q4_0 then None
+              if quant = Ir.Dtype.Tile32_Affine4 || quant = Ir.Dtype.Tile32_Affine8 then
+                if String.ends_with ~suffix:"_x8" base_name then
+                  Some (linear.m * ((linear.n + 7) / 8))
+                else if String.ends_with ~suffix:"_m2" base_name then
+                  Some (((linear.m + 1) / 2) * linear.n)
+                else if String.ends_with ~suffix:"_m16" base_name then
+                  Some (((linear.m + 15) / 16) * linear.n)
+                else if String.ends_with ~suffix:"_m32" base_name then
+                  Some (((linear.m + 31) / 32) * linear.n * 2)
+                else
+                  Some (linear.m * linear.n)
+              else if quant <> Ir.Dtype.Q4_0 then None
               else if String.ends_with ~suffix:"_x16" base_name then
                 Some ((linear.n + 15) / 16)
               else if String.ends_with ~suffix:"_x8" base_name then
@@ -622,6 +633,12 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
             else if String.ends_with ~suffix:"_x4" base_name then
               let groups = (first.n + 3) / 4 in
               linear_f16_grid (first.m * groups)
+            else if String.ends_with ~suffix:"_m16" base_name then
+              let m_tiles = (first.m + 15) / 16 in
+              linear_f16_grid (m_tiles * first.n)
+            else if String.ends_with ~suffix:"_m32" base_name then
+              let m_tiles = (first.m + 31) / 32 in
+              linear_f16_grid (m_tiles * first.n * 2)
             else
               linear_f16_grid (first.m * first.n)
           in
@@ -806,6 +823,12 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
                         else if String.ends_with ~suffix:"_x4" base_name then
                           let groups = (first.n + 3) / 4 in
                           linear_f16_grid (first.m * groups)
+                        else if String.ends_with ~suffix:"_m16" base_name then
+                          let m_tiles = (first.m + 15) / 16 in
+                          linear_f16_grid (m_tiles * first.n)
+                        else if String.ends_with ~suffix:"_m32" base_name then
+                          let m_tiles = (first.m + 31) / 32 in
+                          linear_f16_grid (m_tiles * first.n * 2)
                         else
                           linear_f16_grid (first.m * first.n)
                       in
@@ -860,7 +883,7 @@ let dispatch_assignment (context : Metal_execution_state.context) state =
                           ~output_dtype:(Ir.Value.dtype (List.hd outputs))
                       in
                       let* kernel =
-                        Metal_native.dispatch runtime entry ~buffers ~parameters
+                        Metal_native.dispatch ~batch:context.batch runtime entry ~buffers ~parameters
                           ~grid:(grid_x, 1, 1)
                       in
                       let state =

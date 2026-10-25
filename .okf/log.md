@@ -1,5 +1,11 @@
 # Update Log
 
+## 2026-10-25
+* **Zero-Cost Metal ICB Execution & Prefill Batch-Tiled Contractions for `Tile32_Affine{4,8}` ([exp-0178](experiments/exp-0178-mellum21-12b-tile32-affine-vs-llamacpp-2026-10-23.md))**:
+  - **Metal ICB 32-Bit Truncation Resolution (`native/ocaml_metal_stubs.m`)**: Resolved GPU address faults and page faults on large archives ($>4\text{ GiB}$) using 2 GiB page-aligned buffer slicing (`newBufferWithBytesNoCopy`) with bounded 2.5 GiB spans. Restored zero-overhead ICB execution (`icb=yes`, 408 dispatches) across 100% of prefill and decode dispatches for Mellum 2.1 12B without direct dispatch fallbacks.
+  - **QKV Multi-Export Contraction for `Tile32_Affine{4,8}` (`lib/metal_block_codegen.ml`, `lib/pass_fuse_linear_bias.ml`)**: Emitted fused `tile32_affine_qkv_linear_f16_x8`, `_m16`, and `_m32` kernels, with algebraic fallback from Triplet to Pair QK projections in mixed-quantization attention layers (100% layer coverage). Slashed decode latency from 15.5 ms down to **11.68 ms** median (min: **11.21 ms**, ~89.2 tok/s), closing the decode gap to `llama.cpp`.
+  - **Prefill Batch-Tiled GEMM (`_m16`, `_m32`)**: Implemented 16-row and 32-row batch-tiled matrix contractions amortizing weight dequantization across up to 32 activation rows. Verified GPU prefill throughput scaling from 33.03 tok/s ($p=4$, 5.07x faster) up to 179.21 tok/s ($p=128$, 2.06x faster) with zero numerical drift. End-to-end empirical comparison receipt saved to `bench/results/mellum21-benchmark-comparison-2026-10-25_100540.json`. All unit tests (`_build/bin/llmopt-test`) pass 100%.
+
 ## 2026-10-23
 * **Canonical `Tile32_Affine{4,8}` quantization reduction & in-register SIMD FWHT32 attention rotation**: Pivoted `llmopt` away from maintaining a 7-format GGUF runtime kernel zoo toward mathematical reduction:
   - **Prior Art & ADR**: Added `.okf/prior-art/apple-coreai.md`, `.okf/prior-art/cloudrift-emmy.md`, `.okf/prior-art/exl3-quarot-hadamard.md`, and `.okf/decisions/canonical-tile32-affine-and-hadamard-attention-rotation.md`; updated `.okf/decisions/gguf-unsloth-dynamic-quantization.md`, `.okf/architecture.md`, and `.okf/goal-serving-runtime.md`.

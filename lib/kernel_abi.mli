@@ -7,6 +7,7 @@ module Operation : sig
     | W4a16_linear
     | W4a16_qkv_linear
     | W4a16_swiglu_ffn
+    | Moe_swiglu_ffn
     | W4a16_lm_head_argmax
     | Rms_norm
     | Rms_rope
@@ -69,6 +70,8 @@ end
 module Linear_tactic : sig
   type t
   type linear_tactic = t
+
+  val make : name:string -> threadgroup:int * int * int -> t
 
   module Candidate : sig
     module Resource : sig

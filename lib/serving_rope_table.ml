@@ -96,6 +96,13 @@ let inv_freq_input schedule =
 
 let create ~runtime ~package ~positions =
   let schedule = Serving_package.schedule package in
+  let has_rope_input =
+    Serving_schedule.runtime_inputs schedule
+    |> List.exists (fun (name, _) ->
+           String.equal name Serving_schedule.Sequence.rope_cosine_input)
+  in
+  if not has_rope_input then Ok None
+  else
   match rope_half_dimension schedule with
   | None -> Ok None
   | Some half_dimension ->

@@ -90,6 +90,21 @@ let linear_f16_f32_source =
   ^ "  const uint column = gid / LINEAR_F32_WEIGHT_SIMD_WIDTH;\n"
   ^ "  if (column >= params.n) return;\n"
   ^ "  const uint weight_base = column * params.k;\n"
+  ^ "  if (params.m == 1u && (params.k & 3u) == 0u) {\n"
+  ^ "    const uint k4 = params.k >> 2u;\n"
+  ^ "    device const float4* w4 = (device const float4*)(weight + weight_base);\n"
+  ^ "    device const half4* in4 = (device const half4*)input;\n"
+  ^ "    float acc = 0.0f;\n"
+  ^ "    for (uint idx = lane; idx < k4; idx += LINEAR_F32_WEIGHT_SIMD_WIDTH) {\n"
+  ^ "      float4 w_val = w4[idx];\n"
+  ^ "      half4 in_val = in4[idx];\n"
+  ^ "      acc += float(in_val.x) * w_val.x + float(in_val.y) * w_val.y\n"
+  ^ "           + float(in_val.z) * w_val.z + float(in_val.w) * w_val.w;\n"
+  ^ "    }\n"
+  ^ "    acc = simd_sum(acc);\n"
+  ^ "    if (lane == 0u) output[column] = half(acc);\n"
+  ^ "    return;\n"
+  ^ "  }\n"
   ^ "  for (uint row_base = 0; row_base < params.m;\n"
   ^ "       row_base += LINEAR_F32_WEIGHT_ROWS_PER_BLOCK) {\n"
   ^ "    float accumulators[8] = {};\n"
@@ -174,6 +189,8 @@ let embedding_source = {|
 struct EmbeddingParams { uint tokens; uint vocabulary; uint width; };
 
 struct embedding_block_q8_0 { half d; int8_t qs[32]; };
+struct embedding_block_tile32_affine4 { half scale; half bias; uint8_t qs[16]; };
+struct embedding_block_tile32_affine8 { half scale; half bias; uint8_t qs[32]; };
 struct embedding_block_q5_0 { half d; uint8_t qh[4]; uint8_t qs[16]; };
 struct embedding_block_q4_0 { half d; uint8_t qs[16]; };
 struct embedding_block_q4_K {
@@ -360,6 +377,43 @@ kernel void llmopt_embedding_q6_k(
   output[gid] = llmopt_embedding_q6_k_value(weight[element >> 8], uint(element & 255u));
 }
 
+kernel void llmopt_embedding_tile32_affine4(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_tile32_affine4* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  const uint within = uint(element & 31u);
+  device const embedding_block_tile32_affine4& block = weight[element >> 5];
+  const uint packed = block.qs[within & 15u];
+  const uint q = within < 16u ? packed & 15u : packed >> 4;
+  output[gid] = block.scale * half(q) + block.bias;
+}
+
+kernel void llmopt_embedding_tile32_affine8(
+    device const long* indices [[buffer(0)]],
+    device const embedding_block_tile32_affine8* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant EmbeddingParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+  const uint count = params.tokens * params.width;
+  if (gid >= count) return;
+  const uint token = gid / params.width;
+  const uint dimension = gid % params.width;
+  const long index = indices[token];
+  if (index < 0 || index >= long(params.vocabulary)) { output[gid] = half(0.0h); return; }
+  const ulong element = ulong(index) * params.width + dimension;
+  device const embedding_block_tile32_affine8& block = weight[element >> 5];
+  output[gid] = block.scale * half(block.qs[element & 31u]) + block.bias;
+}
+
 kernel void llmopt_chain_token_id(
     device const uint* argmax_in [[buffer(0)]],
     device long* token_out [[buffer(1)]],
@@ -370,6 +424,8 @@ kernel void llmopt_chain_token_id(
 
 let embedding_entries =
   ([ "llmopt_embedding_f16";
+     "llmopt_embedding_tile32_affine4";
+     "llmopt_embedding_tile32_affine8";
      "llmopt_embedding_q8_0";
      "llmopt_embedding_q5_0";
      "llmopt_embedding_q4_0";

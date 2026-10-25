@@ -49,7 +49,7 @@ rule metal_compile
   pool = console
 
 rule python_test
-  command = PYTHONPATH=python:bench python3.13 -m unittest discover -s python/tests -v
+  command = PYTHONPATH=python:bench python/.venv/bin/python3 -m unittest discover -s python/tests -v
   description = run Python FX and benchsuite tests
   pool = console
 

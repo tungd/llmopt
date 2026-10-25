@@ -26,6 +26,9 @@ module Execution_batch : sig
     mutable swiglu_normalized : Buffer.t option;
     mutable swiglu_product : Buffer.t option;
     mutable candidates_buffer : Buffer.t option;
+    mutable moe_topk_indices : Buffer.t option;
+    mutable moe_topk_weights : Buffer.t option;
+    mutable moe_intermediate : Buffer.t option;
   }
 end
 

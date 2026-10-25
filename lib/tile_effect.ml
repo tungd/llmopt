@@ -38,6 +38,22 @@ type w4a16_linear = {
   logical_shape : Tensor_shape.t;
 }
 
+type moe_swiglu_ffn = {
+  hidden_states : Ir.Value.t;
+  router_logits : Ir.Value.t;
+  gate_exps : Ir.Value.t;
+  up_exps : Ir.Value.t;
+  down_exps : Ir.Value.t;
+  m : int;
+  n_experts : int;
+  top_k : int;
+  hidden_dim : int;
+  intermediate_dim : int;
+  norm_topk_prob : bool;
+  shape : Shape.t;
+  logical_shape : Tensor_shape.t;
+}
+
 type add = {
   lhs : Ir.Value.t;
   rhs : Ir.Value.t;
@@ -84,6 +100,7 @@ type _ Effect.t +=
   | Matmul : matmul -> Ir.Value.t Effect.t
   | Linear : linear -> Ir.Value.t Effect.t
   | W4a16_linear : w4a16_linear -> Ir.Value.t Effect.t
+  | Moe_swiglu_ffn : moe_swiglu_ffn -> Ir.Value.t Effect.t
   | Add : add -> Ir.Value.t Effect.t
   | Gelu : unary -> Ir.Value.t Effect.t
   | Relu : unary -> Ir.Value.t Effect.t
@@ -107,6 +124,7 @@ let async_copy ~src ~dst ~barrier = Effect.perform (Async_copy { src; dst; barri
 let matmul request = Effect.perform (Matmul request)
 let linear request = Effect.perform (Linear request)
 let w4a16_linear request = Effect.perform (W4a16_linear request)
+let moe_swiglu_ffn request = Effect.perform (Moe_swiglu_ffn request)
 let add request = Effect.perform (Add request)
 let gelu request = Effect.perform (Gelu request)
 let relu request = Effect.perform (Relu request)

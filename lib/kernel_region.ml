@@ -319,6 +319,12 @@ let dims shape = Tensor_shape.dimensions shape
 let numel shape = Tensor_shape.numel shape
 let same_shape left right = Tensor_shape.equal left right
 
+let is_float32_broadcastable_weight main_shape weight_shape =
+  numel weight_shape = 1
+  || match dims weight_shape, List.rev (dims main_shape) with
+     | [ w ], last_dim :: _ -> w = last_dim
+     | _ -> false
+
 let output_metadata ({ shape; dtype; _ } : output_spec) = (shape, dtype)
 
 let metadata inputs bindings =
@@ -467,10 +473,10 @@ let validate_primitive map binding =
                          || (output.dtype = Ir.Dtype.Float16
                              && ((left_dtype = Ir.Dtype.Float16
                                   && right_dtype = Ir.Dtype.Float32
-                                  && Tensor_shape.numel right_shape = 1)
+                                  && is_float32_broadcastable_weight left_shape right_shape)
                                  || (left_dtype = Ir.Dtype.Float32
                                      && right_dtype = Ir.Dtype.Float16
-                                     && Tensor_shape.numel left_shape = 1)))) ->
+                                     && is_float32_broadcastable_weight right_shape left_shape)))) ->
                   Ok ()
               | Ok _ | Error _ -> invalid "binary metadata is inconsistent")))
   | Primitive.Scalar_binary _ -> (

@@ -106,6 +106,37 @@ val tile32_affine_linear_f16_x8_kernel :
   Block_schema.t ->
   (string, string) result
 
+val tile32_affine_linear_f16_m16_kernel :
+  ?name:string ->
+  ?epilogue:Epilogue.t ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val tile32_affine_linear_f16_m16_add_kernel :
+  name:string ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val tile32_affine_linear_f16_m32_kernel :
+  ?name:string ->
+  ?epilogue:Epilogue.t ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val tile32_affine_linear_f16_m32_add_kernel :
+  name:string ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val tile32_affine_qkv :
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
 val tile32_affine_multi_linear_f16_x8_kernel :
   name:string ->
   epilogue:int Applicative_expr.t ->

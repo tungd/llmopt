@@ -143,6 +143,12 @@ let quant_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output
           | Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
               Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q4_0
               && Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q4_0
+          | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4
+              && Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4
+          | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8
+              && Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8
           | Ir.Dtype.Quant Ir.Dtype.Q5_0 ->
               Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q5_0
               && (Ir.Value.dtype vw = Ir.Dtype.Quant Ir.Dtype.Q5_0
@@ -160,6 +166,10 @@ let quant_qkv_linear_metadata_matches ~m ~k ~n_q ~n_k ~n_v inputs output
       && (match Ir.Value.dtype qw with
           | Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
               Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q4_0
+          | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4
+          | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8 ->
+              Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8
           | Ir.Dtype.Quant Ir.Dtype.Q5_0 ->
               Ir.Value.dtype kw = Ir.Dtype.Quant Ir.Dtype.Q5_0
           | _ -> false)
@@ -318,6 +328,27 @@ let validate_command seen_values command =
               Error
                 (Printf.sprintf
                    "schedule node %d W4A16 SwiGLU metadata is inconsistent"
+                   command.Command.node_id)
+        | ( Ir.Op.Moe_swiglu_ffn
+              { m; n_experts; top_k; hidden_dim; intermediate_dim; _ },
+            [ hidden_states; router_logits; gate_exps; up_exps; down_exps ],
+            Some output ) ->
+            if
+              m > 0 && n_experts > 0 && top_k > 0 && hidden_dim > 0
+              && intermediate_dim > 0 && top_k <= n_experts
+              && Tensor_shape.dimensions (Ir.Value.logical_shape hidden_states) = [ m; hidden_dim ]
+              && Tensor_shape.dimensions (Ir.Value.logical_shape router_logits) = [ m; n_experts ]
+              && Tensor_shape.dimensions (Ir.Value.logical_shape gate_exps) = [ n_experts; intermediate_dim; hidden_dim ]
+              && Tensor_shape.dimensions (Ir.Value.logical_shape up_exps) = [ n_experts; intermediate_dim; hidden_dim ]
+              && Tensor_shape.dimensions (Ir.Value.logical_shape down_exps) = [ n_experts; hidden_dim; intermediate_dim ]
+              && Tensor_shape.dimensions (Ir.Value.logical_shape output) = [ m; hidden_dim ]
+              && Ir.Value.dtype hidden_states = Ir.Dtype.Float16
+              && Ir.Value.dtype output = Ir.Dtype.Float16
+            then Ok ()
+            else
+              Error
+                (Printf.sprintf
+                   "schedule node %d Moe_swiglu_ffn metadata is inconsistent"
                    command.Command.node_id)
         | Ir.Op.Rms_norm_add { epsilon }, [ input; weight; residual ], Some output ->
             if
@@ -1118,7 +1149,8 @@ let validate_command seen_values command =
               (match Ir.Value.dtype weight with
               | Ir.Dtype.Float16
               | Ir.Dtype.Quant
-                  (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0) ->
+                  (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | Tile32_Affine4
+                  | Tile32_Affine8) ->
                   true
               | Ir.Dtype.Quant IQ4_XS | _ -> false)
               && Ir.Value.dtype output = Ir.Dtype.Float16

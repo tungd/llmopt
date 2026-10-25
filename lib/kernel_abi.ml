@@ -7,6 +7,7 @@ module Operation = struct
     | W4a16_linear
     | W4a16_qkv_linear
     | W4a16_swiglu_ffn
+    | Moe_swiglu_ffn
     | W4a16_lm_head_argmax
     | Rms_norm
     | Rms_rope
@@ -41,6 +42,7 @@ module Operation = struct
     | W4a16_linear -> "w4a16-linear-g64"
     | W4a16_qkv_linear -> "w4a16-qkv-linear-g64"
     | W4a16_swiglu_ffn -> "w4a16-swiglu-ffn-g64"
+    | Moe_swiglu_ffn -> "moe-swiglu-ffn"
     | W4a16_lm_head_argmax -> "w4a16-lm-head-argmax"
     | Rms_norm -> "rms-norm"
     | Rms_rope -> "rms-rope"
@@ -75,6 +77,7 @@ module Operation = struct
     | "w4a16-linear-g64" -> Ok W4a16_linear
     | "w4a16-qkv-linear-g64" -> Ok W4a16_qkv_linear
     | "w4a16-swiglu-ffn-g64" -> Ok W4a16_swiglu_ffn
+    | "moe-swiglu-ffn" -> Ok Moe_swiglu_ffn
     | "w4a16-lm-head-argmax" -> Ok W4a16_lm_head_argmax
     | "rms-norm" -> Ok Rms_norm
     | "rms-rope" -> Ok Rms_rope
@@ -151,6 +154,8 @@ module Linear_tactic = struct
   type t = { name : string; threadgroup : int * int * int }
   type linear_tactic = t
   type tactic = linear_tactic
+
+  let make ~name ~threadgroup = { name; threadgroup }
 
   module Work_sharing = struct
     type t = {
@@ -511,7 +516,10 @@ module Linear_tactic = struct
             threadgroup = (256, 1, 1) });
       accepts =
         (fun (problem : problem) ->
-          problem.m = 1 && problem.n > 0 && problem.n mod 8 = 0 && problem.k > 0
+          (problem.m = 1
+          || ((quant = Ir.Dtype.Tile32_Affine4 || quant = Ir.Dtype.Tile32_Affine8)
+              && problem.slots >= 2))
+          && problem.n > 0 && problem.n mod 8 = 0 && problem.k > 0
           && problem.k mod block_elements quant = 0
           && f16_io problem.input_dtype problem.output_dtype
           && block_quantized problem quant
@@ -645,9 +653,9 @@ module Linear_tactic = struct
     @ List.map four_column_quant_registration
       [ Ir.Dtype.Q4_K; Ir.Dtype.Q5_K; Ir.Dtype.Q6_K ]
     @ List.map m32_quant_registration
-      [ Ir.Dtype.Q4_0 ]
+      [ Ir.Dtype.Q4_0; Ir.Dtype.Tile32_Affine4; Ir.Dtype.Tile32_Affine8 ]
     @ List.map m16_quant_registration
-      [ Ir.Dtype.Q4_0 ]
+      [ Ir.Dtype.Q4_0; Ir.Dtype.Tile32_Affine4; Ir.Dtype.Tile32_Affine8 ]
     @ List.map m4_quant_registration
       [ Ir.Dtype.Q4_0 ]
     @ List.map paired_quant_registration

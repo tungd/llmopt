@@ -274,6 +274,7 @@ let take_best_fit bytes blocks =
       Some (selected.offset, remove [] blocks)
 
 let allocate_intervals intervals =
+  let no_reuse = Sys.getenv_opt "LLMOPT_NO_MEMORY_REUSE" = Some "1" in
   let sorted =
     intervals |> Value_map.bindings |> List.map snd
     |> List.sort (fun left right ->
@@ -286,14 +287,21 @@ let allocate_intervals intervals =
     | interval :: rest ->
         let active, free = release_finished interval.first active free in
         let* offset, free, high_water =
-          match take_best_fit interval.reserved free with
-          | Some (offset, free) -> Ok (offset, free, high_water)
-          | None ->
-              let* next =
-                checked_add high_water interval.reserved
-                  "workspace high-water mark overflows"
-              in
-              Ok (high_water, free, next)
+          if no_reuse then
+            let* next =
+              checked_add high_water interval.reserved
+                "workspace high-water mark overflows"
+            in
+            Ok (high_water, free, next)
+          else
+            match take_best_fit interval.reserved free with
+            | Some (offset, free) -> Ok (offset, free, high_water)
+            | None ->
+                let* next =
+                  checked_add high_water interval.reserved
+                    "workspace high-water mark overflows"
+                in
+                Ok (high_water, free, next)
         in
         let allocation =
           { Allocation.offset = offset; bytes = interval.bytes }

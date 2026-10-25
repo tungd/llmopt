@@ -182,3 +182,27 @@ val batched_matmul :
   rhs_shape:Tensor_shape.t ->
   output_shape:Tensor_shape.t ->
   (bytes, string) result
+
+val moe_topk :
+  tokens:int ->
+  num_experts:int ->
+  top_k:int ->
+  norm_topk_prob:bool ->
+  unit ->
+  (bytes, string) result
+
+val moe_gate_up :
+  tokens:int ->
+  top_k:int ->
+  hidden_dim:int ->
+  intermediate_dim:int ->
+  unit ->
+  (bytes, string) result
+
+val moe_down :
+  tokens:int ->
+  top_k:int ->
+  hidden_dim:int ->
+  intermediate_dim:int ->
+  unit ->
+  (bytes, string) result

@@ -1431,12 +1431,6 @@ let reset engine =
   engine.logical_cache <- Serving_cache.create engine.config;
   engine.decode_checkpoint <- None;
   engine.decode_recurrent_buffers <- None;
-  (match engine.decode_executable with
-   | Some { ring_queue = Some ring; _ } ->
-       let _ = Metal_runtime.Ring_queue.destroy ring in
-       ()
-   | _ -> ());
-  engine.decode_executable <- None;
   Ok ()
 
 let warmup_engine ?(prompt_lengths = [ 4; 37 ]) engine =

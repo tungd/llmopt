@@ -58,6 +58,7 @@ val has_w4a16_linear : Ir.Graph.t -> bool
 val has_w4a16_qkv_linear : Ir.Graph.t -> bool
 val has_quant_qkv_linear : Ir.Graph.t -> bool
 val has_w4a16_swiglu_ffn : Ir.Graph.t -> bool
+val has_moe_swiglu_ffn : Ir.Graph.t -> bool
 val has_w4a16_lm_head_argmax : Ir.Graph.t -> bool
 val has_f16_linear : Ir.Graph.t -> bool
 val has_f16_bf16_linear : Ir.Graph.t -> bool

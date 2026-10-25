@@ -446,7 +446,9 @@ let fuse_quant_qkv graph =
         | Ir.Op.Linear { m; n; k; bias = false }, Some output,
           [ input; weight ] ->
             (match Ir.Value.dtype weight with
-            | Ir.Dtype.Quant (Ir.Dtype.Q4_0 | Ir.Dtype.Q5_0 | Ir.Dtype.Q8_0) ->
+            | Ir.Dtype.Quant
+                ( Ir.Dtype.Q4_0 | Ir.Dtype.Q5_0 | Ir.Dtype.Q8_0
+                | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8 ) ->
                 Some (node, m, n, k, output, input, weight)
             | _ -> None)
         | _ -> None)
@@ -503,7 +505,9 @@ let fuse_quant_qkv graph =
                  n_q > n_first && n_first = n_second
                  && q_rotary
                  && (q_quant = Ir.Dtype.Quant Ir.Dtype.Q5_0
-                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Q4_0)
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Q4_0
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8)
                then
                  let k_node, v_node =
                    if first_is_k && not second_is_k then first, second
@@ -517,6 +521,12 @@ let fuse_quant_qkv graph =
                    | Ir.Dtype.Quant Ir.Dtype.Q4_0 ->
                        Ir.Value.dtype k_weight = Ir.Dtype.Quant Ir.Dtype.Q4_0
                        && Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Q4_0
+                   | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4 ->
+                       Ir.Value.dtype k_weight = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4
+                       && Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4
+                   | Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8 ->
+                       Ir.Value.dtype k_weight = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8
+                       && Ir.Value.dtype v_weight = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8
                    | Ir.Dtype.Quant Ir.Dtype.Q5_0 ->
                        Ir.Value.dtype k_weight = Ir.Dtype.Quant Ir.Dtype.Q5_0
                        &&
@@ -529,6 +539,11 @@ let fuse_quant_qkv graph =
                      (`Triplet
                        ( q_node, k_node', v_node', m, k, n_q, n_k, n_v,
                          normalized, q_weight, k_weight, v_weight, k_out, v_out ))
+                 else if Ir.Value.dtype k_weight = q_quant then
+                   Some
+                     (`Pair
+                       ( q_node, k_node', m, k, n_q, n_k,
+                         normalized, q_weight, k_weight, k_out ))
                  else None
                else None
            | [ first ] ->
@@ -541,7 +556,9 @@ let fuse_quant_qkv graph =
                  n_q > n_k && q_rotary && first_is_k
                  && q_quant = k_quant
                  && (q_quant = Ir.Dtype.Quant Ir.Dtype.Q4_0
-                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Q5_0)
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Q5_0
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4
+                    || q_quant = Ir.Dtype.Quant Ir.Dtype.Tile32_Affine8)
                then
                  Some
                    (`Pair

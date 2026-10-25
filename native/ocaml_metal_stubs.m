@@ -136,6 +136,10 @@ typedef struct {
   id<MTLBuffer> params_buffer;
   id<MTLResource> *unique_resources;
   NSUInteger unique_resource_count;
+  id<MTLResource> *read_only_resources;
+  NSUInteger read_only_resource_count;
+  id<MTLResource> *read_write_resources;
+  NSUInteger read_write_resource_count;
 } llmopt_prebaked_plan;
 
 static bool is_paged_attention_kernel(const char *name) {
@@ -358,6 +362,18 @@ static void finalize_prebaked(value v) {
         [plan->unique_resources[i] release];
       }
       free(plan->unique_resources);
+    }
+    if (plan->read_only_resources != NULL) {
+      for (NSUInteger i = 0; i < plan->read_only_resource_count; i++) {
+        [plan->read_only_resources[i] release];
+      }
+      free(plan->read_only_resources);
+    }
+    if (plan->read_write_resources != NULL) {
+      for (NSUInteger i = 0; i < plan->read_write_resource_count; i++) {
+        [plan->read_write_resources[i] release];
+      }
+      free(plan->read_write_resources);
     }
     [plan->params_buffer release];
     [plan->icb release];
@@ -1913,6 +1929,8 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
   }
 
   bool disable_icb = (getenv("LLMOPT_DISABLE_ICB") != NULL);
+  NSMutableDictionary<NSString *, id<MTLBuffer>> *slice_cache = [NSMutableDictionary dictionary];
+
   for (mlsize_t i = 0; i < total; i++) {
     value item = Field(v_dispatches, i);
     const char *kname = String_val(Field(item, 0));
@@ -1945,9 +1963,46 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     while (rem != Val_emptylist && b_idx < 16) {
       llmopt_metal_buffer *b = Buffer_val(Field(rem, 0));
       if (b != NULL) {
-        plan->records[i].buffers[b_idx] = [b->buffer retain];
-        plan->records[i].offsets[b_idx] = b->offset;
-        plan->records[i].lengths[b_idx] = b->length;
+        id<MTLBuffer> mbuf = b->buffer;
+        NSUInteger offset = b->offset;
+        NSUInteger length = b->length;
+
+        // Metal ICB argument table encodes buffer offsets as uint32_t.
+        // For large buffers (e.g. model weights > 2GB), chunk the buffer into 2 GiB slices using newBufferWithBytesNoCopy
+        // so that the relative offset inside the slice buffer is guaranteed < 2GB, safely fitting in uint32_t.
+        if ([mbuf length] >= 0x80000000ULL && [mbuf contents] != NULL) {
+          const size_t chunk_size = 0x80000000ULL; // 2 GiB
+          const size_t max_span = chunk_size + 0x20000000ULL; // 2 GiB + 512 MB
+          size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+          NSUInteger chunk_index = offset / chunk_size;
+          NSUInteger chunk_base = chunk_index * chunk_size;
+          NSUInteger rem_offset = offset - chunk_base;
+          NSString *cache_key = [NSString stringWithFormat:@"%p:%lu", (void *)mbuf, (unsigned long)chunk_index];
+          id<MTLBuffer> slice_buf = [slice_cache objectForKey:cache_key];
+          if (slice_buf == nil) {
+            uint8_t *ptr = (uint8_t *)[mbuf contents] + chunk_base;
+            NSUInteger remaining = [mbuf length] > chunk_base ? [mbuf length] - chunk_base : 0;
+            NSUInteger raw_len = remaining > max_span ? max_span : remaining;
+            NSUInteger slice_len = ((raw_len + page_size - 1) / page_size) * page_size;
+            if (slice_len > 0) {
+              slice_buf = [lib->device newBufferWithBytesNoCopy:ptr
+                                                         length:slice_len
+                                                        options:MTLResourceStorageModeShared
+                                                    deallocator:nil];
+              if (slice_buf != nil) {
+                [slice_cache setObject:slice_buf forKey:cache_key];
+              }
+            }
+          }
+          if (slice_buf != nil) {
+            mbuf = slice_buf;
+            offset = rem_offset;
+          }
+        }
+
+        plan->records[i].buffers[b_idx] = [mbuf retain];
+        plan->records[i].offsets[b_idx] = offset;
+        plan->records[i].lengths[b_idx] = length;
       }
       b_idx++;
       rem = Field(rem, 1);
@@ -1958,6 +2013,19 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     if (plen > 0 && plen <= 256) {
       memcpy(plan->records[i].parameters, Bytes_val(params), plen);
       plan->records[i].parameter_length = plen;
+    }
+  }
+
+  // Safety fallback: only disable ICB if any buffer offset still exceeds uint32_t limit
+  if (!disable_icb) {
+    for (size_t i = 0; i < total; i++) {
+      for (NSUInteger b = 0; b < plan->records[i].buffer_count; b++) {
+        if ((uint64_t)plan->records[i].offsets[b] >= 0xFFFFFFFFULL) {
+          disable_icb = true;
+          break;
+        }
+      }
+      if (disable_icb) break;
     }
   }
 
@@ -1986,7 +2054,7 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
       for (size_t i = 0; i < total; i++) {
         llmopt_dispatch_record *r = &plan->records[i];
         id<MTLIndirectComputeCommand> cmd = [plan->icb indirectComputeCommandAtIndex:i];
-        if (r->barrier_before) {
+        if (i < total - 1) {
           [cmd setBarrier];
         }
         [cmd setComputePipelineState:r->pipeline];
@@ -2002,23 +2070,56 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
       }
     }
 
-    NSMutableSet<id<MTLResource>> *res_set = [NSMutableSet set];
-    if (plan->token_buffer != nil) [res_set addObject:plan->token_buffer];
-    if (plan->output_buffer != nil) [res_set addObject:plan->output_buffer];
-    if (plan->params_buffer != nil) [res_set addObject:plan->params_buffer];
+    NSMutableSet<id<MTLResource>> *ro_set = [NSMutableSet set];
+    for (id<MTLBuffer> sbuf in [slice_cache allValues]) {
+      [ro_set addObject:sbuf];
+    }
+
+    NSMutableSet<id<MTLResource>> *rw_set = [NSMutableSet set];
+    if (plan->token_buffer != nil) [rw_set addObject:plan->token_buffer];
+    if (plan->output_buffer != nil) [rw_set addObject:plan->output_buffer];
+    if (plan->params_buffer != nil) [rw_set addObject:plan->params_buffer];
     for (size_t i = 0; i < total; i++) {
       for (NSUInteger b = 0; b < plan->records[i].buffer_count; b++) {
-        if (plan->records[i].buffers[b] != nil) {
-          [res_set addObject:plan->records[i].buffers[b]];
+        if (plan->records[i].buffers[b] != nil && ![ro_set containsObject:plan->records[i].buffers[b]]) {
+          [rw_set addObject:plan->records[i].buffers[b]];
         }
       }
     }
-    plan->unique_resource_count = [res_set count];
-    if (plan->unique_resource_count > 0) {
-      plan->unique_resources = calloc(plan->unique_resource_count, sizeof(id<MTLResource>));
-      NSUInteger u_idx = 0;
-      for (id<MTLResource> res in res_set) {
-        plan->unique_resources[u_idx++] = [res retain];
+
+    plan->read_only_resource_count = [ro_set count];
+    if (plan->read_only_resource_count > 0) {
+      plan->read_only_resources = calloc(plan->read_only_resource_count, sizeof(id<MTLResource>));
+      NSUInteger idx = 0;
+      uint64_t ro_bytes = 0;
+      for (id<MTLResource> res in ro_set) {
+        plan->read_only_resources[idx++] = [res retain];
+        if ([res conformsToProtocol:@protocol(MTLBuffer)]) {
+          ro_bytes += [(id<MTLBuffer>)res length];
+        }
+      }
+      if (getenv("LLMOPT_PROFILE_BATCH") != NULL) {
+        fprintf(stderr, "[ICB_DEBUG] read_only_resources: count=%lu, total_bytes=%llu (%.2f GB)\n",
+                (unsigned long)plan->read_only_resource_count, (unsigned long long)ro_bytes,
+                (double)ro_bytes / (1024.0 * 1024.0 * 1024.0));
+      }
+    }
+
+    plan->read_write_resource_count = [rw_set count];
+    if (plan->read_write_resource_count > 0) {
+      plan->read_write_resources = calloc(plan->read_write_resource_count, sizeof(id<MTLResource>));
+      NSUInteger idx = 0;
+      uint64_t rw_bytes = 0;
+      for (id<MTLResource> res in rw_set) {
+        plan->read_write_resources[idx++] = [res retain];
+        if ([res conformsToProtocol:@protocol(MTLBuffer)]) {
+          rw_bytes += [(id<MTLBuffer>)res length];
+        }
+      }
+      if (getenv("LLMOPT_PROFILE_BATCH") != NULL) {
+        fprintf(stderr, "[ICB_DEBUG] read_write_resources: count=%lu, total_bytes=%llu (%.2f MB)\n",
+                (unsigned long)plan->read_write_resource_count, (unsigned long long)rw_bytes,
+                (double)rw_bytes / (1024.0 * 1024.0));
       }
     }
   }
@@ -2245,9 +2346,14 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
     id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
 
     if (plan->icb != nil && getenv("LLMOPT_DISABLE_ICB") == NULL) {
-      if (plan->unique_resource_count > 0) {
-        [enc useResources:plan->unique_resources
-                    count:plan->unique_resource_count
+      if (plan->read_only_resource_count > 0) {
+        [enc useResources:plan->read_only_resources
+                    count:plan->read_only_resource_count
+                    usage:MTLResourceUsageRead];
+      }
+      if (plan->read_write_resource_count > 0) {
+        [enc useResources:plan->read_write_resources
+                    count:plan->read_write_resource_count
                     usage:MTLResourceUsageRead | MTLResourceUsageWrite];
       }
       if (getenv("LLMOPT_DEBUG_ICB_STEP") != NULL) {
@@ -2281,37 +2387,6 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
         fprintf(stderr, "  grid=(%lu,%lu,%lu) group=(%lu,%lu,%lu)\n",
                 (unsigned long)r0->grid.width, (unsigned long)r0->grid.height, (unsigned long)r0->grid.depth,
                 (unsigned long)r0->group.width, (unsigned long)r0->group.height, (unsigned long)r0->group.depth);
-        // Test 3: Slice buffer test for ICB record 0
-        {
-          size_t page_size = getpagesize();
-          NSUInteger chunk_base = (r0->offsets[1] / page_size) * page_size;
-          NSUInteger rem_offset = r0->offsets[1] - chunk_base;
-          uint8_t *ptr = (uint8_t *)[r0->buffers[1] contents] + chunk_base;
-          NSUInteger slice_len = [r0->buffers[1] length] - chunk_base;
-          id<MTLBuffer> slice_buf = [plan->queue.device newBufferWithBytesNoCopy:ptr
-                                                                          length:slice_len
-                                                                         options:MTLResourceStorageModeShared
-                                                                     deallocator:nil];
-          id<MTLIndirectComputeCommand> icmd0 = [plan->icb indirectComputeCommandAtIndex:0];
-          [icmd0 setKernelBuffer:slice_buf offset:rem_offset atIndex:1];
-
-          id<MTLCommandBuffer> slice_cmd = [plan->queue commandBuffer];
-          id<MTLComputeCommandEncoder> slice_enc = [slice_cmd computeCommandEncoder];
-          [slice_enc useResource:slice_buf usage:MTLResourceUsageRead];
-          if (plan->unique_resource_count > 0) {
-            [slice_enc useResources:plan->unique_resources
-                              count:plan->unique_resource_count
-                              usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-          }
-          [slice_enc executeCommandsInBuffer:plan->icb withRange:NSMakeRange(0, 1)];
-          [slice_enc endEncoding];
-          [slice_cmd commit];
-          [slice_cmd waitUntilCompleted];
-          const _Float16 *f16_slice = (const _Float16 *)((const uint8_t *)[r0->buffers[2] contents] + r0->offsets[2]);
-          fprintf(stderr, "[DEBUG_ICB_STEP] ICB + SLICE BUF record 0 out[0..3]: %f %f %f %f\n",
-                  (float)f16_slice[0], (float)f16_slice[1], (float)f16_slice[2], (float)f16_slice[3]);
-          [slice_buf release];
-        }
 
         for (size_t i = 0; i < plan->record_count; i++) {
           llmopt_dispatch_record *r = &plan->records[i];
@@ -2323,15 +2398,48 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
           }
           id<MTLCommandBuffer> step_cmd = [plan->queue commandBuffer];
           id<MTLComputeCommandEncoder> step_enc = [step_cmd computeCommandEncoder];
-          if (plan->unique_resource_count > 0) {
-            [step_enc useResources:plan->unique_resources
-                             count:plan->unique_resource_count
+          if (i == 0) {
+            for (NSUInteger b = 0; b < r->buffer_count; b++) {
+              bool found = false;
+              for (NSUInteger u = 0; u < plan->unique_resource_count; u++) {
+                if (plan->unique_resources[u] == r->buffers[b]) { found = true; break; }
+              }
+              fprintf(stderr, "  buf[%lu] (%p) in unique_resources: %s\n", b, (void *)r->buffers[b], found ? "YES" : "NO");
+            }
+            bool pb_found = false;
+            for (NSUInteger u = 0; u < plan->unique_resource_count; u++) {
+              if (plan->unique_resources[u] == plan->params_buffer) { pb_found = true; break; }
+            }
+            fprintf(stderr, "  params_buffer (%p) in unique_resources: %s\n", (void *)plan->params_buffer, pb_found ? "YES" : "NO");
+          }
+          if (plan->read_only_resource_count > 0) {
+            [step_enc useResources:plan->read_only_resources
+                             count:plan->read_only_resource_count
+                             usage:MTLResourceUsageRead];
+          }
+          if (plan->read_write_resource_count > 0) {
+            [step_enc useResources:plan->read_write_resources
+                             count:plan->read_write_resource_count
                              usage:MTLResourceUsageRead | MTLResourceUsageWrite];
           }
           [step_enc executeCommandsInBuffer:plan->icb withRange:NSMakeRange(i, 1)];
           [step_enc endEncoding];
           [step_cmd commit];
           [step_cmd waitUntilCompleted];
+
+          if (step_cmd.status != MTLCommandBufferStatusCompleted) {
+            fprintf(stderr, "\n==================================================\n");
+            fprintf(stderr, "[DEBUG_ICB_STEP] ICB COMMAND FAILED AT RECORD %zu: %s\n",
+                    i, [[step_cmd.error localizedDescription] UTF8String]);
+            fprintf(stderr, "  kernel: '%s'\n", r->kernel_name);
+            for (NSUInteger b = 0; b < r->buffer_count; b++) {
+              fprintf(stderr, "  buf[%lu]: ptr=%p, offset=%lu, len=%lu, total_buf_len=%lu\n",
+                      (unsigned long)b, (void *)r->buffers[b], (unsigned long)r->offsets[b],
+                      (unsigned long)r->lengths[b], (unsigned long)[r->buffers[b] length]);
+            }
+            fprintf(stderr, "==================================================\n\n");
+            exit(1);
+          }
 
           if (i == 0) {
             const _Float16 *f16_icb = (const _Float16 *)((const uint8_t *)[r->buffers[2] contents] + r->offsets[2]);
@@ -2350,15 +2458,6 @@ CAMLprim value caml_llmopt_prebaked_execute(value v_plan, value v_token, value v
               exit(1);
             }
           }
-        }
-      } else if (getenv("LLMOPT_ICB_STEP") != NULL) {
-        for (size_t i = 0; i < plan->record_count; i++) {
-          llmopt_dispatch_record *r = &plan->records[i];
-          if (r->barrier_before) {
-            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
-          }
-          [enc executeCommandsInBuffer:plan->icb
-                             withRange:NSMakeRange(i, 1)];
         }
       } else {
         [enc executeCommandsInBuffer:plan->icb

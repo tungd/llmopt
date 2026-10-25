@@ -63,6 +63,10 @@ module Resource_class = struct
         in
         let activations = Float.of_int (m * (2 * k + n)) *. 2.0 in
         flops /. max 1.0 (packed_weights +. group_scales +. activations)
+    | Ir.Op.Moe_swiglu_ffn { m; top_k; hidden_dim; intermediate_dim; _ } ->
+        let flops = 6.0 *. Float.of_int (m * top_k) *. Float.of_int hidden_dim *. Float.of_int intermediate_dim in
+        let weights = Float.of_int (top_k * hidden_dim * intermediate_dim) *. 0.625 in
+        flops /. max 1.0 weights
     | Ir.Op.Gated_linear { m; n; k; _ } ->
         let flops = 4.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k in
         let weights = Float.of_int (2 * n * k) *. 0.5625 in
@@ -99,6 +103,7 @@ module Resource_class = struct
     | Ir.Op.W4a16_qkv_linear _
     | Ir.Op.Quant_qkv_linear _
     | Ir.Op.W4a16_swiglu_ffn _
+    | Ir.Op.Moe_swiglu_ffn _
     | Ir.Op.Gated_linear _
     | Ir.Op.W4a16_lm_head_argmax _
     | Ir.Op.Matmul _

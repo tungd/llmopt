@@ -401,6 +401,14 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                   (Metal_dispatch_linear.dispatch_w4a16_lm_head_argmax_command
                      context state ~m ~n ~k ~epsilon ~extra_outputs values
                      output)
+            | ( Ir.Op.Moe_swiglu_ffn
+                  { m; n_experts; top_k; hidden_dim; intermediate_dim; norm_topk_prob },
+                values,
+                Some output ) ->
+                dispatched
+                  (Metal_dispatch_linear.dispatch_moe_swiglu_ffn_command
+                     context state ~m ~n_experts ~top_k ~hidden_dim ~intermediate_dim
+                     ~norm_topk_prob values output)
             | Ir.Op.Output { name }, [ input ], None ->
                 let* buffer = Metal_execution_state.find_value state input in
                 continue
@@ -443,6 +451,9 @@ let bind_schedule_plan ?workspace ?memory_plan runtime ~schedule ~inputs =
       swiglu_normalized = None;
       swiglu_product = None;
       candidates_buffer = None;
+      moe_topk_indices = None;
+      moe_topk_weights = None;
+      moe_intermediate = None;
     }
   in
   let* execution =
@@ -474,6 +485,9 @@ let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
       swiglu_normalized = None;
       swiglu_product = None;
       candidates_buffer = None;
+      moe_topk_indices = None;
+      moe_topk_weights = None;
+      moe_intermediate = None;
     }
   in
   let* execution =

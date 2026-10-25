@@ -871,7 +871,8 @@ let plan fx_graph =
               match Ir.Value.dtype weight with
               | Ir.Dtype.Float16
               | Ir.Dtype.Quant
-                  (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0) ->
+                  (Q8_0 | Q4_K | Q5_K | Q6_K | Q5_0 | Q4_0 | Tile32_Affine4
+                  | Tile32_Affine8) ->
                   false
               | Ir.Dtype.Quant IQ4_XS | _ -> true
             then
@@ -1529,6 +1530,70 @@ let plan fx_graph =
                     lower_w4a16 input weight scale None
                 | [ input; weight; scale; bias ] ->
                     lower_w4a16 input weight scale (Some bias)
+                | _ -> lower_opaque inputs)
+              else if contains target "moe_swiglu_ffn" then
+                let lower_moe hidden_states router_logits gate_exps up_exps down_exps =
+                  let hs_shape = Ir.Value.shape hidden_states in
+                  let hs_logical = Ir.Value.logical_shape hidden_states in
+                  let m = Shape.rows hs_shape in
+                  let hidden_dim = Shape.cols hs_shape in
+                  let gate_dims =
+                    Tensor_shape.dimensions (Ir.Value.logical_shape gate_exps)
+                  in
+                  let* n_experts, intermediate_dim =
+                    match gate_dims with
+                    | [ e; i; h ] when h = hidden_dim -> Ok (e, i)
+                    | _ ->
+                        fail_unsupported node
+                          "moe_swiglu_ffn gate_exps shape must be [num_experts, intermediate_dim, hidden_dim]"
+                  in
+                  let top_k =
+                    match keyword "top_k" node with
+                    | Some (Fx.Argument.Int k) -> k
+                    | _ ->
+                        (match Fx.Node.arguments node with
+                        | _ :: _ :: _ :: _ :: _ :: Fx.Argument.Int k :: _ -> k
+                        | _ -> 8)
+                  in
+                  let norm_topk_prob =
+                    match keyword "norm_topk_prob" node with
+                    | Some (Fx.Argument.Bool b) -> b
+                    | _ ->
+                        (match Fx.Node.arguments node with
+                        | _ :: _ :: _ :: _ :: _ :: _ :: Fx.Argument.Bool b :: _ -> b
+                        | _ -> true)
+                  in
+                  let output_shapes =
+                    match shapes_for node with
+                    | Ok shapes -> Ok shapes
+                    | Error _ -> Ok (hs_logical, hs_shape)
+                  in
+                  match output_shapes with
+                  | Error error -> Error (Shape.error_to_string error)
+                  | Ok (logical_shape, shape) ->
+                      let value =
+                        Tile_effect.moe_swiglu_ffn
+                          {
+                            hidden_states;
+                            router_logits;
+                            gate_exps;
+                            up_exps;
+                            down_exps;
+                            m;
+                            n_experts;
+                            top_k;
+                            hidden_dim;
+                            intermediate_dim;
+                            norm_topk_prob;
+                            shape;
+                            logical_shape;
+                          }
+                      in
+                      Hashtbl.replace env name value;
+                      Ok ()
+                in
+                (match inputs with
+                | [ hs; rl; ge; ue; de ] -> lower_moe hs rl ge ue de
                 | _ -> lower_opaque inputs)
               else if
                 target_is target [ "add"; "add.tensor"; "aten.add.tensor" ]

@@ -734,6 +734,7 @@ let run () =
   let target = Target_hardware.default in
   let msl_preamble =
     Metal_source_common.metal_header ^ Metal_quant_source.quant_common_source
+    ^ Metal_quant_qkv_source.quant_qkv_params_source
   in
   let swiglu_epi =
     Applicative_expr.Binop
@@ -751,9 +752,24 @@ let run () =
       let linear_src =
         Metal_block_codegen.linear_kernels ~target schema |> Result.get_ok
       in
+      let qkv_src =
+        Metal_block_codegen.qkv_kernels ~target schema |> Result.get_ok
+      in
       let epi_src =
         Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
           ~name:("llmopt_" ^ label ^ "_silu_x8") ~epilogue:Epilogue.silu ~target
+          schema
+        |> Result.get_ok
+      in
+      let m16_epi_src =
+        Metal_block_codegen.tile32_affine_linear_f16_m16_kernel
+          ~name:("llmopt_" ^ label ^ "_m16_silu") ~epilogue:Epilogue.silu ~target
+          schema
+        |> Result.get_ok
+      in
+      let m32_epi_src =
+        Metal_block_codegen.tile32_affine_linear_f16_m32_kernel
+          ~name:("llmopt_" ^ label ^ "_m32_silu") ~epilogue:Epilogue.silu ~target
           schema
         |> Result.get_ok
       in
@@ -770,11 +786,11 @@ let run () =
         |> Result.get_ok
       in
       let combined_msl =
-        msl_preamble ^ linear_src ^ epi_src ^ multi_src ^ multi_export_src
+        msl_preamble ^ linear_src ^ qkv_src ^ epi_src ^ m16_epi_src ^ m32_epi_src ^ multi_src ^ multi_export_src
       in
       expect
         (compile_msl_string combined_msl)
-        (label ^ " unified parametric single/multi/multi-export MSL compiles cleanly with xcrun metal"))
+        (label ^ " unified parametric single/m16/m32/qkv/multi/multi-export MSL compiles cleanly with xcrun metal"))
     [ ("tile32_affine4", affine4_schema); ("tile32_affine8", affine8_schema) ];
 
   (* In-Register 32-Lane Fast Walsh-Hadamard Butterfly & Tile32_Affine KV Cache *)

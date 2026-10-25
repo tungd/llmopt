@@ -1100,6 +1100,8 @@ let run ~inputs thunk =
                     tensor (Option.map (find state) bias);
                   bind state value tensor;
                   Effect.Deep.continue continuation value)
+          | Tile_effect.Moe_swiglu_ffn _ ->
+              failwith "CPU runtime does not support Moe_swiglu_ffn"
           | Tile_effect.Add { lhs; rhs; shape; logical_shape; broadcast } ->
               Some
                 (fun (continuation : (a, _) Effect.Deep.continuation) ->

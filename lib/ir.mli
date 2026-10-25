@@ -401,6 +401,14 @@ module Op : sig
         extra_outputs : Value.t list;
       }
     | W4a16_swiglu_ffn of { m : int; n : int; k : int; epsilon : float }
+    | Moe_swiglu_ffn of {
+        m : int;
+        n_experts : int;
+        top_k : int;
+        hidden_dim : int;
+        intermediate_dim : int;
+        norm_topk_prob : bool;
+      }
     | Rms_rope_qk of {
         q_heads : int;
         k_heads : int;

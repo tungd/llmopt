@@ -1402,6 +1402,13 @@ let write_op writer = function
       Binary.Writer.u8 writer 42;
       Binary.Writer.u8 writer (List.length extra_outputs);
       List.iter (write_value writer) extra_outputs
+  | Ir.Op.Moe_swiglu_ffn
+      { m; n_experts; top_k; hidden_dim; intermediate_dim; norm_topk_prob } ->
+      Binary.Writer.u8 writer 44;
+      List.iter
+        (Binary.Writer.u64 writer)
+        [ m; n_experts; top_k; hidden_dim; intermediate_dim ];
+      Binary.Writer.bool writer norm_topk_prob
 
 let read_three_dimensions reader =
   let* m = Binary.Reader.u64 reader in
@@ -1626,6 +1633,23 @@ let read_op values reader =
       in
       let* extra_outputs = outputs [] count in
       Ok (Ir.Op.Fused_region { extra_outputs })
+  | 44 ->
+      let* m = Binary.Reader.u64 reader in
+      let* n_experts = Binary.Reader.u64 reader in
+      let* top_k = Binary.Reader.u64 reader in
+      let* hidden_dim = Binary.Reader.u64 reader in
+      let* intermediate_dim = Binary.Reader.u64 reader in
+      let* norm_topk_prob = Binary.Reader.bool reader in
+      Ok
+        (Ir.Op.Moe_swiglu_ffn
+           {
+             m;
+             n_experts;
+             top_k;
+             hidden_dim;
+             intermediate_dim;
+             norm_topk_prob;
+           })
   | _ -> Error (Printf.sprintf "unknown schedule opcode: %d" tag)
 
 let magic = "LLMOSCH\000"

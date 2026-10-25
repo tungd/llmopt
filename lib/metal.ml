@@ -19,6 +19,9 @@ let w4a16_swiglu_ffn_entries = Metal_w4a16_source.w4a16_swiglu_ffn_entries
 let w4a16_lm_head_argmax_source = Metal_w4a16_source.w4a16_lm_head_argmax_source
 let w4a16_lm_head_argmax_entries = Metal_w4a16_source.w4a16_lm_head_argmax_entries
 
+let moe_source = Metal_quant_source.moe_source
+let moe_entries = Metal_quant_source.moe_entries
+
 let cache_source = Metal_cache_source.cache_source
 
 let cache_entries = Metal_cache_source.cache_entries
@@ -33,6 +36,10 @@ let q4_0_source = Metal_q4_0_source.q4_0_source
 let quant_qkv_params_source = Metal_quant_qkv_source.quant_qkv_params_source
 let q4_0_qkv_source = Metal_quant_qkv_source.q4_0_qkv_source
 let q4_0_qkv_entries = Metal_quant_qkv_source.q4_0_qkv_entries
+let tile32_affine4_qkv_source = Metal_quant_qkv_source.tile32_affine4_qkv_source
+let tile32_affine4_qkv_entries = Metal_quant_qkv_source.tile32_affine4_qkv_entries
+let tile32_affine8_qkv_source = Metal_quant_qkv_source.tile32_affine8_qkv_source
+let tile32_affine8_qkv_entries = Metal_quant_qkv_source.tile32_affine8_qkv_entries
 let quant_qkv_entries = Metal_quant_qkv_source.quant_qkv_entries
 let quant_qkv_source = Metal_quant_qkv_source.quant_qkv_source
 
@@ -114,6 +121,14 @@ let block32_entries =
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_linear_f16_m16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine4_linear_f16_m32"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine4) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_tile32_affine8_linear_f16"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
@@ -123,6 +138,14 @@ let block32_entries =
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
     kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
       ~name:"llmopt_tile32_affine8_linear_f16_x8"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_linear_f16_m16"
+      ~operation:Kernel_abi.Operation.Linear
+      ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16;
+    kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+      ~name:"llmopt_tile32_affine8_linear_f16_m32"
       ~operation:Kernel_abi.Operation.Linear
       ~input_dtype:(Ir.Dtype.Quant Tile32_Affine8) ~output_dtype:Ir.Dtype.Float16 ]
 
@@ -250,6 +273,7 @@ let has_w4a16_linear = Metal_selection.has_w4a16_linear
 let has_w4a16_qkv_linear = Metal_selection.has_w4a16_qkv_linear
 let has_quant_qkv_linear = Metal_selection.has_quant_qkv_linear
 let has_w4a16_swiglu_ffn = Metal_selection.has_w4a16_swiglu_ffn
+let has_moe_swiglu_ffn = Metal_selection.has_moe_swiglu_ffn
 let has_w4a16_lm_head_argmax = Metal_selection.has_w4a16_lm_head_argmax
 let has_f16_linear = Metal_selection.has_f16_linear
 let has_f16_bf16_linear = Metal_selection.has_f16_bf16_linear
@@ -295,6 +319,10 @@ let quant_tactic_entries ~quant_types tactics =
              Kernel_abi.Entry.operation entry <> Kernel_abi.Operation.Linear
              || List.mem (Kernel_abi.Entry.name entry) selected_names
              || List.mem (Kernel_abi.Entry.name entry) generic_names
+             || String.ends_with ~suffix:"_x8" (Kernel_abi.Entry.name entry)
+             || String.ends_with ~suffix:"_m2" (Kernel_abi.Entry.name entry)
+             || String.ends_with ~suffix:"_m2_add" (Kernel_abi.Entry.name entry)
+             || String.ends_with ~suffix:"_linear_f16_add" (Kernel_abi.Entry.name entry)
              || String.ends_with ~suffix:"_m4" (Kernel_abi.Entry.name entry)
              || String.ends_with ~suffix:"_m4_add" (Kernel_abi.Entry.name entry)
              || String.ends_with ~suffix:"_m16" (Kernel_abi.Entry.name entry)
@@ -371,12 +399,61 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     else
       quant_qkv_params_source
       ^ (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_source else "")
+      ^ (if List.mem Ir.Dtype.Tile32_Affine4 quant_qkv_types then tile32_affine4_qkv_source else "")
+      ^ (if List.mem Ir.Dtype.Tile32_Affine8 quant_qkv_types then tile32_affine8_qkv_source else "")
   in
   let quant_qkv_entries =
-    if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_entries else []
+    (if List.mem Ir.Dtype.Q4_0 quant_qkv_types then q4_0_qkv_entries else [])
+    @ (if List.mem Ir.Dtype.Tile32_Affine4 quant_qkv_types then tile32_affine4_qkv_entries else [])
+    @ (if List.mem Ir.Dtype.Tile32_Affine8 quant_qkv_types then tile32_affine8_qkv_entries else [])
   in
   let quant_add_tactics =
-    quant_linear_add_tactics ~target graph @ region_quant_add_tactics
+    let direct_add_tactics =
+      quant_linear_add_tactics ~target graph @ region_quant_add_tactics
+    in
+    let expanded_affine_tactics =
+      direct_add_tactics
+      |> List.concat_map (fun (quant, _) ->
+             match quant with
+             | Ir.Dtype.Tile32_Affine4 ->
+                 [
+                   ( Ir.Dtype.Tile32_Affine4,
+                     { Tactic.name = "llmopt_tile32_affine4_linear_f16";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine4,
+                     { Tactic.name = "llmopt_tile32_affine4_linear_f16_m2";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine4,
+                     { Tactic.name = "llmopt_tile32_affine4_linear_f16_x8";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine4,
+                     { Tactic.name = "llmopt_tile32_affine4_linear_f16_m16";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine4,
+                     { Tactic.name = "llmopt_tile32_affine4_linear_f16_m32";
+                       threadgroup = (256, 1, 1) } );
+                 ]
+             | Ir.Dtype.Tile32_Affine8 ->
+                 [
+                   ( Ir.Dtype.Tile32_Affine8,
+                     { Tactic.name = "llmopt_tile32_affine8_linear_f16";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine8,
+                     { Tactic.name = "llmopt_tile32_affine8_linear_f16_m2";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine8,
+                     { Tactic.name = "llmopt_tile32_affine8_linear_f16_x8";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine8,
+                     { Tactic.name = "llmopt_tile32_affine8_linear_f16_m16";
+                       threadgroup = (256, 1, 1) } );
+                   ( Ir.Dtype.Tile32_Affine8,
+                     { Tactic.name = "llmopt_tile32_affine8_linear_f16_m32";
+                       threadgroup = (256, 1, 1) } );
+                 ]
+             | _ -> [])
+    in
+    direct_add_tactics @ expanded_affine_tactics
     |> List.sort_uniq Stdlib.compare
   in
   let quant_add_entries = List.map quant_linear_add_entry quant_add_tactics in
@@ -436,6 +513,13 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    tile32_affine4_schema
                in
                Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine4, "llmopt_tile32_affine4_linear_f16_x8" ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
+                   ~name:"llmopt_tile32_affine4_linear_f16_x8_add" ~target
+                   tile32_affine4_schema
+               in
+               Ok (source ^ kernel)
            | Ir.Dtype.Tile32_Affine8, "llmopt_tile32_affine8_linear_f16" ->
                let* kernel =
                  Metal_block_codegen.tile32_affine_linear_add_kernel
@@ -450,7 +534,14 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    tile32_affine8_schema
                in
                Ok (source ^ kernel)
-           | Ir.Dtype.Q4_0, base
+           | Ir.Dtype.Tile32_Affine8, "llmopt_tile32_affine8_linear_f16_x8" ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
+                   ~name:"llmopt_tile32_affine8_linear_f16_x8_add" ~target
+                   tile32_affine8_schema
+               in
+               Ok (source ^ kernel)
+           | (Ir.Dtype.Q4_0 | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8), base
              when String.ends_with ~suffix:"_m4" base
                   || String.ends_with ~suffix:"_m16" base
                   || String.ends_with ~suffix:"_m32" base ->
@@ -505,9 +596,41 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    tile32_affine4_schema
                in
                Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine4, _ when String.ends_with ~suffix:"_m16" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_m16_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine4_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine4, _ when String.ends_with ~suffix:"_m32" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_m32_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine4_schema
+               in
+               Ok (source ^ kernel)
            | Ir.Dtype.Tile32_Affine8, _ when String.ends_with ~suffix:"_x8" base ->
                let* kernel =
                  Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine8_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine8, _ when String.ends_with ~suffix:"_m16" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_m16_kernel
+                   ~name:kernel_name
+                   ~epilogue:(Epilogue.canonicalize epilogue) ~target
+                   tile32_affine8_schema
+               in
+               Ok (source ^ kernel)
+           | Ir.Dtype.Tile32_Affine8, _ when String.ends_with ~suffix:"_m32" base ->
+               let* kernel =
+                 Metal_block_codegen.tile32_affine_linear_f16_m32_kernel
                    ~name:kernel_name
                    ~epilogue:(Epilogue.canonicalize epilogue) ~target
                    tile32_affine8_schema
@@ -669,6 +792,9 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
       ( has_w4a16_swiglu_ffn graph,
         w4a16_swiglu_ffn_source,
         w4a16_swiglu_ffn_entries );
+      ( has_moe_swiglu_ffn graph,
+        moe_source,
+        moe_entries );
       ( has_w4a16_lm_head_argmax graph,
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
@@ -679,9 +805,11 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
         ^ quant_add_source ^ region_quant_digest_source
         ^ region_quant_multi_digest_source
         ^ region_quant_multi_export_digest_source,
-        selected_quant_entries @ quant_qkv_entries @ quant_add_entries
-        @ region_quant_digest_entries @ region_quant_multi_digest_entries
-        @ region_quant_multi_export_digest_entries );
+        List.sort_uniq
+          (fun a b -> String.compare (Kernel_abi.Entry.name a) (Kernel_abi.Entry.name b))
+          (selected_quant_entries @ quant_qkv_entries @ quant_add_entries
+          @ region_quant_digest_entries @ region_quant_multi_digest_entries
+          @ region_quant_multi_export_digest_entries) );
       has_f16_linear graph, linear_f16_source, linear_f16_entries;
       ( has_f16_bf16_linear graph,
         linear_f16_bf16_source,

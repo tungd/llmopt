@@ -123,23 +123,15 @@ let run () =
   let load_seconds = Unix.gettimeofday () -. load_started in
   match options.top_k_logits with
   | Some count ->
+      let* () =
+        if options.warmup then
+          let* _ = Serving_engine.prompt engine ~tokens:options.prompt_tokens in
+          Serving_engine.reset engine
+        else Ok ()
+      in
       let probe_started = Unix.gettimeofday () in
       let* prompt = Serving_engine.prompt engine ~tokens:options.prompt_tokens in
       let step = Serving_engine.Prompt.step prompt in
-      let* logits =
-        match Serving_engine.Step.logits step with
-        | Some logits -> Ok logits
-        | None -> Error "top-k probe requires a logits output"
-      in
-      let* bytes = Metal_runtime.Buffer.contents logits in
-      let vocabulary = Serving_engine.Step.vocabulary step in
-      let suppress_token_ids = Serving_engine.Step.suppress_token_ids step in
-      let* raw =
-        Sampling.Float16_logits.top ~count ~vocabulary bytes
-      in
-      let* policy =
-        Sampling.Float16_logits.top ~count ~vocabulary ~suppress_token_ids bytes
-      in
       let* () =
         match options.dump_diagnostic_output with
         | None -> Ok ()
@@ -168,6 +160,20 @@ let run () =
         | Some directory ->
             Error ("diagnostic output directory does not exist: " ^ directory)
       in
+      let* logits =
+        match Serving_engine.Step.logits step with
+        | Some logits -> Ok logits
+        | None -> Error "top-k probe requires a logits output"
+      in
+      let* bytes = Metal_runtime.Buffer.contents logits in
+      let vocabulary = Serving_engine.Step.vocabulary step in
+      let suppress_token_ids = Serving_engine.Step.suppress_token_ids step in
+      let* raw =
+        Sampling.Float16_logits.top ~count ~vocabulary bytes
+      in
+      let* policy =
+        Sampling.Float16_logits.top ~count ~vocabulary ~suppress_token_ids bytes
+      in
       Printf.printf "load-seconds: %.6f\n" load_seconds;
       Printf.printf "probe-seconds: %.6f\n"
         (Unix.gettimeofday () -. probe_started);
@@ -180,6 +186,16 @@ let run () =
       Printf.printf "policy-top-k: %s\n" (ranked policy);
       Ok ()
   | None ->
+  let* () =
+    if options.warmup then
+      let* warmup_config = Generation_core.Config.create ~max_new_tokens:2 in
+      let* _ =
+        Generation.Driver.run engine ~config:warmup_config ~is_stop:(Fun.const false)
+          ~prompt:options.prompt_tokens
+      in
+      Serving_engine.reset engine
+    else Ok ()
+  in
   let* config =
     Generation_core.Config.create ~max_new_tokens:options.max_new_tokens
   in
@@ -207,11 +223,28 @@ let run () =
     let sorted = Array.copy inter_token in
     Array.sort Float.compare sorted;
     let total = Array.fold_left ( +. ) 0.0 sorted in
+    let p90_idx = min (Array.length sorted - 1) (Array.length sorted * 90 / 100) in
     Printf.printf "inter-token-count: %d\n" (Array.length sorted);
     Printf.printf "inter-token-mean-ms: %.6f\n"
       (1000.0 *. total /. float_of_int (Array.length sorted));
     Printf.printf "inter-token-median-ms: %.6f\n"
-      (1000.0 *. sorted.(Array.length sorted / 2)));
+      (1000.0 *. sorted.(Array.length sorted / 2));
+    Printf.printf "inter-token-min-ms: %.6f\n" (1000.0 *. sorted.(0));
+    Printf.printf "inter-token-p90-ms: %.6f\n" (1000.0 *. sorted.(p90_idx));
+    Printf.printf "inter-token-max-ms: %.6f\n" (1000.0 *. sorted.(Array.length sorted - 1));
+    Printf.printf "inter-token-first-5-ms: %s\n"
+      (Array.sub inter_token 0 (min 5 (Array.length inter_token))
+       |> Array.to_list |> List.map (fun t -> Printf.sprintf "%.2f" (1000.0 *. t)) |> String.concat ", ");
+    if Array.length inter_token > 1 then (
+      let steady = Array.sub inter_token 1 (Array.length inter_token - 1) in
+      let steady_total = Array.fold_left ( +. ) 0.0 steady in
+      let steady_mean_ms = 1000.0 *. steady_total /. float_of_int (Array.length steady) in
+      let steady_tps = float_of_int (Array.length steady) /. steady_total in
+      Printf.printf "steady-token-count: %d\n" (Array.length steady);
+      Printf.printf "steady-token-mean-ms: %.6f\n" steady_mean_ms;
+      Printf.printf "steady-tokens-per-second: %.6f\n" steady_tps;
+    );
+  );
   Ok ()
 
 let () =

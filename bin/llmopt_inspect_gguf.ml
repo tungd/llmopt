@@ -106,7 +106,37 @@ let inspect_file path =
 
 let () =
   let args = List.tl (Array.to_list Sys.argv) in
-  if args = [] then (
-    prerr_endline "usage: llmopt-inspect-gguf <model1.gguf> [model2.gguf ...]";
-    exit 64)
-  else List.iter inspect_file args
+  let rec parse_args source dest rotate prefer = function
+    | [] -> (source, dest, rotate, prefer)
+    | "--bake-tile32-affine" :: out_p :: rest ->
+        parse_args source (Some out_p) rotate prefer rest
+    | "--rotate-fwht32" :: rest ->
+        parse_args source dest true prefer rest
+    | "--prefer-4bit" :: rest ->
+        parse_args source dest rotate true rest
+    | src :: rest when not (String.starts_with ~prefix:"--" src) ->
+        parse_args (Some src) dest rotate prefer rest
+    | flag :: _ ->
+        prerr_endline ("unknown flag: " ^ flag);
+        exit 64
+  in
+  match parse_args None None false false args with
+  | None, _, _, _ ->
+      prerr_endline "usage: llmopt-inspect-gguf <model.gguf> [--bake-tile32-affine <output.weights.llmopt>] [--rotate-fwht32] [--prefer-4bit]";
+      exit 64
+  | Some src, None, _, _ ->
+      inspect_file src
+  | Some src, Some dst, rotate, prefer ->
+      inspect_file src;
+      Printf.printf "==> Baking Tile32_Affine archive to: %s\n" dst;
+      let t0 = Unix.gettimeofday () in
+      match Gguf.write_tile32_affine_archive ~rotate_fwht32:rotate ~prefer_4bit:prefer
+              ~source_path:src ~destination_path:dst () with
+      | Ok archive ->
+          let t1 = Unix.gettimeofday () in
+          Printf.printf "==> Transcoding completed in %.2f seconds! Tensors: %d, Archive size: %s\n%!"
+            (t1 -. t0) (List.length (Weight_archive.tensors archive))
+            (format_bytes (Weight_archive.file_size archive))
+      | Error msg ->
+          Printf.eprintf "[ERROR] Baking failed: %s\n%!" msg;
+          exit 1

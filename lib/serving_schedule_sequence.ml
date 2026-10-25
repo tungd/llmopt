@@ -172,6 +172,18 @@ open Serving_schedule_core
                k = substitute substitutions k;
                epsilon;
              })
+    | Ir.Op.Moe_swiglu_ffn
+        { m; n_experts; top_k; hidden_dim; intermediate_dim; norm_topk_prob } ->
+        Ok
+          (Ir.Op.Moe_swiglu_ffn
+             {
+               m = substitute substitutions m;
+               n_experts;
+               top_k;
+               hidden_dim;
+               intermediate_dim;
+               norm_topk_prob;
+             })
     | Ir.Op.Gated_linear { m; n; k; activation } ->
         Ok
           (Ir.Op.Gated_linear
@@ -903,7 +915,15 @@ open Serving_schedule_core
     match ropes with
     | [] -> Ok schedule
     | (half_dimension, _, _, first_cosine, first_sine) :: rest ->
-        if half_dimension > max_int / 2 then
+        let all_same_trig =
+          List.for_all
+            (fun (_, _, _, cosine, sine) ->
+              Ir.Value.equal cosine first_cosine
+              && Ir.Value.equal sine first_sine)
+            rest
+        in
+        if not all_same_trig then Ok schedule
+        else if half_dimension > max_int / 2 then
           Error "decode RoPE width overflows"
         else
           let width = 2 * half_dimension in

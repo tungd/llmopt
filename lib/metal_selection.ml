@@ -287,6 +287,13 @@ let has_w4a16_swiglu_ffn graph =
          | Ir.Op.W4a16_swiglu_ffn _ -> true
          | _ -> false)
 
+let has_moe_swiglu_ffn graph =
+  Ir.Graph.nodes graph
+  |> List.exists (fun node ->
+         match Ir.node_op node with
+         | Ir.Op.Moe_swiglu_ffn _ -> true
+         | _ -> false)
+
 let has_w4a16_lm_head_argmax graph =
   Ir.Graph.nodes graph
   |> List.exists (fun node ->
@@ -442,11 +449,16 @@ let without_region_nodes graph regions =
 let quant_add_twin_servable (storage : Ir.Dtype.quant_type)
     (tactic : Tactic.t) =
   match storage with
-  | Ir.Dtype.Q4_0 | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8 ->
+  | Ir.Dtype.Q4_0 ->
       let name = Tactic.name tactic in
       not
         (String.ends_with ~suffix:"_x16" name
         || String.ends_with ~suffix:"_x8" name
+        || String.ends_with ~suffix:"_x4" name)
+  | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8 ->
+      let name = Tactic.name tactic in
+      not
+        (String.ends_with ~suffix:"_x16" name
         || String.ends_with ~suffix:"_x4" name)
   | _ -> true
 

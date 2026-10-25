@@ -1508,6 +1508,129 @@ let run () =
            | _ -> false))
     "dual QK Quant_qkv_linear survives schedule serialization and validation";
 
+  let a4_qkv_graph = Ir.Graph.create () in
+  let a4_qkv_fresh shape =
+    Ir.Graph.fresh_tensor_value a4_qkv_graph
+      ~shape:(Tensor_shape.of_ints_exn shape) ~dtype:Ir.Dtype.Float16
+  in
+  let a4_qkv_input =
+    tensor_input a4_qkv_graph ~name:"a4_qkv_input"
+      ~source:Ir.Input_source.Runtime ~shape:[ 1; 576 ]
+      ~dtype:Ir.Dtype.Float16
+  in
+  let a4_q_weight =
+    tensor_input a4_qkv_graph ~name:"a4_q_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "a4_q_weight" })
+      ~shape:[ 576; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+  in
+  let a4_k_weight =
+    tensor_input a4_qkv_graph ~name:"a4_k_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "a4_k_weight" })
+      ~shape:[ 192; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+  in
+  let a4_v_weight =
+    tensor_input a4_qkv_graph ~name:"a4_v_weight"
+      ~source:(Ir.Input_source.Tensor_store { key = "a4_v_weight" })
+      ~shape:[ 192; 576 ] ~dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+  in
+  let a4_q_out = a4_qkv_fresh [ 1; 1; 9; 64 ] in
+  let a4_k_out = a4_qkv_fresh [ 1; 1; 3; 64 ] in
+  let a4_v_out = a4_qkv_fresh [ 1; 192 ] in
+  Ir.Graph.append a4_qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 576; k = 576; bias = false })
+    ~inputs:[ a4_qkv_input; a4_q_weight ] ~output:(Some a4_q_out);
+  Ir.Graph.append a4_qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 192; k = 576; bias = false })
+    ~inputs:[ a4_qkv_input; a4_k_weight ] ~output:(Some a4_k_out);
+  Ir.Graph.append a4_qkv_graph
+    ~op:(Ir.Op.Linear { m = 1; n = 192; k = 576; bias = false })
+    ~inputs:[ a4_qkv_input; a4_v_weight ] ~output:(Some a4_v_out);
+  let a4_cos =
+    tensor_input a4_qkv_graph ~name:"a4_cos" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let a4_sin =
+    tensor_input a4_qkv_graph ~name:"a4_sin" ~source:Ir.Input_source.Runtime
+      ~shape:[ 1; 1; 1; 64 ] ~dtype:Ir.Dtype.Float16
+  in
+  let a4_rot_q = a4_qkv_fresh [ 1; 9; 1; 64 ] in
+  let a4_rot_k = a4_qkv_fresh [ 1; 3; 1; 64 ] in
+  Ir.Graph.append a4_qkv_graph
+    ~op:
+      (Ir.Op.Rotary_qk
+         { q_heads = 9; k_heads = 3; width = 64; half_dimension = 32;
+           extra_outputs = [ a4_rot_k ] })
+    ~inputs:[ a4_q_out; a4_k_out; a4_cos; a4_sin ] ~output:(Some a4_rot_q);
+  Ir.Graph.add_output a4_qkv_graph ~name:"q" a4_rot_q;
+  Ir.Graph.add_output a4_qkv_graph ~name:"k" a4_rot_k;
+  Ir.Graph.add_output a4_qkv_graph ~name:"v" a4_v_out;
+  let a4_qkv_fused = Pass_fuse_linear_bias.fuse_quant_qkv a4_qkv_graph in
+  expect
+    (Ir.Graph.nodes a4_qkv_fused
+    |> List.exists (fun node ->
+           match Ir.node_op node, Ir.node_inputs node with
+           | ( Ir.Op.Quant_qkv_linear
+                 { m = 1; k = 576; n_q = 576; n_k = 192; n_v = 192;
+                   extra_outputs = [ k; v ] },
+               [ input; q; k_w; v_w ] ) ->
+               Ir.Value.equal input a4_qkv_input
+               && Ir.Value.equal q a4_q_weight
+               && Ir.Value.equal k_w a4_k_weight
+               && Ir.Value.equal v_w a4_v_weight
+               && Ir.Value.equal k a4_k_out && Ir.Value.equal v a4_v_out
+           | _ -> false))
+    "all-Tile32_Affine4 QKV topology fuses into one typed operation";
+  let a4_qkv_program = Metal.lower a4_qkv_fused |> expect_ok in
+  expect
+    (contains_substring (Metal.Program.source a4_qkv_program)
+       "kernel void llmopt_tile32_affine4_qkv_linear_f16_x8")
+    "Metal lowering emits the Tile32_Affine4 QKV x8 kernel";
+  expect
+    (contains_substring (Metal.Program.source a4_qkv_program)
+       "kernel void llmopt_tile32_affine4_qkv_linear_f16_m16")
+    "Metal lowering emits the Tile32_Affine4 QKV m16 kernel";
+  expect
+    (contains_substring (Metal.Program.source a4_qkv_program)
+       "kernel void llmopt_tile32_affine4_qkv_linear_f16_m32")
+    "Metal lowering emits the Tile32_Affine4 QKV m32 kernel";
+  let a4_qkv_schedule =
+    a4_qkv_fused |> Serving_schedule.of_graph |> expect_ok
+    |> Serving_schedule.to_bytes |> Serving_schedule.of_bytes |> expect_ok
+  in
+  expect
+    (Serving_schedule.commands a4_qkv_schedule
+    |> List.exists (fun command ->
+           match Serving_schedule.Command.op command with
+           | Ir.Op.Quant_qkv_linear { n_q = 576; n_k = 192; n_v = 192; _ } ->
+               true
+           | _ -> false))
+    "Tile32_Affine4 Quant_qkv_linear survives schedule serialization and validation";
+
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+       ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:1
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+    |> expect_ok
+    = "llmopt_tile32_affine4_qkv_linear_f16_x8")
+    "single-token Tile32_Affine4 QKV selects the wide x8 QKV kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+       ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:16
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+    |> expect_ok
+    = "llmopt_tile32_affine4_qkv_linear_f16_m16")
+    "batched prefill (m=16) Tile32_Affine4 QKV selects the m16 batched kernel";
+  expect
+    (Metal_runtime.Quant_qkv_tactic.kernel_name
+       ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+       ~experimental_llama_mv:false ~experimental_mixed_llama_mv:false ~m:32
+       ~v_dtype:(Ir.Dtype.Quant Ir.Dtype.Tile32_Affine4)
+    |> expect_ok
+    = "llmopt_tile32_affine4_qkv_linear_f16_m32")
+    "prompt prefill (m=32) Tile32_Affine4 QKV selects the m32 batched kernel";
+
   expect
     (Metal_runtime.Quant_qkv_tactic.kernel_name
        ~q_dtype:(Ir.Dtype.Quant Ir.Dtype.Q4_0)

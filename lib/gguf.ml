@@ -1159,67 +1159,81 @@ let of_file_as_archive path : (Weight_archive.t, string) result =
 
 let align_256 v = ((v + 255) / 256) * 256
 
+let predict_transcoded_layout ?(rotate_fwht32 = false) ?(prefer_4bit = false)
+    (info : Tensor_info.t) : (Weight_archive.Dtype.t * int, string) result =
+  match info.dtype with
+  | Weight_archive.Dtype.Quant quant ->
+      let use_4bit =
+        if not rotate_fwht32 && not prefer_4bit then
+          match quant with
+          | Weight_archive.Dtype.Q4_0 | Weight_archive.Dtype.Q4_K
+          | Weight_archive.Dtype.Tile32_Affine4 -> true
+          | Weight_archive.Dtype.Q8_0 | Weight_archive.Dtype.Q5_0
+          | Weight_archive.Dtype.Q5_K | Weight_archive.Dtype.Q6_K
+          | Weight_archive.Dtype.IQ4_XS | Weight_archive.Dtype.Tile32_Affine8 -> false
+        else
+          match quant with
+          | Weight_archive.Dtype.Q4_0 | Weight_archive.Dtype.Q4_K
+          | Weight_archive.Dtype.IQ4_XS | Weight_archive.Dtype.Tile32_Affine4 -> true
+          | Weight_archive.Dtype.Q5_0 | Weight_archive.Dtype.Q5_K ->
+              prefer_4bit || rotate_fwht32
+          | Weight_archive.Dtype.Q6_K | Weight_archive.Dtype.Q8_0
+          | Weight_archive.Dtype.Tile32_Affine8 -> prefer_4bit
+      in
+      let total_elements = List.fold_left ( * ) 1 info.shape in
+      if total_elements mod 32 <> 0 then
+        Error
+          (Printf.sprintf "tensor %s element count %d is not a multiple of 32"
+             info.name total_elements)
+      else
+        let blocks = total_elements / 32 in
+        if use_4bit then
+          Ok
+            ( Weight_archive.Dtype.Quant Weight_archive.Dtype.Tile32_Affine4,
+              blocks * Transcode.tile32_affine4_block_bytes )
+        else
+          Ok
+            ( Weight_archive.Dtype.Quant Weight_archive.Dtype.Tile32_Affine8,
+              blocks * Transcode.tile32_affine8_block_bytes )
+  | other -> Ok (other, info.byte_length)
+
 let write_tile32_affine_archive ?(rotate_fwht32 = false) ?(prefer_4bit = false)
     ~source_path ~destination_path () : (Weight_archive.t, string) result =
   let* gguf = of_file source_path in
-  let* raw =
-    try
-      let ic = open_in_bin source_path in
-      Fun.protect
-        ~finally:(fun () -> close_in_noerr ic)
-        (fun () ->
-          let len = in_channel_length ic in
-          let buf = Bytes.create len in
-          really_input ic buf 0 len;
-          Ok buf)
-    with Sys_error msg -> Error msg
-  in
   let sorted_infos =
     List.sort
       (fun (a : Tensor_info.t) (b : Tensor_info.t) ->
         String.compare a.name b.name)
       gguf.tensors
   in
-  let rec transcode_all acc = function
+  let rec predict_all acc = function
     | [] -> Ok (List.rev acc)
     | (info : Tensor_info.t) :: rest ->
-        let abs_off =
-          Int64.to_int (Int64.add gguf.data_offset info.offset)
+        let* dtype, len =
+          predict_transcoded_layout ~rotate_fwht32 ~prefer_4bit info
         in
-        let slice = Bytes.sub raw abs_off info.byte_length in
-        let* new_dtype, payload =
-          match info.dtype with
-          | Weight_archive.Dtype.Quant q ->
-              let* q', bytes' =
-                Transcode.bake_tensor_to_tile32_affine ~rotate_fwht32
-                  ~prefer_4bit q slice
-              in
-              Ok (Weight_archive.Dtype.Quant q', bytes')
-          | other -> Ok (other, slice)
-        in
-        transcode_all ((info.name, new_dtype, info.shape, payload) :: acc) rest
+        predict_all ((info, dtype, len) :: acc) rest
   in
-  let* transcoded = transcode_all [] sorted_infos in
+  let* predicted_entries = predict_all [] sorted_infos in
   let raw_index_bytes =
     List.fold_left
-      (fun acc (name, _dtype, shape, _payload) ->
-        acc + 8 + String.length name + (8 * List.length shape) + 16)
-      24 transcoded
+      (fun acc ((info : Tensor_info.t), _dtype, _len) ->
+        acc + 8 + String.length info.name + (8 * List.length info.shape) + 16)
+      24 predicted_entries
   in
   let index_bytes = align_256 raw_index_bytes in
   let cursor = ref index_bytes in
   let laid_out =
     List.map
-      (fun (name, dtype, shape, payload) ->
+      (fun ((info : Tensor_info.t), dtype, len) ->
         let off = align_256 !cursor in
-        let len = Bytes.length payload in
         cursor := off + len;
         let tensor =
-          Weight_archive.Tensor.create ~name ~dtype ~shape ~offset:off
-            ~byte_length:len
+          Weight_archive.Tensor.create ~name:info.name ~dtype ~shape:info.shape
+            ~offset:off ~byte_length:len
         in
-        (tensor, payload))
-      transcoded
+        (info, tensor))
+      predicted_entries
   in
   let writer = Binary.Writer.create () in
   Binary.Writer.raw_string writer "LLMOPTWT";
@@ -1228,7 +1242,7 @@ let write_tile32_affine_archive ?(rotate_fwht32 = false) ?(prefer_4bit = false)
   Binary.Writer.u32 writer (List.length laid_out);
   Binary.Writer.u64 writer index_bytes;
   List.iter
-    (fun (tensor, _payload) ->
+    (fun (_info, tensor) ->
       let name = Weight_archive.Tensor.name tensor in
       let shape = Weight_archive.Tensor.shape tensor in
       let dtype = Weight_archive.Tensor.dtype tensor in
@@ -1242,22 +1256,79 @@ let write_tile32_affine_archive ?(rotate_fwht32 = false) ?(prefer_4bit = false)
       Binary.Writer.u64 writer (Weight_archive.Tensor.byte_length tensor))
     laid_out;
   let header_prefix = Binary.Writer.contents writer in
-  let full_buf = Bytes.make !cursor '\000' in
-  Bytes.blit header_prefix 0 full_buf 0 (Bytes.length header_prefix);
-  List.iter
-    (fun (tensor, payload) ->
-      Bytes.blit payload 0 full_buf
-        (Weight_archive.Tensor.offset tensor)
-        (Bytes.length payload))
-    laid_out;
   let* () =
     try
-      let oc = open_out_bin destination_path in
+      let ic = open_in_bin source_path in
       Fun.protect
-        ~finally:(fun () -> close_out_noerr oc)
+        ~finally:(fun () -> close_in_noerr ic)
         (fun () ->
-          output_bytes oc full_buf;
-          Ok ())
+          let oc = open_out_bin destination_path in
+          Fun.protect
+            ~finally:(fun () -> close_out_noerr oc)
+            (fun () ->
+              output_bytes oc header_prefix;
+              let current_out_pos = ref (Bytes.length header_prefix) in
+              let rec stream_tensors = function
+                | [] -> Ok ()
+                | ((info : Tensor_info.t), tensor) :: rest ->
+                    let target_offset = Weight_archive.Tensor.offset tensor in
+                    let pad_len = target_offset - !current_out_pos in
+                    if pad_len < 0 then
+                      Error
+                        (Printf.sprintf
+                           "output stream position %d exceeds target offset %d for tensor %s"
+                           !current_out_pos target_offset info.name)
+                    else (
+                      if pad_len > 0 then (
+                        output_bytes oc (Bytes.make pad_len '\000');
+                        current_out_pos := !current_out_pos + pad_len);
+                      LargeFile.seek_in ic (Int64.add gguf.data_offset info.offset);
+                      let slice = Bytes.create info.byte_length in
+                      really_input ic slice 0 info.byte_length;
+                      let* payload =
+                        match info.dtype with
+                        | Weight_archive.Dtype.Quant q ->
+                            let* q', bytes' =
+                              Transcode.bake_tensor_to_tile32_affine
+                                ~rotate_fwht32 ~prefer_4bit q slice
+                            in
+                            if
+                              Weight_archive.Dtype.Quant q'
+                              <> Weight_archive.Tensor.dtype tensor
+                            then
+                              Error
+                                (Printf.sprintf
+                                   "baked dtype mismatch for tensor %s"
+                                   info.name)
+                            else if
+                              Bytes.length bytes'
+                              <> Weight_archive.Tensor.byte_length tensor
+                            then
+                              Error
+                                (Printf.sprintf
+                                   "baked length mismatch for tensor %s: expected %d, got %d"
+                                   info.name
+                                   (Weight_archive.Tensor.byte_length tensor)
+                                   (Bytes.length bytes'))
+                            else Ok bytes'
+                        | _ ->
+                            if
+                              Bytes.length slice
+                              <> Weight_archive.Tensor.byte_length tensor
+                            then
+                              Error
+                                (Printf.sprintf
+                                   "slice length mismatch for tensor %s: expected %d, got %d"
+                                   info.name
+                                   (Weight_archive.Tensor.byte_length tensor)
+                                   (Bytes.length slice))
+                            else Ok slice
+                      in
+                      output_bytes oc payload;
+                      current_out_pos := !current_out_pos + Bytes.length payload;
+                      stream_tensors rest)
+              in
+              stream_tensors laid_out))
     with Sys_error msg -> Error msg
   in
   Weight_archive.of_file destination_path

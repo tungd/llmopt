@@ -12,3 +12,5 @@ val quant_source :
 val emit_dequant_q4_0 : unit -> string
 val emit_tile32_affine4 : ?target:Target_hardware.t -> unit -> string
 val emit_tile32_affine8 : ?target:Target_hardware.t -> unit -> string
+val moe_source : string
+val moe_entries : Kernel_abi.Entry.t list

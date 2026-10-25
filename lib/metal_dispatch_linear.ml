@@ -4,6 +4,130 @@ module Parameters = Metal_parameters
 module Execution_batch = Metal_execution_state.Execution_batch
 open Metal_dispatch_common
 
+let dispatch_moe_swiglu_ffn_command (context : Metal_execution_state.context)
+    state ~m ~n_experts ~top_k ~hidden_dim ~intermediate_dim ~norm_topk_prob
+    values output =
+  let execution_batch = context.execution_batch in
+  let batch = context.batch in
+  let runtime = context.runtime in
+  let* hidden_states_val, router_logits_val, _gate_exps_val, _up_exps_val, _down_exps_val =
+    match values with
+    | [ hs; rl; ge; ue; de ] -> Ok (hs, rl, ge, ue, de)
+    | _ -> Error "MoE SwiGLU command has inconsistent inputs"
+  in
+  let* buffers = Metal_execution_state.find_values state values in
+  let* hidden_states, router_logits, gate_exps, up_exps, down_exps =
+    match buffers with
+    | [ hs; rl; ge; ue; de ] -> Ok (hs, rl, ge, ue, de)
+    | _ -> Error "MoE SwiGLU buffer binding is inconsistent"
+  in
+  let* output_buffer = Metal_execution_state.workspace_buffer state output in
+  let* () =
+    if
+      m > 0 && n_experts > 0 && top_k > 0 && hidden_dim > 0
+      && intermediate_dim > 0 && top_k <= n_experts
+      && hidden_dim mod 32 = 0 && intermediate_dim mod 32 = 0
+      && Ir.Value.dtype hidden_states_val = Ir.Dtype.Float16
+      && (Ir.Value.dtype router_logits_val = Ir.Dtype.Float16
+         || Ir.Value.dtype router_logits_val = Ir.Dtype.Float32)
+      && Ir.Value.dtype output = Ir.Dtype.Float16
+    then Ok ()
+    else Error "MoE SwiGLU input metadata is inconsistent"
+  in
+  let* topk_entry =
+    let name =
+      match Ir.Value.dtype router_logits_val with
+      | Ir.Dtype.Float32 -> "llmopt_moe_topk_softmax_f32"
+      | _ -> "llmopt_moe_topk_softmax_f16"
+    in
+    Metal_native.kernel_entry ~name runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:(Ir.Value.dtype router_logits_val)
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* gate_up_entry =
+    Metal_native.kernel_entry
+      ~name:"llmopt_tile32_affine4_moe_gate_up_swiglu_f16_x8" runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* down_entry =
+    Metal_native.kernel_entry
+      ~name:"llmopt_tile32_affine8_moe_down_reduce_f16_x8" runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* topk_indices =
+    match execution_batch.Execution_batch.moe_topk_indices with
+    | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
+        execution_batch.Execution_batch.moe_topk_indices <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* topk_weights =
+    match execution_batch.Execution_batch.moe_topk_weights with
+    | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 2 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 2) in
+        execution_batch.Execution_batch.moe_topk_weights <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* intermediate =
+    match execution_batch.Execution_batch.moe_intermediate with
+    | Some buf
+      when Metal_native.Buffer.byte_length buf
+           >= m * top_k * intermediate_dim * 2 ->
+        Ok buf
+    | _ ->
+        let* buf =
+          Metal_native.Buffer.create ~runtime
+            ~bytes:(m * top_k * intermediate_dim * 2)
+        in
+        execution_batch.Execution_batch.moe_intermediate <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* topk_params =
+    Parameters.moe_topk ~tokens:m ~num_experts:n_experts ~top_k ~norm_topk_prob ()
+  in
+  let* gate_up_params =
+    Parameters.moe_gate_up ~tokens:m ~top_k ~hidden_dim ~intermediate_dim ()
+  in
+  let* down_params =
+    Parameters.moe_down ~tokens:m ~top_k ~hidden_dim ~intermediate_dim ()
+  in
+  let* topk_kernel =
+    Metal_native.dispatch ~batch runtime topk_entry
+      ~buffers:[ router_logits; topk_indices; topk_weights ]
+      ~parameters:topk_params ~grid:(m * 32, 1, 1)
+  in
+  let gate_up_col_groups = (intermediate_dim + 7) / 8 in
+  let gate_up_simdgroups = m * top_k * gate_up_col_groups in
+  let gate_up_threads = ((gate_up_simdgroups * 32 + 255) / 256) * 256 in
+  let* gate_up_kernel =
+    Metal_native.dispatch ~batch runtime gate_up_entry
+      ~buffers:[ hidden_states; topk_indices; gate_exps; up_exps; intermediate ]
+      ~parameters:gate_up_params ~grid:(gate_up_threads, 1, 1)
+  in
+  let down_col_groups = (hidden_dim + 7) / 8 in
+  let down_simdgroups = m * down_col_groups in
+  let down_threads = ((down_simdgroups * 32 + 255) / 256) * 256 in
+  let* down_kernel =
+    Metal_native.dispatch ~batch runtime down_entry
+      ~buffers:[ intermediate; topk_indices; topk_weights; down_exps; output_buffer ]
+      ~parameters:down_params ~grid:(down_threads, 1, 1)
+  in
+  let state = Metal_execution_state.bind_value state output output_buffer in
+  Ok (state, [ topk_kernel; gate_up_kernel; down_kernel ])
+
 let dispatch_w4a16_swiglu_ffn_command (context : Metal_execution_state.context)
     state ~m ~n ~k ~epsilon values output =
   let execution_batch = context.execution_batch in

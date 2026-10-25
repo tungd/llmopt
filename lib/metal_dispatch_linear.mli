@@ -1,3 +1,16 @@
+val dispatch_moe_swiglu_ffn_command :
+  Metal_execution_state.context ->
+  Metal_execution_state.t ->
+  m:int ->
+  n_experts:int ->
+  top_k:int ->
+  hidden_dim:int ->
+  intermediate_dim:int ->
+  norm_topk_prob:bool ->
+  Ir.Value.t list ->
+  Ir.Value.t ->
+  (Metal_execution_state.t * string list, string) result
+
 val dispatch_w4a16_swiglu_ffn_command :
   Metal_execution_state.context ->
   Metal_execution_state.t ->
