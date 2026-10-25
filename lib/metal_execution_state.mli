@@ -34,6 +34,10 @@ module Execution_batch : sig
     mutable moe_sorted_experts : Buffer.t option;
     mutable moe_expert_offsets : Buffer.t option;
     mutable moe_down_out : Buffer.t option;
+    mutable moe_gathered_x : Buffer.t option;
+    mutable moe_p_to_sorted : Buffer.t option;
+    mutable moe_tile_info : Buffer.t option;
+    mutable moe_num_tiles : Buffer.t option;
   }
 end
 

@@ -40,6 +40,10 @@ module Execution_batch = struct
     mutable moe_sorted_experts : Buffer.t option;
     mutable moe_expert_offsets : Buffer.t option;
     mutable moe_down_out : Buffer.t option;
+    mutable moe_gathered_x : Buffer.t option;
+    mutable moe_p_to_sorted : Buffer.t option;
+    mutable moe_tile_info : Buffer.t option;
+    mutable moe_num_tiles : Buffer.t option;
   }
 end
 
@@ -64,7 +68,12 @@ let with_execution_batch runtime operation =
       moe_sorted_experts = None;
       moe_expert_offsets = None;
       moe_down_out = None;
+      moe_gathered_x = None;
+      moe_p_to_sorted = None;
+      moe_tile_info = None;
+      moe_num_tiles = None;
     }
+
   in
   let release_resources () = batch.resources <- [] in
   match operation batch with

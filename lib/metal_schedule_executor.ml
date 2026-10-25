@@ -459,6 +459,10 @@ let bind_schedule_plan ?workspace ?memory_plan runtime ~schedule ~inputs =
       moe_sorted_experts = None;
       moe_expert_offsets = None;
       moe_down_out = None;
+      moe_gathered_x = None;
+      moe_p_to_sorted = None;
+      moe_tile_info = None;
+      moe_num_tiles = None;
     }
   in
   let* execution =
@@ -498,6 +502,10 @@ let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
       moe_sorted_experts = None;
       moe_expert_offsets = None;
       moe_down_out = None;
+      moe_gathered_x = None;
+      moe_p_to_sorted = None;
+      moe_tile_info = None;
+      moe_num_tiles = None;
     }
   in
   let* execution =

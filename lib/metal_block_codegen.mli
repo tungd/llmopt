@@ -139,6 +139,22 @@ val tile32_affine_linear_f16_simd_kernel :
   Block_schema.t ->
   (string, string) result
 
+val tile32_affine_grouped_multi_linear_f16_simd_kernel :
+  ?name:string ->
+  epilogue:int Applicative_expr.t ->
+  ?num_slots:int ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+val tile32_affine_grouped_linear_f16_simd_kernel :
+  ?name:string ->
+  ?epilogue:Epilogue.t ->
+  target:Target_hardware.t ->
+  Block_schema.t ->
+  (string, string) result
+
+
 val tile32_affine_linear_f16_simd_add_kernel :
   name:string ->
   target:Target_hardware.t ->

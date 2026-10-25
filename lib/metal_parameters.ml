@@ -442,3 +442,10 @@ let moe_gate_up ~tokens ~top_k ~hidden_dim ~intermediate_dim () =
 
 let moe_down ~tokens ~top_k ~hidden_dim ~intermediate_dim () =
   u32s [ tokens; top_k; hidden_dim; intermediate_dim ]
+
+let gather_f16 ~rows ~cols_div8 () =
+  u32s [ rows; cols_div8 ]
+
+let quant_linear ~m ~n ~k ~has_bias () =
+  u32s [ m; n; k; (if has_bias then 1 else 0) ]
+

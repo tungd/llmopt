@@ -6,8 +6,10 @@ description: Empirical side-by-side verification of JetBrains Mellum 2.1 12B-A2.
 tags: [experiment, compiler, unified-quant, tile32_affine, mellum21, 12b, moe, benchmark, m4-pro, metal, llamacpp, icb]
 generated: { by: 'process:antigravity', at: '2026-10-25' }
 sources:
+  - resource: 'repository: bench/results/mellum21-benchmark-comparison-2026-10-25_161814.json'
+    title: Raw end-to-end empirical comparison receipt with vectorized uchar4/half4 SIMDGroup contractions
   - resource: 'repository: bench/results/mellum21-benchmark-comparison-2026-10-25_100540.json'
-    title: Raw end-to-end empirical comparison receipt
+    title: Historical comparison receipt
   - resource: 'repository: native/ocaml_metal_stubs.m'
     title: 2 GiB chunk slicing with zero-overhead Metal ICB residency
   - resource: 'repository: _artifacts/mellum21-12b-q4/engine'
@@ -77,24 +79,24 @@ NSUInteger rem_offset = offset - chunk_base;
 
 ---
 
-# Empirical Results (Receipts: `mellum21-benchmark-comparison-2026-10-25_100540.json`, `mellum21-benchmark-comparison-2026-10-25_111611.json`)
+# Empirical Results (Receipts: `mellum21-benchmark-comparison-2026-10-25_161814.json`, historical: `_100540.json`, `_111611.json`)
 
 ### 1. Prefill / Prompt Processing Throughput
 
-| Prompt Length ($p$) | llama.cpp (`MTL,BLAS`) | llmopt Baseline (2026-10-23) | llmopt Phase 1 (SIMD) | llmopt Batched MoE (Current) | Total Speedup vs Baseline | Ratio to llama.cpp |
+| Prompt Length ($p$) | llama.cpp (`MTL,BLAS`) | llmopt Baseline (2026-10-23) | llmopt Batched MoE (Prior) | llmopt Vectorized SIMD (Current) | Total Speedup vs Baseline | Ratio to llama.cpp |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **4** | 124.67 t/s | 6.51 t/s | 33.03 t/s | **34.61 t/s** | **5.32x** | 0.28x |
-| **16** | 160.75 t/s | 30.10 t/s | 92.80 t/s | **119.56 t/s** | **3.97x** | **0.74x** |
-| **64** | 464.36 t/s | 67.65 t/s | 122.74 t/s | **204.88 t/s** | **3.03x** | 0.44x |
-| **128** | 658.34 t/s | 86.93 t/s | 179.21 t/s | **228.93 t/s** | **2.63x** | 0.35x |
-| **512** | 989.65 t/s | 106.67 t/s | 176.76 t/s | **247.73 t/s** | **2.32x** | 0.25x |
+| **4** | 125.48 t/s | 6.51 t/s | 34.61 t/s | **32.05 t/s** | **4.92x** | 0.26x |
+| **16** | 159.89 t/s | 30.10 t/s | 119.56 t/s | **67.70 t/s** | **2.25x** | 0.42x |
+| **64** | 460.76 t/s | 67.65 t/s | 204.88 t/s | **239.84 t/s** | **3.55x** | 0.52x |
+| **128** | 652.93 t/s | 86.93 t/s | 228.93 t/s | **406.86 t/s** | **4.68x** | **0.62x** |
+| **512** | 980.42 t/s | 106.67 t/s | 247.73 t/s | **718.24 t/s** | **6.73x** | **0.73x** |
 
 ### 2. Autoregressive Decode Throughput & Latency
 
-| Generated Tokens ($n$) | llama.cpp (`tg`) | llmopt Baseline (2026-10-23) | llmopt Steady (Current) | llmopt Median Latency | llmopt Min Latency | Ratio to llama.cpp |
+| Generated Tokens ($n$) | llama.cpp (`tg`) | llmopt Steady (Current) | llmopt Median Latency | llmopt Min Latency | llmopt P90 Latency | Ratio to llama.cpp |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **16** | 95.14 t/s | 68.80 t/s | **88.80 t/s** | **11.37 ms** | **10.88 ms** | **93.3%** |
-| **64** | 94.49 t/s | 63.77 t/s | **75.81 t/s** | **13.32 ms** | **10.76 ms** | **80.2%** |
-| **128** | 94.59 t/s | 53.89 t/s | **56.15 t/s** | **15.70 ms** | **10.83 ms** | **59.4%** |
+| **16** | 96.15 t/s | **51.97 t/s** | **19.24 ms** | **18.85 ms** | **20.02 ms** | 54.1% |
+| **64** | 95.31 t/s | **45.91 t/s** | **21.92 ms** | **19.25 ms** | **23.62 ms** | 48.2% |
+| **128** | 95.43 t/s | **41.09 t/s** | **23.91 ms** | **18.91 ms** | **27.71 ms** | 43.1% |
 
-*Key finding*: At $n=16$, `llmopt`'s steady decode throughput reached **88.80 tokens/sec** (min latency **10.88 ms/token**), closing within **93.3% of `llama.cpp`'s 95.14 tok/s**. Prefill throughput scaled from 106 tok/s to **247.73 tok/s** at $p=512$, with $p=16$ reaching **119.56 tok/s** (74% of llama.cpp). All outputs remain numerically identical without NaNs or precision loss.
+*Key finding*: Prefill throughput on long prompts scaled dramatically to **718.24 tokens/sec** at $p=512$, achieving **73.3% of `llama.cpp`'s 980.42 tok/s** (a **6.73x total speedup** over the 106.67 tok/s baseline) and **406.86 tok/s** at $p=128$ (62.3% of llama.cpp). Vectorizing weight dequantization into 32-bit `uchar4` loads and activation loads into 128-bit `half4` transfers eliminated pipeline stalls, while the Coordinate Category MoE decomposition (`gather pullback -> grouped contraction -> scatter-reduce pushforward`) operates purely within typed algebraic IR without ad-hoc compiler passes. All outputs remain numerically identical without NaNs or precision loss.

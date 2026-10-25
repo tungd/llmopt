@@ -81,164 +81,170 @@ let dispatch_moe_swiglu_ffn_command (context : Metal_execution_state.context)
           buf :: execution_batch.Execution_batch.resources;
         Ok buf
   in
+  let* sorted_tokens =
+    match execution_batch.Execution_batch.moe_sorted_tokens with
+    | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
+        execution_batch.Execution_batch.moe_sorted_tokens <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* sorted_p =
+    match execution_batch.Execution_batch.moe_sorted_p with
+    | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
+        execution_batch.Execution_batch.moe_sorted_p <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* p_to_sorted =
+    match execution_batch.Execution_batch.moe_p_to_sorted with
+    | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
+        execution_batch.Execution_batch.moe_p_to_sorted <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let max_m_tiles = min (m * top_k) (((m * top_k + 15) / 16) + n_experts) in
+  let* tile_info =
+    match execution_batch.Execution_batch.moe_tile_info with
+    | Some buf when Metal_native.Buffer.byte_length buf >= max_m_tiles * 16 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(max_m_tiles * 16) in
+        execution_batch.Execution_batch.moe_tile_info <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* num_tiles =
+    match execution_batch.Execution_batch.moe_num_tiles with
+    | Some buf when Metal_native.Buffer.byte_length buf >= 16 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:16 in
+        execution_batch.Execution_batch.moe_num_tiles <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* gathered_x =
+    match execution_batch.Execution_batch.moe_gathered_x with
+    | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * hidden_dim * 2 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * hidden_dim * 2) in
+        execution_batch.Execution_batch.moe_gathered_x <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
+  let* down_out =
+    match execution_batch.Execution_batch.moe_down_out with
+    | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * hidden_dim * 2 -> Ok buf
+    | _ ->
+        let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * hidden_dim * 2) in
+        execution_batch.Execution_batch.moe_down_out <- Some buf;
+        execution_batch.Execution_batch.resources <-
+          buf :: execution_batch.Execution_batch.resources;
+        Ok buf
+  in
   let* topk_params =
     Parameters.moe_topk ~tokens:m ~num_experts:n_experts ~top_k ~norm_topk_prob ()
   in
+  let* sort_params =
+    Parameters.moe_sort ~tokens:m ~num_experts:n_experts ~top_k ()
+  in
+  let* gather_params =
+    Parameters.gather_f16 ~rows:(m * top_k) ~cols_div8:(hidden_dim / 8) ()
+  in
   let* gate_up_params =
-    Parameters.moe_gate_up ~tokens:m ~top_k ~hidden_dim ~intermediate_dim ()
+    Parameters.quant_linear ~m:(m * top_k) ~n:intermediate_dim ~k:hidden_dim ~has_bias:false ()
   in
   let* down_params =
+    Parameters.quant_linear ~m:(m * top_k) ~n:hidden_dim ~k:intermediate_dim ~has_bias:false ()
+  in
+  let* reduce_params =
     Parameters.moe_down ~tokens:m ~top_k ~hidden_dim ~intermediate_dim ()
+  in
+  let* sort_entry =
+    Metal_native.kernel_entry ~name:"llmopt_moe_sort_and_bin" runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* gather_entry =
+    Metal_native.kernel_entry ~name:"llmopt_gather_f16" runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* gate_up_entry =
+    Metal_native.kernel_entry
+      ~name:"llmopt_tile32_affine4_grouped_gate_up_swiglu_f16_simd" runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* down_entry =
+    Metal_native.kernel_entry
+      ~name:"llmopt_tile32_affine8_grouped_linear_f16_simd" runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16
+  in
+  let* reduce_entry =
+    Metal_native.kernel_entry
+      ~name:"llmopt_moe_scatter_reduce_f16" runtime
+      ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+      ~input_dtype:Ir.Dtype.Float16
+      ~output_dtype:Ir.Dtype.Float16
   in
   let* topk_kernel =
     Metal_native.dispatch ~batch runtime topk_entry
       ~buffers:[ router_logits; topk_indices; topk_weights ]
       ~parameters:topk_params ~grid:(m * 32, 1, 1)
   in
-  if m = 1 then
-    let* gate_up_entry =
-      Metal_native.kernel_entry
-        ~name:"llmopt_tile32_affine4_moe_gate_up_swiglu_f16_x8" runtime
-        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-        ~input_dtype:Ir.Dtype.Float16
-        ~output_dtype:Ir.Dtype.Float16
-    in
-    let* down_entry =
-      Metal_native.kernel_entry
-        ~name:"llmopt_tile32_affine8_moe_down_reduce_f16_x8" runtime
-        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-        ~input_dtype:Ir.Dtype.Float16
-        ~output_dtype:Ir.Dtype.Float16
-    in
-    let gate_up_col_groups = (intermediate_dim + 7) / 8 in
-    let gate_up_simdgroups = m * top_k * gate_up_col_groups in
-    let gate_up_threads = ((gate_up_simdgroups * 32 + 255) / 256) * 256 in
-    let* gate_up_kernel =
-      Metal_native.dispatch ~batch runtime gate_up_entry
-        ~buffers:[ hidden_states; topk_indices; gate_exps; up_exps; intermediate ]
-        ~parameters:gate_up_params ~grid:(gate_up_threads, 1, 1)
-    in
-    let down_col_groups = (hidden_dim + 7) / 8 in
-    let down_simdgroups = m * down_col_groups in
-    let down_threads = ((down_simdgroups * 32 + 255) / 256) * 256 in
-    let* down_kernel =
-      Metal_native.dispatch ~batch runtime down_entry
-        ~buffers:[ intermediate; topk_indices; topk_weights; down_exps; output_buffer ]
-        ~parameters:down_params ~grid:(down_threads, 1, 1)
-    in
-    let state = Metal_execution_state.bind_value state output output_buffer in
-    Ok (state, [ topk_kernel; gate_up_kernel; down_kernel ])
-  else
-    let* sort_entry =
-      Metal_native.kernel_entry ~name:"llmopt_moe_sort_and_bin" runtime
-        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-        ~input_dtype:Ir.Dtype.Float16
-        ~output_dtype:Ir.Dtype.Float16
-    in
-    let* gate_up_sorted_entry =
-      Metal_native.kernel_entry
-        ~name:"llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted" runtime
-        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-        ~input_dtype:Ir.Dtype.Float16
-        ~output_dtype:Ir.Dtype.Float16
-    in
-    let* down_sorted_entry =
-      Metal_native.kernel_entry
-        ~name:"llmopt_tile32_affine8_moe_down_project_f16_sorted" runtime
-        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-        ~input_dtype:Ir.Dtype.Float16
-        ~output_dtype:Ir.Dtype.Float16
-    in
-    let* down_reduce_entry =
-      Metal_native.kernel_entry
-        ~name:"llmopt_moe_down_token_reduce_f16" runtime
-        ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
-        ~input_dtype:Ir.Dtype.Float16
-        ~output_dtype:Ir.Dtype.Float16
-    in
-    let* sorted_tokens =
-      match execution_batch.Execution_batch.moe_sorted_tokens with
-      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
-      | _ ->
-          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
-          execution_batch.Execution_batch.moe_sorted_tokens <- Some buf;
-          execution_batch.Execution_batch.resources <-
-            buf :: execution_batch.Execution_batch.resources;
-          Ok buf
-    in
-    let* sorted_p =
-      match execution_batch.Execution_batch.moe_sorted_p with
-      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
-      | _ ->
-          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
-          execution_batch.Execution_batch.moe_sorted_p <- Some buf;
-          execution_batch.Execution_batch.resources <-
-            buf :: execution_batch.Execution_batch.resources;
-          Ok buf
-    in
-    let* sorted_experts =
-      match execution_batch.Execution_batch.moe_sorted_experts with
-      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * 4 -> Ok buf
-      | _ ->
-          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * 4) in
-          execution_batch.Execution_batch.moe_sorted_experts <- Some buf;
-          execution_batch.Execution_batch.resources <-
-            buf :: execution_batch.Execution_batch.resources;
-          Ok buf
-    in
-    let* expert_offsets =
-      match execution_batch.Execution_batch.moe_expert_offsets with
-      | Some buf when Metal_native.Buffer.byte_length buf >= 65 * 4 -> Ok buf
-      | _ ->
-          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(65 * 4) in
-          execution_batch.Execution_batch.moe_expert_offsets <- Some buf;
-          execution_batch.Execution_batch.resources <-
-            buf :: execution_batch.Execution_batch.resources;
-          Ok buf
-    in
-    let* down_out =
-      match execution_batch.Execution_batch.moe_down_out with
-      | Some buf when Metal_native.Buffer.byte_length buf >= m * top_k * hidden_dim * 2 -> Ok buf
-      | _ ->
-          let* buf = Metal_native.Buffer.create ~runtime ~bytes:(m * top_k * hidden_dim * 2) in
-          execution_batch.Execution_batch.moe_down_out <- Some buf;
-          execution_batch.Execution_batch.resources <-
-            buf :: execution_batch.Execution_batch.resources;
-          Ok buf
-    in
-    let* sort_params =
-      Parameters.moe_sort ~tokens:m ~num_experts:n_experts ~top_k ()
-    in
-    let* sort_kernel =
-      Metal_native.dispatch ~batch runtime sort_entry
-        ~buffers:[ topk_indices; sorted_tokens; sorted_p; sorted_experts; expert_offsets ]
-        ~parameters:sort_params ~grid:(64, 1, 1)
-    in
-    let gate_up_col_groups = (intermediate_dim + 7) / 8 in
-    let gate_up_simdgroups = m * top_k * gate_up_col_groups in
-    let gate_up_threads = ((gate_up_simdgroups * 32 + 255) / 256) * 256 in
-    let* gate_up_kernel =
-      Metal_native.dispatch ~batch runtime gate_up_sorted_entry
-        ~buffers:[ hidden_states; sorted_tokens; sorted_p; sorted_experts; gate_exps; up_exps; intermediate ]
-        ~parameters:gate_up_params ~grid:(gate_up_threads, 1, 1)
-    in
-    let down_col_groups = (hidden_dim + 7) / 8 in
-    let down_simdgroups = m * top_k * down_col_groups in
-    let down_threads = ((down_simdgroups * 32 + 255) / 256) * 256 in
-    let* down_kernel =
-      Metal_native.dispatch ~batch runtime down_sorted_entry
-        ~buffers:[ intermediate; sorted_p; sorted_experts; topk_weights; down_exps; down_out ]
-        ~parameters:down_params ~grid:(down_threads, 1, 1)
-    in
-    let reduce_simdgroups = m * down_col_groups in
-    let reduce_threads = ((reduce_simdgroups * 32 + 255) / 256) * 256 in
-    let* reduce_kernel =
-      Metal_native.dispatch ~batch runtime down_reduce_entry
-        ~buffers:[ down_out; output_buffer ]
-        ~parameters:down_params ~grid:(reduce_threads, 1, 1)
-    in
-    let state = Metal_execution_state.bind_value state output output_buffer in
-    Ok (state, [ topk_kernel; sort_kernel; gate_up_kernel; down_kernel; reduce_kernel ])
+  let* sort_kernel =
+    Metal_native.dispatch ~batch runtime sort_entry
+      ~buffers:[ topk_indices; sorted_tokens; sorted_p; p_to_sorted; tile_info; num_tiles ]
+      ~parameters:sort_params ~grid:(64, 1, 1)
+  in
+  let gather_elements = m * top_k * (hidden_dim / 8) in
+  let gather_threads = ((gather_elements + 255) / 256) * 256 in
+  let* gather_kernel =
+    Metal_native.dispatch ~batch runtime gather_entry
+      ~buffers:[ hidden_states; sorted_tokens; gathered_x ]
+      ~parameters:gather_params ~grid:(gather_threads, 1, 1)
+  in
+  let n_tiles_gate = (intermediate_dim + 15) / 16 in
+  let gate_up_simdgroups = max_m_tiles * n_tiles_gate in
+  let* gate_up_kernel =
+    Metal_native.dispatch ~batch runtime gate_up_entry
+      ~buffers:[ gathered_x; tile_info; num_tiles; gate_exps; up_exps; intermediate ]
+      ~parameters:gate_up_params ~grid:(gate_up_simdgroups * 32, 1, 1)
+  in
+  let n_tiles_down = (hidden_dim + 15) / 16 in
+  let down_simdgroups = max_m_tiles * n_tiles_down in
+  let* down_kernel =
+    Metal_native.dispatch ~batch runtime down_entry
+      ~buffers:[ intermediate; tile_info; num_tiles; down_exps; down_out ]
+      ~parameters:down_params ~grid:(down_simdgroups * 32, 1, 1)
+  in
+  let down_col_groups = (hidden_dim + 7) / 8 in
+  let reduce_simdgroups = m * down_col_groups in
+  let reduce_threads = ((reduce_simdgroups * 32 + 255) / 256) * 256 in
+  let* reduce_kernel =
+    Metal_native.dispatch ~batch runtime reduce_entry
+      ~buffers:[ down_out; p_to_sorted; topk_weights; output_buffer ]
+      ~parameters:reduce_params ~grid:(reduce_threads, 1, 1)
+  in
+  let state = Metal_execution_state.bind_value state output output_buffer in
+  Ok (state, [ topk_kernel; sort_kernel; gather_kernel; gate_up_kernel; down_kernel; reduce_kernel ])
+
 
 let dispatch_w4a16_swiglu_ffn_command (context : Metal_execution_state.context)
     state ~m ~n ~k ~epsilon values output =

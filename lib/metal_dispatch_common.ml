@@ -374,6 +374,12 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
          || String.ends_with ~suffix:"_m4_add" tactic_name
     then
       ((m + 3) / 4) * n
+    else if String.ends_with ~suffix:"_simd" tactic_name
+         || String.ends_with ~suffix:"_simd_add" tactic_name
+    then
+      let m_tiles = (m + 15) / 16 in
+      let n_tiles = (n + 15) / 16 in
+      m_tiles * n_tiles
     else if String.ends_with ~suffix:"_m2" tactic_name then n
     else m * n
   in
@@ -390,6 +396,10 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
       if columns > max_int / 128 then
         Error "Metal Q8_0 wide-output Linear grid dimension overflows"
       else Ok (columns * 128)
+    else if
+      String.ends_with ~suffix:"_simd" tactic_name
+      || String.ends_with ~suffix:"_simd_add" tactic_name
+    then Ok (columns * 32)
     else if
       String.ends_with ~suffix:"_m2_n2_l32" tactic_name
       || String.ends_with ~suffix:"_m2_n1_l32" tactic_name

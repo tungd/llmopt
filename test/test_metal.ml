@@ -1184,17 +1184,20 @@ let run () =
     (contains_substring moe_src "kernel void llmopt_moe_sort_and_bin")
     "Metal lowering emits llmopt_moe_sort_and_bin";
   expect
-    (contains_substring moe_src
-       "kernel void llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted")
-    "Metal lowering emits llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted";
+    (contains_substring moe_src "kernel void llmopt_gather_f16")
+    "Metal lowering emits llmopt_gather_f16";
   expect
     (contains_substring moe_src
-       "kernel void llmopt_tile32_affine8_moe_down_project_f16_sorted")
-    "Metal lowering emits llmopt_tile32_affine8_moe_down_project_f16_sorted";
+       "kernel void llmopt_tile32_affine4_grouped_gate_up_swiglu_f16_simd")
+    "Metal lowering emits llmopt_tile32_affine4_grouped_gate_up_swiglu_f16_simd";
   expect
     (contains_substring moe_src
-       "kernel void llmopt_moe_down_token_reduce_f16")
-    "Metal lowering emits llmopt_moe_down_token_reduce_f16";
+       "kernel void llmopt_tile32_affine8_grouped_linear_f16_simd")
+    "Metal lowering emits llmopt_tile32_affine8_grouped_linear_f16_simd";
+  expect
+    (contains_substring moe_src
+       "kernel void llmopt_moe_scatter_reduce_f16")
+    "Metal lowering emits llmopt_moe_scatter_reduce_f16";
   let moe_kernels = Metal.Program.kernels moe_program in
   expect
     (List.exists
@@ -1203,22 +1206,27 @@ let run () =
     "Package ABI declares llmopt_moe_sort_and_bin";
   expect
     (List.exists
-       (fun k ->
-         Kernel_abi.Entry.name k
-         = "llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted")
+       (fun k -> Kernel_abi.Entry.name k = "llmopt_gather_f16")
        moe_kernels)
-    "Package ABI declares llmopt_tile32_affine4_moe_gate_up_swiglu_f16_sorted";
+    "Package ABI declares llmopt_gather_f16";
   expect
     (List.exists
        (fun k ->
          Kernel_abi.Entry.name k
-         = "llmopt_tile32_affine8_moe_down_project_f16_sorted")
+         = "llmopt_tile32_affine4_grouped_gate_up_swiglu_f16_simd")
        moe_kernels)
-    "Package ABI declares llmopt_tile32_affine8_moe_down_project_f16_sorted";
+    "Package ABI declares llmopt_tile32_affine4_grouped_gate_up_swiglu_f16_simd";
   expect
     (List.exists
        (fun k ->
-         Kernel_abi.Entry.name k = "llmopt_moe_down_token_reduce_f16")
+         Kernel_abi.Entry.name k
+         = "llmopt_tile32_affine8_grouped_linear_f16_simd")
        moe_kernels)
-    "Package ABI declares llmopt_moe_down_token_reduce_f16";
-  print_endline "llmopt batched sorted MoE lowering and ABI proof passed"
+    "Package ABI declares llmopt_tile32_affine8_grouped_linear_f16_simd";
+  expect
+    (List.exists
+       (fun k ->
+         Kernel_abi.Entry.name k = "llmopt_moe_scatter_reduce_f16")
+       moe_kernels)
+    "Package ABI declares llmopt_moe_scatter_reduce_f16";
+  print_endline "llmopt algebraic decomposed MoE lowering and ABI proof passed"

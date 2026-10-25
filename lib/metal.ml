@@ -813,8 +813,51 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     region_quant_multi_export_digest_source_result
   in
   let* quant_add_source = quant_add_source_result in
+  let* moe_grouped_source, moe_grouped_entries =
+    if has_moe_swiglu_ffn graph then
+      let swiglu_epilogue =
+        Applicative_expr.Binop
+          (Applicative_expr.Mul,
+           Applicative_expr.Unop (Applicative_expr.Silu, Applicative_expr.Slot 0),
+           Applicative_expr.Slot 1)
+      in
+      let* gate_up_kernel =
+        Metal_block_codegen.tile32_affine_grouped_multi_linear_f16_simd_kernel
+          ~name:"llmopt_tile32_affine4_grouped_gate_up_swiglu_f16_simd"
+          ~epilogue:swiglu_epilogue ~target tile32_affine4_schema
+      in
+      let* down_kernel =
+        Metal_block_codegen.tile32_affine_grouped_linear_f16_simd_kernel
+          ~name:"llmopt_tile32_affine8_grouped_linear_f16_simd"
+          ~target tile32_affine8_schema
+      in
+      Ok
+        ( "\n" ^ gate_up_kernel ^ "\n" ^ down_kernel,
+          [
+            kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+              ~name:"llmopt_tile32_affine4_grouped_gate_up_swiglu_f16_simd"
+              ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+              ~input_dtype:Ir.Dtype.Float16
+              ~output_dtype:Ir.Dtype.Float16;
+            kernel_entry_with_threadgroup ~threadgroup:(32, 1, 1)
+              ~name:"llmopt_tile32_affine8_grouped_linear_f16_simd"
+              ~operation:Kernel_abi.Operation.Moe_swiglu_ffn
+              ~input_dtype:Ir.Dtype.Float16
+              ~output_dtype:Ir.Dtype.Float16;
+          ] )
+    else Ok ("", [])
+  in
+  let needs_quant_common =
+    has_quant_linear graph || region_quant_tactics <> []
+    || region_quant_multi_digest_tactics <> []
+    || region_quant_multi_export_digest_tactics <> [] || quant_qkv
+    || has_moe_swiglu_ffn graph
+  in
   let components =
-    [ ( has_w4a16_linear graph || regions_have_w4,
+    [ ( needs_quant_common,
+        quant_common_source,
+        [] );
+      ( has_w4a16_linear graph || regions_have_w4,
         w4a16_source,
         w4a16_entries );
       ( has_w4a16_qkv_linear graph,
@@ -824,15 +867,15 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
         w4a16_swiglu_ffn_source,
         w4a16_swiglu_ffn_entries );
       ( has_moe_swiglu_ffn graph,
-        moe_source,
-        moe_entries );
+        moe_source ^ moe_grouped_source,
+        moe_entries @ moe_grouped_entries );
       ( has_w4a16_lm_head_argmax graph,
         w4a16_lm_head_argmax_source,
         w4a16_lm_head_argmax_entries );
       ( has_quant_linear graph || region_quant_tactics <> []
         || region_quant_multi_digest_tactics <> []
         || region_quant_multi_export_digest_tactics <> [] || quant_qkv,
-        quant_common_source ^ quant_format_source ^ quant_qkv_source
+        quant_format_source ^ quant_qkv_source
         ^ quant_add_source ^ region_quant_digest_source
         ^ region_quant_multi_digest_source
         ^ region_quant_multi_export_digest_source,

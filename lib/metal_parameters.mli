@@ -213,3 +213,18 @@ val moe_down :
   intermediate_dim:int ->
   unit ->
   (bytes, string) result
+
+val gather_f16 :
+  rows:int ->
+  cols_div8:int ->
+  unit ->
+  (bytes, string) result
+
+val quant_linear :
+  m:int ->
+  n:int ->
+  k:int ->
+  has_bias:bool ->
+  unit ->
+  (bytes, string) result
+

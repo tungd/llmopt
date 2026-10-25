@@ -602,12 +602,15 @@ let tile32_affine_linear_f16_simd_kernel ?name ?(epilogue = Epilogue.none) ~targ
       const float s = float(*reinterpret_cast<device const half*>(blk + %du));
       const float m = float(*reinterpret_cast<device const half*>(blk + %du));
       const uint l_start = sub_w << 3u;
+      device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+      const uchar4 p0 = q_ptr4[0];
+      const uchar4 p1 = q_ptr4[1];
       #pragma unroll
-      for (uint i = 0u; i < 8u; ++i) {
-        const uint l = l_start + i;
-        const uchar packed = blk[%du + l];
-        b_tile[l][c_w] = half(s * float(packed & 15u) + m);
-        b_tile[l + 16u][c_w] = half(s * float(packed >> 4u) + m);
+      for (uint i = 0u; i < 4u; ++i) {
+        b_tile[l_start + i][c_w] = half(s * float(p0[i] & 15u) + m);
+        b_tile[l_start + 16u + i][c_w] = half(s * float(p0[i] >> 4u) + m);
+        b_tile[l_start + 4u + i][c_w] = half(s * float(p1[i] & 15u) + m);
+        b_tile[l_start + 20u + i][c_w] = half(s * float(p1[i] >> 4u) + m);
       }
     } else {
       const uint l_start = sub_w << 3u;
@@ -627,11 +630,17 @@ let tile32_affine_linear_f16_simd_kernel ?name ?(epilogue = Epilogue.none) ~targ
       const float s = float(*reinterpret_cast<device const half*>(blk + %du));
       const float m = float(*reinterpret_cast<device const half*>(blk + %du));
       const uint l_start = sub_w << 4u;
+      device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+      const uchar4 q0 = q_ptr4[0];
+      const uchar4 q1 = q_ptr4[1];
+      const uchar4 q2 = q_ptr4[2];
+      const uchar4 q3 = q_ptr4[3];
       #pragma unroll
-      for (uint i = 0u; i < 16u; ++i) {
-        const uint l = l_start + i;
-        const uchar q = blk[%du + l];
-        b_tile[l][c_w] = half(s * float(q) + m);
+      for (uint i = 0u; i < 4u; ++i) {
+        b_tile[l_start + i][c_w] = half(s * float(q0[i]) + m);
+        b_tile[l_start + 4u + i][c_w] = half(s * float(q1[i]) + m);
+        b_tile[l_start + 8u + i][c_w] = half(s * float(q2[i]) + m);
+        b_tile[l_start + 12u + i][c_w] = half(s * float(q3[i]) + m);
       }
     } else {
       const uint l_start = sub_w << 4u;
@@ -683,14 +692,23 @@ kernel void %s(
     const uint in_r = row_base + r_load;
     const uint in_c = (b << 5u) + c_load;
     device const half* in_ptr = input + in_r * params.k + in_c;
-    #pragma unroll
-    for (uint i = 0u; i < 16u; ++i) {
-      a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
+    if (in_r < params.m && in_c + 15u < params.k) {
+      a_tile4[0] = in_ptr4[0];
+      a_tile4[1] = in_ptr4[1];
+      a_tile4[2] = in_ptr4[2];
+      a_tile4[3] = in_ptr4[3];
+    } else {
+      #pragma unroll
+      for (uint i = 0u; i < 16u; ++i) {
+        a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      }
     }
 
 %s
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
 
     #pragma unroll
     for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
@@ -705,7 +723,7 @@ kernel void %s(
       simdgroup_multiply_accumulate(acc[1][1], a1, b1, acc[1][1]);
     }
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
   }
 
   threadgroup half out_tile[16][20];
@@ -713,7 +731,7 @@ kernel void %s(
   simdgroup_store(acc[0][1], &out_tile[0][8], 20);
   simdgroup_store(acc[1][0], &out_tile[8][0], 20);
   simdgroup_store(acc[1][1], &out_tile[8][8], 20);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
 
   const uint r_out = lane >> 1u;
   const uint c_out_start = (lane & 1u) << 3u;
@@ -733,7 +751,8 @@ kernel void %s(
   in
   Ok flat
 
-let tile32_affine_linear_f16_simd_add_kernel ~name ~target schema =
+let tile32_affine_grouped_multi_linear_f16_simd_kernel ?name ~epilogue
+    ?(num_slots = 2) ~target schema =
   let* ( code_bits,
          scale_offset,
          minimum_offset,
@@ -742,12 +761,251 @@ let tile32_affine_linear_f16_simd_add_kernel ~name ~target schema =
          block_bytes ) =
     tile32_affine_geometry ~target schema
   in
+  let default_name =
+    Printf.sprintf "llmopt_tile32_affine%d_grouped_multi_linear_f16_simd" code_bits
+  in
+  let kernel_name = Option.value name ~default:default_name in
+  let canonical_epilogue = Applicative_expr.canonicalize epilogue in
+  let epilogue_writeback =
+    Applicative_expr.emit_msl_expr ~slot_emitter:(fun s -> Printf.sprintf "a%d" s)
+      ~index_expr:"c" canonical_epilogue
+  in
+  let dequant_b_slot weight_var =
+    if code_bits = 4 then
+      Printf.sprintf
+        {|    {
+      const uint col_idx = col_base + c_w;
+      if (col_idx < params.n) {
+        device const uchar* blk = %s + col_idx * blocks * %du + b * %du;
+        const float s = float(*reinterpret_cast<device const half*>(blk + %du));
+        const float m = float(*reinterpret_cast<device const half*>(blk + %du));
+        const uint l_start = sub_w << 3u;
+        device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+        const uchar4 p0 = q_ptr4[0];
+        const uchar4 p1 = q_ptr4[1];
+        #pragma unroll
+        for (uint i = 0u; i < 4u; ++i) {
+          b_tile[l_start + i][c_w] = half(s * float(p0[i] & 15u) + m);
+          b_tile[l_start + 16u + i][c_w] = half(s * float(p0[i] >> 4u) + m);
+          b_tile[l_start + 4u + i][c_w] = half(s * float(p1[i] & 15u) + m);
+          b_tile[l_start + 20u + i][c_w] = half(s * float(p1[i] >> 4u) + m);
+        }
+      } else {
+        const uint l_start = sub_w << 3u;
+        #pragma unroll
+        for (uint i = 0u; i < 8u; ++i) {
+          const uint l = l_start + i;
+          b_tile[l][c_w] = 0.0h;
+          b_tile[l + 16u][c_w] = 0.0h;
+        }
+      }
+    }|}
+        weight_var block_bytes block_bytes scale_offset minimum_offset quant_offset
+    else
+      Printf.sprintf
+        {|    {
+      const uint col_idx = col_base + c_w;
+      if (col_idx < params.n) {
+        device const uchar* blk = %s + col_idx * blocks * %du + b * %du;
+        const float s = float(*reinterpret_cast<device const half*>(blk + %du));
+        const float m = float(*reinterpret_cast<device const half*>(blk + %du));
+        const uint l_start = sub_w << 4u;
+        device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+        const uchar4 q0 = q_ptr4[0];
+        const uchar4 q1 = q_ptr4[1];
+        const uchar4 q2 = q_ptr4[2];
+        const uchar4 q3 = q_ptr4[3];
+        #pragma unroll
+        for (uint i = 0u; i < 4u; ++i) {
+          b_tile[l_start + i][c_w] = half(s * float(q0[i]) + m);
+          b_tile[l_start + 4u + i][c_w] = half(s * float(q1[i]) + m);
+          b_tile[l_start + 8u + i][c_w] = half(s * float(q2[i]) + m);
+          b_tile[l_start + 12u + i][c_w] = half(s * float(q3[i]) + m);
+        }
+      } else {
+        const uint l_start = sub_w << 4u;
+        #pragma unroll
+        for (uint i = 0u; i < 16u; ++i) {
+          b_tile[l_start + i][c_w] = 0.0h;
+        }
+      }
+    }|}
+        weight_var block_bytes block_bytes scale_offset minimum_offset quant_offset
+  in
+  let dequant_b_0 = dequant_b_slot "exp_w0" in
+  let dequant_b_1 = dequant_b_slot "exp_w1" in
+  let flat =
+    Printf.sprintf
+      {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const MoeTileInfo* tile_info [[buffer(1)]],
+    device const uint* num_tiles [[buffer(2)]],
+    device const uchar* weight_0 [[buffer(3)]],
+    device const uchar* weight_1 [[buffer(4)]],
+    device half* output [[buffer(5)]],
+    constant QuantLinearParams& params [[buffer(6)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint n_tiles = (params.n + 15u) >> 4u;
+  if (n_tiles == 0u) return;
+  const uint m_tile = simd_idx / n_tiles;
+  const uint n_tile = simd_idx - m_tile * n_tiles;
+
+  if (m_tile >= num_tiles[0]) return;
+
+  MoeTileInfo tinfo = tile_info[m_tile];
+  const uint expert = tinfo.expert;
+  const uint row_base = tinfo.slot_start;
+  const uint valid_rows = tinfo.valid_rows;
+  const uint col_base = n_tile << 4u;
+
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+  const uint expert_stride = params.n * col_stride;
+
+  device const uchar* exp_w0 = weight_0 + expert * expert_stride;
+  device const uchar* exp_w1 = weight_1 + expert * expert_stride;
+
+  threadgroup half a_tile[16][36];
+  threadgroup half b_tile[32][20];
+
+  simdgroup_half8x8 acc0[2][2];
+  acc0[0][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc0[0][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc0[1][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc0[1][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+
+  simdgroup_half8x8 acc1[2][2];
+  acc1[0][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc1[0][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc1[1][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc1[1][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+
+  const uint r_load = lane >> 1u;
+  const uint c_load = (lane & 1u) << 4u;
+  const uint c_w = lane >> 1u;
+  const uint sub_w = lane & 1u;
+
+  for (uint b = 0u; b < blocks; ++b) {
+    const uint in_r = row_base + r_load;
+    const uint in_c = (b << 5u) + c_load;
+    device const half* in_ptr = input + in_r * params.k + in_c;
+    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
+    if (r_load < valid_rows && in_c + 15u < params.k) {
+      a_tile4[0] = in_ptr4[0];
+      a_tile4[1] = in_ptr4[1];
+      a_tile4[2] = in_ptr4[2];
+      a_tile4[3] = in_ptr4[3];
+    } else {
+      #pragma unroll
+      for (uint i = 0u; i < 16u; ++i) {
+        a_tile[r_load][c_load + i] = (r_load < valid_rows && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      }
+    }
+
+%s
+
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+
+    #pragma unroll
+    for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
+      simdgroup_half8x8 a0, a1, b0, b1;
+      simdgroup_load(a0, &a_tile[0][k_sub], 36);
+      simdgroup_load(a1, &a_tile[8][k_sub], 36);
+      simdgroup_load(b0, &b_tile[k_sub][0], 20);
+      simdgroup_load(b1, &b_tile[k_sub][8], 20);
+      simdgroup_multiply_accumulate(acc0[0][0], a0, b0, acc0[0][0]);
+      simdgroup_multiply_accumulate(acc0[0][1], a0, b1, acc0[0][1]);
+      simdgroup_multiply_accumulate(acc0[1][0], a1, b0, acc0[1][0]);
+      simdgroup_multiply_accumulate(acc0[1][1], a1, b1, acc0[1][1]);
+    }
+
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+
+%s
+
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+
+    #pragma unroll
+    for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
+      simdgroup_half8x8 a0, a1, b0, b1;
+      simdgroup_load(a0, &a_tile[0][k_sub], 36);
+      simdgroup_load(a1, &a_tile[8][k_sub], 36);
+      simdgroup_load(b0, &b_tile[k_sub][0], 20);
+      simdgroup_load(b1, &b_tile[k_sub][8], 20);
+      simdgroup_multiply_accumulate(acc1[0][0], a0, b0, acc1[0][0]);
+      simdgroup_multiply_accumulate(acc1[0][1], a0, b1, acc1[0][1]);
+      simdgroup_multiply_accumulate(acc1[1][0], a1, b0, acc1[1][0]);
+      simdgroup_multiply_accumulate(acc1[1][1], a1, b1, acc1[1][1]);
+    }
+
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  threadgroup half out_tile[16][20];
+  simdgroup_store(acc0[0][0], &out_tile[0][0], 20);
+  simdgroup_store(acc0[0][1], &out_tile[0][8], 20);
+  simdgroup_store(acc0[1][0], &out_tile[8][0], 20);
+  simdgroup_store(acc0[1][1], &out_tile[8][8], 20);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
+
+  const uint r_out = lane >> 1u;
+  const uint c_out_start = (lane & 1u) << 3u;
+  float v0[8];
+  #pragma unroll
+  for (uint i = 0u; i < 8u; ++i) {
+    v0[i] = float(out_tile[r_out][c_out_start + i]);
+  }
+  simdgroup_barrier(mem_flags::mem_threadgroup);
+
+  simdgroup_store(acc1[0][0], &out_tile[0][0], 20);
+  simdgroup_store(acc1[0][1], &out_tile[0][8], 20);
+  simdgroup_store(acc1[1][0], &out_tile[8][0], 20);
+  simdgroup_store(acc1[1][1], &out_tile[8][8], 20);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
+
+  #pragma unroll
+  for (uint i = 0u; i < 8u; ++i) {
+    const uint r = r_out;
+    const uint c = col_base + c_out_start + i;
+    if (r < valid_rows && c < params.n) {
+      float a0 = v0[i];
+      float a1 = float(out_tile[r_out][c_out_start + i]);
+      float val = %s;
+      output[(row_base + r) * params.n + c] = half(val);
+    }
+  }
+}
+|}
+      kernel_name block_elements block_bytes dequant_b_0 dequant_b_1
+      epilogue_writeback
+  in
+  Ok flat
+
+let tile32_affine_grouped_linear_f16_simd_kernel ?name ?(epilogue = Epilogue.none)
+    ~target schema =
+  let* ( code_bits,
+         scale_offset,
+         minimum_offset,
+         quant_offset,
+         block_elements,
+         block_bytes ) =
+    tile32_affine_geometry ~target schema
+  in
+  let default_name =
+    Printf.sprintf "llmopt_tile32_affine%d_grouped_linear_f16_simd" code_bits
+  in
+  let kernel_name = Option.value name ~default:default_name in
+  let epilogue_writeback = Epilogue.emit_msl_writeback ~acc:"val" ~idx:"c" epilogue in
   let dequant_b =
     if code_bits = 4 then
       Printf.sprintf
         {|    const uint col_idx = col_base + c_w;
     if (col_idx < params.n) {
-      device const uchar* blk = weight + col_idx * blocks * %du + b * %du;
+      device const uchar* blk = exp_w + col_idx * blocks * %du + b * %du;
       const float s = float(*reinterpret_cast<device const half*>(blk + %du));
       const float m = float(*reinterpret_cast<device const half*>(blk + %du));
       const uint l_start = sub_w << 3u;
@@ -772,7 +1030,7 @@ let tile32_affine_linear_f16_simd_add_kernel ~name ~target schema =
       Printf.sprintf
         {|    const uint col_idx = col_base + c_w;
     if (col_idx < params.n) {
-      device const uchar* blk = weight + col_idx * blocks * %du + b * %du;
+      device const uchar* blk = exp_w + col_idx * blocks * %du + b * %du;
       const float s = float(*reinterpret_cast<device const half*>(blk + %du));
       const float m = float(*reinterpret_cast<device const half*>(blk + %du));
       const uint l_start = sub_w << 4u;
@@ -781,6 +1039,181 @@ let tile32_affine_linear_f16_simd_add_kernel ~name ~target schema =
         const uint l = l_start + i;
         const uchar q = blk[%du + l];
         b_tile[l][c_w] = half(s * float(q) + m);
+      }
+    } else {
+      const uint l_start = sub_w << 4u;
+      #pragma unroll
+      for (uint i = 0u; i < 16u; ++i) {
+        b_tile[l_start + i][c_w] = 0.0h;
+      }
+    }|}
+        block_bytes block_bytes scale_offset minimum_offset quant_offset
+  in
+  let flat =
+    Printf.sprintf
+      {|
+kernel void %s(
+    device const half* input [[buffer(0)]],
+    device const MoeTileInfo* tile_info [[buffer(1)]],
+    device const uint* num_tiles [[buffer(2)]],
+    device const uchar* weight [[buffer(3)]],
+    device half* output [[buffer(4)]],
+    constant QuantLinearParams& params [[buffer(5)]],
+    uint gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  const uint simd_idx = gid >> 5u;
+  const uint n_tiles = (params.n + 15u) >> 4u;
+  if (n_tiles == 0u) return;
+  const uint m_tile = simd_idx / n_tiles;
+  const uint n_tile = simd_idx - m_tile * n_tiles;
+
+  if (m_tile >= num_tiles[0]) return;
+
+  MoeTileInfo tinfo = tile_info[m_tile];
+  const uint expert = tinfo.expert;
+  const uint row_base = tinfo.slot_start;
+  const uint valid_rows = tinfo.valid_rows;
+  const uint col_base = n_tile << 4u;
+
+  const uint blocks = params.k / %du;
+  const uint col_stride = blocks * %du;
+  const uint expert_stride = params.n * col_stride;
+
+  device const uchar* exp_w = weight + expert * expert_stride;
+
+  threadgroup half a_tile[16][36];
+  threadgroup half b_tile[32][20];
+
+  simdgroup_half8x8 acc[2][2];
+  acc[0][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc[0][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc[1][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  acc[1][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+
+  const uint r_load = lane >> 1u;
+  const uint c_load = (lane & 1u) << 4u;
+  const uint c_w = lane >> 1u;
+  const uint sub_w = lane & 1u;
+
+  for (uint b = 0u; b < blocks; ++b) {
+    const uint in_r = row_base + r_load;
+    const uint in_c = (b << 5u) + c_load;
+    device const half* in_ptr = input + in_r * params.k + in_c;
+    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
+    if (r_load < valid_rows && in_c + 15u < params.k) {
+      a_tile4[0] = in_ptr4[0];
+      a_tile4[1] = in_ptr4[1];
+      a_tile4[2] = in_ptr4[2];
+      a_tile4[3] = in_ptr4[3];
+    } else {
+      #pragma unroll
+      for (uint i = 0u; i < 16u; ++i) {
+        a_tile[r_load][c_load + i] = (r_load < valid_rows && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      }
+    }
+
+%s
+
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+
+    #pragma unroll
+    for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
+      simdgroup_half8x8 a0, a1, b0, b1;
+      simdgroup_load(a0, &a_tile[0][k_sub], 36);
+      simdgroup_load(a1, &a_tile[8][k_sub], 36);
+      simdgroup_load(b0, &b_tile[k_sub][0], 20);
+      simdgroup_load(b1, &b_tile[k_sub][8], 20);
+      simdgroup_multiply_accumulate(acc[0][0], a0, b0, acc[0][0]);
+      simdgroup_multiply_accumulate(acc[0][1], a0, b1, acc[0][1]);
+      simdgroup_multiply_accumulate(acc[1][0], a1, b0, acc[1][0]);
+      simdgroup_multiply_accumulate(acc[1][1], a1, b1, acc[1][1]);
+    }
+
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  threadgroup half out_tile[16][20];
+  simdgroup_store(acc[0][0], &out_tile[0][0], 20);
+  simdgroup_store(acc[0][1], &out_tile[0][8], 20);
+  simdgroup_store(acc[1][0], &out_tile[8][0], 20);
+  simdgroup_store(acc[1][1], &out_tile[8][8], 20);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
+
+  const uint r_out = lane >> 1u;
+  const uint c_out_start = (lane & 1u) << 3u;
+  #pragma unroll
+  for (uint i = 0u; i < 8u; ++i) {
+    const uint r = r_out;
+    const uint c = col_base + c_out_start + i;
+    if (r < valid_rows && c < params.n) {
+      float val = float(out_tile[r_out][c_out_start + i]);
+      output[(row_base + r) * params.n + c] = half(%s);
+    }
+  }
+}
+|}
+      kernel_name block_elements block_bytes dequant_b epilogue_writeback
+  in
+  Ok flat
+
+let tile32_affine_linear_f16_simd_add_kernel ~name ~target schema =
+  let* ( code_bits,
+         scale_offset,
+         minimum_offset,
+         quant_offset,
+         block_elements,
+         block_bytes ) =
+    tile32_affine_geometry ~target schema
+  in
+  let dequant_b =
+    if code_bits = 4 then
+      Printf.sprintf
+        {|    const uint col_idx = col_base + c_w;
+    if (col_idx < params.n) {
+      device const uchar* blk = weight + col_idx * blocks * %du + b * %du;
+      const float s = float(*reinterpret_cast<device const half*>(blk + %du));
+      const float m = float(*reinterpret_cast<device const half*>(blk + %du));
+      const uint l_start = sub_w << 3u;
+      device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+      const uchar4 p0 = q_ptr4[0];
+      const uchar4 p1 = q_ptr4[1];
+      #pragma unroll
+      for (uint i = 0u; i < 4u; ++i) {
+        b_tile[l_start + i][c_w] = half(s * float(p0[i] & 15u) + m);
+        b_tile[l_start + 16u + i][c_w] = half(s * float(p0[i] >> 4u) + m);
+        b_tile[l_start + 4u + i][c_w] = half(s * float(p1[i] & 15u) + m);
+        b_tile[l_start + 20u + i][c_w] = half(s * float(p1[i] >> 4u) + m);
+      }
+    } else {
+      const uint l_start = sub_w << 3u;
+      #pragma unroll
+      for (uint i = 0u; i < 8u; ++i) {
+        const uint l = l_start + i;
+        b_tile[l][c_w] = 0.0h;
+        b_tile[l + 16u][c_w] = 0.0h;
+      }
+    }|}
+        block_bytes block_bytes scale_offset minimum_offset quant_offset
+    else
+      Printf.sprintf
+        {|    const uint col_idx = col_base + c_w;
+    if (col_idx < params.n) {
+      device const uchar* blk = weight + col_idx * blocks * %du + b * %du;
+      const float s = float(*reinterpret_cast<device const half*>(blk + %du));
+      const float m = float(*reinterpret_cast<device const half*>(blk + %du));
+      const uint l_start = sub_w << 4u;
+      device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+      const uchar4 q0 = q_ptr4[0];
+      const uchar4 q1 = q_ptr4[1];
+      const uchar4 q2 = q_ptr4[2];
+      const uchar4 q3 = q_ptr4[3];
+      #pragma unroll
+      for (uint i = 0u; i < 4u; ++i) {
+        b_tile[l_start + i][c_w] = half(s * float(q0[i]) + m);
+        b_tile[l_start + 4u + i][c_w] = half(s * float(q1[i]) + m);
+        b_tile[l_start + 8u + i][c_w] = half(s * float(q2[i]) + m);
+        b_tile[l_start + 12u + i][c_w] = half(s * float(q3[i]) + m);
       }
     } else {
       const uint l_start = sub_w << 4u;
@@ -832,14 +1265,23 @@ kernel void %s(
     const uint in_r = row_base + r_load;
     const uint in_c = (b << 5u) + c_load;
     device const half* in_ptr = input + in_r * params.k + in_c;
-    #pragma unroll
-    for (uint i = 0u; i < 16u; ++i) {
-      a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
+    if (in_r < params.m && in_c + 15u < params.k) {
+      a_tile4[0] = in_ptr4[0];
+      a_tile4[1] = in_ptr4[1];
+      a_tile4[2] = in_ptr4[2];
+      a_tile4[3] = in_ptr4[3];
+    } else {
+      #pragma unroll
+      for (uint i = 0u; i < 16u; ++i) {
+        a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      }
     }
 
 %s
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
 
     #pragma unroll
     for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
@@ -854,7 +1296,7 @@ kernel void %s(
       simdgroup_multiply_accumulate(acc[1][1], a1, b1, acc[1][1]);
     }
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
   }
 
   threadgroup half out_tile[16][20];
@@ -862,7 +1304,7 @@ kernel void %s(
   simdgroup_store(acc[0][1], &out_tile[0][8], 20);
   simdgroup_store(acc[1][0], &out_tile[8][0], 20);
   simdgroup_store(acc[1][1], &out_tile[8][8], 20);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
 
   const uint r_out = lane >> 1u;
   const uint c_out_start = (lane & 1u) << 3u;
@@ -1208,12 +1650,15 @@ let tile32_affine_qkv_linear_f16_simd_kernel ~target schema =
       const float s = float(*reinterpret_cast<device const half*>(blk + %du));
       const float m = float(*reinterpret_cast<device const half*>(blk + %du));
       const uint l_start = sub_w << 3u;
+      device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+      const uchar4 p0 = q_ptr4[0];
+      const uchar4 p1 = q_ptr4[1];
       #pragma unroll
-      for (uint i = 0u; i < 8u; ++i) {
-        const uint l = l_start + i;
-        const uchar packed = blk[%du + l];
-        b_tile[l][c_w] = half(s * float(packed & 15u) + m);
-        b_tile[l + 16u][c_w] = half(s * float(packed >> 4u) + m);
+      for (uint i = 0u; i < 4u; ++i) {
+        b_tile[l_start + i][c_w] = half(s * float(p0[i] & 15u) + m);
+        b_tile[l_start + 16u + i][c_w] = half(s * float(p0[i] >> 4u) + m);
+        b_tile[l_start + 4u + i][c_w] = half(s * float(p1[i] & 15u) + m);
+        b_tile[l_start + 20u + i][c_w] = half(s * float(p1[i] >> 4u) + m);
       }
     } else {
       const uint l_start = sub_w << 3u;
@@ -1233,11 +1678,17 @@ let tile32_affine_qkv_linear_f16_simd_kernel ~target schema =
       const float s = float(*reinterpret_cast<device const half*>(blk + %du));
       const float m = float(*reinterpret_cast<device const half*>(blk + %du));
       const uint l_start = sub_w << 4u;
+      device const uchar4* q_ptr4 = reinterpret_cast<device const uchar4*>(blk + %du + l_start);
+      const uchar4 q0 = q_ptr4[0];
+      const uchar4 q1 = q_ptr4[1];
+      const uchar4 q2 = q_ptr4[2];
+      const uchar4 q3 = q_ptr4[3];
       #pragma unroll
-      for (uint i = 0u; i < 16u; ++i) {
-        const uint l = l_start + i;
-        const uchar q = blk[%du + l];
-        b_tile[l][c_w] = half(s * float(q) + m);
+      for (uint i = 0u; i < 4u; ++i) {
+        b_tile[l_start + i][c_w] = half(s * float(q0[i]) + m);
+        b_tile[l_start + 4u + i][c_w] = half(s * float(q1[i]) + m);
+        b_tile[l_start + 8u + i][c_w] = half(s * float(q2[i]) + m);
+        b_tile[l_start + 12u + i][c_w] = half(s * float(q3[i]) + m);
       }
     } else {
       const uint l_start = sub_w << 4u;
@@ -1319,14 +1770,23 @@ kernel void %s(
     const uint in_r = row_base + r_load;
     const uint in_c = (b << 5u) + c_load;
     device const half* in_ptr = input + in_r * params.k + in_c;
-    #pragma unroll
-    for (uint i = 0u; i < 16u; ++i) {
-      a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
+    if (in_r < params.m && in_c + 15u < params.k) {
+      a_tile4[0] = in_ptr4[0];
+      a_tile4[1] = in_ptr4[1];
+      a_tile4[2] = in_ptr4[2];
+      a_tile4[3] = in_ptr4[3];
+    } else {
+      #pragma unroll
+      for (uint i = 0u; i < 16u; ++i) {
+        a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      }
     }
 
 %s
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
 
     #pragma unroll
     for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
@@ -1341,7 +1801,7 @@ kernel void %s(
       simdgroup_multiply_accumulate(acc[1][1], a1, b1, acc[1][1]);
     }
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
   }
 
   threadgroup half out_tile[16][20];
@@ -1349,7 +1809,7 @@ kernel void %s(
   simdgroup_store(acc[0][1], &out_tile[0][8], 20);
   simdgroup_store(acc[1][0], &out_tile[8][0], 20);
   simdgroup_store(acc[1][1], &out_tile[8][8], 20);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  simdgroup_barrier(mem_flags::mem_threadgroup);
 
   const uint r_out = lane >> 1u;
   const uint c_out_start = (lane & 1u) << 3u;
