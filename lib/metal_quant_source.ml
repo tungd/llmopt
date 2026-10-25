@@ -420,46 +420,55 @@ kernel void llmopt_moe_scatter_reduce_f16(
     device const half* topk_weights [[buffer(2)]],
     device half* output [[buffer(3)]],
     constant MoeDownParams& params [[buffer(4)]],
-    uint gid [[thread_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint simd_idx = gid >> 5u;
+    uint gid [[thread_position_in_grid]]) {
   const uint col_groups = (params.hidden_dim + 7u) >> 3u;
-  if (simd_idx >= params.tokens * col_groups) return;
+  const uint total_groups = params.tokens * col_groups;
+  if (gid >= total_groups) return;
 
-  const uint token = simd_idx / col_groups;
-  const uint group_idx = simd_idx - token * col_groups;
+  const uint token = gid / col_groups;
+  const uint group_idx = gid - token * col_groups;
   const uint base_col = group_idx << 3u;
-  if (base_col >= params.hidden_dim) return;
 
-  if (lane == 0u) {
-    float tot0 = 0.0f, tot1 = 0.0f, tot2 = 0.0f, tot3 = 0.0f;
-    float tot4 = 0.0f, tot5 = 0.0f, tot6 = 0.0f, tot7 = 0.0f;
-    const uint base_p = token * params.top_k;
-    for (uint k = 0u; k < params.top_k; ++k) {
-      const uint orig_p = base_p + k;
-      const float w = float(topk_weights[orig_p]);
-      if (w > 0.0f) {
-        const uint sorted_idx = p_to_sorted[orig_p];
+  half4 sum0 = half4(0.0h);
+  half4 sum1 = half4(0.0h);
+  const uint base_p = token * params.top_k;
+
+  for (uint k = 0u; k < params.top_k; ++k) {
+    const uint orig_p = base_p + k;
+    const half w = topk_weights[orig_p];
+    if (w > 0.0h) {
+      const uint sorted_idx = p_to_sorted[orig_p];
+      if (base_col + 7u < params.hidden_dim) {
+        device const half4* p_ptr4 = reinterpret_cast<device const half4*>(
+            down_out + sorted_idx * params.hidden_dim + base_col);
+        sum0 += p_ptr4[0] * w;
+        sum1 += p_ptr4[1] * w;
+      } else {
         device const half* p_ptr = down_out + sorted_idx * params.hidden_dim + base_col;
-        tot0 += float(p_ptr[0]) * w;
-        if (base_col + 1u < params.hidden_dim) tot1 += float(p_ptr[1]) * w;
-        if (base_col + 2u < params.hidden_dim) tot2 += float(p_ptr[2]) * w;
-        if (base_col + 3u < params.hidden_dim) tot3 += float(p_ptr[3]) * w;
-        if (base_col + 4u < params.hidden_dim) tot4 += float(p_ptr[4]) * w;
-        if (base_col + 5u < params.hidden_dim) tot5 += float(p_ptr[5]) * w;
-        if (base_col + 6u < params.hidden_dim) tot6 += float(p_ptr[6]) * w;
-        if (base_col + 7u < params.hidden_dim) tot7 += float(p_ptr[7]) * w;
+        #pragma unroll
+        for (uint i = 0u; i < 8u; ++i) {
+          if (base_col + i < params.hidden_dim) {
+            if (i < 4u) sum0[i] += p_ptr[i] * w;
+            else sum1[i - 4u] += p_ptr[i] * w;
+          }
+        }
       }
     }
+  }
+
+  if (base_col + 7u < params.hidden_dim) {
+    device half4* out_p4 = reinterpret_cast<device half4*>(
+        output + token * params.hidden_dim + base_col);
+    out_p4[0] = sum0;
+    out_p4[1] = sum1;
+  } else {
     device half* out_p = output + token * params.hidden_dim + base_col;
-    out_p[0] = half(tot0);
-    if (base_col + 1u < params.hidden_dim) out_p[1] = half(tot1);
-    if (base_col + 2u < params.hidden_dim) out_p[2] = half(tot2);
-    if (base_col + 3u < params.hidden_dim) out_p[3] = half(tot3);
-    if (base_col + 4u < params.hidden_dim) out_p[4] = half(tot4);
-    if (base_col + 5u < params.hidden_dim) out_p[5] = half(tot5);
-    if (base_col + 6u < params.hidden_dim) out_p[6] = half(tot6);
-    if (base_col + 7u < params.hidden_dim) out_p[7] = half(tot7);
+    #pragma unroll
+    for (uint i = 0u; i < 8u; ++i) {
+      if (base_col + i < params.hidden_dim) {
+        out_p[i] = (i < 4u) ? sum0[i] : sum1[i - 4u];
+      }
+    }
   }
 }
 |}

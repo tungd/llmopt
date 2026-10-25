@@ -235,8 +235,8 @@ let dispatch_moe_swiglu_ffn_command (context : Metal_execution_state.context)
       ~parameters:down_params ~grid:(down_simdgroups * 32, 1, 1)
   in
   let down_col_groups = (hidden_dim + 7) / 8 in
-  let reduce_simdgroups = m * down_col_groups in
-  let reduce_threads = ((reduce_simdgroups * 32 + 255) / 256) * 256 in
+  let total_reduce_groups = m * down_col_groups in
+  let reduce_threads = ((total_reduce_groups + 255) / 256) * 256 in
   let* reduce_kernel =
     Metal_native.dispatch ~batch runtime reduce_entry
       ~buffers:[ down_out; p_to_sorted; topk_weights; output_buffer ]

@@ -6,6 +6,162 @@ open Metal_source_common
 
 let replace_all = Metal_tensor_source.replace_all
 
+let attention_simd_kernel_name head_dimension =
+  Printf.sprintf "llmopt_attention_f16_simd_h%d" head_dimension
+
+let attention_simd_template = {|
+kernel void __ATTENTION_KERNEL__(
+    device const half* query [[buffer(0)]],
+    device const half* key [[buffer(1)]],
+    device const half* value [[buffer(2)]],
+    device const uchar* mask [[buffer(3)]],
+    device half* output [[buffer(4)]],
+    constant AttentionParams& params [[buffer(5)]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  if (params.query_length == 0u) return;
+  const uint q_tiles_per_head = (params.query_length + 7u) / 8u;
+  const uint total_tiles = params.batches * params.heads * q_tiles_per_head;
+  if (threadgroup_position.x >= total_tiles) return;
+
+  const uint q_tile = threadgroup_position.x % q_tiles_per_head;
+  const uint head = (threadgroup_position.x / q_tiles_per_head) % params.heads;
+  const uint batch = threadgroup_position.x / (q_tiles_per_head * params.heads);
+  const uint effective_kv_heads = params.kv_heads > 0 ? params.kv_heads : params.heads;
+  const uint kv_head = effective_kv_heads < params.heads
+      ? head / (params.heads / effective_kv_heads) : head;
+  const uint kv_head_base = (batch * effective_kv_heads + kv_head) * params.key_length;
+
+  const uint query_position = q_tile * 8u + simdgroup;
+  const bool active_query = query_position < params.query_length;
+  const uint query_base = (((batch * params.heads + head)
+      * params.query_length + query_position) * __ATTENTION_HEAD_DIMENSION__);
+
+  float query_values[__ATTENTION_SIMD_CHUNKS__];
+  float results[__ATTENTION_SIMD_CHUNKS__];
+  #pragma unroll
+  for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+    query_values[chunk] = active_query
+        ? float(query[query_base + chunk * ATTENTION_SIMD_WIDTH + lane])
+        : 0.0f;
+    results[chunk] = 0.0f;
+  }
+
+  float maximum = -INFINITY;
+  float denominator = 0.0f;
+
+  threadgroup half k_tile[16 * __ATTENTION_HEAD_DIMENSION__];
+  threadgroup half v_tile[16 * __ATTENTION_HEAD_DIMENSION__];
+  threadgroup half4* k_tile4 = reinterpret_cast<threadgroup half4*>(k_tile);
+  threadgroup half4* v_tile4 = reinterpret_cast<threadgroup half4*>(v_tile);
+
+  const uint tid = simdgroup * 32u + lane;
+  const uint total_vec4 = (16u * __ATTENTION_HEAD_DIMENSION__) / 4u;
+  const uint vecs_per_k = __ATTENTION_HEAD_DIMENSION__ / 4u;
+  const uint max_q = min(params.query_length - 1u, q_tile * 8u + 7u);
+  const uint max_allowed_k = params.past_length + max_q;
+
+  for (uint k_start = 0u; k_start < params.key_length; k_start += 16u) {
+    if (params.causal != 0 && k_start > max_allowed_k) break;
+
+    for (uint v_idx = tid; v_idx < total_vec4; v_idx += 256u) {
+      const uint k_row = v_idx / vecs_per_k;
+      const uint k_col = (v_idx - k_row * vecs_per_k) * 4u;
+      const uint curr_k_pos = k_start + k_row;
+      if (curr_k_pos < params.key_length) {
+        const uint k_off = (kv_head_base + curr_k_pos) * __ATTENTION_HEAD_DIMENSION__ + k_col;
+        const uint v_off = params.token_first_value != 0
+            ? (((batch * params.key_length + curr_k_pos) * effective_kv_heads + kv_head)
+                * __ATTENTION_HEAD_DIMENSION__ + k_col)
+            : k_off;
+        k_tile4[v_idx] = *reinterpret_cast<device const half4*>(key + k_off);
+        v_tile4[v_idx] = *reinterpret_cast<device const half4*>(value + v_off);
+      } else {
+        k_tile4[v_idx] = half4(0.0h);
+        v_tile4[v_idx] = half4(0.0h);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (active_query) {
+      float scores[16];
+      bool valid[16];
+      float block_max = -INFINITY;
+      #pragma unroll
+      for (uint k = 0u; k < 16u; ++k) {
+        const uint key_position = k_start + k;
+        if (key_position < params.key_length
+            && (params.causal == 0 || key_position <= (params.past_length + query_position))
+            && llmopt_attention_allowed(mask, params, batch, head, query_position, key_position)) {
+          valid[k] = true;
+          const uint k_tile_base = k * __ATTENTION_HEAD_DIMENSION__;
+          float partial_score = 0.0f;
+          #pragma unroll
+          for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+            const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
+            partial_score += query_values[chunk] * float(k_tile[k_tile_base + dimension]);
+          }
+          const float score = simd_sum(partial_score) * params.scale;
+          scores[k] = score;
+          block_max = max(block_max, score);
+        } else {
+          valid[k] = false;
+          scores[k] = -INFINITY;
+        }
+      }
+      if (block_max > -INFINITY) {
+        const float next_maximum = max(maximum, block_max);
+        const float previous_scale = (denominator == 0.0f) ? 0.0f : exp(maximum - next_maximum);
+        #pragma unroll
+        for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+          results[chunk] *= previous_scale;
+        }
+        denominator *= previous_scale;
+        #pragma unroll
+        for (uint k = 0u; k < 16u; ++k) {
+          if (valid[k]) {
+            const float weight = exp(scores[k] - next_maximum);
+            denominator += weight;
+            const uint v_tile_base = k * __ATTENTION_HEAD_DIMENSION__;
+            #pragma unroll
+            for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+              const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
+              results[chunk] += weight * float(v_tile[v_tile_base + dimension]);
+            }
+          }
+        }
+        maximum = next_maximum;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  if (active_query) {
+    const uint output_base = params.token_first_output != 0
+        ? (((batch * params.query_length + query_position) * params.heads + head)
+            * __ATTENTION_HEAD_DIMENSION__)
+        : (((batch * params.heads + head) * params.query_length + query_position)
+            * __ATTENTION_HEAD_DIMENSION__);
+    #pragma unroll
+    for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
+      const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
+      output[output_base + dimension] = half(denominator == 0.0f
+          ? 0.0f : results[chunk] / denominator);
+    }
+  }
+}
+|}
+
+let attention_simd_source head_dimension =
+  attention_simd_template
+  |> replace_all ~needle:"__ATTENTION_KERNEL__"
+       ~replacement:(attention_simd_kernel_name head_dimension)
+  |> replace_all ~needle:"__ATTENTION_HEAD_DIMENSION__"
+       ~replacement:(string_of_int head_dimension)
+  |> replace_all ~needle:"__ATTENTION_SIMD_CHUNKS__"
+       ~replacement:(string_of_int (head_dimension / 32))
+
 let attention_source =
   "\nconstant uint ATTENTION_SIMD_WIDTH = 32;\n"
   ^ "constant uint ATTENTION_ROWS_PER_THREADGROUP = 8;\n\n"
@@ -106,136 +262,8 @@ let attention_source =
   ^ "    output[out_base + dimension] = half(result);\n"
   ^ "  }\n"
   ^ "}\n\n"
-  ^ "kernel void llmopt_attention_f16_simd_h64(\n"
-  ^ "    device const half* query [[buffer(0)]],\n"
-  ^ "    device const half* key [[buffer(1)]],\n"
-  ^ "    device const half* value [[buffer(2)]],\n"
-  ^ "    device const uchar* mask [[buffer(3)]],\n"
-  ^ "    device half* output [[buffer(4)]],\n"
-  ^ "    constant AttentionParams& params [[buffer(5)]],\n"
-  ^ "    uint3 threadgroup_position [[threadgroup_position_in_grid]],\n"
-  ^ "    uint simdgroup [[simdgroup_index_in_threadgroup]],\n"
-  ^ "    uint lane [[thread_index_in_simdgroup]]) {\n"
-  ^ "  const uint row = threadgroup_position.x * ATTENTION_ROWS_PER_THREADGROUP\n"
-  ^ "      + simdgroup;\n"
-  ^ "  const uint count = params.batches * params.heads * params.query_length;\n"
-  ^ "  if (row >= count) return;\n"
-  ^ "  const uint query_position = row % params.query_length;\n"
-  ^ "  const uint head = (row / params.query_length) % params.heads;\n"
-  ^ "  const uint batch = row / (params.query_length * params.heads);\n"
-  ^ "  const uint kv_head = (params.kv_heads > 0 && params.kv_heads < params.heads)\n"
-  ^ "      ? (head / (params.heads / params.kv_heads)) : head;\n"
-  ^ "  const uint query_base = (((batch * params.heads + head)\n"
-  ^ "      * params.query_length + query_position) * params.head_dimension);\n"
-  ^ "  const float query_low = float(query[query_base + lane]);\n"
-  ^ "  const float query_high = float(query[query_base + lane + ATTENTION_SIMD_WIDTH]);\n"
-  ^ "  const uint kv_head_base = (batch * params.kv_heads + kv_head) * params.key_length;\n"
-  ^ "  float maximum = -INFINITY;\n"
-  ^ "  float denominator = 0.0f;\n"
-  ^ "  float result_low = 0.0f;\n"
-  ^ "  float result_high = 0.0f;\n"
-  ^ "  for (uint key_position = 0; key_position < params.key_length; ++key_position) {\n"
-  ^ "    if (!llmopt_attention_allowed(mask, params, batch, head,\n"
-  ^ "        query_position, key_position)) continue;\n"
-  ^ "    const uint key_base = (kv_head_base + key_position) * 64;\n"
-  ^ "    const uint value_base = params.token_first_value != 0\n"
-  ^ "        ? (((batch * params.key_length + key_position) * params.kv_heads + kv_head) * 64)\n"
-  ^ "        : key_base;\n"
-  ^ "    const float partial_score = query_low * float(key[key_base + lane])\n"
-  ^ "        + query_high * float(key[key_base + lane + ATTENTION_SIMD_WIDTH]);\n"
-  ^ "    const float score = simd_sum(partial_score) * params.scale;\n"
-  ^ "    const float next_maximum = max(maximum, score);\n"
-  ^ "    const float previous_scale = denominator == 0.0f ? 0.0f\n"
-  ^ "        : exp(maximum - next_maximum);\n"
-  ^ "    const float current_scale = exp(score - next_maximum);\n"
-  ^ "    result_low = result_low * previous_scale\n"
-  ^ "        + current_scale * float(value[value_base + lane]);\n"
-  ^ "    result_high = result_high * previous_scale\n"
-  ^ "        + current_scale * float(value[value_base + lane + ATTENTION_SIMD_WIDTH]);\n"
-  ^ "    denominator = denominator * previous_scale + current_scale;\n"
-  ^ "    maximum = next_maximum;\n"
-  ^ "  }\n"
-  ^ "  const uint output_base = params.token_first_output != 0\n"
-  ^ "      ? (((batch * params.query_length + query_position) * params.heads + head) * params.head_dimension)\n"
-  ^ "      : (row * params.head_dimension);\n"
-  ^ "  output[output_base + lane] = half(denominator == 0.0f\n"
-  ^ "      ? 0.0f : result_low / denominator);\n"
-  ^ "  output[output_base + lane + ATTENTION_SIMD_WIDTH] = half(denominator == 0.0f\n"
-  ^ "      ? 0.0f : result_high / denominator);\n"
-  ^ "}\n"
+  ^ attention_simd_source 64
 
-let attention_simd_template = {|
-kernel void __ATTENTION_KERNEL__(
-    device const half* query [[buffer(0)]],
-    device const half* key [[buffer(1)]],
-    device const half* value [[buffer(2)]],
-    device const uchar* mask [[buffer(3)]],
-    device half* output [[buffer(4)]],
-    constant AttentionParams& params [[buffer(5)]],
-    uint3 threadgroup_position [[threadgroup_position_in_grid]],
-    uint simdgroup [[simdgroup_index_in_threadgroup]],
-    uint lane [[thread_index_in_simdgroup]]) {
-  const uint row = threadgroup_position.x * ATTENTION_ROWS_PER_THREADGROUP
-      + simdgroup;
-  const uint count = params.batches * params.heads * params.query_length;
-  if (row >= count) return;
-  const uint query_position = row % params.query_length;
-  const uint head = (row / params.query_length) % params.heads;
-  const uint batch = row / (params.query_length * params.heads);
-  const uint effective_kv_heads = params.kv_heads > 0 ? params.kv_heads : params.heads;
-  const uint kv_head = effective_kv_heads < params.heads
-      ? head / (params.heads / effective_kv_heads) : head;
-  const uint query_base = (((batch * params.heads + head)
-      * params.query_length + query_position) * params.head_dimension);
-  const uint kv_head_base =
-      (batch * effective_kv_heads + kv_head) * params.key_length;
-  float query_values[__ATTENTION_SIMD_CHUNKS__];
-  float results[__ATTENTION_SIMD_CHUNKS__];
-  for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-    query_values[chunk] =
-        float(query[query_base + chunk * ATTENTION_SIMD_WIDTH + lane]);
-    results[chunk] = 0.0f;
-  }
-  float maximum = -INFINITY;
-  float denominator = 0.0f;
-  for (uint key_position = 0; key_position < params.key_length; ++key_position) {
-    if (!llmopt_attention_allowed(mask, params, batch, head,
-        query_position, key_position)) continue;
-    const uint key_base =
-        (kv_head_base + key_position) * __ATTENTION_HEAD_DIMENSION__;
-    const uint value_base = params.token_first_value != 0
-        ? (((batch * params.key_length + key_position) * effective_kv_heads
-            + kv_head) * __ATTENTION_HEAD_DIMENSION__)
-        : key_base;
-    float partial_score = 0.0f;
-    for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-      const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
-      partial_score += query_values[chunk] * float(key[key_base + dimension]);
-    }
-    const float score = simd_sum(partial_score) * params.scale;
-    const float next_maximum = max(maximum, score);
-    const float previous_scale = denominator == 0.0f ? 0.0f
-        : exp(maximum - next_maximum);
-    const float current_scale = exp(score - next_maximum);
-    for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-      const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
-      results[chunk] = results[chunk] * previous_scale
-          + current_scale * float(value[value_base + dimension]);
-    }
-    denominator = denominator * previous_scale + current_scale;
-    maximum = next_maximum;
-  }
-  const uint output_base = params.token_first_output != 0
-      ? (((batch * params.query_length + query_position) * params.heads + head)
-          * __ATTENTION_HEAD_DIMENSION__)
-      : (row * __ATTENTION_HEAD_DIMENSION__);
-  for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-    const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
-    output[output_base + dimension] = half(denominator == 0.0f
-        ? 0.0f : results[chunk] / denominator);
-  }
-}
-|}
 
 let attention_tree_speculative_source = {|
 struct SpeculativeAttentionParams {

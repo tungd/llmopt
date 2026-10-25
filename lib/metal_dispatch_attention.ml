@@ -84,7 +84,15 @@ let dispatch_attention (context : Metal_execution_state.context) state ~config
     select_attention_kernel context.runtime input_dtype (Ir.Value.dtype output)
       head_dimension
   in
-  let* grid_x = if simd then simd_rows_grid rows else Ok rows in
+  let* grid_x =
+    if simd then
+      let q_tiles = (query_length + 7) / 8 in
+      let total_threadgroups = batches * heads * q_tiles in
+      if total_threadgroups > max_int / 256 then
+        Error "Metal attention grid dimension overflows"
+      else Ok (total_threadgroups * 256)
+    else Ok rows
+  in
   let* output_buffer = Metal_execution_state.workspace_buffer state output in
   let* kernel =
     Metal_native.dispatch ~batch:context.batch context.runtime entry
