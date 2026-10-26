@@ -377,7 +377,7 @@ let dispatch_quant_linear ?batch runtime state output ~m ~n ~k ~quant
     else if String.ends_with ~suffix:"_simd" tactic_name
          || String.ends_with ~suffix:"_simd_add" tactic_name
     then
-      let m_tiles = (m + 15) / 16 in
+      let m_tiles = (m + 31) / 32 in
       let n_tiles = (n + 15) / 16 in
       m_tiles * n_tiles
     else if String.ends_with ~suffix:"_m2" tactic_name then n

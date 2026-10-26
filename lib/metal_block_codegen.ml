@@ -663,46 +663,45 @@ kernel void %s(
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
-  const uint m_tiles = (params.m + 15u) >> 4u;
+  const uint m_tiles = (params.m + 31u) >> 5u;
   const uint n_tiles = (params.n + 15u) >> 4u;
   if (simd_idx >= m_tiles * n_tiles) return;
 
   const uint m_tile = simd_idx / n_tiles;
   const uint n_tile = simd_idx - m_tile * n_tiles;
-  const uint row_base = m_tile << 4u;
+  const uint row_base = m_tile << 5u;
   const uint col_base = n_tile << 4u;
 
   const uint blocks = params.k / %du;
 
-  threadgroup half a_tile[16][36];
+  threadgroup half a_tile[32][36];
   threadgroup half b_tile[32][20];
 
-  simdgroup_half8x8 acc[2][2];
-  acc[0][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[0][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[1][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[1][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  simdgroup_half8x8 acc[4][2];
+  #pragma unroll
+  for (uint i = 0u; i < 4u; ++i) {
+    acc[i][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+    acc[i][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  }
 
-  const uint r_load = lane >> 1u;
-  const uint c_load = (lane & 1u) << 4u;
+  const uint in_r = row_base + lane;
   const uint c_w = lane >> 1u;
   const uint sub_w = lane & 1u;
 
   for (uint b = 0u; b < blocks; ++b) {
-    const uint in_r = row_base + r_load;
-    const uint in_c = (b << 5u) + c_load;
-    device const half* in_ptr = input + in_r * params.k + in_c;
-    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
-    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
-    if (in_r < params.m && in_c + 15u < params.k) {
-      a_tile4[0] = in_ptr4[0];
-      a_tile4[1] = in_ptr4[1];
-      a_tile4[2] = in_ptr4[2];
-      a_tile4[3] = in_ptr4[3];
+    const uint in_c = (b << 5u);
+    device const half* in_ptr = (in_r < params.m) ? input + in_r * params.k + in_c : nullptr;
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[lane][0]);
+    if (in_ptr != nullptr && in_c + 31u < params.k) {
+      device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+      #pragma unroll
+      for (uint i = 0u; i < 8u; ++i) {
+        a_tile4[i] = in_ptr4[i];
+      }
     } else {
       #pragma unroll
-      for (uint i = 0u; i < 16u; ++i) {
-        a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      for (uint i = 0u; i < 32u; ++i) {
+        a_tile[lane][i] = (in_ptr != nullptr && in_c + i < params.k) ? in_ptr[i] : 0.0h;
       }
     }
 
@@ -712,42 +711,61 @@ kernel void %s(
 
     #pragma unroll
     for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
-      simdgroup_half8x8 a0, a1, b0, b1;
+      simdgroup_half8x8 a0, a1, a2, a3;
       simdgroup_load(a0, &a_tile[0][k_sub], 36);
       simdgroup_load(a1, &a_tile[8][k_sub], 36);
+      simdgroup_load(a2, &a_tile[16][k_sub], 36);
+      simdgroup_load(a3, &a_tile[24][k_sub], 36);
+
+      simdgroup_half8x8 b0, b1;
       simdgroup_load(b0, &b_tile[k_sub][0], 20);
       simdgroup_load(b1, &b_tile[k_sub][8], 20);
+
       simdgroup_multiply_accumulate(acc[0][0], a0, b0, acc[0][0]);
       simdgroup_multiply_accumulate(acc[0][1], a0, b1, acc[0][1]);
       simdgroup_multiply_accumulate(acc[1][0], a1, b0, acc[1][0]);
       simdgroup_multiply_accumulate(acc[1][1], a1, b1, acc[1][1]);
+      simdgroup_multiply_accumulate(acc[2][0], a2, b0, acc[2][0]);
+      simdgroup_multiply_accumulate(acc[2][1], a2, b1, acc[2][1]);
+      simdgroup_multiply_accumulate(acc[3][0], a3, b0, acc[3][0]);
+      simdgroup_multiply_accumulate(acc[3][1], a3, b1, acc[3][1]);
     }
 
     simdgroup_barrier(mem_flags::mem_threadgroup);
   }
 
-  threadgroup half out_tile[16][20];
+  threadgroup half out_tile[32][20];
   simdgroup_store(acc[0][0], &out_tile[0][0], 20);
   simdgroup_store(acc[0][1], &out_tile[0][8], 20);
   simdgroup_store(acc[1][0], &out_tile[8][0], 20);
   simdgroup_store(acc[1][1], &out_tile[8][8], 20);
+  simdgroup_store(acc[2][0], &out_tile[16][0], 20);
+  simdgroup_store(acc[2][1], &out_tile[16][8], 20);
+  simdgroup_store(acc[3][0], &out_tile[24][0], 20);
+  simdgroup_store(acc[3][1], &out_tile[24][8], 20);
   simdgroup_barrier(mem_flags::mem_threadgroup);
 
   const uint r_out = lane >> 1u;
   const uint c_out_start = (lane & 1u) << 3u;
   #pragma unroll
   for (uint i = 0u; i < 8u; ++i) {
-    const uint r = row_base + r_out;
+    const uint r0 = row_base + r_out;
     const uint c = col_base + c_out_start + i;
-    if (r < params.m && c < params.n) {
+    if (r0 < params.m && c < params.n) {
       float val = float(out_tile[r_out][c_out_start + i]);
       if (params.has_bias != 0u) val += float(bias[c]);
-      output[r * params.n + c] = half(%s);
+      output[r0 * params.n + c] = half(%s);
+    }
+    const uint r1 = row_base + 16u + r_out;
+    if (r1 < params.m && c < params.n) {
+      float val = float(out_tile[16u + r_out][c_out_start + i]);
+      if (params.has_bias != 0u) val += float(bias[c]);
+      output[r1 * params.n + c] = half(%s);
     }
   }
 }
 |}
-      kernel_name epilogue_buffers block_elements dequant_b epilogue_writeback
+      kernel_name epilogue_buffers block_elements dequant_b epilogue_writeback epilogue_writeback
   in
   Ok flat
 
@@ -770,7 +788,7 @@ let tile32_affine_grouped_multi_linear_f16_simd_kernel ?name ~epilogue
     Applicative_expr.emit_msl_expr ~slot_emitter:(fun s -> Printf.sprintf "a%d" s)
       ~index_expr:"c" canonical_epilogue
   in
-  let dequant_b_slot weight_var =
+  let dequant_b_slot weight_var target_b_tile =
     if code_bits = 4 then
       Printf.sprintf
         {|    {
@@ -785,22 +803,24 @@ let tile32_affine_grouped_multi_linear_f16_simd_kernel ?name ~epilogue
         const uchar4 p1 = q_ptr4[1];
         #pragma unroll
         for (uint i = 0u; i < 4u; ++i) {
-          b_tile[l_start + i][c_w] = half(s * float(p0[i] & 15u) + m);
-          b_tile[l_start + 16u + i][c_w] = half(s * float(p0[i] >> 4u) + m);
-          b_tile[l_start + 4u + i][c_w] = half(s * float(p1[i] & 15u) + m);
-          b_tile[l_start + 20u + i][c_w] = half(s * float(p1[i] >> 4u) + m);
+          %s[l_start + i][c_w] = half(s * float(p0[i] & 15u) + m);
+          %s[l_start + 16u + i][c_w] = half(s * float(p0[i] >> 4u) + m);
+          %s[l_start + 4u + i][c_w] = half(s * float(p1[i] & 15u) + m);
+          %s[l_start + 20u + i][c_w] = half(s * float(p1[i] >> 4u) + m);
         }
       } else {
         const uint l_start = sub_w << 3u;
         #pragma unroll
         for (uint i = 0u; i < 8u; ++i) {
           const uint l = l_start + i;
-          b_tile[l][c_w] = 0.0h;
-          b_tile[l + 16u][c_w] = 0.0h;
+          %s[l][c_w] = 0.0h;
+          %s[l + 16u][c_w] = 0.0h;
         }
       }
     }|}
         weight_var block_bytes block_bytes scale_offset minimum_offset quant_offset
+        target_b_tile target_b_tile target_b_tile target_b_tile
+        target_b_tile target_b_tile
     else
       Printf.sprintf
         {|    {
@@ -817,23 +837,25 @@ let tile32_affine_grouped_multi_linear_f16_simd_kernel ?name ~epilogue
         const uchar4 q3 = q_ptr4[3];
         #pragma unroll
         for (uint i = 0u; i < 4u; ++i) {
-          b_tile[l_start + i][c_w] = half(s * float(q0[i]) + m);
-          b_tile[l_start + 4u + i][c_w] = half(s * float(q1[i]) + m);
-          b_tile[l_start + 8u + i][c_w] = half(s * float(q2[i]) + m);
-          b_tile[l_start + 12u + i][c_w] = half(s * float(q3[i]) + m);
+          %s[l_start + i][c_w] = half(s * float(q0[i]) + m);
+          %s[l_start + 4u + i][c_w] = half(s * float(q1[i]) + m);
+          %s[l_start + 8u + i][c_w] = half(s * float(q2[i]) + m);
+          %s[l_start + 12u + i][c_w] = half(s * float(q3[i]) + m);
         }
       } else {
         const uint l_start = sub_w << 4u;
         #pragma unroll
         for (uint i = 0u; i < 16u; ++i) {
-          b_tile[l_start + i][c_w] = 0.0h;
+          %s[l_start + i][c_w] = 0.0h;
         }
       }
     }|}
         weight_var block_bytes block_bytes scale_offset minimum_offset quant_offset
+        target_b_tile target_b_tile target_b_tile target_b_tile
+        target_b_tile
   in
-  let dequant_b_0 = dequant_b_slot "exp_w0" in
-  let dequant_b_1 = dequant_b_slot "exp_w1" in
+  let dequant_b_0 = dequant_b_slot "exp_w0" "b_tile0" in
+  let dequant_b_1 = dequant_b_slot "exp_w1" "b_tile1" in
   let flat =
     Printf.sprintf
       {|
@@ -869,7 +891,8 @@ kernel void %s(
   device const uchar* exp_w1 = weight_1 + expert * expert_stride;
 
   threadgroup half a_tile[16][36];
-  threadgroup half b_tile[32][20];
+  threadgroup half b_tile0[32][20];
+  threadgroup half b_tile1[32][20];
 
   simdgroup_half8x8 acc0[2][2];
   acc0[0][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
@@ -907,39 +930,31 @@ kernel void %s(
     }
 
 %s
-
-    simdgroup_barrier(mem_flags::mem_threadgroup);
-
-    #pragma unroll
-    for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
-      simdgroup_half8x8 a0, a1, b0, b1;
-      simdgroup_load(a0, &a_tile[0][k_sub], 36);
-      simdgroup_load(a1, &a_tile[8][k_sub], 36);
-      simdgroup_load(b0, &b_tile[k_sub][0], 20);
-      simdgroup_load(b1, &b_tile[k_sub][8], 20);
-      simdgroup_multiply_accumulate(acc0[0][0], a0, b0, acc0[0][0]);
-      simdgroup_multiply_accumulate(acc0[0][1], a0, b1, acc0[0][1]);
-      simdgroup_multiply_accumulate(acc0[1][0], a1, b0, acc0[1][0]);
-      simdgroup_multiply_accumulate(acc0[1][1], a1, b1, acc0[1][1]);
-    }
-
-    simdgroup_barrier(mem_flags::mem_threadgroup);
-
 %s
 
     simdgroup_barrier(mem_flags::mem_threadgroup);
 
     #pragma unroll
     for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
-      simdgroup_half8x8 a0, a1, b0, b1;
+      simdgroup_half8x8 a0, a1;
       simdgroup_load(a0, &a_tile[0][k_sub], 36);
       simdgroup_load(a1, &a_tile[8][k_sub], 36);
-      simdgroup_load(b0, &b_tile[k_sub][0], 20);
-      simdgroup_load(b1, &b_tile[k_sub][8], 20);
-      simdgroup_multiply_accumulate(acc1[0][0], a0, b0, acc1[0][0]);
-      simdgroup_multiply_accumulate(acc1[0][1], a0, b1, acc1[0][1]);
-      simdgroup_multiply_accumulate(acc1[1][0], a1, b0, acc1[1][0]);
-      simdgroup_multiply_accumulate(acc1[1][1], a1, b1, acc1[1][1]);
+
+      simdgroup_half8x8 b0, b1;
+      simdgroup_load(b0, &b_tile0[k_sub][0], 20);
+      simdgroup_load(b1, &b_tile0[k_sub][8], 20);
+      simdgroup_multiply_accumulate(acc0[0][0], a0, b0, acc0[0][0]);
+      simdgroup_multiply_accumulate(acc0[0][1], a0, b1, acc0[0][1]);
+      simdgroup_multiply_accumulate(acc0[1][0], a1, b0, acc0[1][0]);
+      simdgroup_multiply_accumulate(acc0[1][1], a1, b1, acc0[1][1]);
+
+      simdgroup_half8x8 c0, c1;
+      simdgroup_load(c0, &b_tile1[k_sub][0], 20);
+      simdgroup_load(c1, &b_tile1[k_sub][8], 20);
+      simdgroup_multiply_accumulate(acc1[0][0], a0, c0, acc1[0][0]);
+      simdgroup_multiply_accumulate(acc1[0][1], a0, c1, acc1[0][1]);
+      simdgroup_multiply_accumulate(acc1[1][0], a1, c0, acc1[1][0]);
+      simdgroup_multiply_accumulate(acc1[1][1], a1, c1, acc1[1][1]);
     }
 
     simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -1236,46 +1251,45 @@ kernel void %s(
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
-  const uint m_tiles = (params.m + 15u) >> 4u;
+  const uint m_tiles = (params.m + 31u) >> 5u;
   const uint n_tiles = (params.n + 15u) >> 4u;
   if (simd_idx >= m_tiles * n_tiles) return;
 
   const uint m_tile = simd_idx / n_tiles;
   const uint n_tile = simd_idx - m_tile * n_tiles;
-  const uint row_base = m_tile << 4u;
+  const uint row_base = m_tile << 5u;
   const uint col_base = n_tile << 4u;
 
   const uint blocks = params.k / %du;
 
-  threadgroup half a_tile[16][36];
+  threadgroup half a_tile[32][36];
   threadgroup half b_tile[32][20];
 
-  simdgroup_half8x8 acc[2][2];
-  acc[0][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[0][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[1][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[1][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  simdgroup_half8x8 acc[4][2];
+  #pragma unroll
+  for (uint i = 0u; i < 4u; ++i) {
+    acc[i][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+    acc[i][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  }
 
-  const uint r_load = lane >> 1u;
-  const uint c_load = (lane & 1u) << 4u;
+  const uint in_r = row_base + lane;
   const uint c_w = lane >> 1u;
   const uint sub_w = lane & 1u;
 
   for (uint b = 0u; b < blocks; ++b) {
-    const uint in_r = row_base + r_load;
-    const uint in_c = (b << 5u) + c_load;
-    device const half* in_ptr = input + in_r * params.k + in_c;
-    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
-    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
-    if (in_r < params.m && in_c + 15u < params.k) {
-      a_tile4[0] = in_ptr4[0];
-      a_tile4[1] = in_ptr4[1];
-      a_tile4[2] = in_ptr4[2];
-      a_tile4[3] = in_ptr4[3];
+    const uint in_c = (b << 5u);
+    device const half* in_ptr = (in_r < params.m) ? input + in_r * params.k + in_c : nullptr;
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[lane][0]);
+    if (in_ptr != nullptr && in_c + 31u < params.k) {
+      device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+      #pragma unroll
+      for (uint i = 0u; i < 8u; ++i) {
+        a_tile4[i] = in_ptr4[i];
+      }
     } else {
       #pragma unroll
-      for (uint i = 0u; i < 16u; ++i) {
-        a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      for (uint i = 0u; i < 32u; ++i) {
+        a_tile[lane][i] = (in_ptr != nullptr && in_c + i < params.k) ? in_ptr[i] : 0.0h;
       }
     }
 
@@ -1285,36 +1299,54 @@ kernel void %s(
 
     #pragma unroll
     for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
-      simdgroup_half8x8 a0, a1, b0, b1;
+      simdgroup_half8x8 a0, a1, a2, a3;
       simdgroup_load(a0, &a_tile[0][k_sub], 36);
       simdgroup_load(a1, &a_tile[8][k_sub], 36);
+      simdgroup_load(a2, &a_tile[16][k_sub], 36);
+      simdgroup_load(a3, &a_tile[24][k_sub], 36);
+
+      simdgroup_half8x8 b0, b1;
       simdgroup_load(b0, &b_tile[k_sub][0], 20);
       simdgroup_load(b1, &b_tile[k_sub][8], 20);
+
       simdgroup_multiply_accumulate(acc[0][0], a0, b0, acc[0][0]);
       simdgroup_multiply_accumulate(acc[0][1], a0, b1, acc[0][1]);
       simdgroup_multiply_accumulate(acc[1][0], a1, b0, acc[1][0]);
       simdgroup_multiply_accumulate(acc[1][1], a1, b1, acc[1][1]);
+      simdgroup_multiply_accumulate(acc[2][0], a2, b0, acc[2][0]);
+      simdgroup_multiply_accumulate(acc[2][1], a2, b1, acc[2][1]);
+      simdgroup_multiply_accumulate(acc[3][0], a3, b0, acc[3][0]);
+      simdgroup_multiply_accumulate(acc[3][1], a3, b1, acc[3][1]);
     }
 
     simdgroup_barrier(mem_flags::mem_threadgroup);
   }
 
-  threadgroup half out_tile[16][20];
+  threadgroup half out_tile[32][20];
   simdgroup_store(acc[0][0], &out_tile[0][0], 20);
   simdgroup_store(acc[0][1], &out_tile[0][8], 20);
   simdgroup_store(acc[1][0], &out_tile[8][0], 20);
   simdgroup_store(acc[1][1], &out_tile[8][8], 20);
+  simdgroup_store(acc[2][0], &out_tile[16][0], 20);
+  simdgroup_store(acc[2][1], &out_tile[16][8], 20);
+  simdgroup_store(acc[3][0], &out_tile[24][0], 20);
+  simdgroup_store(acc[3][1], &out_tile[24][8], 20);
   simdgroup_barrier(mem_flags::mem_threadgroup);
 
   const uint r_out = lane >> 1u;
   const uint c_out_start = (lane & 1u) << 3u;
   #pragma unroll
   for (uint i = 0u; i < 8u; ++i) {
-    const uint r = row_base + r_out;
+    const uint r0 = row_base + r_out;
     const uint c = col_base + c_out_start + i;
-    if (r < params.m && c < params.n) {
-      const uint out_idx = r * params.n + c;
+    if (r0 < params.m && c < params.n) {
+      const uint out_idx = r0 * params.n + c;
       output[out_idx] = out_tile[r_out][c_out_start + i] + bias[out_idx];
+    }
+    const uint r1 = row_base + 16u + r_out;
+    if (r1 < params.m && c < params.n) {
+      const uint out_idx = r1 * params.n + c;
+      output[out_idx] = out_tile[16u + r_out][c_out_start + i] + bias[out_idx];
     }
   }
 }
@@ -1714,7 +1746,7 @@ kernel void %s(
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
-  const uint m_tiles = (params.m + 15u) >> 4u;
+  const uint m_tiles = (params.m + 31u) >> 5u;
   const uint q_tiles = (params.n_q + 15u) >> 4u;
   const uint k_tiles = (params.n_k + 15u) >> 4u;
   const uint v_tiles = (params.n_v + 15u) >> 4u;
@@ -1723,7 +1755,7 @@ kernel void %s(
 
   const uint m_tile = simd_idx / total_n_tiles;
   const uint n_tile = simd_idx - m_tile * total_n_tiles;
-  const uint row_base = m_tile << 4u;
+  const uint row_base = m_tile << 5u;
 
   uint col_base;
   uint col_limit;
@@ -1752,35 +1784,34 @@ kernel void %s(
 
   const uint blocks = params.k / %du;
 
-  threadgroup half a_tile[16][36];
+  threadgroup half a_tile[32][36];
   threadgroup half b_tile[32][20];
 
-  simdgroup_half8x8 acc[2][2];
-  acc[0][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[0][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[1][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
-  acc[1][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  simdgroup_half8x8 acc[4][2];
+  #pragma unroll
+  for (uint i = 0u; i < 4u; ++i) {
+    acc[i][0] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+    acc[i][1] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+  }
 
-  const uint r_load = lane >> 1u;
-  const uint c_load = (lane & 1u) << 4u;
+  const uint in_r = row_base + lane;
   const uint c_w = lane >> 1u;
   const uint sub_w = lane & 1u;
 
   for (uint b = 0u; b < blocks; ++b) {
-    const uint in_r = row_base + r_load;
-    const uint in_c = (b << 5u) + c_load;
-    device const half* in_ptr = input + in_r * params.k + in_c;
-    device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
-    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[r_load][c_load]);
-    if (in_r < params.m && in_c + 15u < params.k) {
-      a_tile4[0] = in_ptr4[0];
-      a_tile4[1] = in_ptr4[1];
-      a_tile4[2] = in_ptr4[2];
-      a_tile4[3] = in_ptr4[3];
+    const uint in_c = (b << 5u);
+    device const half* in_ptr = (in_r < params.m) ? input + in_r * params.k + in_c : nullptr;
+    threadgroup half4* a_tile4 = reinterpret_cast<threadgroup half4*>(&a_tile[lane][0]);
+    if (in_ptr != nullptr && in_c + 31u < params.k) {
+      device const half4* in_ptr4 = reinterpret_cast<device const half4*>(in_ptr);
+      #pragma unroll
+      for (uint i = 0u; i < 8u; ++i) {
+        a_tile4[i] = in_ptr4[i];
+      }
     } else {
       #pragma unroll
-      for (uint i = 0u; i < 16u; ++i) {
-        a_tile[r_load][c_load + i] = (in_r < params.m && in_c + i < params.k) ? in_ptr[i] : 0.0h;
+      for (uint i = 0u; i < 32u; ++i) {
+        a_tile[lane][i] = (in_ptr != nullptr && in_c + i < params.k) ? in_ptr[i] : 0.0h;
       }
     }
 
@@ -1790,35 +1821,52 @@ kernel void %s(
 
     #pragma unroll
     for (uint k_sub = 0u; k_sub < 32u; k_sub += 8u) {
-      simdgroup_half8x8 a0, a1, b0, b1;
+      simdgroup_half8x8 a0, a1, a2, a3;
       simdgroup_load(a0, &a_tile[0][k_sub], 36);
       simdgroup_load(a1, &a_tile[8][k_sub], 36);
+      simdgroup_load(a2, &a_tile[16][k_sub], 36);
+      simdgroup_load(a3, &a_tile[24][k_sub], 36);
+
+      simdgroup_half8x8 b0, b1;
       simdgroup_load(b0, &b_tile[k_sub][0], 20);
       simdgroup_load(b1, &b_tile[k_sub][8], 20);
+
       simdgroup_multiply_accumulate(acc[0][0], a0, b0, acc[0][0]);
       simdgroup_multiply_accumulate(acc[0][1], a0, b1, acc[0][1]);
       simdgroup_multiply_accumulate(acc[1][0], a1, b0, acc[1][0]);
       simdgroup_multiply_accumulate(acc[1][1], a1, b1, acc[1][1]);
+      simdgroup_multiply_accumulate(acc[2][0], a2, b0, acc[2][0]);
+      simdgroup_multiply_accumulate(acc[2][1], a2, b1, acc[2][1]);
+      simdgroup_multiply_accumulate(acc[3][0], a3, b0, acc[3][0]);
+      simdgroup_multiply_accumulate(acc[3][1], a3, b1, acc[3][1]);
     }
 
     simdgroup_barrier(mem_flags::mem_threadgroup);
   }
 
-  threadgroup half out_tile[16][20];
+  threadgroup half out_tile[32][20];
   simdgroup_store(acc[0][0], &out_tile[0][0], 20);
   simdgroup_store(acc[0][1], &out_tile[0][8], 20);
   simdgroup_store(acc[1][0], &out_tile[8][0], 20);
   simdgroup_store(acc[1][1], &out_tile[8][8], 20);
+  simdgroup_store(acc[2][0], &out_tile[16][0], 20);
+  simdgroup_store(acc[2][1], &out_tile[16][8], 20);
+  simdgroup_store(acc[3][0], &out_tile[24][0], 20);
+  simdgroup_store(acc[3][1], &out_tile[24][8], 20);
   simdgroup_barrier(mem_flags::mem_threadgroup);
 
   const uint r_out = lane >> 1u;
   const uint c_out_start = (lane & 1u) << 3u;
   #pragma unroll
   for (uint i = 0u; i < 8u; ++i) {
-    const uint r = row_base + r_out;
+    const uint r0 = row_base + r_out;
     const uint c = col_base + c_out_start + i;
-    if (r < params.m && c < col_limit) {
-      out_ptr[r * out_stride + c] = out_tile[r_out][c_out_start + i];
+    if (r0 < params.m && c < col_limit) {
+      out_ptr[r0 * out_stride + c] = out_tile[r_out][c_out_start + i];
+    }
+    const uint r1 = row_base + 16u + r_out;
+    if (r1 < params.m && c < col_limit) {
+      out_ptr[r1 * out_stride + c] = out_tile[16u + r_out][c_out_start + i];
     }
   }
 }

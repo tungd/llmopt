@@ -424,9 +424,9 @@ module Linear_tactic = struct
           && problem.supports_simd ~threads:32);
       work_sharing =
         Work_sharing.make ~simdgroups_per_threadgroup:1
-          ~output_values_per_threadgroup:256 ~split_k_partitions:1
-          ~decoded_weight_reuse:16 ~activation_reuse:16
-          ~threadgroup_sram_bytes:2432 ~dispatches:1 }
+          ~output_values_per_threadgroup:512 ~split_k_partitions:1
+          ~decoded_weight_reuse:32 ~activation_reuse:16
+          ~threadgroup_sram_bytes:4864 ~dispatches:1 }
 
   let m32_quant_registration quant : registration =
     { build =

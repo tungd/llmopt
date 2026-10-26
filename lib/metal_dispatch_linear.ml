@@ -514,7 +514,7 @@ let dispatch_quant_qkv_linear_command (context : Metal_execution_state.context)
         Error "llama-style Q5_0 QKV grid overflows"
       else Ok (groups * 128)
     else if String.ends_with ~suffix:"_simd" name then
-      let m_tiles = (m + 15) / 16 in
+      let m_tiles = (m + 31) / 32 in
       let q_tiles = (n_q + 15) / 16 in
       let k_tiles = (n_k + 15) / 16 in
       let v_tiles = (n_v + 15) / 16 in
