@@ -21,7 +21,7 @@ kernel void __ATTENTION_KERNEL__(
     uint simdgroup [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
   if (params.query_length == 0u) return;
-  const uint q_tiles_per_head = (params.query_length + 7u) / 8u;
+  const uint q_tiles_per_head = (params.query_length + 31u) / 32u;
   const uint total_tiles = params.batches * params.heads * q_tiles_per_head;
   if (threadgroup_position.x >= total_tiles) return;
 
@@ -32,122 +32,205 @@ kernel void __ATTENTION_KERNEL__(
   const uint kv_head = effective_kv_heads < params.heads
       ? head / (params.heads / effective_kv_heads) : head;
   const uint kv_head_base = (batch * effective_kv_heads + kv_head) * params.key_length;
+  const uint query_head_base = (batch * params.heads + head) * params.query_length;
 
-  const uint query_position = q_tile * 8u + simdgroup;
-  const bool active_query = query_position < params.query_length;
-  const uint query_base = (((batch * params.heads + head)
-      * params.query_length + query_position) * __ATTENTION_HEAD_DIMENSION__);
+  const uint q_tg_base = q_tile * 32u;
+  const uint q_base = q_tg_base + simdgroup * 8u;
+  const uint my_row = ((lane & 16u) >> 2u) | ((lane & 6u) >> 1u);
+  const uint q_idx = q_base + my_row;
 
-  float query_values[__ATTENTION_SIMD_CHUNKS__];
-  float results[__ATTENTION_SIMD_CHUNKS__];
-  #pragma unroll
-  for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-    query_values[chunk] = active_query
-        ? float(query[query_base + chunk * ATTENTION_SIMD_WIDTH + lane])
-        : 0.0f;
-    results[chunk] = 0.0f;
-  }
+  const uint col_base = ((lane & 8u) >> 1u) | ((lane & 1u) << 1u);
+  const uint col0 = col_base;
+  const uint col1 = col_base + 1u;
 
-  float maximum = -INFINITY;
-  float denominator = 0.0f;
-
-  threadgroup half k_tile[16 * __ATTENTION_HEAD_DIMENSION__];
-  threadgroup half v_tile[16 * __ATTENTION_HEAD_DIMENSION__];
-  threadgroup half4* k_tile4 = reinterpret_cast<threadgroup half4*>(k_tile);
-  threadgroup half4* v_tile4 = reinterpret_cast<threadgroup half4*>(v_tile);
+  threadgroup half q_tile_mem[4][8][__ATTENTION_HEAD_DIMENSION__];
+  threadgroup half k_tile_mem[16][__ATTENTION_HEAD_DIMENSION__];
+  threadgroup half v_tile_mem[16][__ATTENTION_HEAD_DIMENSION__];
+  threadgroup float o_tile_mem[4][8][__ATTENTION_HEAD_DIMENSION__];
 
   const uint tid = simdgroup * 32u + lane;
-  const uint total_vec4 = (16u * __ATTENTION_HEAD_DIMENSION__) / 4u;
-  const uint vecs_per_k = __ATTENTION_HEAD_DIMENSION__ / 4u;
-  const uint max_q = min(params.query_length - 1u, q_tile * 8u + 7u);
+  const uint vecs_per_row = __ATTENTION_HEAD_DIMENSION__ / 4u;
+  const uint q_total_vec4 = 8u * __ATTENTION_HEAD_DIMENSION__;
+  const uint kv_total_vec4 = 4u * __ATTENTION_HEAD_DIMENSION__;
+
+  // 128 threads cooperatively load Q (32 rows) into threadgroup memory
+  threadgroup half4* q_mem4 = reinterpret_cast<threadgroup half4*>(q_tile_mem);
+  for (uint i = tid; i < q_total_vec4; i += 128u) {
+    const uint r = i / vecs_per_row;
+    const uint d4 = i % vecs_per_row;
+    const uint curr_q = q_tg_base + r;
+    if (curr_q < params.query_length) {
+      const uint q_off = (query_head_base + curr_q) * __ATTENTION_HEAD_DIMENSION__ + d4 * 4u;
+      q_mem4[i] = *reinterpret_cast<device const half4*>(query + q_off);
+    } else {
+      q_mem4[i] = half4(0.0h);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Initialize output accumulators in registers
+  simdgroup_float8x8 o_acc[__ATTENTION_SIMD_CHUNKS__];
+  #pragma unroll
+  for (uint c = 0; c < __ATTENTION_SIMD_CHUNKS__; ++c) {
+    o_acc[c] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+  }
+
+  float row_max = -INFINITY;
+  float row_denom = 0.0f;
+
+  threadgroup half4* k_mem4 = reinterpret_cast<threadgroup half4*>(k_tile_mem);
+  threadgroup half4* v_mem4 = reinterpret_cast<threadgroup half4*>(v_tile_mem);
+
+  const uint max_q = min(params.query_length - 1u, q_tg_base + 31u);
   const uint max_allowed_k = params.past_length + max_q;
 
   for (uint k_start = 0u; k_start < params.key_length; k_start += 16u) {
     if (params.causal != 0 && k_start > max_allowed_k) break;
 
-    for (uint v_idx = tid; v_idx < total_vec4; v_idx += 256u) {
-      const uint k_row = v_idx / vecs_per_k;
-      const uint k_col = (v_idx - k_row * vecs_per_k) * 4u;
-      const uint curr_k_pos = k_start + k_row;
-      if (curr_k_pos < params.key_length) {
-        const uint k_off = (kv_head_base + curr_k_pos) * __ATTENTION_HEAD_DIMENSION__ + k_col;
+    // 128 threads cooperatively load 16 keys and values
+    for (uint i = tid; i < kv_total_vec4; i += 128u) {
+      const uint r = i / vecs_per_row;
+      const uint d4 = i % vecs_per_row;
+      const uint curr_k = k_start + r;
+      if (curr_k < params.key_length) {
+        const uint k_off = (kv_head_base + curr_k) * __ATTENTION_HEAD_DIMENSION__ + d4 * 4u;
         const uint v_off = params.token_first_value != 0
-            ? (((batch * params.key_length + curr_k_pos) * effective_kv_heads + kv_head)
-                * __ATTENTION_HEAD_DIMENSION__ + k_col)
+            ? (((batch * params.key_length + curr_k) * effective_kv_heads + kv_head)
+                * __ATTENTION_HEAD_DIMENSION__ + d4 * 4u)
             : k_off;
-        k_tile4[v_idx] = *reinterpret_cast<device const half4*>(key + k_off);
-        v_tile4[v_idx] = *reinterpret_cast<device const half4*>(value + v_off);
+        k_mem4[i] = *reinterpret_cast<device const half4*>(key + k_off);
+        v_mem4[i] = *reinterpret_cast<device const half4*>(value + v_off);
       } else {
-        k_tile4[v_idx] = half4(0.0h);
-        v_tile4[v_idx] = half4(0.0h);
+        k_mem4[i] = half4(0.0h);
+        v_mem4[i] = half4(0.0h);
       }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    if (active_query) {
-      float scores[16];
-      bool valid[16];
-      float block_max = -INFINITY;
-      #pragma unroll
-      for (uint k = 0u; k < 16u; ++k) {
-        const uint key_position = k_start + k;
-        if (key_position < params.key_length
-            && (params.causal == 0 || key_position <= (params.past_length + query_position))
-            && llmopt_attention_allowed(mask, params, batch, head, query_position, key_position)) {
-          valid[k] = true;
-          const uint k_tile_base = k * __ATTENTION_HEAD_DIMENSION__;
-          float partial_score = 0.0f;
-          #pragma unroll
-          for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-            const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
-            partial_score += query_values[chunk] * float(k_tile[k_tile_base + dimension]);
-          }
-          const float score = simd_sum(partial_score) * params.scale;
-          scores[k] = score;
-          block_max = max(block_max, score);
-        } else {
-          valid[k] = false;
-          scores[k] = -INFINITY;
-        }
-      }
-      if (block_max > -INFINITY) {
-        const float next_maximum = max(maximum, block_max);
-        const float previous_scale = (denominator == 0.0f) ? 0.0f : exp(maximum - next_maximum);
-        #pragma unroll
-        for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-          results[chunk] *= previous_scale;
-        }
-        denominator *= previous_scale;
-        #pragma unroll
-        for (uint k = 0u; k < 16u; ++k) {
-          if (valid[k]) {
-            const float weight = exp(scores[k] - next_maximum);
-            denominator += weight;
-            const uint v_tile_base = k * __ATTENTION_HEAD_DIMENSION__;
-            #pragma unroll
-            for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-              const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
-              results[chunk] += weight * float(v_tile[v_tile_base + dimension]);
-            }
-          }
-        }
-        maximum = next_maximum;
-      }
+    // Compute S0 = Q * K0^T and S1 = Q * K1^T
+    simdgroup_float8x8 s_mat0 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 s_mat1 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    #pragma unroll
+    for (uint c = 0; c < __ATTENTION_SIMD_CHUNKS__; ++c) {
+      simdgroup_half8x8 q_mat;
+      simdgroup_load(q_mat, &q_tile_mem[simdgroup][0][c * 8u], __ATTENTION_HEAD_DIMENSION__);
+
+      simdgroup_half8x8 k_mat0;
+      simdgroup_load(k_mat0, &k_tile_mem[0][c * 8u], __ATTENTION_HEAD_DIMENSION__, ulong2(0, 0), true);
+      simdgroup_multiply_accumulate(s_mat0, q_mat, k_mat0, s_mat0);
+
+      simdgroup_half8x8 k_mat1;
+      simdgroup_load(k_mat1, &k_tile_mem[8][c * 8u], __ATTENTION_HEAD_DIMENSION__, ulong2(0, 0), true);
+      simdgroup_multiply_accumulate(s_mat1, q_mat, k_mat1, s_mat1);
     }
+
+    const uint k0_pos0 = k_start + col0;
+    const uint k0_pos1 = k_start + col1;
+    const bool valid0_0 = (q_idx < params.query_length) && (k0_pos0 < params.key_length)
+        && (params.causal == 0 || k0_pos0 <= (params.past_length + q_idx))
+        && llmopt_attention_allowed(mask, params, batch, head, q_idx, k0_pos0);
+    const bool valid0_1 = (q_idx < params.query_length) && (k0_pos1 < params.key_length)
+        && (params.causal == 0 || k0_pos1 <= (params.past_length + q_idx))
+        && llmopt_attention_allowed(mask, params, batch, head, q_idx, k0_pos1);
+
+    const uint k1_pos0 = k_start + 8u + col0;
+    const uint k1_pos1 = k_start + 8u + col1;
+    const bool valid1_0 = (q_idx < params.query_length) && (k1_pos0 < params.key_length)
+        && (params.causal == 0 || k1_pos0 <= (params.past_length + q_idx))
+        && llmopt_attention_allowed(mask, params, batch, head, q_idx, k1_pos0);
+    const bool valid1_1 = (q_idx < params.query_length) && (k1_pos1 < params.key_length)
+        && (params.causal == 0 || k1_pos1 <= (params.past_length + q_idx))
+        && llmopt_attention_allowed(mask, params, batch, head, q_idx, k1_pos1);
+
+    const float s0_0 = valid0_0 ? (s_mat0.thread_elements()[0] * params.scale) : -INFINITY;
+    const float s0_1 = valid0_1 ? (s_mat0.thread_elements()[1] * params.scale) : -INFINITY;
+    const float s1_0 = valid1_0 ? (s_mat1.thread_elements()[0] * params.scale) : -INFINITY;
+    const float s1_1 = valid1_1 ? (s_mat1.thread_elements()[1] * params.scale) : -INFINITY;
+
+    // Intra-row reduction across the 4 lanes sharing my_row (16 keys total)
+    float thread_max = max(max(s0_0, s0_1), max(s1_0, s1_1));
+    thread_max = max(thread_max, simd_shuffle_xor(thread_max, 1u));
+    thread_max = max(thread_max, simd_shuffle_xor(thread_max, 8u));
+    const float block_max = thread_max;
+
+    const bool has_valid = (block_max > -INFINITY);
+    const float next_max = has_valid ? max(row_max, block_max) : row_max;
+    const float alpha = (row_denom == 0.0f || row_max == -INFINITY || !has_valid)
+        ? (has_valid ? 0.0f : 1.0f)
+        : exp(row_max - next_max);
+
+    const float p0_0 = (valid0_0 && has_valid) ? exp(s0_0 - next_max) : 0.0f;
+    const float p0_1 = (valid0_1 && has_valid) ? exp(s0_1 - next_max) : 0.0f;
+    const float p1_0 = (valid1_0 && has_valid) ? exp(s1_0 - next_max) : 0.0f;
+    const float p1_1 = (valid1_1 && has_valid) ? exp(s1_1 - next_max) : 0.0f;
+
+    float thread_sum = (p0_0 + p0_1) + (p1_0 + p1_1);
+    thread_sum += simd_shuffle_xor(thread_sum, 1u);
+    thread_sum += simd_shuffle_xor(thread_sum, 8u);
+    const float block_denom = thread_sum;
+
+    row_denom = row_denom * alpha + block_denom;
+    row_max = next_max;
+
+    // In-register scaling of accumulator
+    #pragma unroll
+    for (uint c = 0; c < __ATTENTION_SIMD_CHUNKS__; ++c) {
+      o_acc[c].thread_elements()[0] *= alpha;
+      o_acc[c].thread_elements()[1] *= alpha;
+    }
+
+    // Hardware MMA: Compute P * V and accumulate into o_acc
+    simdgroup_half8x8 p_mat0;
+    p_mat0.thread_elements()[0] = half(p0_0);
+    p_mat0.thread_elements()[1] = half(p0_1);
+
+    simdgroup_half8x8 p_mat1;
+    p_mat1.thread_elements()[0] = half(p1_0);
+    p_mat1.thread_elements()[1] = half(p1_1);
+
+    #pragma unroll
+    for (uint c = 0; c < __ATTENTION_SIMD_CHUNKS__; ++c) {
+      simdgroup_half8x8 v_mat0;
+      simdgroup_load(v_mat0, &v_tile_mem[0][c * 8u], __ATTENTION_HEAD_DIMENSION__);
+      simdgroup_multiply_accumulate(o_acc[c], p_mat0, v_mat0, o_acc[c]);
+
+      simdgroup_half8x8 v_mat1;
+      simdgroup_load(v_mat1, &v_tile_mem[8][c * 8u], __ATTENTION_HEAD_DIMENSION__);
+      simdgroup_multiply_accumulate(o_acc[c], p_mat1, v_mat1, o_acc[c]);
+    }
+
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
 
-  if (active_query) {
-    const uint output_base = params.token_first_output != 0
-        ? (((batch * params.query_length + query_position) * params.heads + head)
-            * __ATTENTION_HEAD_DIMENSION__)
-        : (((batch * params.heads + head) * params.query_length + query_position)
-            * __ATTENTION_HEAD_DIMENSION__);
-    #pragma unroll
-    for (uint chunk = 0; chunk < __ATTENTION_SIMD_CHUNKS__; ++chunk) {
-      const uint dimension = chunk * ATTENTION_SIMD_WIDTH + lane;
-      output[output_base + dimension] = half(denominator == 0.0f
-          ? 0.0f : results[chunk] / denominator);
+  // Final softmax normalization
+  const float inv_denom = row_denom > 0.0f ? (1.0f / row_denom) : 0.0f;
+  #pragma unroll
+  for (uint c = 0; c < __ATTENTION_SIMD_CHUNKS__; ++c) {
+    o_acc[c].thread_elements()[0] *= inv_denom;
+    o_acc[c].thread_elements()[1] *= inv_denom;
+    simdgroup_store(o_acc[c], &o_tile_mem[simdgroup][0][c * 8u], __ATTENTION_HEAD_DIMENSION__);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Cooperative writeout of all 32 queries
+  for (uint i = tid; i < q_total_vec4; i += 128u) {
+    const uint r = i / vecs_per_row;
+    const uint d4 = i % vecs_per_row;
+    const uint curr_q = q_tg_base + r;
+    if (curr_q < params.query_length) {
+      const uint sg = r / 8u;
+      const uint row_in_sg = r % 8u;
+      const uint out_off = params.token_first_output != 0
+          ? (((batch * params.query_length + curr_q) * params.heads + head)
+              * __ATTENTION_HEAD_DIMENSION__ + d4 * 4u)
+          : (((batch * params.heads + head) * params.query_length + curr_q)
+              * __ATTENTION_HEAD_DIMENSION__ + d4 * 4u);
+      *reinterpret_cast<device half4*>(output + out_off) = half4(
+          half(o_tile_mem[sg][row_in_sg][d4 * 4u + 0u]),
+          half(o_tile_mem[sg][row_in_sg][d4 * 4u + 1u]),
+          half(o_tile_mem[sg][row_in_sg][d4 * 4u + 2u]),
+          half(o_tile_mem[sg][row_in_sg][d4 * 4u + 3u])
+      );
     }
   }
 }
@@ -160,7 +243,7 @@ let attention_simd_source head_dimension =
   |> replace_all ~needle:"__ATTENTION_HEAD_DIMENSION__"
        ~replacement:(string_of_int head_dimension)
   |> replace_all ~needle:"__ATTENTION_SIMD_CHUNKS__"
-       ~replacement:(string_of_int (head_dimension / 32))
+       ~replacement:(string_of_int (head_dimension / 8))
 
 let attention_source =
   "\nconstant uint ATTENTION_SIMD_WIDTH = 32;\n"
@@ -417,26 +500,14 @@ kernel void llmopt_attention_tree_speculative_f16_simd_h64(
 }
 |}
 
-let attention_simd_kernel_name head_dimension =
-  Printf.sprintf "llmopt_attention_f16_simd_h%d" head_dimension
-
-let attention_simd_source head_dimension =
-  attention_simd_template
-  |> replace_all ~needle:"__ATTENTION_KERNEL__"
-       ~replacement:(attention_simd_kernel_name head_dimension)
-  |> replace_all ~needle:"__ATTENTION_HEAD_DIMENSION__"
-       ~replacement:(string_of_int head_dimension)
-  |> replace_all ~needle:"__ATTENTION_SIMD_CHUNKS__"
-       ~replacement:(string_of_int (head_dimension / 32))
-
 let attention_simd_entry head_dimension =
-  kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+  kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
     ~name:(attention_simd_kernel_name head_dimension)
     ~operation:Kernel_abi.Operation.Attention ~input_dtype:Ir.Dtype.Float16
     ~output_dtype:Ir.Dtype.Float16
 
 let attention_entries =
-  [ kernel_entry_with_threadgroup ~threadgroup:(256, 1, 1)
+  [ kernel_entry_with_threadgroup ~threadgroup:(128, 1, 1)
       ~name:"llmopt_attention_f16_simd_h64"
       ~operation:Kernel_abi.Operation.Attention
       ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16;

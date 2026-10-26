@@ -86,11 +86,11 @@ let dispatch_attention (context : Metal_execution_state.context) state ~config
   in
   let* grid_x =
     if simd then
-      let q_tiles = (query_length + 7) / 8 in
+      let q_tiles = (query_length + 31) / 32 in
       let total_threadgroups = batches * heads * q_tiles in
-      if total_threadgroups > max_int / 256 then
+      if total_threadgroups > max_int / 128 then
         Error "Metal attention grid dimension overflows"
-      else Ok (total_threadgroups * 256)
+      else Ok (total_threadgroups * 128)
     else Ok rows
   in
   let* output_buffer = Metal_execution_state.workspace_buffer state output in

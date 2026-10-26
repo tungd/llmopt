@@ -168,7 +168,7 @@ let select_attention_kernel runtime input_dtype output_dtype head_dimension =
     Printf.sprintf "llmopt_attention_f16_simd_h%d" head_dimension
   in
   let candidates =
-    if head_dimension mod 32 = 0 then
+    if head_dimension mod 8 = 0 then
       [ specialized, true; "llmopt_attention_f16", false ]
     else [ "llmopt_attention_f16", false ]
   in

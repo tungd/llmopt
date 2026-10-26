@@ -49,12 +49,12 @@ module Tactic = struct
             { name =
                 Printf.sprintf "llmopt_attention_f16_simd_h%d"
                   problem.head_dimension;
-              threadgroup = (256, 1, 1) });
+              threadgroup = (128, 1, 1) });
         accepts =
           (fun (problem : attention_problem) ->
-            problem.head_dimension > 0 && problem.head_dimension mod 32 = 0
+            problem.head_dimension > 0 && problem.head_dimension mod 8 = 0
             && f16_io problem.input_dtype problem.output_dtype
-            && supports_simd problem.target ~threads:256) };
+            && supports_simd problem.target ~threads:128) };
       { build =
           (fun _ ->
             { name = "llmopt_attention_f16"; threadgroup = (64, 1, 1) });

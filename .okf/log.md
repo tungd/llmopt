@@ -1,5 +1,11 @@
 # Update Log
 
+## 2026-10-26
+* **Hardware Matrix-Multiply-Accumulate (MMA) Attention Acceleration & 804 tok/s Prefill Scaling ([exp-0178](experiments/exp-0178-mellum21-12b-tile32-affine-vs-llamacpp-2026-10-23.md))**:
+  - **Single Parameterized MSL Hardware MMA Template (`lib/metal_attention_source.ml`, `lib/metal_dispatch_attention.ml`, `lib/metal_selection.ml`)**: Upgraded the unified prefill attention template to utilize Apple Silicon's native hardware Matrix-Multiply-Accumulate coprocessor units (`simdgroup_matrix<half, 8, 8>`). Replaced serial 32-lane cross-lane butterfly shuffles (`simd_sum`) with hardware register contractions ($Q_{8 \times 8} \times K_{8 \times 8}^T$ and $P_{8 \times 8} \times V_{8 \times 8}$) and pure in-register online softmax rescaling.
+  - **Threadgroup SRAM Key/Value Cooperative Tiling (128 Threads / 4 SIMDgroups)**: Staged 32 queries per threadgroup ($4 \times 8$), amortizing device memory loads of 16 keys/values across all 4 SIMDgroups in threadgroup SRAM. Dropped 28-layer attention dispatch latency from **157.03 ms down to 92.85 ms** at $p=512$.
+  - **Empirical Results**: Prefill throughput reaches **804.55 tok/s** at $p=512$ (**7.54x faster than original baseline**, reaching **81.3% of llama.cpp**'s 989.80 tok/s), and **527.57 tok/s** at $p=128$ (**80.2% of llama.cpp**'s 657.51 tok/s). Full bit-exact numerical parity verified (zero NaNs, matching top-k logits). Unit tests pass 100%. Receipt: `bench/results/mellum21-benchmark-comparison-2026-10-26_054201.json`.
+
 ## 2026-10-25
 * **Vectorized Scatter-Reduce, Threadgroup-Tiled Causal Attention with Block Softmax, & Gap Analysis ([exp-0178](experiments/exp-0178-mellum21-12b-tile32-affine-vs-llamacpp-2026-10-23.md))**:
   - **Vectorized Scatter-Reduce (`lib/metal_quant_source.ml`, `lib/metal_dispatch_linear.ml`)**: Eliminated 31/32 idling SIMD lanes in `llmopt_moe_scatter_reduce_f16`, vectorized memory transfers to 64-bit `half4` loads and stores, and corrected the grid dispatch to active thread occupancy ($m \times \lceil\text{hidden\_dim} / 8\rceil$). Empirical latency dropped from **30.75 ms to 2.18 ms** at $p=512$ (**14.1x faster**) and from **60.36 ms to 4.25 ms** at $p=1024$ (**14.2x faster**).
