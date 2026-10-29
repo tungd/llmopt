@@ -2,7 +2,7 @@
 
 ## 2026-10-30
 
-- [EXL3 execution and schedule repair](experiments/exp-0181-exl3-schedule-repair-2026-10-30.md): minimized ICB corruption to a one-token native fixture, restored direct command lists by default, and reused packed-tile vector/grouped matrix generators. Sequential intermediate measurements reached 229.10 prefill and 40.09 decode tok/s with unchanged weights.
+- [EXL3 execution and schedule repair](experiments/exp-0181-exl3-schedule-repair-2026-10-30.md): minimized ICB corruption to a one-token native fixture, restored direct command lists by default, and reused packed-tile vector/grouped matrix generators. The final serialized comparison of `cbd33a0` reached 235.50 prefill and 41.18 decode tok/s with unchanged weights: 52.19% and 44.85% of fresh llama.cpp (12.43x/3.74x the original EXL3 run); the 95% objective remains open.
 
 - Completed the [Mellum EXL3 comparison](experiments/exp-0180-exl3-mellum-integration-2026-10-30.md): self-contained compiled bundle, zero opaque operations, 18.95 vs 435.04 tok/s prefill and 11.00 vs 88.22 tok/s steady decode (4.36% and 12.47%). Retained TTFT, all-gap timing, raw outputs, approximation error, hashes, and synthetic-output limitations; fast-forwarded the signed implementation onto `main`.
 

@@ -69,8 +69,8 @@ The 64-token prefill improved successively to 122.29 tok/s with expert grouping,
 runs. Four-way vector K partitioning measured 40.0935 steady decode tok/s for
 64 generated tokens, versus 28.2236 in the preceding full comparison; generated
 IDs were identical between those two runs. The previous paired llama.cpp run
-measured 436.67 prefill and 89.64 decode tok/s. A final packaged comparison is
-recorded separately below when completed. The user's 95% target is not met.
+measured 436.67 prefill and 89.64 decode tok/s. The final packaged comparison is
+recorded below. The user's 95% target is not met.
 
 # Approximation and quality boundary
 
@@ -93,3 +93,44 @@ OCaml/native checks. Independent 3-bit and 4-bit packed/codebook/complete-linear
 fixtures passed for the final schedules. The extended direct/prebaked native
 fixture passed all row counts; maximum absolute error was 0.00012207 for the
 ordinary projection and 0.0000152588 for routed MoE. Strict OKF validation passed.
+
+# Final compiled-bundle comparison
+
+Signed implementation `cbd33a0` produced the final self-contained bundle. The
+64-token prefill and 64-token generation workloads match the baseline protocol;
+llama-bench ran three repetitions. Every model, compiler, and benchmark job was
+serialized. This is a throughput comparison on synthetic inputs, not matched
+generation-quality evidence.
+
+| Metric | Original EXL3 | Repaired EXL3 | Fresh llama.cpp | Repaired/llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill, 64 tokens | 18.9487 tok/s | 235.4976 tok/s | 451.2362 tok/s | 52.1894% |
+| Steady decode, 64 tokens | 11.0031 tok/s | 41.1795 tok/s | 91.8251 tok/s | 44.8456% |
+| All decode gaps | 11.0144 tok/s | 41.2352 tok/s | 91.8251 tok/s | 44.9063% |
+
+Prefill increased 12.4282x and steady decode 3.7425x relative to the original
+EXL3 measurements. TTFT was 0.069500 s, total generation 1.597321 s, median
+inter-token latency 24.1828 ms, and maximum 26.9949 ms. The steady definition
+excludes the first gap; the all-gap metric is retained separately. The user
+objective remains 95%; neither workload has reached it.
+
+Exact commands, runtime/compiler commit, raw outputs, and fresh llama.cpp
+measurements are in `bench/results/mellum21-exl3-fixed-vs-llamacpp-2026-10-30.json`
+and adjacent `mellum21-exl3-fixed-2026-10-30-*.txt` files. No new quantization
+pass was run. The bundle includes real compiled Metal libraries and the serving
+executable, and has 109 kernels per package, zero opaque operations, and 932
+archive entries.
+
+The canonical bundle is `_artifacts/mellum21-exl3/engine` in the main checkout;
+`serve` launches its included executable. The previous bundle remains at sibling
+`engine-baseline`. The measured `_artifacts/mellum21-exl3-fixed/engine` path is
+an alias to the canonical bundle. Archive hashes were compared before relocation
+and are identical. All bundle links resolve inside the bundle; Model Program
+validation passed after relocation.
+
+The included serving executable returned HTTP 200 and a complete eight-token
+SSE response ending in `[DONE]` for a chat request to write an addition function.
+It began `<think>\nWe need to respond: the`. The controller stopped and reaped
+that server before releasing the job. This verifies the serving path, not the
+quality of a completed answer. The response and artifact hashes are retained
+with the final comparison receipt.

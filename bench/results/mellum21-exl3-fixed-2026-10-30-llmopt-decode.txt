@@ -1,0 +1,18 @@
+load-seconds: 5.149569
+prompt-token-count: 4
+prompt-tokens: 1,2,3,4
+completion-token-count: 64
+completion-tokens: 28,28,28,28,28,28,28,28,28,28,28,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28,19669,28
+ttft-seconds: 0.069500
+elapsed-seconds: 1.597321
+tokens-per-second: 40.067092
+inter-token-count: 63
+inter-token-mean-ms: 24.251124
+inter-token-median-ms: 24.182796
+inter-token-min-ms: 21.654129
+inter-token-p90-ms: 26.510000
+inter-token-max-ms: 26.994944
+inter-token-first-5-ms: 22.22, 21.65, 21.81, 21.79, 22.19
+steady-token-count: 62
+steady-token-mean-ms: 24.283901
+steady-tokens-per-second: 41.179545

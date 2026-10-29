@@ -27,9 +27,11 @@ for conversion and full-model measurement evidence. The first Mellum EXL3 run
 measured 18.95 tok/s prefill and 11.00 tok/s steady decode, 4.36% and 12.47%
 of the source-GGUF llama.cpp baseline. The subsequent execution/schedule repair
 restores direct command lists after reproducing ICB corruption and measures
-229.10 prefill and 40.09 decode tok/s in separate intermediate runs with the
-same weights. See `.okf/experiments/exp-0181-exl3-schedule-repair-2026-10-30.md`.
-The user target remains 95%. Historical experiment
+235.50 prefill and 41.18 decode tok/s in the final serialized comparison with
+the same weights: 52.19% and 44.85% of fresh llama.cpp, and 12.43x/3.74x the
+original EXL3 run. See `.okf/experiments/exp-0181-exl3-schedule-repair-2026-10-30.md`.
+The canonical self-contained bundle is `_artifacts/mellum21-exl3/engine`; its
+HTTP streaming smoke passed. The user target remains 95%. Historical experiment
 records and `direction.md` describe earlier states and must not be read as the
 live contract when they disagree with source or this note.
 
