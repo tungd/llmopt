@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -23,14 +22,7 @@ sys.path[:0] = [str(REPO_ROOT / "python"), str(REPO_ROOT / "bench")]
 from llmopt_backend import CapturedFx, ExternalTensor, bind_external_tensors, capture_from_fx
 from llmopt_backend.fx_graph import write_graph
 
-DTYPE_TAG_TO_NAME = {
-    0: "float32",
-    1: "float16",
-    2: "bfloat16",
-    13: "Q4_0",
-    15: "Tile32_Affine4",
-    16: "Tile32_Affine8",
-}
+from llmopt_backend.tensor_archive import read_inventory
 
 # 1. Custom MoE operation registration
 @torch.library.custom_op("llmopt::moe_swiglu_ffn", mutates_args=())
@@ -294,21 +286,6 @@ def target_graph(
     }
     return manifest
 
-def load_weight_inventory(weights_path: Path) -> dict[str, tuple[str, tuple[int, ...]]]:
-    inventory = {}
-    with open(weights_path, "rb") as f:
-        magic, ver, align, count, idx_bytes = struct.unpack("<8sHHIQ", f.read(24))
-        for _ in range(count):
-            nl, dt, rank, _ = struct.unpack("<IBBH", f.read(8))
-            name = f.read(nl).decode("utf-8")
-            shape = struct.unpack(f"<{rank}Q", f.read(rank * 8))
-            f.read(16)
-            dtype_name = DTYPE_TAG_TO_NAME.get(dt)
-            if dtype_name is None:
-                raise ValueError(f"unknown dtype tag {dt} for {name}")
-            inventory[name] = (dtype_name, shape)
-    return inventory
-
 def preserve_reference_constant_precision(model: Any) -> None:
     rotary = model.model.rotary_emb
     for layer_type in ("sliding_attention", "full_attention"):
@@ -336,7 +313,7 @@ def main() -> None:
     num_layers = config.num_hidden_layers
 
     print(f"[build_mellum21_engine] Loading weight inventory from {args.weights}...")
-    inventory = load_weight_inventory(args.weights)
+    inventory = read_inventory(args.weights)
     print(f"[build_mellum21_engine] Loaded {len(inventory)} tensors from archive.")
 
     print("[build_mellum21_engine] Initializing Mellum meta model with llmopt MoE blocks...")

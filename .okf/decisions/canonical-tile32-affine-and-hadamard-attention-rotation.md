@@ -5,7 +5,7 @@ description: 'Eliminate the multi-format GGUF kernel zoo by transcoding all GGUF
 tags: [decision, compiler, algebra, quantization, tile32-affine, hadamard, fwht, kv-cache, gguf, metal, mathematical-reduction]
 status: stable
 decision_status: approved
-generated: { by: antigravity/2.0, at: '2026-10-23T16:52:00+07:00' }
+generated: { by: codex/gpt-6, at: '2026-10-29T18:39:51Z' }
 verified: { by: human:tung, at: '2026-10-23T16:47:51+07:00' }
 sources:
   - id: algebraic-ir
@@ -28,7 +28,13 @@ sources:
     title: Native GGUF parser and offline transcoder
 ---
 
-# Decision
+# Historical decision
+
+The canonical weight-format choice was superseded on 2026-10-30 by
+[EXL3 canonical runtime weights](exl3-canonical-runtime.md). Approximate import
+conversion is accepted. The text below records the earlier affine implementation;
+its lossless-conversion rationale is not a current architectural constraint.
+The separate KV-cache mechanisms are not changed by the EXL3 weight decision.
 
 `llmopt` adopts **mathematical reduction** across its quantization, contraction,
 and KV-cache runtime stack:

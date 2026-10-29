@@ -4,7 +4,7 @@ title: 'Dynamo/FX Compiler with an OCaml Metal Serving Runtime'
 description: 'A model-neutral Ahead-Of-Time (AOT) compilation and serving architecture: PyTorch Dynamo captures FX graphs, OCaml effect-driven passes lower and fuse megakernels against GGUF/UD weights, and the zero-JIT native runtime hosts continuous batching, radix prefix caching, and SIMD stochastic sampling on Apple Silicon.'
 tags: [architecture, pytorch, fx, ocaml, metal, gemma, qwen, smollm, lfm, gguf, unsloth, continuous-batching, radix-cache, megakernels, aot]
 status: stable
-generated: { by: 'autoagent/union-alpha', at: '2026-09-24T05:55:16Z' }
+generated: { by: codex/gpt-6, at: '2026-10-29T18:39:51Z' }
 sources:
   - id: pytorch-backend-contract
     resource: https://docs.pytorch.org/docs/2.9/torch.compiler_custom_backends.html
@@ -42,6 +42,12 @@ sources:
   - id: local-gguf
     resource: /lib/gguf.ml
     title: Native GGUF v2/v3 parser and tensor index
+  - id: local-python-weight-archive
+    resource: /python/llmopt_backend/tensor_archive.py
+    title: Shared Python binary weight archive writer and inventory reader
+  - id: local-linear-writeback
+    resource: /lib/metal_q4_0_epilogue_codegen.ml
+    title: Direct construction of linear kernel headers and writebacks
   - id: local-weight-archive
     resource: /lib/weight_archive.ml
     title: Versioned binary weight-archive parser and tensor index
@@ -157,6 +163,12 @@ sources:
     resource: https://github.com/sgl-project/sglang/blob/d1af3c89233c475fc1bf11939d86787e6cddd58c/python/sglang/srt/mem_cache/mamba_radix_cache.py
     title: SGLang hybrid recurrent-cache reference revision
 ---
+
+The current weight-format direction is [EXL3](decisions/exl3-canonical-runtime.md).
+The first slice provides archive component validation and generated Metal
+contractions; the full-model execution paths described below still use their
+existing weight formats until integration.
+
 
 # 1. System Overview
 
@@ -305,7 +317,28 @@ Rather than relying on brittle heuristic rules, kernel implementations are resol
   $$M_{\text{knee}} = \left\lceil \frac{W}{B} \times \frac{P}{2 \cdot \text{Params}} \right\rceil$$
   dynamically determining optimal chunk sizes ($M^* \in [64, 512]$) to maximize core saturation while adhering to SLA latency bounds.
 
+### 3.3.1 Shared linear kernel emission
+
+`Metal_q4_0_epilogue_codegen.Writeback` constructs the kernel buffer header and
+writeback directly for both Q4_0 and Tile32_Affine. Its `Bias` and `Epilogue`
+variants distinguish the flat optional-bias ABI from algebraic epilogue inputs,
+including an identity epilogue with no auxiliary buffers. Row-relative bias
+addressing stays explicit. No generated shader text is parsed or spliced to
+insert an epilogue; x16 emission retains its macro definitions and cleanup.
+
+`Metal_q4_0_decode_codegen.Contraction_source` shares buffer declarations,
+weight-row addressing, accumulator declarations, reductions, and auxiliary row
+views across x8/x16 single-output and multi-export contractions. Each tactic
+retains its existing load and accumulation order; tactic selection is unchanged.
+
 ## 3.4. Quantization Ingestion & Weight Architecture
+
+The Python `llmopt_backend.tensor_archive` module owns ABI-v1 (`LLMOPTWT`)
+dtype tags, deterministic sorted index layout, 256-byte payload alignment,
+streaming atomic writes, and metadata-only inventory reads. `write_archive`
+adapts PyTorch tensors; the Gemma builder supplies GGUF payload chunks and its
+FP32 reference constants to `write_payloads`; Mellum uses `read_inventory`.
+Payload failure removes the temporary file while preserving the destination.
 
 `llmopt` provides first-class support for both native GGUF files and internal aligned binary archives:
 * **Direct GGUF Mmap ([`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml))**: Reads GGUF v2/v3 metadata, resolves tensor name aliases, and creates zero-copy 256-byte aligned `MTLBuffer` views directly from memory-mapped GGUF files without intermediate memory copies or conversions.
@@ -397,7 +430,7 @@ separate claims; no row generalizes those properties to every benchmark run.[^sl
 | **Serving Package** | `LLMOPTPK` | ABI Version 27 | [`lib/serving_package.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_package.ml) |
 | **Serving Schedule** | `LLMOSCH` | Format Version 29 | [`lib/serving_schedule_codec.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule_codec.ml) (facade: [`lib/serving_schedule.ml`](file:///Users/tung/Projects/std23/llmopt/lib/serving_schedule.ml)) |
 | **Model Program** | `LLMOPT-MODEL` | ABI Version 7 | [`lib/model_program.ml`](file:///Users/tung/Projects/std23/llmopt/lib/model_program.ml) |
-| **Binary Weight Archive** | `LLMOPTWA` | Version 1 | [`lib/weight_archive.ml`](file:///Users/tung/Projects/std23/llmopt/lib/weight_archive.ml) |
+| **Binary Weight Archive** | `LLMOPTWT` | Version 1 | [`lib/weight_archive.ml`](file:///Users/tung/Projects/std23/llmopt/lib/weight_archive.ml) |
 | **Native GGUF Ingestion** | `GGUF` | v2 / v3 | [`lib/gguf.ml`](file:///Users/tung/Projects/std23/llmopt/lib/gguf.ml) |
 
 ---

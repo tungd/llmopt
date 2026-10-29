@@ -1,16 +1,10 @@
 open Metal_q4_0_epilogue_codegen
 
 let emit_q4_0_linear_f16_x4 ?(name = "llmopt_q4_0_linear_f16_x4")
-    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
+    ?(writeback = Writeback.Bias) ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes () =
   let flat =
-    Printf.sprintf {|
-kernel void llmopt_q4_0_linear_f16_x4(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+    Printf.sprintf {|%s
     uint gid [[thread_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
@@ -77,44 +71,24 @@ kernel void llmopt_q4_0_linear_f16_x4(
   accumulator1 = simd_sum(accumulator1);
   accumulator2 = simd_sum(accumulator2);
   accumulator3 = simd_sum(accumulator3);
-  if (lane == 0u && base_col < params.n) {
-    if (params.has_bias != 0u) {
-      accumulator0 += float(bias[base_col]);
-      if (base_col + 1u < params.n) accumulator1 += float(bias[base_col + 1u]);
-      if (base_col + 2u < params.n) accumulator2 += float(bias[base_col + 2u]);
-      if (base_col + 3u < params.n) accumulator3 += float(bias[base_col + 3u]);
-    }
-    output[base_col] = half(accumulator0);
-    if (base_col + 1u < params.n) output[base_col + 1u] = half(accumulator1);
-    if (base_col + 2u < params.n) output[base_col + 2u] = half(accumulator2);
-    if (base_col + 3u < params.n) output[base_col + 3u] = half(accumulator3);
-  }
+%s
 }
 |}
+    (Writeback.header ~name:name writeback)
     block_elements block_bytes block_bytes scale_offset scale_offset
     scale_offset scale_offset quant_offset quant_offset quant_offset
     quant_offset block_elements zero zero zero zero zero zero zero zero
     block_bytes block_elements
+    (Writeback.single_row ~columns:4 writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then flat
-  else
-    match q4_0_x4_digest_of_flat ~name epilogue flat with
-    | Ok text -> text
-    | Error message ->
-        invalid_arg
-          (Printf.sprintf "Metal_block_codegen q4_0_linear_f16_x4: %s" message)
+  flat
+
 
 let emit_q4_0_linear_f16_x8 ?(split_k = 1) ?(name = "llmopt_q4_0_linear_f16_x8")
-    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
+    ?(writeback = Writeback.Bias) ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes () =
   let flat_split1 =
-    Printf.sprintf {|
-kernel void %s(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+    Printf.sprintf {|%s
     uint gid [[thread_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
@@ -202,35 +176,16 @@ kernel void %s(
   accumulator6 = simd_sum(accumulator6);
   accumulator7 = simd_sum(accumulator7);
 
-  if (lane == 0u && base_col < params.n) {
-    if (params.has_bias != 0u) {
-      accumulator0 += float(bias[base_col]);
-      if (base_col + 1u < params.n) accumulator1 += float(bias[base_col + 1u]);
-      if (base_col + 2u < params.n) accumulator2 += float(bias[base_col + 2u]);
-      if (base_col + 3u < params.n) accumulator3 += float(bias[base_col + 3u]);
-      if (base_col + 4u < params.n) accumulator4 += float(bias[base_col + 4u]);
-      if (base_col + 5u < params.n) accumulator5 += float(bias[base_col + 5u]);
-      if (base_col + 6u < params.n) accumulator6 += float(bias[base_col + 6u]);
-      if (base_col + 7u < params.n) accumulator7 += float(bias[base_col + 7u]);
-    }
-    output[base_col] = half(accumulator0);
-    if (base_col + 1u < params.n) output[base_col + 1u] = half(accumulator1);
-    if (base_col + 2u < params.n) output[base_col + 2u] = half(accumulator2);
-    if (base_col + 3u < params.n) output[base_col + 3u] = half(accumulator3);
-    if (base_col + 4u < params.n) output[base_col + 4u] = half(accumulator4);
-    if (base_col + 5u < params.n) output[base_col + 5u] = half(accumulator5);
-    if (base_col + 6u < params.n) output[base_col + 6u] = half(accumulator6);
-    if (base_col + 7u < params.n) output[base_col + 7u] = half(accumulator7);
-  }
+%s
 }
 |}
-    name block_elements block_bytes
+    (Writeback.header ~name:name writeback) block_elements block_bytes
     quant_offset block_bytes block_elements zero
     scale_offset
+    (Writeback.single_row ~columns:8 writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then
-    if split_k = 1 then flat_split1
-    else
+  if split_k = 1 then flat_split1
+  else if writeback = Writeback.Bias then
       Printf.sprintf {|
 kernel void llmopt_q4_0_linear_f16_x8(
     device const half* input [[buffer(0)]],
@@ -420,20 +375,13 @@ kernel void llmopt_q4_0_linear_f16_x8(
     zero zero zero zero zero zero zero zero
     zero zero zero zero zero zero zero zero
     block_bytes block_elements
-  else if split_k = 1 then
-    match q4_0_x8_digest_of_flat ~name epilogue flat_split1 with
-    | Ok text -> text
-    | Error message ->
-        invalid_arg
-          (Printf.sprintf
-             "Metal_block_codegen q4_0_linear_f16_x8: %s" message)
   else
     invalid_arg
       "Metal_block_codegen q4_0_linear_f16_x8: epilogue emission requires \
        split_k = 1"
 
 let emit_q4_0_linear_f16_x16 ?(split_k = 1) ?(name = "llmopt_q4_0_linear_f16_x16")
-    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
+    ?(writeback = Writeback.Bias) ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes () =
   let row_blocks_decls =
     List.init 16 (fun j ->
@@ -469,24 +417,6 @@ let emit_q4_0_linear_f16_x16 ?(split_k = 1) ?(name = "llmopt_q4_0_linear_f16_x16
   let simd_sums =
     List.init 16 (fun j ->
         Printf.sprintf "  accumulator%d = simd_sum(accumulator%d);" j j)
-    |> String.concat "\n"
-  in
-  let bias_adds =
-    List.init 16 (fun j ->
-        if j = 0 then "      accumulator0 += float(bias[base_col]);"
-        else
-          Printf.sprintf
-            "      if (base_col + %du < params.n) accumulator%d += float(bias[base_col + %du]);"
-            j j j)
-    |> String.concat "\n"
-  in
-  let stores =
-    List.init 16 (fun j ->
-        if j = 0 then "    output[base_col] = half(accumulator0);"
-        else
-          Printf.sprintf
-            "    if (base_col + %du < params.n) output[base_col + %du] = half(accumulator%d);"
-            j j j)
     |> String.concat "\n"
   in
   let flat_split1 =
@@ -529,12 +459,7 @@ let emit_q4_0_linear_f16_x16 ?(split_k = 1) ?(name = "llmopt_q4_0_linear_f16_x16
     (col_acc) += float(s) * (a_low * q_l + a_high * q_h); \
   }
 
-kernel void %s(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+%s
     uint gid [[thread_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
@@ -590,12 +515,7 @@ kernel void %s(
 
 %s
 
-  if (lane == 0u && base_col < params.n) {
-    if (params.has_bias != 0u) {
 %s
-    }
-%s
-  }
 }
 
 #undef Q4_0_OCT_ACCUMULATE
@@ -605,27 +525,16 @@ kernel void %s(
       quant_offset quant_offset quant_offset quant_offset
       zero zero zero zero zero zero zero zero
       scale_offset quant_offset zero zero
-      name block_elements block_bytes
+      (Writeback.header ~name:name writeback) block_elements block_bytes
       row_blocks_decls accumulators_decls
       block_bytes block_elements oct_accumulates
       block_bytes block_elements rem_accumulates
       block_bytes block_elements odd_accumulates
-      simd_sums bias_adds stores
+      simd_sums (Writeback.single_row ~columns:16 writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then
-    if split_k = 1 then flat_split1
-    else invalid_arg "Metal_block_codegen q4_0_linear_f16_x16: split_k > 1 not supported"
-  else if split_k = 1 then
-    match q4_0_x16_digest_of_flat ~name epilogue flat_split1 with
-    | Ok text -> text
-    | Error message ->
-        invalid_arg
-          (Printf.sprintf
-             "Metal_block_codegen q4_0_linear_f16_x16: %s" message)
-  else
-    invalid_arg
-      "Metal_block_codegen q4_0_linear_f16_x16: epilogue emission requires \
-       split_k = 1"
+  if split_k = 1 then flat_split1
+  else invalid_arg "Metal_block_codegen q4_0_linear_f16_x16: split_k > 1 not supported"
+
 
 let emit_q4_0_gated_linear_f16_x8 ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =
@@ -784,22 +693,14 @@ kernel void llmopt_q4_0_gated_linear_f16_x8(
     quant_offset block_bytes block_elements zero
     scale_offset scale_offset
 
-let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
-    ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
-  let canonical_epilogue = Applicative_expr.canonicalize epilogue in
-  let aux_values = Applicative_expr.required_values canonical_epilogue in
-  let num_aux = List.length aux_values in
-  let buf_idx_out = 1 + num_slots + num_aux in
-  let buf_idx_params = 2 + num_slots + num_aux in
-  let weight_buffers =
+module Contraction_source = struct
+  let weight_buffers ~num_slots =
     List.init num_slots (fun s ->
         Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
           (1 + s))
     |> String.concat "\n"
-  in
-  let aux_buffers =
-    if num_aux = 0 then ""
-    else
+
+  let aux_buffers ~num_slots aux_values =
       aux_values
       |> List.mapi (fun k v ->
              let dtype_str =
@@ -810,11 +711,11 @@ let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
              Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
                dtype_str k (1 + num_slots + k))
       |> String.concat ""
-  in
-  let weight_bases =
+
+  let weight_bases ~columns ~num_slots =
     List.init num_slots (fun s ->
         let rows =
-          List.init 8 (fun j ->
+          List.init columns (fun j ->
               if j = 0 then
                 Printf.sprintf
                   "  device const uchar* row_%d_0 = base_%d + base_col * col_stride;"
@@ -827,15 +728,49 @@ let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
         in
         Printf.sprintf "  device const uchar* base_%d = weight_%d;\n%s" s s rows)
     |> String.concat "\n\n"
-  in
-  let accumulators =
+
+  let simd_sums ~columns ~num_slots =
     List.init num_slots (fun s ->
-        Printf.sprintf
-          "  float acc%d_0 = 0.0f, acc%d_1 = 0.0f, acc%d_2 = 0.0f, acc%d_3 = 0.0f;\n\
-          \  float acc%d_4 = 0.0f, acc%d_5 = 0.0f, acc%d_6 = 0.0f, acc%d_7 = 0.0f;"
-          s s s s s s s s)
+        List.init columns (fun j ->
+            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
+        |> String.concat "\n")
+    |> String.concat "\n\n"
+
+  let in_bufs aux_values =
+      aux_values
+      |> List.mapi (fun k v ->
+             let dtype_str =
+               match Ir.Value.dtype v with
+               | Ir.Dtype.Float16 -> "half"
+               | _ -> "float"
+             in
+             Printf.sprintf
+               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
+               dtype_str k k)
+      |> String.concat ""
+
+  let accumulators ~columns ~num_slots =
+    let width = if columns = 8 then 4 else columns in
+    List.init num_slots (fun s ->
+      List.init (columns / width) (fun group ->
+        let declarations = List.init width (fun j ->
+          Printf.sprintf "acc%d_%d = 0.0f" s (group * width + j)) in
+        "  float " ^ String.concat ", " declarations ^ ";")
+      |> String.concat "\n")
     |> String.concat "\n"
-  in
+end
+
+let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
+    ~scale_offset ~quant_offset ~zero ~block_elements ~block_bytes () =
+  let canonical_epilogue = Applicative_expr.canonicalize epilogue in
+  let aux_values = Applicative_expr.required_values canonical_epilogue in
+  let num_aux = List.length aux_values in
+  let buf_idx_out = 1 + num_slots + num_aux in
+  let buf_idx_params = 2 + num_slots + num_aux in
+  let weight_buffers = Contraction_source.weight_buffers ~num_slots in
+  let aux_buffers = Contraction_source.aux_buffers ~num_slots aux_values in
+  let weight_bases = Contraction_source.weight_bases ~columns:8 ~num_slots in
+  let accumulators = Contraction_source.accumulators ~columns:8 ~num_slots in
   let cluster_block_accs =
     List.init num_slots (fun s ->
         List.init 8 (fun j ->
@@ -859,28 +794,8 @@ let emit_q4_0_multi_linear_f16_x8 ~name ~epilogue ?(num_slots = 2)
         |> String.concat "\n")
     |> String.concat "\n\n"
   in
-  let simd_sums =
-    List.init num_slots (fun s ->
-        List.init 8 (fun j ->
-            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
-        |> String.concat "\n")
-    |> String.concat "\n\n"
-  in
-  let in_bufs =
-    if num_aux = 0 then ""
-    else
-      aux_values
-      |> List.mapi (fun k v ->
-             let dtype_str =
-               match Ir.Value.dtype v with
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf
-               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
-               dtype_str k k)
-      |> String.concat ""
-  in
+  let simd_sums = Contraction_source.simd_sums ~columns:8 ~num_slots in
+  let in_bufs = Contraction_source.in_bufs aux_values in
   let value_var v =
     Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
   in
@@ -975,52 +890,10 @@ let emit_q4_0_multi_linear_f16_x16 ~name ~epilogue ?(num_slots = 2)
   let num_aux = List.length aux_values in
   let buf_idx_out = 1 + num_slots + num_aux in
   let buf_idx_params = 2 + num_slots + num_aux in
-  let weight_buffers =
-    List.init num_slots (fun s ->
-        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
-          (1 + s))
-    |> String.concat "\n"
-  in
-  let aux_buffers =
-    if num_aux = 0 then ""
-    else
-      aux_values
-      |> List.mapi (fun k v ->
-             let dtype_str =
-               match Ir.Value.dtype v with
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
-               dtype_str k (1 + num_slots + k))
-      |> String.concat ""
-  in
-  let weight_bases =
-    List.init num_slots (fun s ->
-        let rows =
-          List.init 16 (fun j ->
-              if j = 0 then
-                Printf.sprintf
-                  "  device const uchar* row_%d_0 = base_%d + base_col * col_stride;"
-                  s s
-              else
-                Printf.sprintf
-                  "  device const uchar* row_%d_%d = base_%d + min(base_col + %du, params.n - 1u) * col_stride;"
-                  s j s j)
-          |> String.concat "\n"
-        in
-        Printf.sprintf "  device const uchar* base_%d = weight_%d;\n%s" s s rows)
-    |> String.concat "\n\n"
-  in
-  let accumulators =
-    List.init num_slots (fun s ->
-        let acc_decls =
-          List.init 16 (fun j -> Printf.sprintf "acc%d_%d = 0.0f" s j)
-          |> String.concat ", "
-        in
-        Printf.sprintf "  float %s;" acc_decls)
-    |> String.concat "\n"
-  in
+  let weight_buffers = Contraction_source.weight_buffers ~num_slots in
+  let aux_buffers = Contraction_source.aux_buffers ~num_slots aux_values in
+  let weight_bases = Contraction_source.weight_bases ~columns:16 ~num_slots in
+  let accumulators = Contraction_source.accumulators ~columns:16 ~num_slots in
   let oct_accumulates =
     List.init num_slots (fun s ->
         List.init 16 (fun j ->
@@ -1044,28 +917,8 @@ let emit_q4_0_multi_linear_f16_x16 ~name ~epilogue ?(num_slots = 2)
         |> String.concat "\n")
     |> String.concat "\n"
   in
-  let simd_sums =
-    List.init num_slots (fun s ->
-        List.init 16 (fun j ->
-            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
-        |> String.concat "\n")
-    |> String.concat "\n\n"
-  in
-  let in_bufs =
-    if num_aux = 0 then ""
-    else
-      aux_values
-      |> List.mapi (fun k v ->
-             let dtype_str =
-               match Ir.Value.dtype v with
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf
-               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
-               dtype_str k k)
-      |> String.concat ""
-  in
+  let simd_sums = Contraction_source.simd_sums ~columns:16 ~num_slots in
+  let in_bufs = Contraction_source.in_bufs aux_values in
   let value_var v =
     Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
   in
@@ -1230,57 +1083,16 @@ let emit_q4_0_multi_export_linear_f16_x8 ~name ~epilogues ?(num_slots = 2)
   let num_aux = List.length all_aux_values in
   let first_output_buf = 1 + num_slots + num_aux in
   let buf_idx_params = first_output_buf + num_exports in
-  let weight_buffers =
-    List.init num_slots (fun s ->
-        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
-          (1 + s))
-    |> String.concat "\n"
-  in
-  let aux_buffers =
-    if num_aux = 0 then ""
-    else
-      all_aux_values
-      |> List.mapi (fun k v ->
-             let dtype_str =
-               match Ir.Value.dtype v with
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
-               dtype_str k (1 + num_slots + k))
-      |> String.concat ""
-  in
+  let weight_buffers = Contraction_source.weight_buffers ~num_slots in
+  let aux_buffers = Contraction_source.aux_buffers ~num_slots all_aux_values in
   let output_buffers =
     List.init num_exports (fun e ->
         Printf.sprintf "    device half* output_%d [[buffer(%d)]]," e
           (first_output_buf + e))
     |> String.concat "\n"
   in
-  let weight_bases =
-    List.init num_slots (fun s ->
-        let rows =
-          List.init 8 (fun j ->
-              if j = 0 then
-                Printf.sprintf
-                  "  device const uchar* row_%d_0 = base_%d + base_col * col_stride;"
-                  s s
-              else
-                Printf.sprintf
-                  "  device const uchar* row_%d_%d = base_%d + min(base_col + %du, params.n - 1u) * col_stride;"
-                  s j s j)
-          |> String.concat "\n"
-        in
-        Printf.sprintf "  device const uchar* base_%d = weight_%d;\n%s" s s rows)
-    |> String.concat "\n\n"
-  in
-  let accumulators =
-    List.init num_slots (fun s ->
-        Printf.sprintf
-          "  float acc%d_0 = 0.0f, acc%d_1 = 0.0f, acc%d_2 = 0.0f, acc%d_3 = 0.0f;\n\
-          \  float acc%d_4 = 0.0f, acc%d_5 = 0.0f, acc%d_6 = 0.0f, acc%d_7 = 0.0f;"
-          s s s s s s s s)
-    |> String.concat "\n"
-  in
+  let weight_bases = Contraction_source.weight_bases ~columns:8 ~num_slots in
+  let accumulators = Contraction_source.accumulators ~columns:8 ~num_slots in
   let cluster_block_accs =
     List.init num_slots (fun s ->
         List.init 8 (fun j ->
@@ -1304,28 +1116,8 @@ let emit_q4_0_multi_export_linear_f16_x8 ~name ~epilogues ?(num_slots = 2)
         |> String.concat "\n")
     |> String.concat "\n\n"
   in
-  let simd_sums =
-    List.init num_slots (fun s ->
-        List.init 8 (fun j ->
-            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
-        |> String.concat "\n")
-    |> String.concat "\n\n"
-  in
-  let in_bufs =
-    if num_aux = 0 then ""
-    else
-      all_aux_values
-      |> List.mapi (fun k v ->
-             let dtype_str =
-               match Ir.Value.dtype v with
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf
-               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
-               dtype_str k k)
-      |> String.concat ""
-  in
+  let simd_sums = Contraction_source.simd_sums ~columns:8 ~num_slots in
+  let in_bufs = Contraction_source.in_bufs all_aux_values in
   let value_var v =
     Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
   in
@@ -1434,58 +1226,16 @@ let emit_q4_0_multi_export_linear_f16_x16 ~name ~epilogues ?(num_slots = 2)
   let num_aux = List.length all_aux_values in
   let first_output_buf = 1 + num_slots + num_aux in
   let buf_idx_params = first_output_buf + num_exports in
-  let weight_buffers =
-    List.init num_slots (fun s ->
-        Printf.sprintf "    device const uchar* weight_%d [[buffer(%d)]]," s
-          (1 + s))
-    |> String.concat "\n"
-  in
-  let aux_buffers =
-    if num_aux = 0 then ""
-    else
-      all_aux_values
-      |> List.mapi (fun k v ->
-             let dtype_str =
-               match Ir.Value.dtype v with
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf "    device const %s* buf_%d [[buffer(%d)]],\n"
-               dtype_str k (1 + num_slots + k))
-      |> String.concat ""
-  in
+  let weight_buffers = Contraction_source.weight_buffers ~num_slots in
+  let aux_buffers = Contraction_source.aux_buffers ~num_slots all_aux_values in
   let output_buffers =
     List.init num_exports (fun e ->
         Printf.sprintf "    device half* output_%d [[buffer(%d)]]," e
           (first_output_buf + e))
     |> String.concat "\n"
   in
-  let weight_bases =
-    List.init num_slots (fun s ->
-        let rows =
-          List.init 16 (fun j ->
-              if j = 0 then
-                Printf.sprintf
-                  "  device const uchar* row_%d_0 = base_%d + base_col * col_stride;"
-                  s s
-              else
-                Printf.sprintf
-                  "  device const uchar* row_%d_%d = base_%d + min(base_col + %du, params.n - 1u) * col_stride;"
-                  s j s j)
-          |> String.concat "\n"
-        in
-        Printf.sprintf "  device const uchar* base_%d = weight_%d;\n%s" s s rows)
-    |> String.concat "\n\n"
-  in
-  let accumulators =
-    List.init num_slots (fun s ->
-        let acc_decls =
-          List.init 16 (fun j -> Printf.sprintf "acc%d_%d = 0.0f" s j)
-          |> String.concat ", "
-        in
-        Printf.sprintf "  float %s;" acc_decls)
-    |> String.concat "\n"
-  in
+  let weight_bases = Contraction_source.weight_bases ~columns:16 ~num_slots in
+  let accumulators = Contraction_source.accumulators ~columns:16 ~num_slots in
   let oct_accumulates =
     List.init num_slots (fun s ->
         List.init 16 (fun j ->
@@ -1509,28 +1259,8 @@ let emit_q4_0_multi_export_linear_f16_x16 ~name ~epilogues ?(num_slots = 2)
         |> String.concat "\n")
     |> String.concat "\n"
   in
-  let simd_sums =
-    List.init num_slots (fun s ->
-        List.init 16 (fun j ->
-            Printf.sprintf "  acc%d_%d = simd_sum(acc%d_%d);" s j s j)
-        |> String.concat "\n")
-    |> String.concat "\n\n"
-  in
-  let in_bufs =
-    if num_aux = 0 then ""
-    else
-      all_aux_values
-      |> List.mapi (fun k v ->
-             let dtype_str =
-               match Ir.Value.dtype v with
-               | Ir.Dtype.Float16 -> "half"
-               | _ -> "float"
-             in
-             Printf.sprintf
-               "    device const %s* in_buf_%d = buf_%d + row * params.n;\n"
-               dtype_str k k)
-      |> String.concat ""
-  in
+  let simd_sums = Contraction_source.simd_sums ~columns:16 ~num_slots in
+  let in_bufs = Contraction_source.in_bufs all_aux_values in
   let value_var v =
     Printf.sprintf "in_buf_%d" (Ir.Value_id.to_int (Ir.Value.id v))
   in

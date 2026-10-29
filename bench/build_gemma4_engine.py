@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import struct
 import subprocess
 import sys
@@ -33,78 +32,47 @@ from llmopt_backend import CapturedFx, ExternalTensor, bind_external_tensors  # 
 from llmopt_backend.fx_graph import write_graph  # noqa: E402
 from probe_gemma4_mtp_lowering import capture  # noqa: E402
 
-MAGIC = b"LLMOPTWT"
-VERSION = 1
-ALIGNMENT = 256
-PREFIX = struct.Struct("<8sHHIQ")
-ENTRY = struct.Struct("<IBBH")
-U64 = struct.Struct("<Q")
-DTYPE_TAGS = {
-    "F32": 0,
-    "F16": 1,
-    "BF16": 2,
-    "Q8_0": 8,
-    "Q4_K": 9,
-    "Q5_K": 10,
-    "Q6_K": 11,
-    "Q5_0": 12,
-    "Q4_0": 13,
-    "IQ4_XS": 14,
-    "Tile32_Affine4": 15,
-    "Tile32_Affine8": 16,
-}
+from llmopt_backend.tensor_archive import DTYPE_TAGS, TensorSpec, write_payloads
+
 SPECIAL_EMBED_SCALE = "llmopt.gemma4.embed_scale"
 SPECIAL_FULL_INV_FREQ = "llmopt.gemma4.full_attention_inv_freq"
 SPECIAL_SLIDING_INV_FREQ = "llmopt.gemma4.sliding_attention_inv_freq"
 
 
 @dataclass(frozen=True)
-class TensorSpec:
-    name: str
-    dtype_tag: int
-    dtype_name: str
-    shape: tuple[int, ...]
-    byte_length: int
+class TensorSource(TensorSpec):
     source_offset: int | None = None
     contents: bytes | None = None
-    output_offset: int = 0
-
-
-def align(value: int) -> int:
-    return (value + ALIGNMENT - 1) // ALIGNMENT * ALIGNMENT
 
 
 def f32_bytes(tensor: torch.Tensor) -> bytes:
     return tensor.detach().to(dtype=torch.float32, device="cpu").contiguous().numpy().tobytes()
 
 
-def gemma_reference_constants(config: Any) -> tuple[TensorSpec, ...]:
+def gemma_reference_constants(config: Any) -> tuple[TensorSource, ...]:
     """Create the scalar/rotary constants with llama.cpp's source precision."""
 
     from transformers.models.gemma4.modeling_gemma4 import Gemma4TextRotaryEmbedding
 
     rotary = Gemma4TextRotaryEmbedding(config, device="cpu")
     return (
-        TensorSpec(
+        TensorSource(
             name=SPECIAL_EMBED_SCALE,
             dtype_tag=0,
-            dtype_name="F32",
             shape=(),
             byte_length=4,
             contents=struct.pack("<f", math.sqrt(config.hidden_size)),
         ),
-        TensorSpec(
+        TensorSource(
             name=SPECIAL_FULL_INV_FREQ,
             dtype_tag=0,
-            dtype_name="F32",
             shape=tuple(rotary.full_attention_inv_freq.shape),
             byte_length=4 * rotary.full_attention_inv_freq.numel(),
             contents=f32_bytes(rotary.full_attention_inv_freq),
         ),
-        TensorSpec(
+        TensorSource(
             name=SPECIAL_SLIDING_INV_FREQ,
             dtype_tag=0,
-            dtype_name="F32",
             shape=tuple(rotary.sliding_attention_inv_freq.shape),
             byte_length=4 * rotary.sliding_attention_inv_freq.numel(),
             contents=f32_bytes(rotary.sliding_attention_inv_freq),
@@ -133,16 +101,15 @@ def gguf_suppress_token_ids(reader: Any) -> tuple[int, ...]:
 
 def write_augmented_archive(source: Path, destination: Path, config: Any) -> None:
     reader = GGUFReader(str(source), "r")
-    specs: list[TensorSpec] = []
+    specs: list[TensorSource] = []
     for tensor in reader.tensors:
         dtype_name = tensor.tensor_type.name
         if dtype_name not in DTYPE_TAGS:
             raise ValueError(f"unsupported GGUF tensor type {dtype_name}: {tensor.name}")
         specs.append(
-            TensorSpec(
+            TensorSource(
                 name=tensor.name,
                 dtype_tag=DTYPE_TAGS[dtype_name],
-                dtype_name=dtype_name,
                 shape=tuple(int(value) for value in reversed(tensor.shape)),
                 byte_length=int(tensor.n_bytes),
                 source_offset=int(tensor.data_offset),
@@ -151,37 +118,13 @@ def write_augmented_archive(source: Path, destination: Path, config: Any) -> Non
 
     specs.extend(gemma_reference_constants(config))
 
-    specs.sort(key=lambda spec: spec.name)
-    index_bytes = PREFIX.size + sum(
-        ENTRY.size + len(spec.name.encode()) + (8 * len(spec.shape)) + 16
-        for spec in specs
-    )
-    cursor = align(index_bytes)
-    laid_out: list[TensorSpec] = []
-    for spec in specs:
-        cursor = align(cursor)
-        laid_out.append(TensorSpec(**{**spec.__dict__, "output_offset": cursor}))
-        cursor += spec.byte_length
-
-    header = bytearray(PREFIX.pack(MAGIC, VERSION, 0, len(laid_out), align(index_bytes)))
-    for spec in laid_out:
-        name = spec.name.encode()
-        header.extend(ENTRY.pack(len(name), spec.dtype_tag, len(spec.shape), 0))
-        header.extend(name)
-        for dimension in spec.shape:
-            header.extend(U64.pack(dimension))
-        header.extend(U64.pack(spec.output_offset))
-        header.extend(U64.pack(spec.byte_length))
-    header.extend(b"\0" * (align(index_bytes) - len(header)))
-
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    with source.open("rb") as source_file, temporary.open("wb") as output:
-        output.write(header)
-        for spec in laid_out:
-            output.write(b"\0" * (spec.output_offset - output.tell()))
+    sources = {spec.name: spec for spec in specs}
+    with source.open("rb") as source_file:
+        def chunks(name: str):
+            spec = sources[name]
             if spec.contents is not None:
-                output.write(spec.contents)
-                continue
+                yield spec.contents
+                return
             assert spec.source_offset is not None
             source_file.seek(spec.source_offset)
             remaining = spec.byte_length
@@ -189,11 +132,10 @@ def write_augmented_archive(source: Path, destination: Path, config: Any) -> Non
                 chunk = source_file.read(min(8 * 1024 * 1024, remaining))
                 if not chunk:
                     raise EOFError(f"short GGUF payload for {spec.name}")
-                output.write(chunk)
+                yield chunk
                 remaining -= len(chunk)
-        output.flush()
-        os.fsync(output.fileno())
-    os.replace(temporary, destination)
+
+        write_payloads(specs, destination, chunks)
 
 
 def prepare_weight_archive(

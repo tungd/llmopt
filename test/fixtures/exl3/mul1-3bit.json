@@ -1,0 +1,15 @@
+{
+  "reference_repository": "https://github.com/turboderp-org/exllamav3",
+  "reference_revision": "cdc785db89e263e65e5849cb53e1ada156411414",
+  "reference_file": "tests/testlib/trellis.py",
+  "reference_sha256": "072b5233f0e1ec39615a70416a865ca3fbf3043669aa7dc9c5597cd132e8d45d",
+  "archive_sha256": "cb378ceca9af7fba3a5b113b22fa5a7c2fbd3b4a6eafa21767bc56f878204041",
+  "bits": 3,
+  "k": 128,
+  "n": 128,
+  "rows": 9,
+  "seed": 20261030,
+  "codebook": "mul1",
+  "fixture_kind": "synthetic valid packed trellis; not quantized model weights",
+  "staging_max_abs_error_vs_full_precision": 0.00018396011907512166
+}

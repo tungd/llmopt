@@ -13,10 +13,37 @@ from llmopt_backend import (
     bind_external_tensors,
     capture_from_fx,
 )
-from llmopt_backend.tensor_archive import ALIGNMENT, MAGIC, VERSION, write_archive
+from llmopt_backend.tensor_archive import (
+    ALIGNMENT, MAGIC, VERSION, TensorSpec, read_inventory, write_archive, write_payloads,
+)
 
 
 class TensorArchiveTests(unittest.TestCase):
+    def test_chunked_payloads_match_tensor_export_bytes(self) -> None:
+        tensors = {"weight": torch.arange(16, dtype=torch.float16),
+                   "scalar": torch.tensor(0.5, dtype=torch.bfloat16)}
+        specs = [TensorSpec("weight", 1, (16,), 32), TensorSpec("scalar", 2, (), 2)]
+        payloads = {"weight": tensors["weight"].numpy().tobytes(),
+                    "scalar": tensors["scalar"].view(torch.uint16).numpy().tobytes()}
+        with tempfile.TemporaryDirectory() as directory:
+            dense, chunked = Path(directory) / "dense", Path(directory) / "chunked"
+            write_archive(tensors, dense)
+            write_payloads(specs, chunked, lambda name: (payloads[name][:1], payloads[name][1:]))
+            self.assertEqual(dense.read_bytes(), chunked.read_bytes())
+            self.assertEqual(read_inventory(chunked), {
+                "scalar": ("bfloat16", ()), "weight": ("float16", (16,)),
+            })
+
+    def test_failed_stream_preserves_destination_and_removes_temporary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "weights"
+            path.write_bytes(b"original")
+            for chunks in ((b"a",), (b"abc",)):
+                with self.subTest(chunks=chunks), self.assertRaises(ValueError):
+                    write_payloads([TensorSpec("w", 1, (1,), 2)], path, lambda _: chunks)
+                self.assertEqual(path.read_bytes(), b"original")
+                self.assertEqual(list(path.parent.iterdir()), [path])
+
     def test_meta_tensors_with_equal_shapes_remain_distinct(self) -> None:
         first = torch.empty((4, 4), device="meta")
         second = torch.empty((4, 4), device="meta")

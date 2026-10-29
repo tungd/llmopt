@@ -1,10 +1,10 @@
 ---
 type: Decision
 title: 'Use llama.cpp as the primary performance target'
-description: 'Bring the model-neutral FX-to-native pipeline within plus or minus ten percent of llama.cpp on quantization-parity probe workloads.'
+description: 'Target at least 95 percent of the selected llama.cpp throughput with EXL3 canonical weights and separately recorded conversion quality.'
 tags: [decision, benchmark, llama.cpp, fx, gguf, ud-quant, compiler, mps]
 status: stable
-generated: { by: codex/gpt-5.6, at: '2026-08-26T20:17:55Z' }
+generated: { by: codex/gpt-6, at: '2026-10-29T18:39:51Z' }
 sources:
   - id: benchmark-protocol
     resource: /benchmarks/llama-cpp.md
@@ -25,12 +25,16 @@ sources:
 
 # Decision
 
-The primary external performance target is llama.cpp. For each accepted parity
-workload, the llmopt median must be within plus or minus ten percent of the
-corresponding llama.cpp median: `0.9x <= llmopt / llama.cpp <= 1.1x`. The
-current full-model workload is a two-token, no-cache forward over the same GGUF
-UD-quantized weights, with three llmopt warmups, ten timed llmopt executions,
-and `llama-bench -p 2 -n 0 -r 10` on the same Apple Silicon host.
+The primary external performance target is llama.cpp. On 2026-10-30 the user
+specified at least 95% of the chosen llama.cpp baseline's throughput and chose
+[EXL3 canonical weights](exl3-canonical-runtime.md), accepting approximate import
+conversion. Matching GGUF physical formats is no longer an execution constraint.
+Record the baseline build, model, quantization, KV policy, workload, and metric
+alongside the result; report conversion quality separately. There is no upper
+performance cap and no extra intermediate benchmark threshold.
+
+The previous +/-10% target and two-token same-GGUF protocol below describe
+historical work and are superseded as the current performance objective.
 
 This target does not authorize model-specific compiler paths. FX topology,
 typed operation semantics, captured shapes and dtypes, physical tensor layout,
@@ -62,10 +66,10 @@ llama-server SSE does not expose the llmopt token-ID instrumentation; the HTTP
 side comparison therefore retains timing and visible streamed output while
 preserving the existing token-parity observations for llmopt versus eager Q8.
 
-The 2026-08-27 LFM W4A16/Q4_0 comparison remains historical evidence. Current
-parity work uses GGUF mixed UD quantization as the weight-distribution contract;
+The 2026-08-27 LFM W4A16/Q4_0 comparison remains historical evidence. That historical
+parity work used GGUF mixed UD quantization as the weight-distribution contract;
 weight precision and KV precision remain independent backend choices.
 
-The plus or minus ten percent band is the user-declared performance target.
+The current user-declared target is at least 95% throughput; the older plus or minus ten percent band is historical.
 Benchmark receipts report exact measurements and deltas without adding another
 threshold.

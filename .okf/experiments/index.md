@@ -1,5 +1,7 @@
 # Experiments
 
+* [EXL3 first contraction slice](exp-0179-exl3-contraction-first-slice-2026-10-30.md) - exact upstream decoder parity, 25 complete-linear schedule cases, and stage/combined GPU timing.
+
 * [JetBrains Mellum 2.1 12B Unified Tile32_Affine Benchmark vs llama.cpp](exp-0178-mellum21-12b-tile32-affine-vs-llamacpp-2026-10-23.md) - empirical side-by-side verification of JetBrains Mellum 2.1 12B-A2.5B-Thinking at Q4 on llmopt (unified Tile32_Affine{4,8} mathematical format) versus llama.cpp (Q4_K_M GGUF) on Apple M4 Pro Metal. Identified and resolved 32-bit Metal ICB hardware offset truncation (>4GB) with zero-cost automatic direct dispatch fallback.
 
 * [Gemma 4 12B Occupancy-Aware Cost Model Calibration and 128-Token Autoregressive Benchmark](exp-0177-gemma4-occupancy-cost-model-and-x8-128token-benchmark-2026-10-07.md) - retired obsolete Q4 decode occupancy bypass in compiler cost model, recompiled Gemma 4 12B QAT bundle with 100% x8 tile selection (193/193 layers), and ran full 128-token benchmark on Apple M4 Pro reducing median latency from 79.78 ms to 48.54 ms (-39.2%) and raising throughput by +56.4%.

@@ -5,7 +5,7 @@ okf_version: '0.2'
 # llmopt: effect-driven tile compiler research
 
 The product boundary is a model-neutral PyTorch/Dynamo capture and a declared
-`model.llmopt` execution contract. The current Metal backend uses W4A16 weights
+`model.llmopt` execution contract. The intended canonical weight format is [EXL3](decisions/exl3-canonical-runtime.md); the first implementation slice is an independently exercised contraction. Full-model integration remains subsequent work. The current full-model Metal backend uses W4A16 weights
 plus grouped-Q8 KV/recurrent state; those formats are backend capabilities, not
 a built-in model profile or the target weight policy. GGUF with Unsloth Dynamic
 mixed quantization is the target weight-distribution path; FX capture, not a
@@ -22,13 +22,15 @@ not evidence of a second supported serving backend.
 ## Orientation
 
 * Current status and next priorities: see `CURRENT_STATUS.md` in the repository root.
-* [Architecture](architecture.md) - current Dynamo/FX to OCaml planning pipeline.
+* [Architecture](architecture.md) - current Dynamo/FX to OCaml pipeline, shared weight-archive IO, and direct linear-kernel emission.
 * [Complete OCaml serving goal](goal-serving-runtime.md) - requirement-by-requirement end state and evidence map.
 * [Probe models](probe-models.md) - model coverage without product defaults.
 * [LFM2.5 probe](target-lfm25.md) - hybrid probe facts and probe-only constants.
 * [Research tracking](tracking.md) - open questions, slices, and evidence status.
 
 ## Decisions
+
+* [EXL3 canonical runtime weights](decisions/exl3-canonical-runtime.md) - current weight-format direction; approximate conversion accepted, generated schedules target 95% of the chosen llama.cpp baseline.
 
 * [FX backend boundary](decisions/fx-backend.md) - why PyTorch owns graph capture.
 * [Effect planning](decisions/effect-planning.md) - why OCaml effects own staging.
@@ -67,6 +69,8 @@ not evidence of a second supported serving backend.
 * [EXL3, QuaRot, and SpinQuant](prior-art/exl3-quarot-hadamard.md) - Hadamard incoherence rotation and unified low-bit quantization analysis.
 
 ## Experiments and benchmarks
+
+* [EXL3 first contraction slice](experiments/exp-0179-exl3-contraction-first-slice-2026-10-30.md) - verified mul1 decoding and generated vector/matrix schedules; full-model integration follows.
 
 * [Bounded Q4 decode tile bandwidth](experiments/exp-0175-q4-decode-tile-bandwidth-2026-09-18.md) - two exact-parity x4/x8/x16 sweeps show shape-dependent wins; production selection unchanged.
 

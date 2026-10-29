@@ -5,6 +5,8 @@
    - Parametric Tile32_Affine (B in {4, 8}) unified affine contraction codegen
 *)
 
+module Writeback = Metal_q4_0_epilogue_codegen.Writeback
+
 let ( let* ) = Result.bind
 
 let tile32_affine_geometry ~target schema =
@@ -165,15 +167,10 @@ let tile32_affine_linear_f16_x8_kernel ?name ?(epilogue = Epilogue.none) ~target
     emit_tile32_affine_cluster_loop ~code_bits ~scale_offset ~minimum_offset
       ~quant_offset ~block_elements ~block_bytes ~in_ptr:"activation" ~acc_body
   in
+  let writeback = Writeback.of_epilogue epilogue in
   let flat =
     Printf.sprintf
-      {|
-kernel void %s(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+      {|%s
     uint gid [[thread_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]) {
@@ -217,33 +214,14 @@ kernel void %s(
 
   output += row * params.n;
 
-  if (lane == 0u && base_col < params.n) {
-    if (params.has_bias != 0u) {
-      device const half* bias_row = bias + row * params.n;
-      accumulator0 += float(bias_row[base_col]);
-      if (base_col + 1u < params.n) accumulator1 += float(bias_row[base_col + 1u]);
-      if (base_col + 2u < params.n) accumulator2 += float(bias_row[base_col + 2u]);
-      if (base_col + 3u < params.n) accumulator3 += float(bias_row[base_col + 3u]);
-      if (base_col + 4u < params.n) accumulator4 += float(bias_row[base_col + 4u]);
-      if (base_col + 5u < params.n) accumulator5 += float(bias_row[base_col + 5u]);
-      if (base_col + 6u < params.n) accumulator6 += float(bias_row[base_col + 6u]);
-      if (base_col + 7u < params.n) accumulator7 += float(bias_row[base_col + 7u]);
-    }
-    output[base_col] = half(accumulator0);
-    if (base_col + 1u < params.n) output[base_col + 1u] = half(accumulator1);
-    if (base_col + 2u < params.n) output[base_col + 2u] = half(accumulator2);
-    if (base_col + 3u < params.n) output[base_col + 3u] = half(accumulator3);
-    if (base_col + 4u < params.n) output[base_col + 4u] = half(accumulator4);
-    if (base_col + 5u < params.n) output[base_col + 5u] = half(accumulator5);
-    if (base_col + 6u < params.n) output[base_col + 6u] = half(accumulator6);
-    if (base_col + 7u < params.n) output[base_col + 7u] = half(accumulator7);
-  }
+%s
 }
 |}
-      kernel_name block_elements block_bytes cluster_loop
+      (Writeback.header ~name:kernel_name writeback) block_elements block_bytes cluster_loop
+    (Writeback.single_row ~row:"row" ~columns:8 writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then Ok flat
-  else Metal_q4_0_epilogue_codegen.q4_0_x8_digest_of_flat ~name:kernel_name epilogue flat
+  Ok flat
+
 
 let emit_tile32_affine_m16_k_loop ~code_bits ~scale_offset ~minimum_offset
     ~quant_offset ~block_elements ~block_bytes ~row_blocks_var =
@@ -323,15 +301,10 @@ let tile32_affine_linear_f16_m16_kernel ?name ?(epilogue = Epilogue.none) ~targe
     emit_tile32_affine_m16_k_loop ~code_bits ~scale_offset ~minimum_offset
       ~quant_offset ~block_elements ~block_bytes ~row_blocks_var:"row_blocks"
   in
+  let writeback = Writeback.of_epilogue epilogue in
   let flat =
     Printf.sprintf
-      {|
-kernel void %s(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+      {|%s
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
@@ -359,22 +332,14 @@ kernel void %s(
     acc[r] = simd_sum(acc[r]);
   }
 
-  if (lane == 0u) {
-    const float b_val = (params.has_bias != 0u) ? float(bias[column]) : 0.0f;
-    #pragma unroll
-    for (uint r = 0; r < 16; ++r) {
-      if (row_base + r < params.m) {
-        output[(row_base + r) * params.n + column] = half(acc[r] + b_val);
-      }
-    }
-  }
+%s
 }
 |}
-      kernel_name block_elements block_bytes k_loop
+      (Writeback.header ~name:kernel_name writeback) block_elements block_bytes k_loop
+    (Writeback.row_block ~rows:16 ~row_guard:"row_base" writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then Ok flat
-  else
-    Metal_q4_0_epilogue_codegen.q4_0_m16_digest_of_flat ~name:kernel_name epilogue flat
+  Ok flat
+
 
 let tile32_affine_linear_f16_m16_add_kernel ~name ~target schema =
   let* ( code_bits,
@@ -456,15 +421,10 @@ let tile32_affine_linear_f16_m32_kernel ?name ?(epilogue = Epilogue.none) ~targe
     emit_tile32_affine_m16_k_loop ~code_bits ~scale_offset ~minimum_offset
       ~quant_offset ~block_elements ~block_bytes ~row_blocks_var:"row_blocks"
   in
+  let writeback = Writeback.of_epilogue epilogue in
   let flat =
     Printf.sprintf
-      {|
-kernel void %s(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+      {|%s
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
@@ -495,22 +455,14 @@ kernel void %s(
     acc[r] = simd_sum(acc[r]);
   }
 
-  if (lane == 0u) {
-    const float b_val = (params.has_bias != 0u) ? float(bias[column]) : 0.0f;
-    #pragma unroll
-    for (uint r = 0; r < 16; ++r) {
-      if (sub_row_base + r < params.m) {
-        output[(sub_row_base + r) * params.n + column] = half(acc[r] + b_val);
-      }
-    }
-  }
+%s
 }
 |}
-      kernel_name block_elements block_bytes k_loop
+      (Writeback.header ~name:kernel_name writeback) block_elements block_bytes k_loop
+    (Writeback.row_block ~rows:16 ~row_guard:"sub_row_base" writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then Ok flat
-  else
-    Metal_q4_0_epilogue_codegen.q4_0_m32_digest_of_flat ~name:kernel_name epilogue flat
+  Ok flat
+
 
 let tile32_affine_linear_f16_m32_add_kernel ~name ~target schema =
   let* ( code_bits,

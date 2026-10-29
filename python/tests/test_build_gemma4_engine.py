@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import torch
+import numpy as np
+from gguf import GGUFWriter, GGMLQuantizationType
 from transformers import Gemma4TextConfig
 
 from build_gemma4_engine import (
@@ -21,7 +23,9 @@ from build_gemma4_engine import (
     preserve_reference_constant_precision,
     retain_diagnostic_hidden_output,
     retain_layer_zero_diagnostic_outputs,
+    write_augmented_archive,
 )
+from llmopt_backend.tensor_archive import read_inventory
 
 
 def gemma_config() -> Gemma4TextConfig:
@@ -48,6 +52,34 @@ def gemma_config() -> Gemma4TextConfig:
 
 
 class BuildGemma4EngineTests(unittest.TestCase):
+    def test_augmented_archive_preserves_gguf_bytes_and_f32_constants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = Path(directory) / "source.gguf", Path(directory) / "weights"
+            payload = np.arange(18, dtype=np.uint8).reshape(1, 18)
+            writer = GGUFWriter(source, "test")
+            writer.add_tensor("weight", payload, raw_dtype=GGMLQuantizationType.Q4_0)
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file()
+            writer.close()
+            write_augmented_archive(source, destination, gemma_config())
+            inventory = read_inventory(destination)
+            self.assertEqual(inventory["weight"], ("Q4_0", (1, 32)))
+            contents = destination.read_bytes()
+            _, _, _, count, _ = struct.unpack_from("<8sHHIQ", contents)
+            cursor = 24
+            expected = {spec.name: spec.contents for spec in gemma_reference_constants(gemma_config())}
+            expected["weight"] = payload.tobytes()
+            for _ in range(count):
+                length, _, rank, _ = struct.unpack_from("<IBBH", contents, cursor)
+                cursor += 8
+                name = contents[cursor:cursor + length].decode()
+                cursor += length + 8 * rank
+                offset, size = struct.unpack_from("<QQ", contents, cursor)
+                cursor += 16
+                self.assertEqual(contents[offset:offset + size], expected.pop(name))
+            self.assertEqual(expected, {})
+
     def test_existing_augmented_weights_can_be_reused_without_rewriting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -171,7 +203,7 @@ class BuildGemma4EngineTests(unittest.TestCase):
             SPECIAL_FULL_INV_FREQ,
             SPECIAL_SLIDING_INV_FREQ,
         })
-        self.assertTrue(all(spec.dtype_name == "F32" for spec in constants.values()))
+        self.assertTrue(all(spec.dtype_name == "float32" for spec in constants.values()))
         self.assertTrue(all(spec.dtype_tag == 0 for spec in constants.values()))
         self.assertEqual(constants[SPECIAL_FULL_INV_FREQ].shape, (256,))
         self.assertEqual(constants[SPECIAL_FULL_INV_FREQ].byte_length, 1024)

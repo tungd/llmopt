@@ -451,45 +451,28 @@ kernel void llmopt_q4_0_linear_f16_m4_add(
           ~block_bytes)
 
 let q4_0_x16_epilogue_kernel ~name ~epilogue ~target schema =
-  q4_0_decode_epilogue_kernel ~columns:16 ~label:"x16"
-    ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
-                    ~block_bytes ->
-      emit_q4_0_linear_f16_x16 ~split_k:1 ~scale_offset ~quant_offset ~zero
-        ~block_elements ~block_bytes ())
+  q4_0_decode_epilogue_kernel ~label:"x16"
+    ~emit:(fun ~name ~writeback -> emit_q4_0_linear_f16_x16 ~split_k:1 ~name ~writeback)
     ~name ~epilogue ~target schema
 
 let q4_0_x8_epilogue_kernel ~name ~epilogue ~target schema =
-  q4_0_decode_epilogue_kernel ~columns:8 ~label:"x8"
-    ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
-                    ~block_bytes ->
-      emit_q4_0_linear_f16_x8 ~split_k:1 ~scale_offset ~quant_offset ~zero
-        ~block_elements ~block_bytes ())
+  q4_0_decode_epilogue_kernel ~label:"x8"
+    ~emit:(fun ~name ~writeback -> emit_q4_0_linear_f16_x8 ~split_k:1 ~name ~writeback)
     ~name ~epilogue ~target schema
 
 let q4_0_x4_epilogue_kernel ~name ~epilogue ~target schema =
-  q4_0_decode_epilogue_kernel ~columns:4 ~label:"x4"
-    ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
-                    ~block_bytes ->
-      emit_q4_0_linear_f16_x4 ~scale_offset ~quant_offset ~zero ~block_elements
-        ~block_bytes ())
+  q4_0_decode_epilogue_kernel ~label:"x4"
+    ~emit:(fun ~name ~writeback -> emit_q4_0_linear_f16_x4 ~name ~writeback)
     ~name ~epilogue ~target schema
 
 let q4_0_m16_epilogue_kernel ~name ~epilogue ~target schema =
-  q4_0_decode_epilogue_kernel ~rows:16 ~row_guard:"row_base" ~columns:16
-    ~label:"m16"
-    ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
-                    ~block_bytes ->
-      emit_q4_0_linear_f16_m16 ~scale_offset ~quant_offset ~zero ~block_elements
-        ~block_bytes ())
+  q4_0_decode_epilogue_kernel ~label:"m16"
+    ~emit:(fun ~name ~writeback -> emit_q4_0_linear_f16_m16 ~name ~writeback)
     ~name ~epilogue ~target schema
 
 let q4_0_m32_epilogue_kernel ~name ~epilogue ~target schema =
-  q4_0_decode_epilogue_kernel ~rows:16 ~row_guard:"sub_row_base" ~columns:16
-    ~label:"m32"
-    ~emit_flat:(fun ~scale_offset ~quant_offset ~zero ~block_elements
-                    ~block_bytes ->
-      emit_q4_0_linear_f16_m32 ~scale_offset ~quant_offset ~zero ~block_elements
-        ~block_bytes ())
+  q4_0_decode_epilogue_kernel ~label:"m32"
+    ~emit:(fun ~name ~writeback -> emit_q4_0_linear_f16_m32 ~name ~writeback)
     ~name ~epilogue ~target schema
 
 let q4_0_multi_linear_f16_x8_kernel ~name ~epilogue ?(num_slots = 2) ~target

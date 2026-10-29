@@ -1,5 +1,14 @@
 # Update Log
 
+## 2026-10-30
+
+- [EXL3 first-slice results](experiments/exp-0179-exl3-contraction-first-slice-2026-10-30.md): exact 65,536-value mul1 codebook and packed-weight parity, 25 complete-linear GPU cases, stage timings, and passing full tests (95 Python tests plus native checks). Full-model EXL3 integration and llama.cpp comparison are subsequent work.
+
+- Recorded the user-approved EXL3 canonical weight direction, superseding the affine lossless-conversion constraint; added the first schema/archive, reference fixture, and generated Metal contraction slice.
+
+* **Shared archive IO and direct linear-kernel emission** ([architecture](architecture.md)): Consolidated the PyTorch/Gemma archive writers and Mellum inventory reader in `python/llmopt_backend/tensor_archive.py`, retaining ABI-v1, deterministic alignment, bounded streaming, atomic replacement, and Gemma FP32 constants. Q4_0/Tile32_Affine headers and writebacks are now constructed directly; x8/x16 contraction emitters share buffer, accumulator, and reduction generation. Removed shader-text reparsing and retained x16 macro definitions previously discarded by the splice. Tactic selection and arithmetic order are unchanged.
+* **Verification and reduction**: Against `77b4748`, production code shrank by 542 lines; including regression tests, code shrank by 463 lines. `ninja -f ninja.build -j1 all test` passes (95 Python tests and native tests including Metal device parity). Original/refactored dense and GGUF archive fixtures are byte-identical. Of 70 shader snapshots, 64 are byte-identical, one differs only in whitespace, and five differ only by retaining the x16 macro preamble/cleanup; dedicated Metal compilation tests cover x16 identity and compound epilogues. No full-model benchmark was run. Local logs, receipts, source snapshots, and comparison details are under `_artifacts/refactor-surface/` in the implementation worktree.
+
 ## 2026-10-26
 * **Dual-Buffer MoE SwiGLU Staging & Prefill Batch Tiling $M=32$ Scaling ([exp-0178](experiments/exp-0178-mellum21-12b-tile32-affine-vs-llamacpp-2026-10-23.md))**:
   - **Lever A — Dual-Buffer Weight SRAM Staging for MoE SwiGLU (`lib/metal_block_codegen.ml`)**: Staged both Gate ($W_0$) and Up ($W_1$) weights simultaneously in threadgroup SRAM (`b_tile0[32][20]`, `b_tile1[32][20]`). Merged the separate K-sub loops into a single pipelined loop, halving threadgroup barrier frequency (from 4 to 2 barriers per K-step) and allowing the GPU instruction scheduler to overlap the independent MMA operations of Gate and Up projections with shared activation loads (`a0`, `a1`).

@@ -902,7 +902,7 @@ let run () =
       output_string oc src;
       close_out oc;
       let cmd =
-        Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s >/dev/null 2>&1"
+        Printf.sprintf "xcrun -sdk macosx metal -c %s -o %s"
           (Filename.quote tmp_src) (Filename.quote tmp_air)
       in
       let ok = Sys.command cmd = 0 in
@@ -910,6 +910,26 @@ let run () =
       (try Sys.remove tmp_air with _ -> ());
       ok
   in
+  (* A complete x16 epilogue must retain its macro definitions. The former
+     header/tail splice dropped them while leaving calls in the kernel. *)
+  let q4_source =
+    lower_linear_add ~quant:Ir.Dtype.Q4_0 ~m:1 ~n:62 ~k:32 ~tag:"x16_base"
+    |> Metal.Program.source
+  in
+  List.iter (fun epilogue ->
+    let source =
+      Metal_block_codegen.q4_0_x16_epilogue_kernel ~name:"test_x16_epilogue"
+        ~epilogue ~target:Target_hardware.default q4_0_schema |> Result.get_ok
+    in
+    assert (compile_msl_string (q4_source ^ source)))
+    [Epilogue.none; Epilogue.canonicalize gemma_chain];
+  let affine4 = Block_schema.tile32_affine_schema ~bits:4 |> Result.get_ok in
+  let row_bias =
+    Metal_block_codegen.tile32_affine_linear_f16_x8_kernel
+      ~target:Target_hardware.default affine4 |> Result.get_ok
+  in
+  expect_contains "multi-row flat bias retains its row offset" row_bias
+    "device const half* bias_row = bias + row * params.n;";
   List.iter
     (fun (quant, label, bits) ->
       let prog_gen =

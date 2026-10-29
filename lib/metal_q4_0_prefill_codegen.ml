@@ -1,15 +1,9 @@
 open Metal_q4_0_epilogue_codegen
 
 let emit_q4_0_linear_f16_m16 ?(name = "llmopt_q4_0_linear_f16_m16")
-    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
+    ?(writeback = Writeback.Bias) ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes () =
-  let flat = Printf.sprintf {|
-kernel void llmopt_q4_0_linear_f16_m16(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+  let flat = Printf.sprintf {|%s
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
@@ -71,28 +65,17 @@ kernel void llmopt_q4_0_linear_f16_m16(
     acc[r] = simd_sum(acc[r]);
   }
 
-  if (lane == 0u) {
-    const float b_val = (params.has_bias != 0u) ? float(bias[column]) : 0.0f;
-    #pragma unroll
-    for (uint r = 0; r < 16; ++r) {
-      if (row_base + r < params.m) {
-        output[(row_base + r) * params.n + column] = half(acc[r] + b_val);
-      }
-    }
-  }
+%s
 }
 |}
+    (Writeback.header ~name:name writeback)
     block_elements block_bytes block_bytes scale_offset quant_offset
     block_elements zero zero block_bytes scale_offset quant_offset
     quant_offset zero block_elements
+    (Writeback.row_block ~rows:16 ~row_guard:"row_base" writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then flat
-  else
-    match q4_0_m16_digest_of_flat ~name epilogue flat with
-    | Ok text -> text
-    | Error message ->
-        invalid_arg
-          (Printf.sprintf "Metal_block_codegen q4_0_linear_f16_m16: %s" message)
+  flat
+
 
 let emit_q4_0_linear_f16_m16_add ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =
@@ -180,15 +163,9 @@ kernel void llmopt_q4_0_linear_f16_m16_add(
     quant_offset zero block_elements
 
 let emit_q4_0_linear_f16_m32 ?(name = "llmopt_q4_0_linear_f16_m32")
-    ?(epilogue = Epilogue.none) ~scale_offset ~quant_offset ~zero ~block_elements
+    ?(writeback = Writeback.Bias) ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes () =
-  let flat = Printf.sprintf {|
-kernel void llmopt_q4_0_linear_f16_m32(
-    device const half* input [[buffer(0)]],
-    device const uchar* weight [[buffer(1)]],
-    device const half* bias [[buffer(2)]],
-    device half* output [[buffer(3)]],
-    constant QuantLinearParams& params [[buffer(4)]],
+  let flat = Printf.sprintf {|%s
     uint gid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]) {
   const uint simd_idx = gid >> 5u;
@@ -253,28 +230,17 @@ kernel void llmopt_q4_0_linear_f16_m32(
     acc[r] = simd_sum(acc[r]);
   }
 
-  if (lane == 0u) {
-    const float b_val = (params.has_bias != 0u) ? float(bias[column]) : 0.0f;
-    #pragma unroll
-    for (uint r = 0; r < 16; ++r) {
-      if (sub_row_base + r < params.m) {
-        output[(sub_row_base + r) * params.n + column] = half(acc[r] + b_val);
-      }
-    }
-  }
+%s
 }
 |}
+    (Writeback.header ~name:name writeback)
     block_elements block_bytes block_bytes scale_offset quant_offset
     block_elements zero zero block_bytes scale_offset quant_offset
     quant_offset zero block_elements
+    (Writeback.row_block ~rows:16 ~row_guard:"sub_row_base" writeback)
   in
-  if Epilogue.equal epilogue Epilogue.none then flat
-  else
-    match q4_0_m32_digest_of_flat ~name epilogue flat with
-    | Ok text -> text
-    | Error message ->
-        invalid_arg
-          (Printf.sprintf "Metal_block_codegen q4_0_linear_f16_m32: %s" message)
+  flat
+
 
 let emit_q4_0_linear_f16_m32_add ~scale_offset ~quant_offset ~zero ~block_elements
     ~block_bytes =
