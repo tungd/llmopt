@@ -65,6 +65,10 @@ for variant in variants {
             let command = queue.makeCommandBuffer()!, e = command.makeComputeCommandEncoder()!
             e.setComputePipelineState(p)
             for (i,b) in buffers.enumerated() { e.setBuffer(b, offset: 0, index: i) }
+            if count != 65536 || buffers.count == 2 {
+                let params: [UInt32] = [1, UInt32(n), UInt32(k), UInt32(manifest["bits"] as! Int), 0, 0, 1, 0]
+                params.withUnsafeBytes { e.setBytes($0.baseAddress!, length: $0.count, index: 2) }
+            }
             e.dispatchThreads(MTLSize(width: count, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             e.endEncoding()
             _ = finish(command)
@@ -85,8 +89,9 @@ for variant in variants {
                     let e = command.makeComputeCommandEncoder()!
                     e.setComputePipelineState(pipeline)
                     for (i,b) in buffers.enumerated() { e.setBuffer(b, offset: 0, index: i) }
-                    var count = UInt32(m)
-                    e.setBytes(&count, length: 4, index: 3)
+                    let params: [UInt32] = [UInt32(m), UInt32(n), UInt32(k), UInt32(manifest["bits"] as! Int), 0, 0, 1, 0]
+                    params.withUnsafeBytes { e.setBytes($0.baseAddress!, length: $0.count, index: 4) }
+                    e.setBuffer(packed, offset: 0, index: 3)
                     e.dispatchThreadgroups(grid, threadsPerThreadgroup: MTLSize(width: group, height: 1, depth: 1))
                     e.endEncoding()
                 }

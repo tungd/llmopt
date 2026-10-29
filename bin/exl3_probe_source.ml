@@ -4,6 +4,8 @@ let write path contents =
   Fun.protect ~finally:(fun () -> close_out c) (fun () -> output_string c contents)
 
 let () =
+  if Array.length Sys.argv = 3 && Sys.argv.(1) = "--runtime-source" then
+    (write Sys.argv.(2) Metal_exl3_codegen.runtime_source; exit 0);
   if Array.length Sys.argv <> 3 then (prerr_endline "usage: llmopt-exl3-probe-source archive output-directory"; exit 2);
   let archive = get (Weight_archive.of_file Sys.argv.(1)) in
   let bound = get (Exl3.Archive.bind archive ~prefix:"weight") in

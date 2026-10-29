@@ -9,6 +9,7 @@ module Dtype = struct
     | IQ4_XS
     | Tile32_Affine4
     | Tile32_Affine8
+    | Exl3_4
 
   type t =
     | Float32
@@ -31,6 +32,7 @@ module Dtype = struct
     | IQ4_XS -> "IQ4_XS"
     | Tile32_Affine4 -> "Tile32_Affine4"
     | Tile32_Affine8 -> "Tile32_Affine8"
+    | Exl3_4 -> "EXL3_4"
 
   let quant_of_string = function
     | "Q8_0" | "q8_0" -> Some Q8_0
@@ -44,6 +46,7 @@ module Dtype = struct
         Some Tile32_Affine4
     | "Tile32_Affine8" | "tile32_affine8" | "TILE32_AFFINE8" ->
         Some Tile32_Affine8
+    | "EXL3_4" | "exl3_4" -> Some Exl3_4
     | _ -> None
 
   let to_string = function
@@ -69,7 +72,7 @@ module Tensor_layout = struct
     | Dtype.Q8_0 | Dtype.Q5_0 | Dtype.Q4_0 | Dtype.Tile32_Affine4
     | Dtype.Tile32_Affine8 ->
         32
-    | Dtype.Q4_K | Dtype.Q5_K | Dtype.Q6_K | Dtype.IQ4_XS -> 256
+    | Dtype.Q4_K | Dtype.Q5_K | Dtype.Q6_K | Dtype.IQ4_XS | Dtype.Exl3_4 -> 256
 
   let block_bytes = function
     | Dtype.Q8_0 -> 34
@@ -81,6 +84,7 @@ module Tensor_layout = struct
     | Dtype.IQ4_XS -> 136
     | Dtype.Tile32_Affine4 -> 20
     | Dtype.Tile32_Affine8 -> 36
+    | Dtype.Exl3_4 -> 128
 
   let physical_bytes layout shape =
     let elements = Tensor_shape.numel shape in

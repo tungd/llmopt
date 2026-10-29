@@ -19,7 +19,11 @@ server are implemented to different levels of evidence. The current evidence is
 strong for selected probe models and Metal device fixtures, not yet a universal
 model-adoption or backend-portability claim.
 
-The current branch is `feat/unified-optimizing-compiler`. Historical experiment
+The current implementation is developed on `codex/reduce-code-surface`.
+EXL3 is the canonical quantized weight direction; typed model bindings and a
+bounded GGUF converter now execute ordinary and expert projections in native
+fixtures. See `.okf/experiments/exp-0180-exl3-mellum-integration-2026-10-30.md`
+for conversion and full-model measurement evidence. Historical experiment
 records and `direction.md` describe earlier states and must not be read as the
 live contract when they disagree with source or this note.
 

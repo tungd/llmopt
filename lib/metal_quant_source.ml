@@ -116,7 +116,7 @@ let quant_source ~target = function
     | Ir.Dtype.Q4_K
     | Ir.Dtype.Q5_K
     | Ir.Dtype.Q6_K
-    | Ir.Dtype.IQ4_XS ) as quant ->
+    | Ir.Dtype.IQ4_XS | Ir.Dtype.Exl3_4 ) as quant ->
       Error
         (Printf.sprintf
            "legacy GGUF format %s must be transcoded to Tile32_Affine{4,8} before Metal codegen"

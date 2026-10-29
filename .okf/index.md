@@ -5,7 +5,7 @@ okf_version: '0.2'
 # llmopt: effect-driven tile compiler research
 
 The product boundary is a model-neutral PyTorch/Dynamo capture and a declared
-`model.llmopt` execution contract. The intended canonical weight format is [EXL3](decisions/exl3-canonical-runtime.md); the first implementation slice is an independently exercised contraction. Full-model integration remains subsequent work. The current full-model Metal backend uses W4A16 weights
+`model.llmopt` execution contract. The intended canonical weight format is [EXL3](decisions/exl3-canonical-runtime.md); typed ordinary/MoE bindings and a bounded GGUF converter now accompany the generated contraction schedules. The [Mellum integration experiment](experiments/exp-0180-exl3-mellum-integration-2026-10-30.md) records model-specific evidence. Existing full-model Metal packages use W4A16 weights
 plus grouped-Q8 KV/recurrent state; those formats are backend capabilities, not
 a built-in model profile or the target weight policy. GGUF with Unsloth Dynamic
 mixed quantization is the target weight-distribution path; FX capture, not a
@@ -69,6 +69,8 @@ not evidence of a second supported serving backend.
 * [EXL3, QuaRot, and SpinQuant](prior-art/exl3-quarot-hadamard.md) - Hadamard incoherence rotation and unified low-bit quantization analysis.
 
 ## Experiments and benchmarks
+
+* [Mellum EXL3 integration](experiments/exp-0180-exl3-mellum-integration-2026-10-30.md) - GGUF conversion, typed ordinary/MoE runtime binding, and serialized model comparison.
 
 * [EXL3 first contraction slice](experiments/exp-0179-exl3-contraction-first-slice-2026-10-30.md) - verified mul1 decoding and generated vector/matrix schedules; full-model integration follows.
 

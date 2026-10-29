@@ -984,6 +984,7 @@ type linear_info = {
 }
 
 let supported_quant = function
+  | Ir.Dtype.Exl3_4 -> false
   | Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
   | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_0 | Ir.Dtype.IQ4_XS
   | Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8 -> true

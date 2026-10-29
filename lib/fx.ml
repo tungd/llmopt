@@ -119,6 +119,7 @@ let dtype_of_tag = function
   | 14 -> Ok (Ir.Dtype.Quant IQ4_XS)
   | 15 -> Ok (Ir.Dtype.Quant Tile32_Affine4)
   | 16 -> Ok (Ir.Dtype.Quant Tile32_Affine8)
+  | 17 -> Ok (Ir.Dtype.Quant Exl3_4)
   | tag -> Error (Printf.sprintf "unknown binary FX dtype tag: %d" tag)
 
 let read_binary_binding reader =

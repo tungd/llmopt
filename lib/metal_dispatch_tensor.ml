@@ -205,6 +205,9 @@ let update_slice_kernel destination source output =
            (Ir.Dtype.to_string output_dtype))
 
 let dispatch_alias_movement state ~input ~output =
+  let state = match Metal_execution_state.Value_map.find_opt (Ir.Value.id input) state.Metal_execution_state.tensor_keys with
+    | None -> state
+    | Some key -> {state with tensor_keys = Metal_execution_state.Value_map.add (Ir.Value.id output) key state.tensor_keys} in
   let* buffer = Metal_execution_state.find_value state input in
   let* () = Metal_execution_state.validate_buffer output buffer in
   Ok (Metal_execution_state.bind_value state output buffer, [])

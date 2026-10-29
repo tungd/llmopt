@@ -2280,6 +2280,7 @@ let linear_kernels ~target schema =
   match Block_schema.quant_type schema with
   | Some (Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8) ->
       tile32_affine_linear ~target schema
+  | Some Ir.Dtype.Exl3_4 -> Error "EXL3 requires rotated contraction lowering"
   | Some Ir.Dtype.Q4_0 -> Metal_q4_0_codegen.q4_0_linear ~target schema
   | Some
       ( Ir.Dtype.Q8_0
@@ -2303,6 +2304,7 @@ let linear_kernels ~target schema =
 
 let qkv_kernels ~target schema =
   match Block_schema.quant_type schema with
+  | Some Ir.Dtype.Exl3_4 -> Error "EXL3 requires rotated contraction lowering"
   | Some Ir.Dtype.Q4_0 -> Metal_q4_0_codegen.q4_0_qkv ~target schema
   | Some (Ir.Dtype.Tile32_Affine4 | Ir.Dtype.Tile32_Affine8) ->
       tile32_affine_qkv ~target schema

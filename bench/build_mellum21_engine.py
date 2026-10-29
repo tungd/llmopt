@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Mellum 2.1 12B target engine using unified Tile32_Affine runtime format."""
+"""Build Mellum 2.1 from a typed archive, including canonical EXL3 weights."""
 
 from __future__ import annotations
 

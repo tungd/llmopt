@@ -34,8 +34,9 @@ SIMD mapping, tile geometry, staging, and fusion. Packed decode is shared.
 
 This supersedes the previous Tile32_Affine canonical **weight-format** choice.
 Existing affine/GGUF execution paths remain during migration. This decision does
-not change KV-cache representation, introduce an EXL3 encoder, or claim that
-current full-model packages execute EXL3.
+not change KV-cache representation. The subsequent integration adds an approximate
+GGUF encoder and explicit ordinary/expert runtime binding; see the
+[Mellum integration experiment](/experiments/exp-0180-exl3-mellum-integration-2026-10-30.md).
 
 # First implementation slice
 
@@ -79,3 +80,18 @@ mul1 codebook outputs and every fixture weight exactly, then checks the complete
 linear result against a stage-aware independent reference. GPU timings separate
 input transform, contraction, output transform, and their combined command.
 Small repeated fixtures are cache-resident tests, not DRAM or full-model claims.
+
+# Model integration
+
+The canonical model archive uses dtype tag 17 (`EXL3_4`) for logical `[N,K]`
+and `[E,N,K]` weights with the same `.exl3`, `.suh`, and `.svh` companions.
+The original component-only fixture representation remains supported. Runtime
+archive checks reject mismatched descriptors, payload lengths, and scale shapes.
+One projection interpreter serves ordinary and indexed expert contractions.
+
+`bench/convert_gguf_exl3.py` converts aligned projections from GGUF with bounded
+Metal requests. Its lookahead encoder is approximate and uncalibrated; it does
+not reproduce the upstream optimizer. Dense embeddings/norms/routers remain
+dense. The user selected the existing self-contained compiled bundle, rather
+than embedding weights into one executable. Full-model throughput is recorded
+separately from conversion error and upstream-reference arithmetic checks.

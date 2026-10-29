@@ -779,6 +779,7 @@ module Transcode = struct
   let to_tile32_affine (quant : Weight_archive.Dtype.quant_type) (src : bytes) :
       ([ `Affine4 of bytes | `Affine8 of bytes ], string) result =
     match quant with
+    | Weight_archive.Dtype.Exl3_4 -> Error "EXL3 conversion requires its scales and rotations"
     | Weight_archive.Dtype.Q4_0 ->
         Result.map (fun b -> `Affine4 b) (q4_0_to_tile32_affine4 src)
     | Weight_archive.Dtype.Q4_K ->
@@ -852,7 +853,8 @@ module Transcode = struct
     let len = Bytes.length src in
     let block_bytes = Weight_archive.Dtype.bytes_per_block quant in
     let block_elems = Weight_archive.Dtype.block_size quant in
-    if len mod block_bytes <> 0 then
+    if quant = Weight_archive.Dtype.Exl3_4 then Error "EXL3 is not a GGUF block format"
+    else if len mod block_bytes <> 0 then
       Error
         (Printf.sprintf "input length %d is not a multiple of %s block size %d"
            len
@@ -862,6 +864,7 @@ module Transcode = struct
       let num_blocks = len / block_bytes in
       let out = Array.make (num_blocks * block_elems) 0.0 in
       (match quant with
+      | Weight_archive.Dtype.Exl3_4 -> assert false (* rejected above *)
       | Weight_archive.Dtype.Q4_0 ->
           for blk = 0 to num_blocks - 1 do
             let off = blk * q4_0_block_bytes in
@@ -1120,7 +1123,7 @@ module Transcode = struct
         | Weight_archive.Dtype.Q5_0 | Weight_archive.Dtype.Q5_K ->
             prefer_4bit || rotate_fwht32
         | Weight_archive.Dtype.Q6_K | Weight_archive.Dtype.Q8_0
-        | Weight_archive.Dtype.Tile32_Affine8 ->
+        | Weight_archive.Dtype.Tile32_Affine8 | Weight_archive.Dtype.Exl3_4 ->
             prefer_4bit
       in
       if use_4bit then
@@ -1170,7 +1173,7 @@ let predict_transcoded_layout ?(rotate_fwht32 = false) ?(prefer_4bit = false)
           | Weight_archive.Dtype.Tile32_Affine4 -> true
           | Weight_archive.Dtype.Q8_0 | Weight_archive.Dtype.Q5_0
           | Weight_archive.Dtype.Q5_K | Weight_archive.Dtype.Q6_K
-          | Weight_archive.Dtype.IQ4_XS | Weight_archive.Dtype.Tile32_Affine8 -> false
+          | Weight_archive.Dtype.IQ4_XS | Weight_archive.Dtype.Tile32_Affine8 | Weight_archive.Dtype.Exl3_4 -> false
         else
           match quant with
           | Weight_archive.Dtype.Q4_0 | Weight_archive.Dtype.Q4_K
@@ -1178,7 +1181,7 @@ let predict_transcoded_layout ?(rotate_fwht32 = false) ?(prefer_4bit = false)
           | Weight_archive.Dtype.Q5_0 | Weight_archive.Dtype.Q5_K ->
               prefer_4bit || rotate_fwht32
           | Weight_archive.Dtype.Q6_K | Weight_archive.Dtype.Q8_0
-          | Weight_archive.Dtype.Tile32_Affine8 -> prefer_4bit
+          | Weight_archive.Dtype.Tile32_Affine8 | Weight_archive.Dtype.Exl3_4 -> prefer_4bit
       in
       let total_elements = List.fold_left ( * ) 1 info.shape in
       if total_elements mod 32 <> 0 then

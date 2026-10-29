@@ -50,4 +50,23 @@ let () =
       check (rejects (Exl3.Archive.bind bad ~prefix:"weight")) "wrong scale contract accepted"
     ) [Weight_archive.Dtype.F32, [Exl3.k (Exl3.Archive.storage bound)]; Weight_archive.Dtype.F16, [1]]
   ) ["test/fixtures/exl3/mul1-4bit.llmopt"; "test/fixtures/exl3/mul1-3bit.llmopt"];
+  let source = get (Weight_archive.of_file "test/fixtures/exl3/mul1-4bit.llmopt") in
+  let canonical = Weight_archive.tensors source |> List.map (fun tensor ->
+    if Weight_archive.Tensor.name tensor = "weight.trellis" then
+      Weight_archive.Tensor.create ~name:"weight" ~dtype:(Weight_archive.Dtype.Quant Ir.Dtype.Exl3_4)
+        ~shape:[256;128] ~offset:(Weight_archive.Tensor.offset tensor)
+        ~byte_length:(Weight_archive.Tensor.byte_length tensor)
+    else tensor) in
+  let archive = Weight_archive.create ~path:(Weight_archive.path source)
+    ~file_size:(Weight_archive.file_size source) ~index_bytes:(Weight_archive.index_bytes source)
+    ~tensors:canonical in
+  ignore (get (Exl3.Archive.bind archive ~prefix:"weight"));
+  let malformed = List.map (fun tensor -> if Weight_archive.Tensor.name tensor = "weight" then
+    Weight_archive.Tensor.create ~name:"weight" ~dtype:(Weight_archive.Dtype.Quant Ir.Dtype.Exl3_4)
+      ~shape:[128;256] ~offset:(Weight_archive.Tensor.offset tensor)
+      ~byte_length:(Weight_archive.Tensor.byte_length tensor) else tensor) canonical in
+  let bad = Weight_archive.create ~path:(Weight_archive.path source)
+    ~file_size:(Weight_archive.file_size source) ~index_bytes:(Weight_archive.index_bytes source)
+    ~tensors:malformed in
+  check (rejects (Exl3.Archive.bind bad ~prefix:"weight")) "canonical metadata mismatch accepted";
   print_endline "EXL3 schema/archive tests passed"

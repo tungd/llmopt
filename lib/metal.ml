@@ -314,7 +314,7 @@ let quant_tactic_entries ~quant_types tactics =
     | Ir.Dtype.Tile32_Affine8 -> "llmopt_tile32_affine8_linear_f16"
     | Ir.Dtype.Q4_0 -> "llmopt_q4_0_linear_f16"
     | Ir.Dtype.Q8_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K | Ir.Dtype.Q6_K
-    | Ir.Dtype.Q5_0 | Ir.Dtype.IQ4_XS -> ""
+    | Ir.Dtype.Q5_0 | Ir.Dtype.IQ4_XS | Ir.Dtype.Exl3_4 -> ""
   in
   let generic_names =
     tactics |> List.map (fun (quant, _) -> generic_name quant)
@@ -716,7 +716,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    ~epilogue:canonical_epilogue
                    ~target tile32_affine8_schema
              | Ir.Dtype.Q8_0 | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K
-             | Ir.Dtype.Q6_K | Ir.Dtype.IQ4_XS ->
+             | Ir.Dtype.Q6_K | Ir.Dtype.IQ4_XS | Ir.Dtype.Exl3_4 ->
                  Error
                    (Printf.sprintf
                       "legacy GGUF format %s must be transcoded to Tile32_Affine{4,8} before Metal codegen"
@@ -768,7 +768,7 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
                    ~epilogues:canonical_epilogues
                    ~target tile32_affine8_schema
              | Ir.Dtype.Q8_0 | Ir.Dtype.Q5_0 | Ir.Dtype.Q4_K | Ir.Dtype.Q5_K
-             | Ir.Dtype.Q6_K | Ir.Dtype.IQ4_XS ->
+             | Ir.Dtype.Q6_K | Ir.Dtype.IQ4_XS | Ir.Dtype.Exl3_4 ->
                  Error
                    (Printf.sprintf
                       "legacy GGUF format %s must be transcoded to Tile32_Affine{4,8} before Metal codegen"
@@ -813,8 +813,10 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     region_quant_multi_export_digest_source_result
   in
   let* quant_add_source = quant_add_source_result in
+  let has_exl3 = Ir.Graph.nodes graph |> List.concat_map Ir.node_inputs
+    |> List.exists (fun v -> Ir.Value.dtype v = Ir.Dtype.Quant Ir.Dtype.Exl3_4) in
   let* moe_grouped_source, moe_grouped_entries =
-    if has_moe_swiglu_ffn graph then
+    if has_moe_swiglu_ffn graph && not has_exl3 then
       let swiglu_epilogue =
         Applicative_expr.Binop
           (Applicative_expr.Mul,
@@ -854,7 +856,11 @@ let lower ?(target = Target_hardware.default) ?(fusion_regions = []) graph =
     || has_moe_swiglu_ffn graph
   in
   let components =
-    [ ( needs_quant_common,
+    [ (has_exl3, Metal_exl3_codegen.runtime_source,
+        List.map (fun (name, threads) -> kernel_entry_with_threadgroup
+          ~threadgroup:(threads, 1, 1) ~name ~operation:Kernel_abi.Operation.Linear
+          ~input_dtype:Ir.Dtype.Float16 ~output_dtype:Ir.Dtype.Float16)
+          Metal_exl3_codegen.runtime_kernels); ( needs_quant_common,
         quant_common_source,
         [] );
       ( has_w4a16_linear graph || regions_have_w4,

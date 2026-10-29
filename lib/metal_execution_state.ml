@@ -44,6 +44,7 @@ module Execution_batch = struct
     mutable moe_p_to_sorted : Buffer.t option;
     mutable moe_tile_info : Buffer.t option;
     mutable moe_num_tiles : Buffer.t option;
+    mutable exl3_scratch : (string * Buffer.t) list;
   }
 end
 
@@ -72,6 +73,7 @@ let with_execution_batch runtime operation =
       moe_p_to_sorted = None;
       moe_tile_info = None;
       moe_num_tiles = None;
+      exl3_scratch = [];
     }
 
   in
@@ -136,6 +138,7 @@ let encode_cache_pack_checkpoint execution_batch ~cache ~layer ~checkpoint
 
 type t = {
   values : Buffer.t Value_map.t;
+  tensor_keys : string Value_map.t;
   outputs_rev : (string * Buffer.t) list;
   kernels_rev : string list;
   memory_plan : Serving_memory_plan.t;

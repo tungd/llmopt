@@ -7,6 +7,9 @@ open Metal_dispatch_common
 let dispatch_moe_swiglu_ffn_command (context : Metal_execution_state.context)
     state ~m ~n_experts ~top_k ~hidden_dim ~intermediate_dim ~norm_topk_prob
     values output =
+  if List.exists (fun v -> Ir.Value.dtype v = Ir.Dtype.Quant Ir.Dtype.Exl3_4) values then
+    Metal_dispatch_exl3.moe context state ~m ~n_experts ~top_k ~hidden_dim ~intermediate_dim ~norm_topk_prob values output
+  else
   let execution_batch = context.execution_batch in
   let batch = context.batch in
   let runtime = context.runtime in
@@ -740,6 +743,8 @@ let dispatch_linear (context : Metal_execution_state.context) state ~m ~n ~k
     Ir.Value.dtype output,
     bias_value
   with
+  | Ir.Dtype.Float16, Ir.Dtype.Quant Ir.Dtype.Exl3_4, Ir.Dtype.Float16, None ->
+      Metal_dispatch_exl3.linear context state ~m ~n ~k input weight output
   | Ir.Dtype.Float16, Ir.Dtype.Float16, Ir.Dtype.Float16, None ->
       let* parameters = Parameters.u32s [ m; n; k ] in
       let* grid_x = linear_f16_grid n in

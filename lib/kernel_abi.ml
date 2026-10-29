@@ -367,6 +367,7 @@ module Linear_tactic = struct
     | Ir.Dtype.IQ4_XS -> "llmopt_iq4_xs_linear_f16"
     | Ir.Dtype.Tile32_Affine4 -> "llmopt_tile32_affine4_linear_f16"
     | Ir.Dtype.Tile32_Affine8 -> "llmopt_tile32_affine8_linear_f16"
+    | Ir.Dtype.Exl3_4 -> "exl3_contract_vector"
 
   let block_elements = Ir.Tensor_layout.block_elements
 

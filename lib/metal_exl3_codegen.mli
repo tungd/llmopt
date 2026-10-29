@@ -16,3 +16,7 @@ val emit : Exl3.t -> Schedule.t -> epilogue:Epilogue.t -> string
 (** Emits [exl3_input], [exl3_contract], [exl3_output], and the independently
     checkable [exl3_unpack] / [exl3_codebook] probes. Three production stages
     have explicit buffers; all shape constants are fixed at generation time. *)
+
+val decoder : string
+val runtime_source : string
+val runtime_kernels : (string * int) list

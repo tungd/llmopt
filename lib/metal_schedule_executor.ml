@@ -86,8 +86,16 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
                   { source = Ir.Input_source.Tensor_store { key }; name = _ },
                 [],
                 Some output ) ->
+                let* () =
+                  if Ir.Value.dtype output <> Ir.Dtype.Quant Ir.Dtype.Exl3_4 then Ok ()
+                  else match runtime.Metal_native.tensor_store with
+                    | None -> Error "EXL3 requires a weight archive"
+                    | Some (archive, _) -> Exl3.Archive.bind archive ~prefix:key |> Result.map (fun _ -> ())
+                in
                 let* buffer, _tensor = Metal_native.tensor runtime ~name:key in
                 let* () = Metal_execution_state.validate_buffer output buffer in
+                let state = { state with tensor_keys = Metal_execution_state.Value_map.add
+                  (Ir.Value.id output) key state.tensor_keys } in
                 continue (Metal_execution_state.bind_value state output buffer)
             | Ir.Op.Alloc _, [], Some output ->
                 let* buffer = Metal_execution_state.workspace_buffer state output in
@@ -425,6 +433,7 @@ let encode_schedule ?workspace ?memory_plan ?decode_uniforms ?cache
     run
       {
         values = Metal_execution_state.Value_map.empty;
+        tensor_keys = Metal_execution_state.Value_map.empty;
         outputs_rev = [];
         kernels_rev = [];
         memory_plan;
@@ -463,6 +472,7 @@ let bind_schedule_plan ?workspace ?memory_plan runtime ~schedule ~inputs =
       moe_p_to_sorted = None;
       moe_tile_info = None;
       moe_num_tiles = None;
+      exl3_scratch = [];
     }
   in
   let* execution =
@@ -506,6 +516,7 @@ let bind_decode_plan ?workspace ?memory_plan ~decode_uniforms ?cache
       moe_p_to_sorted = None;
       moe_tile_info = None;
       moe_num_tiles = None;
+      exl3_scratch = [];
     }
   in
   let* execution =

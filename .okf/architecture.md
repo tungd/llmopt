@@ -165,9 +165,9 @@ sources:
 ---
 
 The current weight-format direction is [EXL3](decisions/exl3-canonical-runtime.md).
-The first slice provides archive component validation and generated Metal
-contractions; the full-model execution paths described below still use their
-existing weight formats until integration.
+The EXL3 integration adds typed archive binding, generated ordinary and indexed
+expert contractions, and a bounded GGUF converter. Existing affine packages
+retain their execution path. See the [Mellum integration evidence](/experiments/exp-0180-exl3-mellum-integration-2026-10-30.md).
 
 
 # 1. System Overview

@@ -382,6 +382,7 @@ let quant_linear_tactics ~target graph =
              | Ok storage ->
                  let quant =
                    match Ir.Value.dtype weight with
+                   | Ir.Dtype.Quant Ir.Dtype.Exl3_4 -> None
                    | Ir.Dtype.Quant quant -> Some quant
                    | _ -> None
                  in
@@ -409,6 +410,7 @@ let graph_quant_types graph =
   |> List.concat_map Ir.node_inputs
   |> List.filter_map (fun value ->
          match Ir.Value.dtype value with
+         | Ir.Dtype.Quant Ir.Dtype.Exl3_4 -> None
          | Ir.Dtype.Quant quant -> Some quant
          | _ -> None)
   |> List.sort_uniq Stdlib.compare

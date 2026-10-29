@@ -9,6 +9,7 @@ module Dtype : sig
     | IQ4_XS
     | Tile32_Affine4
     | Tile32_Affine8
+    | Exl3_4
 
   type t =
     | Float32

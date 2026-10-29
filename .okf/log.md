@@ -2,6 +2,8 @@
 
 ## 2026-10-30
 
+- [Mellum EXL3 integration](experiments/exp-0180-exl3-mellum-integration-2026-10-30.md): converted 197 projection tensors from the HF CLI-acquired GGUF into a 6.47 GB canonical archive; native ordinary/MoE schedule fixtures pass. Added bounded serial job receipts and a self-contained serving-bundle materializer.
+
 - [EXL3 first-slice results](experiments/exp-0179-exl3-contraction-first-slice-2026-10-30.md): exact 65,536-value mul1 codebook and packed-weight parity, 25 complete-linear GPU cases, stage timings, and passing full tests (95 Python tests plus native checks). Full-model EXL3 integration and llama.cpp comparison are subsequent work.
 
 - Recorded the user-approved EXL3 canonical weight direction, superseding the affine lossless-conversion constraint; added the first schema/archive, reference fixture, and generated Metal contraction slice.

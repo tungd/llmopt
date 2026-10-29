@@ -1,0 +1,91 @@
+{
+  "status": "passed",
+  "source_download": {
+    "pid": 29060,
+    "status": "passed",
+    "exit_code": 0,
+    "seconds": 86.31451525000739,
+    "command": [
+      "/Users/tung/.local/bin/hf",
+      "download",
+      "JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF",
+      "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+      "--local-dir",
+      "/Users/tung/Projects/std23/llmopt/_artifacts/mellum21-12b-q4",
+      "--max-workers",
+      "1"
+    ],
+    "log": "_artifacts/exl3-mellum/hf-download.log"
+  },
+  "conversion": {
+    "source": {
+      "source": "/Users/tung/Projects/std23/llmopt/_artifacts/mellum21-12b-q4/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+      "bytes": 8071295264,
+      "mtime_ns": 1792755540532542150,
+      "encoder_sha256": "b6a076d769b0956400e8fd3f29ed8d11865ae057153b3c331fd9056c97a6a6db",
+      "converter_sha256": "864e8344670dc79bf66d6255e319965c1562d0783db90cda6ffa127ed427be3e",
+      "only": null
+    },
+    "encoder": "mul1-4bit-lookahead2-three-sweeps",
+    "archive_bytes": 6465384192,
+    "archive_sha256": "c6de377d1bb0c31e5dccf94b3a7a959e7dee2b966a188776584a6eabb37d2cb9",
+    "quantized_tensors": 197,
+    "source_tensors": 339,
+    "relative_rmse": 0.19092122474672252,
+    "metric": "RMSE in normalized rotated weight space; not output/model quality",
+    "job": {
+      "job": "convert-full",
+      "controller_pid": 53321,
+      "command": [
+        "python/.venv/bin/python",
+        "bench/convert_gguf_exl3.py",
+        "--gguf",
+        "/Users/tung/Projects/std23/llmopt/_artifacts/mellum21-12b-q4/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+        "--output",
+        "_artifacts/exl3-mellum/mellum.weights.llmopt",
+        "--worker",
+        "_artifacts/exl3-mellum/metal-exl3-quantize",
+        "--source",
+        "_artifacts/exl3-mellum/quantizer.metal",
+        "--extra-archive",
+        "/Users/tung/Projects/std23/llmopt/_artifacts/mellum21-12b-q4/mellum21-12b.weights.llmopt"
+      ],
+      "log": "_artifacts/exl3-mellum/convert-full.log",
+      "status": "passed",
+      "pid": 53324,
+      "exit_code": 0,
+      "seconds": 515.5045555000252
+    }
+  },
+  "native_fixture": "linear m=1 max_abs_error=0\nmoe m=1 max_abs_error=0\nlinear m=3 max_abs_error=0\nmoe m=3 max_abs_error=3.8147e-06\nlinear m=17 max_abs_error=1.52588e-05\nmoe m=17 max_abs_error=7.62939e-06\n",
+  "native_job": {
+    "job": "device",
+    "controller_pid": 68442,
+    "command": [
+      "/Users/tung/Projects/std23/llmopt-refactor-surface/_build/bin/llmopt-exl3-runtime-test",
+      "_artifacts/exl3-mellum/native-probe"
+    ],
+    "log": "_artifacts/exl3-mellum/native-probe/device.log",
+    "status": "passed",
+    "pid": 68445,
+    "exit_code": 0,
+    "seconds": 0.391005709010642
+  },
+  "tests": {
+    "job": "tests-final",
+    "controller_pid": 71432,
+    "command": [
+      "ninja",
+      "-f",
+      "ninja.build",
+      "-j1",
+      "all",
+      "test"
+    ],
+    "log": "_artifacts/exl3-mellum/tests-final.log",
+    "status": "passed",
+    "pid": 71436,
+    "exit_code": 0,
+    "seconds": 30.51797612500377
+  }
+}

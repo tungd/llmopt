@@ -26,7 +26,7 @@ _U64 = struct.Struct("<Q")
 DTYPE_NAMES = (
     "float32", "float16", "bfloat16", "int64", "int32", "int8", "bool", "uint8",
     "Q8_0", "Q4_K", "Q5_K", "Q6_K", "Q5_0", "Q4_0", "IQ4_XS",
-    "Tile32_Affine4", "Tile32_Affine8",
+    "Tile32_Affine4", "Tile32_Affine8", "EXL3_4",
 )
 DTYPE_TAGS = {name: tag for tag, name in enumerate(DTYPE_NAMES)}
 DTYPE_TAGS.update(F32=0, F16=1, BF16=2)

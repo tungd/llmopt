@@ -780,6 +780,7 @@ let make ~storage ~quant_type ~physical ~logical ~decode =
 
 let of_quant quant =
   match quant with
+  | Ir.Dtype.Exl3_4 -> invalid_arg "EXL3 has a rotated trellis schema, not an affine block schema"
   | Ir.Dtype.Q8_0 ->
       make ~storage:(Ir.Linear_storage.Block_quantized quant)
         ~quant_type:(Some quant) ~physical:(q8_0_physical quant)
@@ -823,6 +824,7 @@ let of_quant quant =
 
 let of_storage storage =
   match storage with
+  | Ir.Linear_storage.Block_quantized Ir.Dtype.Exl3_4 -> Error (Error.Unsupported_storage storage)
   | Ir.Linear_storage.Block_quantized quant -> Ok (of_quant quant)
   | Ir.Linear_storage.Dense _ -> Error (Error.Unsupported_storage storage)
   | Ir.Linear_storage.Groupwise_packed { bits; group_elements } ->

@@ -38,11 +38,13 @@ module Execution_batch : sig
     mutable moe_p_to_sorted : Buffer.t option;
     mutable moe_tile_info : Buffer.t option;
     mutable moe_num_tiles : Buffer.t option;
+    mutable exl3_scratch : (string * Buffer.t) list;
   }
 end
 
 type t = {
   values : Buffer.t Value_map.t;
+  tensor_keys : string Value_map.t;
   outputs_rev : (string * Buffer.t) list;
   kernels_rev : string list;
   memory_plan : Serving_memory_plan.t;

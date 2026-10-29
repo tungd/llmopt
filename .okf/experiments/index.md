@@ -1,5 +1,7 @@
 # Experiments
 
+* [Mellum EXL3 integration](exp-0180-exl3-mellum-integration-2026-10-30.md) - GGUF conversion, typed ordinary/MoE runtime binding, and serialized model comparison.
+
 * [EXL3 first contraction slice](exp-0179-exl3-contraction-first-slice-2026-10-30.md) - exact upstream decoder parity, 25 complete-linear schedule cases, and stage/combined GPU timing.
 
 * [JetBrains Mellum 2.1 12B Unified Tile32_Affine Benchmark vs llama.cpp](exp-0178-mellum21-12b-tile32-affine-vs-llamacpp-2026-10-23.md) - empirical side-by-side verification of JetBrains Mellum 2.1 12B-A2.5B-Thinking at Q4 on llmopt (unified Tile32_Affine{4,8} mathematical format) versus llama.cpp (Q4_K_M GGUF) on Apple M4 Pro Metal. Identified and resolved 32-bit Metal ICB hardware offset truncation (>4GB) with zero-cost automatic direct dispatch fallback.

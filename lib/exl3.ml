@@ -66,9 +66,25 @@ module Archive = struct
          | End_of_file -> Error "truncated EXL3 metadata"
     in
     let* storage = of_metadata contents in
-    let* trellis = component "trellis" Weight_archive.Dtype.U8
-      [storage.k / 16; storage.n / 16; 32 * storage.bits] in
-    let* suh = component "suh" Weight_archive.Dtype.F16 [storage.k] in
-    let* svh = component "svh" Weight_archive.Dtype.F16 [storage.n] in
+    let* trellis, scale_prefix =
+      match Weight_archive.find archive prefix with
+      | None ->
+          let* tensor = component "trellis" Weight_archive.Dtype.U8
+            [storage.k / 16; storage.n / 16; 32 * storage.bits] in
+          Ok (tensor, [])
+      | Some tensor ->
+          let* experts, scale_prefix = match Weight_archive.Tensor.shape tensor with
+            | [n; k] when n = storage.n && k = storage.k -> Ok (1, [])
+            | [experts; n; k] when experts > 0 && n = storage.n && k = storage.k ->
+                Ok (experts, [experts])
+            | _ -> Error ("EXL3 logical weight shape mismatch: " ^ prefix) in
+          if storage.bits <> 4
+             || Weight_archive.Tensor.dtype tensor <> Weight_archive.Dtype.Quant Ir.Dtype.Exl3_4
+             || Weight_archive.Tensor.byte_length tensor <> experts * packed_bytes storage
+          then Error ("EXL3 packed weight dtype or length mismatch: " ^ prefix)
+          else Ok (tensor, scale_prefix)
+    in
+    let* suh = component "suh" Weight_archive.Dtype.F16 (scale_prefix @ [storage.k]) in
+    let* svh = component "svh" Weight_archive.Dtype.F16 (scale_prefix @ [storage.n]) in
     Ok { storage; trellis; suh; svh }
 end
