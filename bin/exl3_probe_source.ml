@@ -40,7 +40,7 @@ let () =
   write (Filename.concat dir "vector_m1_silu.metal")
     (Metal_exl3_codegen.emit storage schedule ~epilogue:Epilogue.silu);
   let variants = variants @ [`Assoc ["name", `String "vector_m1_silu"; "source", `String "vector_m1_silu.metal";
-    "rows", `Int 1; "threads", `Int 128; "columns", `Int 4; "silu", `Bool true]] in
+    "rows", `Int 1; "threads", `Int (Metal_exl3_codegen.Schedule.threads schedule); "columns", `Int (Metal_exl3_codegen.Schedule.columns schedule); "silu", `Bool true]] in
   let tensors = Weight_archive.tensors archive |> List.map (fun t ->
     Weight_archive.Tensor.name t, `Assoc ["offset", `Int (Weight_archive.Tensor.offset t);
       "bytes", `Int (Weight_archive.Tensor.byte_length t)]) in

@@ -277,6 +277,11 @@ def target_graph(
 
     manifest = replace_names(manifest, {**runtime_names, **output_names})
     retained = ["logits", *cache_outputs]
+    if retain_diagnostics:
+        head = next(node for node in manifest["nodes"] if node["name"] == "logits")
+        hidden_name = head["inputs"][0]
+        manifest = replace_names(manifest, {hidden_name: "diagnostic.hidden"})
+        retained.append("diagnostic.hidden")
     manifest["outputs"] = retained
     output_node = next(node for node in manifest["nodes"] if node["op"] == "output")
     output_node["inputs"] = retained
@@ -300,6 +305,7 @@ def main() -> None:
     parser.add_argument("--weights", type=Path, required=True, help="Path to weights.llmopt archive")
     parser.add_argument("--tokenizer", type=Path, required=True, help="Path to GGUF or tokenizer file")
     parser.add_argument("--output", type=Path, required=True, help="Output directory for compiled engine")
+    parser.add_argument("--retain-diagnostics", action="store_true", help="Retain final normalized hidden values for numerical diagnosis")
     args = parser.parse_args()
 
     output = args.output.resolve()
@@ -333,7 +339,7 @@ def main() -> None:
         torch.zeros(1, 1, 2, 2, dtype=torch.float16, device="meta"),
     )
     prefill_captured = capture(prefill_wrapper, prefill_args)
-    prefill_manifest = target_graph(prefill_captured, inventory, num_layers=num_layers)
+    prefill_manifest = target_graph(prefill_captured, inventory, num_layers=num_layers, retain_diagnostics=args.retain_diagnostics)
     prefill_graph_path = source_dir / "prefill.graph.llmopt"
     write_graph(prefill_manifest, prefill_graph_path)
     print(f"[build_mellum21_engine] Prefill graph written to {prefill_graph_path}")
@@ -353,7 +359,7 @@ def main() -> None:
         *cache_inputs,
     )
     decode_captured = capture(decode_wrapper, decode_args)
-    decode_manifest = target_graph(decode_captured, inventory, num_layers=num_layers)
+    decode_manifest = target_graph(decode_captured, inventory, num_layers=num_layers, retain_diagnostics=args.retain_diagnostics)
     decode_graph_path = source_dir / "decode.graph.llmopt"
     write_graph(decode_manifest, decode_graph_path)
     print(f"[build_mellum21_engine] Decode graph written to {decode_graph_path}")

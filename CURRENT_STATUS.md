@@ -25,7 +25,11 @@ bounded GGUF converter now execute ordinary and expert projections in native
 fixtures. See `.okf/experiments/exp-0180-exl3-mellum-integration-2026-10-30.md`
 for conversion and full-model measurement evidence. The first Mellum EXL3 run
 measured 18.95 tok/s prefill and 11.00 tok/s steady decode, 4.36% and 12.47%
-of the source-GGUF llama.cpp baseline. The user target remains 95%. Historical experiment
+of the source-GGUF llama.cpp baseline. The subsequent execution/schedule repair
+restores direct command lists after reproducing ICB corruption and measures
+229.10 prefill and 40.09 decode tok/s in separate intermediate runs with the
+same weights. See `.okf/experiments/exp-0181-exl3-schedule-repair-2026-10-30.md`.
+The user target remains 95%. Historical experiment
 records and `direction.md` describe earlier states and must not be read as the
 live contract when they disagree with source or this note.
 

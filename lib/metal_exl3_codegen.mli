@@ -15,7 +15,8 @@ end
 val emit : Exl3.t -> Schedule.t -> epilogue:Epilogue.t -> string
 (** Emits [exl3_input], [exl3_contract], [exl3_output], and the independently
     checkable [exl3_unpack] / [exl3_codebook] probes. Three production stages
-    have explicit buffers; all shape constants are fixed at generation time. *)
+    have explicit buffers; bit width and tile geometry are fixed at generation
+    time, while matrix dimensions are runtime uniforms. *)
 
 val decoder : string
 val runtime_source : string

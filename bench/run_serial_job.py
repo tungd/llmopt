@@ -29,9 +29,15 @@ with log.open('w') as stream:
  r['pid']=child.pid;receipt.write_text(json.dumps(r,indent=2)+'\n')
  try: code=child.wait(timeout=a.timeout);r['status']='passed' if code==0 else 'failed'
  except subprocess.TimeoutExpired:
-  os.killpg(child.pid,signal.SIGTERM)
-  try: code=child.wait(timeout=10)
-  except subprocess.TimeoutExpired: os.killpg(child.pid,signal.SIGKILL);code=child.wait()
-  r['status']='timed_out_and_reaped'
+  r['status']='timed_out'
+  for sig, grace in ((signal.SIGTERM,10),(signal.SIGKILL,5)):
+   try: os.killpg(child.pid,sig)
+   except ProcessLookupError: pass
+   except PermissionError as error: r['cleanup_error']=str(error)
+   try:
+    code=child.wait(timeout=grace);r['status']='timed_out_and_reaped';break
+   except subprocess.TimeoutExpired: pass
+  else:
+   code=child.poll();r['status']='timed_out_outcome_unknown' if code is None else 'timed_out_and_reaped'
 r.update(exit_code=code,seconds=time.monotonic()-t);receipt.write_text(json.dumps(r,indent=2)+'\n')
 print(json.dumps(r));raise SystemExit(0 if r['status']=='passed' else 1)

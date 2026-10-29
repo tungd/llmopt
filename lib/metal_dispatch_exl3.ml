@@ -21,7 +21,11 @@ let dispatch (context : State.context) name buffers parameters grid =
   Metal_native.Batch.mark_barrier context.batch;
   Metal_native.dispatch ~batch:context.batch context.runtime entry ~buffers ~parameters ~grid
 
-let projection (context : State.context) state ~m ~n ~k ~experts ~indices
+module Routes = struct
+  type t = { rows : Buffer.t; tiles : Buffer.t; count : Buffer.t; capacity : int }
+end
+
+let projection ?routes (context : State.context) state ~m ~n ~k ~experts ~indices
     ~repeat_input ~top_k input weight output =
   let* _ = Exl3.create ~bits:4 ~k ~n in
   let* key = match State.Value_map.find_opt (Ir.Value.id weight) state.State.tensor_keys with
@@ -48,11 +52,18 @@ let projection (context : State.context) state ~m ~n ~k ~experts ~indices
   let* parameters = Metal_parameters.u32s
     [m; n; k; 4; Bool.to_int indexed; Bool.to_int repeat_input; top_k; 0] in
   let* a = dispatch context "exl3_input" [input; suh; x; indices] parameters (k, m, 1) in
-  let name, columns, rows = if indexed || m = 1 then "exl3_contract_vector", 4, 1
-    else if m < 8 then "exl3_contract_vector4", 4, 4
-    else "exl3_contract_matrix", 16, 16 in
-  let* b = dispatch context name [x; packed; y; indices] parameters
-    ((n / columns) * 128, (m + rows - 1) / rows, 1) in
+  let* b = match routes with
+    | Some (routes : Routes.t) ->
+        dispatch context "exl3_contract_grouped"
+          [x; packed; y; routes.rows; routes.tiles; routes.count] parameters
+          ((n / 32) * 256, routes.capacity, 1)
+    | None ->
+        let name, rows, threads, columns = if indexed || m = 1 then "exl3_contract_vector", 1, 128, 16
+          else if m < 8 then "exl3_contract_vector4", 4, 128, 16
+          else "exl3_contract_matrix", 16, 256, 32 in
+        dispatch context name [x; packed; y; indices] parameters
+          ((n / columns) * threads, (m + rows - 1) / rows, 1)
+  in
   let* c = dispatch context "exl3_output" [y; svh; output; indices] parameters (n, m, 1) in
   Ok [a; b; c]
 
@@ -87,7 +98,25 @@ let moe (context : State.context) state ~m ~n_experts ~top_k ~hidden_dim
       Metal_native.Batch.mark_barrier context.batch;
       let* topk = Metal_native.dispatch ~batch:context.batch context.runtime entry
         ~buffers:[router_buffer; indices; weights] ~parameters ~grid:(m * 32, 1, 1) in
-      let project = projection context state ~m:(m * top_k) ~experts:n_experts
+      let* routes, sorting =
+        if m < 8 || n_experts > 64 then Ok (None, []) else
+        let pairs = m * top_k in
+        let capacity = min pairs ((pairs + 15) / 16 + n_experts) in
+        let* tokens = scratch context "moe.sorted_tokens" (pairs * 4) in
+        let* rows = scratch context "moe.sorted_rows" (pairs * 4) in
+        let* inverse = scratch context "moe.inverse" (pairs * 4) in
+        let* tiles = scratch context "moe.tiles" (capacity * 16) in
+        let* count = scratch context "moe.tile_count" 4 in
+        let* entry = Metal_native.kernel_entry context.runtime ~name:"llmopt_moe_sort_and_bin"
+          ~operation:Kernel_abi.Operation.Moe_swiglu_ffn ~input_dtype:Ir.Dtype.Float16
+          ~output_dtype:Ir.Dtype.Float16 in
+        let* parameters = Metal_parameters.moe_sort ~tokens:m ~num_experts:n_experts ~top_k () in
+        Metal_native.Batch.mark_barrier context.batch;
+        let* kernel = Metal_native.dispatch ~batch:context.batch context.runtime entry
+          ~buffers:[indices; tokens; rows; inverse; tiles; count] ~parameters ~grid:(64,1,1) in
+        Ok (Some Routes.{rows; tiles; count; capacity}, [kernel])
+      in
+      let project = projection ?routes context state ~m:(m * top_k) ~experts:n_experts
         ~indices:(Some indices) ~top_k in
       let* gate_kernels = project ~n:intermediate_dim ~k:hidden_dim ~repeat_input:true
         hidden_buffer gate gate_buffer in
@@ -103,5 +132,5 @@ let moe (context : State.context) state ~m ~n_experts ~top_k ~hidden_dim
       let* reduce = dispatch context "exl3_moe_reduce" [down_buffer; weights; result]
         parameters (((m * hidden_dim + 255) / 256) * 256, 1, 1) in
       Ok (State.bind_value state output result,
-          [topk] @ gate_kernels @ up_kernels @ [activation] @ down_kernels @ [reduce])
+          [topk] @ sorting @ gate_kernels @ up_kernels @ [activation] @ down_kernels @ [reduce])
   | _ -> Error "EXL3 MoE expects hidden, router, gate, up, down"

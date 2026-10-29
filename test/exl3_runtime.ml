@@ -49,7 +49,18 @@ let () =
     let input name count =
       let buffer,_=get (Metal_native.tensor runtime ~name) in
       get (Metal_native.Buffer.view ~parent:buffer ~offset:0 ~bytes:count) in
-    let execution=get (Metal_runtime.execute runtime ~inputs:["input",input "input" (m*128*2); "router",input "router" (m*3*4)]) in
+    let inputs=["input",input "input" (m*128*2); "router",input "router" (m*3*4)] in
+    List.iter (fun mode ->
+    let execution = match mode with
+      | `Direct -> get (Metal_runtime.execute runtime ~inputs)
+      | `Prebaked ->
+        let dispatches,execution=get (Metal_runtime.bind_schedule_plan runtime ~schedule ~inputs) in
+        let dummy=get (Metal_native.Buffer.create ~runtime ~bytes:8) in
+        let plan=get (Metal_runtime.Prebaked.create ~runtime ~dispatches
+          ~token_buffer:dummy ~output_buffer:dummy) in
+        ignore (get (Metal_runtime.Prebaked.execute plan ~token:0 ~past_tokens:0 ~checkpoint:0));
+        execution in
+    let label = match mode with `Direct -> "direct" | `Prebaked -> "prebaked" in
     List.iter (fun (name,n) ->
       let actual=Option.get (Metal_runtime.Execution.output execution ~name) |> Metal_native.Buffer.contents |> get in
       let expected,_=get (Metal_native.tensor runtime ~name:("expected."^name)) in
@@ -59,8 +70,9 @@ let () =
         let a=half actual i and e=half expected i in
         let error=abs_float(a-.e) in worst:=max !worst error;
         if not(Float.is_finite a) || error > 0.001 +. 0.002 *. abs_float e then
-          failwith (Printf.sprintf "%s m=%d i=%d actual=%g expected=%g" name m i a e)
+          failwith (Printf.sprintf "%s %s m=%d i=%d actual=%g expected=%g" label name m i a e)
       done;
-      Printf.printf "%s m=%d max_abs_error=%g\n%!" name m !worst
+      Printf.printf "%s %s m=%d max_abs_error=%g\n%!" label name m !worst
     ) ["linear",256;"moe",128]
-  ) [1;3;17]
+    ) [`Direct;`Prebaked]
+  ) [1;3;17;64]

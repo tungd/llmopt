@@ -20,8 +20,8 @@ let () =
   check (rejects (Metal_exl3_codegen.Schedule.vector ~rows:3)) "invalid vector tile accepted";
   let vector = get (Metal_exl3_codegen.Schedule.vector ~rows:4) in
   let matrix = get (Metal_exl3_codegen.Schedule.matrix ~rows:16) in
-  check (Metal_exl3_codegen.Schedule.grid vector ~m:17 ~n:256 = (64,5,1)) "vector partial row dispatch";
-  check (Metal_exl3_codegen.Schedule.grid matrix ~m:17 ~n:256 = (16,2,1)) "matrix partial row dispatch";
+  check (Metal_exl3_codegen.Schedule.grid vector ~m:17 ~n:256 = (16,5,1)) "vector partial row dispatch";
+  check (Metal_exl3_codegen.Schedule.grid matrix ~m:17 ~n:256 = (8,2,1)) "matrix partial row dispatch";
   List.iter (fun path ->
     let archive = get (Weight_archive.of_file path) in
     let bound = get (Exl3.Archive.bind archive ~prefix:"weight") in

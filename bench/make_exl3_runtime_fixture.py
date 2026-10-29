@@ -29,10 +29,11 @@ def weights(name,experts,k,n):
   return (((y.astype(np.float64).reshape(-1,128)@h).reshape(-1,n))*sv[e]).astype(np.float16)
  return project
 linear=weights('linear',1,128,256);gate=weights('gate',3,128,256);up=weights('up',3,128,256);down=weights('down',3,256,128)
-x=rng.uniform(-.4,.4,size=(17,128)).astype(np.float16);router=rng.uniform(-1,1,size=(17,3)).astype(np.float32)
+x=rng.uniform(-.4,.4,size=(64,128)).astype(np.float16);router=rng.uniform(-1,1,size=(64,3)).astype(np.float32)
+router[:32,2] = -10  # Empty expert for m=17; mixed/partial tiles for m=64.
 add('input',1,x);add('router',0,router);add('expected.linear',1,linear(x))
-y=np.zeros((17,128),np.float32)
-for i in range(17):
+y=np.zeros((64,128),np.float32)
+for i in range(64):
  indices=np.argsort(router[i])[::-1][:2];prob=np.exp(router[i,indices]-max(router[i,indices]));prob=(prob/prob.sum()).astype(np.float16)
  for j,e in enumerate(indices):
   g=gate(x[i:i+1],e).astype(np.float32);u=up(x[i:i+1],e).astype(np.float32)
@@ -40,4 +41,4 @@ for i in range(17):
   y[i]+=down(z,e)[0].astype(np.float32)*np.float32(prob[j])
 add('expected.moe',1,y.astype(np.float16))
 write_payloads([TensorSpec(name,tag,shape,len(data)) for name,(tag,shape,data) in payloads.items()],a.output,lambda name:(payloads[name][2],))
-print(json.dumps({'status':'passed','archive':str(a.output),'oracle_revision':REVISION,'rows':17,'experts':3,'top_k':2}))
+print(json.dumps({'status':'passed','archive':str(a.output),'oracle_revision':REVISION,'rows':64,'experts':3,'top_k':2}))

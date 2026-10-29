@@ -70,6 +70,8 @@ not evidence of a second supported serving backend.
 
 ## Experiments and benchmarks
 
+* [EXL3 schedule and execution repair](experiments/exp-0181-exl3-schedule-repair-2026-10-30.md) - native ICB regression, direct execution, packed-tile vectors, and grouped matrix schedules.
+
 * [Mellum EXL3 integration](experiments/exp-0180-exl3-mellum-integration-2026-10-30.md) - GGUF conversion, typed ordinary/MoE runtime binding, and serialized model comparison.
 
 * [EXL3 first contraction slice](experiments/exp-0179-exl3-contraction-first-slice-2026-10-30.md) - verified mul1 decoding and generated vector/matrix schedules; full-model integration follows.

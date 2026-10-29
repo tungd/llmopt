@@ -300,7 +300,10 @@ the portable scalar form is a correctness fallback, not the optimization target.
 
 The resulting dispatches, dependencies, and barriers form an AOT GPU command
 queue which the Metal backend realizes as a precompiled direct command list.
-ICB remains an optional backend tactic for a specialization whose buffers,
+ICB is now an explicit diagnostic opt-in (`LLMOPT_ENABLE_ICB=1`), after the
+[EXL3 regression](/experiments/exp-0181-exl3-schedule-repair-2026-10-30.md)
+reproduced incorrect MoE output under indirect execution. It remains a possible
+backend tactic for a specialization whose buffers,
 parameters, dimensions, and barriers can be bound correctly. This compiler
 queue is distinct from the runtime SRPT serving request queue. Existing
 `pass_fuse_*.ml` and `metal.ml` paths remain explicit legacy fallbacks until

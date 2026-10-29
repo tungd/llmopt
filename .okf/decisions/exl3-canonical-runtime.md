@@ -95,3 +95,12 @@ not reproduce the upstream optimizer. Dense embeddings/norms/routers remain
 dense. The user selected the existing self-contained compiled bundle, rather
 than embedding weights into one executable. Full-model throughput is recorded
 separately from conversion error and upstream-reference arithmetic checks.
+
+# Schedule repair
+
+The [subsequent repair](/experiments/exp-0181-exl3-schedule-repair-2026-10-30.md)
+uses contiguous packed-tile reads, four-way vector K partitioning, and shared
+Mx32x64 matrix generation for ordinary and grouped expert projections. Native
+fixtures also execute the prebaked command-list path; direct encoding is the
+default after reproducing ICB corruption. The converter and weight archive
+remain unchanged, and the 95% throughput objective remains open.

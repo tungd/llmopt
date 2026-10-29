@@ -1928,7 +1928,13 @@ CAMLprim value caml_llmopt_prebaked_create(value v_library,
     plan->output_buffer_offset = o_buf->offset;
   }
 
-  bool disable_icb = (getenv("LLMOPT_DISABLE_ICB") != NULL);
+  // Keep the AOT dispatch list on the serial direct encoder by default.
+  // ICB execution corrupts dependent EXL3 scratch-buffer chains even with
+  // command barriers; test/exl3_runtime.ml reproduces this at one token.
+  // Retain explicit opt-in only for diagnosing the indirect realization.
+  const char *enable_icb = getenv("LLMOPT_ENABLE_ICB");
+  bool disable_icb = (enable_icb == NULL || strcmp(enable_icb, "1") != 0
+                      || getenv("LLMOPT_DISABLE_ICB") != NULL);
   NSMutableDictionary<NSString *, id<MTLBuffer>> *slice_cache = [NSMutableDictionary dictionary];
 
   for (mlsize_t i = 0; i < total; i++) {
