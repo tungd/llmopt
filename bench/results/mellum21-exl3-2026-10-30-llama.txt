@@ -1,0 +1,106 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.027 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M4 Pro)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple9  (1009)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 19069.67 MB
+[
+  {
+    "build_commit": "f20395d",
+    "build_number": 10531,
+    "cpu_info": "Accelerate, Apple M4 Pro",
+    "gpu_info": "Apple M4 Pro",
+    "backends": "MTL,BLAS",
+    "model_filename": "/Users/tung/Projects/std23/llmopt/_artifacts/mellum21-12b-q4/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+    "model_type": "mellum 12B.A2.5B Q4_K - Medium",
+    "model_size": 8067705856,
+    "model_n_params": 12149923072,
+    "n_batch": 2048,
+    "n_ubatch": 512,
+    "n_threads": 8,
+    "cpu_mask": "0x0",
+    "cpu_strict": false,
+    "poll": 50,
+    "type_k": "f16",
+    "type_v": "f16",
+    "n_gpu_layers": 99,
+    "n_cpu_moe": 0,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "no_kv_offload": false,
+    "flash_attn": -1,
+    "devices": "auto",
+    "tensor_split": "0.00",
+    "tensor_buft_overrides": "none",
+    "load_mode": "auto",
+    "embeddings": false,
+    "no_op_offload": 0,
+    "no_host": false,
+    "fit_target": 0,
+    "fit_min_ctx": 0,
+    "n_prompt": 64,
+    "n_gen": 0,
+    "n_depth": 0,
+    "test_time": "2026-10-29T19:23:13Z",
+    "avg_ns": 147389472,
+    "stddev_ns": 7932916,
+    "avg_ts": 435.038608,
+    "stddev_ts": 22.711309,
+    "samples_ns": [ 156546875, 142617125, 143004417 ],
+    "samples_ts": [ 408.823, 448.754, 447.539 ]
+  },
+  {
+    "build_commit": "f20395d",
+    "build_number": 10531,
+    "cpu_info": "Accelerate, Apple M4 Pro",
+    "gpu_info": "Apple M4 Pro",
+    "backends": "MTL,BLAS",
+    "model_filename": "/Users/tung/Projects/std23/llmopt/_artifacts/mellum21-12b-q4/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+    "model_type": "mellum 12B.A2.5B Q4_K - Medium",
+    "model_size": 8067705856,
+    "model_n_params": 12149923072,
+    "n_batch": 2048,
+    "n_ubatch": 512,
+    "n_threads": 8,
+    "cpu_mask": "0x0",
+    "cpu_strict": false,
+    "poll": 50,
+    "type_k": "f16",
+    "type_v": "f16",
+    "n_gpu_layers": 99,
+    "n_cpu_moe": 0,
+    "split_mode": "layer",
+    "main_gpu": 0,
+    "no_kv_offload": false,
+    "flash_attn": -1,
+    "devices": "auto",
+    "tensor_split": "0.00",
+    "tensor_buft_overrides": "none",
+    "load_mode": "auto",
+    "embeddings": false,
+    "no_op_offload": 0,
+    "no_host": false,
+    "fit_target": 0,
+    "fit_min_ctx": 0,
+    "n_prompt": 0,
+    "n_gen": 64,
+    "n_depth": 0,
+    "test_time": "2026-10-29T19:23:14Z",
+    "avg_ns": 725473847,
+    "stddev_ns": 6254814,
+    "avg_ts": 88.222561,
+    "stddev_ts": 0.758007,
+    "samples_ns": [ 720346125, 732442541, 723632875 ],
+    "samples_ts": [ 88.8462, 87.3789, 88.4426 ]
+  }
+]

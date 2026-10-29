@@ -3,7 +3,7 @@ type: Experiment
 title: Mellum GGUF to EXL3 conversion and native integration
 description: Explicit EXL3 storage binding, bounded approximate Metal encoding, and serialized Mellum execution evidence.
 tags: [exl3, mellum, metal, benchmark]
-status: draft
+status: stable
 generated: { by: codex/gpt-6, at: '2026-10-30T00:00:00Z' }
 sources:
   - id: canonical
@@ -70,8 +70,55 @@ outputs. Full-model conversion completed in 515.505 seconds including process st
 aggregate normalized relative RMSE 0.190921. Native archive binding, schedule
 serialization, ordinary projections, and 3-expert/top-2 MoE passed at 1, 3, and
 17 rows. Largest absolute error was 1.52588e-5 (ordinary) and 7.62939e-6 (MoE).
-The full-model bundle and throughput comparison follow these implementation checks.
+The compiled model and throughput comparison completed as recorded below.
 
 The full `ninja -f ninja.build -j1 all test` suite passed: 97 Python tests and
 native checks. Retained implementation receipt:
 `bench/results/exl3-mellum-integration-2026-10-30.json`.
+
+# Compiled bundle and measured comparison
+
+Implementation commit `7482643` is on `main` and was used for the measurement.
+The user selected the existing compiled bundle, not one executable embedding
+all weights. The self-contained bundle is at
+`_artifacts/mellum21-exl3/engine` in the main checkout; `serve` launches the
+included executable with that Model Program. It contains the EXL3 archive,
+3.46 MB tokenizer, compiled Metal libraries, and relative entrypoint links.
+It has no dependency on the source GGUF. Relocation after measurement retained
+the original worktree path as a symlink and passed Model Program/package checks.
+Both packages have 108 declared kernels and zero opaque operations; prefill has
+1200 schedule commands, decode 1256, and each binds a 932-entry tensor store.
+
+All our heavy stages ran serially. The controller waited for other detected
+compiler processes before launch. The comparison used a 64-token prefill and
+64-token generation; llama-bench ran three repetitions. LLMOpt used warmup and
+synthetic IDs 1..64 for prefill and 1,2,3,4 for decode. llama-bench uses its own
+synthetic inputs, so this is a workload-level throughput comparison, not a
+matched-token quality test.
+
+| Metric | LLMOpt EXL3 | llama.cpp source Q4_K_M | Ratio |
+| --- | ---: | ---: | ---: |
+| Prefill, 64 tokens | 18.9487 tok/s | 435.0386 tok/s | 4.3556% |
+| Steady decode, 64 generated tokens | 11.0031 tok/s | 88.2226 tok/s | 12.4719% |
+| Decode including every inter-token gap | 11.0144 tok/s | 88.2226 tok/s | 12.4848% |
+
+LLMOpt TTFT was 0.235699 s, total measured generation 5.955496 s, and end-to-end
+completion throughput 10.7464 tok/s. Median inter-token latency was 88.794 ms,
+maximum 178.261 ms. The steady metric excludes the first gap; both definitions
+are retained. Load times were 23.3897 s for the prefill process and 10.0446 s
+for the decode process, separate from the measured request. Synthetic generated
+IDs repeatedly alternate 28 and 61048; these receipts do not establish semantic
+quality parity. The observed ratios are below the user's 95% throughput target.
+
+Raw outputs and exact commands are retained in
+`bench/results/mellum21-exl3-vs-llamacpp-2026-10-30.json` and adjacent
+`mellum21-exl3-2026-10-30-*.txt`. The receipt includes the model/Metal-library,
+serving-executable, tokenizer, and archive hashes. Converter payload temporaries
+were removed only after hashing the complete archive; provenance and conversion
+measurements remain under `_artifacts/exl3-mellum` in the implementation worktree.
+
+The implementation currently sends each routed token/expert pair through the
+vector schedule, including prefill. Grouping routes by expert and lowering
+through the existing matrix schedule is a concrete next compiler improvement;
+no speedup from it has been measured here. No separate model-specific kernel
+family was introduced by this integration.

@@ -19,11 +19,13 @@ server are implemented to different levels of evidence. The current evidence is
 strong for selected probe models and Metal device fixtures, not yet a universal
 model-adoption or backend-portability claim.
 
-The current implementation is developed on `codex/reduce-code-surface`.
+The EXL3 integration is committed on `main` (`7482643`).
 EXL3 is the canonical quantized weight direction; typed model bindings and a
 bounded GGUF converter now execute ordinary and expert projections in native
 fixtures. See `.okf/experiments/exp-0180-exl3-mellum-integration-2026-10-30.md`
-for conversion and full-model measurement evidence. Historical experiment
+for conversion and full-model measurement evidence. The first Mellum EXL3 run
+measured 18.95 tok/s prefill and 11.00 tok/s steady decode, 4.36% and 12.47%
+of the source-GGUF llama.cpp baseline. The user target remains 95%. Historical experiment
 records and `direction.md` describe earlier states and must not be read as the
 live contract when they disagree with source or this note.
 
